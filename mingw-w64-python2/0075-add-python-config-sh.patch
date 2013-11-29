@@ -1,0 +1,172 @@
+diff -urN a/configure.ac b/configure.ac
+--- a/configure.ac	2013-05-17 23:57:37.951460630 +0100
++++ b/configure.ac	2013-05-17 23:57:38.317464817 +0100
+@@ -913,6 +913,7 @@
+ 
+ # Other platforms follow
+ if test $enable_shared = "yes"; then
++  PY_ENABLE_SHARED=1
+   AC_DEFINE(Py_ENABLE_SHARED, 1, [Defined if Python is built as a shared library.])
+   case $ac_sys_system in
+     BeOS*)
+@@ -981,6 +982,7 @@
+           ;;
+   esac
+ else # shared is disabled
++  PY_ENABLE_SHARED=0
+   case $ac_sys_system in
+     CYGWIN*)
+           BLDLIBRARY='$(LIBRARY)'
+@@ -992,6 +994,7 @@
+           LDLIBRARY='libpython$(VERSION).a';;
+   esac
+ fi
++AC_SUBST(PY_ENABLE_SHARED)
+ 
+ if test "$cross_compiling" = yes; then
+ 	RUNSHARED=
+@@ -4862,7 +4865,7 @@
+ AC_MSG_RESULT(done)
+ 
+ # generate output files
+-AC_CONFIG_FILES(Makefile.pre Modules/Setup.config Misc/python.pc)
++AC_CONFIG_FILES(Makefile.pre Modules/Setup.config Misc/python.pc Misc/python-config.sh)
+ AC_CONFIG_FILES([Modules/ld_so_aix], [chmod +x Modules/ld_so_aix])
+ AC_OUTPUT
+ 
+diff -urN a/Makefile.pre.in b/Makefile.pre.in
+--- a/Makefile.pre.in	2013-05-17 23:57:37.937460470 +0100
++++ b/Makefile.pre.in	2013-05-17 23:57:38.319464839 +0100
+@@ -1051,6 +1051,8 @@
+ 	# Substitution happens here, as the completely-expanded BINDIR
+ 	# is not available in configure
+ 	sed -e "s,@EXENAME@,$(BINDIR)/python$(VERSION)$(EXE)," < $(srcdir)/Misc/python-config.in >python-config
++	# Replace makefile compat. variable references with shell script compat. ones; $(VAR) -> ${VAR}
++	sed -e "s,\$$(\([A-Za-z0-9_]*\)),\$$\{\1\},g" < Misc/python-config.sh >python-config.sh
+ 
+ # Install the include files
+ INCLDIRSTOMAKE=$(INCLUDEDIR) $(CONFINCLUDEDIR) $(INCLUDEPY) $(CONFINCLUDEPY)
+@@ -1109,6 +1111,7 @@
+ 	$(INSTALL_SCRIPT) $(srcdir)/Modules/makesetup $(DESTDIR)$(LIBPL)/makesetup
+ 	$(INSTALL_SCRIPT) $(srcdir)/install-sh $(DESTDIR)$(LIBPL)/install-sh
+ 	$(INSTALL_SCRIPT) python-config $(DESTDIR)$(BINDIR)/python$(VERSION)-config
++	$(INSTALL_SCRIPT) python-config.sh $(DESTDIR)$(BINDIR)/python-config.sh
+ 	rm python-config
+ 	@if [ -s Modules/python.exp -a \
+ 		"`echo $(MACHDEP) | sed 's/^\(...\).*/\1/'`" = "aix" ]; then \
+diff -urN a/Misc/python-config.sh.in b/Misc/python-config.sh.in
+--- a/Misc/python-config.sh.in	1970-01-01 01:00:00.000000000 +0100
++++ b/Misc/python-config.sh.in	2013-05-17 23:57:38.320464851 +0100
+@@ -0,0 +1,112 @@
++#!/usr/bin/env sh
++
++exit_with_usage ()
++{
++    echo "Usage: $0 [ignored.py] --prefix|--exec-prefix|--includes|--libs|--cflags|--ldflags|--extension-suffix|--help|--abiflags|--configdir"
++    exit 1
++}
++
++case "$1" in
++    *.py)
++        shift
++    ;;
++esac
++
++if [ "$1" = "" ] ; then
++    exit_with_usage
++fi
++
++# Returns the actual prefix where this script was installed to.
++installed_prefix ()
++{
++    local RESULT=$(dirname $(cd $(dirname "$1") && pwd -P))
++    local READLINK=readlink
++    if [ "$(uname -s)" = "Darwin" ] ; then
++        # readlink in darwin can't handle -f.  Use greadlink from MacPorts instead.
++        READLINK=greadlink
++    fi
++    if [ $(which $READLINK) ] ; then
++        RESULT=$($READLINK -f "$RESULT")
++    fi
++    echo $RESULT
++}
++
++prefix_build="@prefix@"
++prefix_real=$(installed_prefix "$0")
++
++# Use sed to fix paths from their built to locations to their installed to locations.
++prefix=$(echo "$prefix_build" | sed "s#$prefix_build#$prefix_real#")
++exec_prefix_build="@exec_prefix@"
++exec_prefix=$(echo "$exec_prefix_build" | sed "s#$exec_prefix_build#$prefix_real#")
++includedir=$(echo "@includedir@" | sed "s#$prefix_build#$prefix_real#")
++libdir=$(echo "@libdir@" | sed "s#$prefix_build#$prefix_real#")
++CFLAGS=$(echo "@CFLAGS@" | sed "s#$prefix_build#$prefix_real#")
++VERSION="@VERSION@"
++LIBM="@LIBM@"
++LIBC="@LIBC@"
++SYSLIBS="$LIBM $LIBC"
++ABIFLAGS="@ABIFLAGS@"
++# Protect against lack of substitution.
++if [ "$ABIFLAGS" = "@ABIFLAGS@" ] ; then
++    ABIFLAGS=
++fi
++LIBS="@LIBS@ $SYSLIBS -lpython${VERSION}${ABIFLAGS}"
++BASECFLAGS="@BASECFLAGS@"
++LDLIBRARY="@LDLIBRARY@"
++LINKFORSHARED="@LINKFORSHARED@"
++OPT="@OPT@"
++PY_ENABLE_SHARED="@PY_ENABLE_SHARED@"
++DLLLIBRARY="@DLLLIBRARY@"
++LIBDEST=${prefix}/lib/python${VERSION}
++LIBPL=${LIBDEST}/config
++SO="@SO@"
++PYTHONFRAMEWORK="@PYTHONFRAMEWORK@"
++INCDIR="-I$includedir/python${VERSION}${ABIFLAGS}"
++PLATINCDIR="-I$includedir/python${VERSION}${ABIFLAGS}"
++
++# Scan for --help or unknown argument.
++for ARG in $*
++do
++    case $ARG in
++        --help)
++            exit_with_usage
++        ;;
++        --prefix|--exec-prefix|--includes|--libs|--cflags|--ldflags)
++        ;;
++        *)
++            exit_with_usage
++        ;;
++    esac
++done
++
++for ARG in $*
++do
++    case $ARG in
++        --prefix)
++            echo "$prefix"
++        ;;
++        --exec-prefix)
++            echo "$exec_prefix"
++        ;;
++        --includes)
++            echo "$INCDIR"
++        ;;
++        --cflags)
++            echo "$INCDIR $BASECFLAGS $CFLAGS $OPT"
++        ;;
++        --libs)
++            echo "$LIBS"
++        ;;
++        --ldflags)
++            LINKFORSHAREDUSED=
++            if [ -z "$PYTHONFRAMEWORK" ] ; then
++                LINKFORSHAREDUSED=$LINKFORSHARED
++            fi
++            LIBPLUSED=
++            if [ "$PY_ENABLE_SHARED" = "0" -o -n "$(DLLLIBRARY)" ] ; then
++                LIBPLUSED="-L$LIBPL"
++            fi
++            echo "$LIBPLUSED -L$libdir $LIBS $LINKFORSHAREDUSED"
++        ;;
++esac
++done
