@@ -1,0 +1,334 @@
+From 7f4f4354540440c0a8a37beaccbec8bc7fc15ec7 Mon Sep 17 00:00:00 2001
+From: Erik van Pienbroek <epienbro@fedoraproject.org>
+Date: Mon, 27 Aug 2012 23:28:54 +0200
+Subject: [PATCH] Use CreateFile on Win32 to make sure g_unlink always works
+
+The functions g_open(), g_creat() and g_fopen() defer to _wopen(),
+_wcreat() and _wfopen() respectively. This is very similar to
+the corresponding arrangement for Linux. However, those Windows
+functions do not support renaming a file whilst it's open. As a
+result, g_rename() behaves differently on the Windows platform
+compared to its Linux behaviour, where files can be renamed even
+while there are file handles still open. Resolved this by using
+the Win32 API function CreateFile() instead of _wopen(), _wcreat()
+and _wfopen()
+
+Patch initially created by John Emmas
+---
+ glib/gstdio.c | 259 ++++++++++++++++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 233 insertions(+), 26 deletions(-)
+
+diff --git a/glib/gstdio.c b/glib/gstdio.c
+index 6d763e1..c1d072f 100644
+--- a/glib/gstdio.c
++++ b/glib/gstdio.c
+@@ -191,6 +191,11 @@ g_open (const gchar *filename,
+ 	int          mode)
+ {
+ #ifdef G_OS_WIN32
++  HANDLE hFile;
++  DWORD  dwDesiredAccess       = 0;
++  DWORD  dwFlagsAndAttributes  = 0;
++  DWORD  dwDisposition         = OPEN_EXISTING;
++  DWORD  dwSharedAccess        = FILE_SHARE_READ | FILE_SHARE_DELETE;
+   wchar_t *wfilename = g_utf8_to_utf16 (filename, -1, NULL, NULL, NULL);
+   int retval;
+   int save_errno;
+@@ -201,12 +206,114 @@ g_open (const gchar *filename,
+       return -1;
+     }
+ 
+-  retval = _wopen (wfilename, flags, mode);
+-  save_errno = errno;
++  /* Set up the access modes and other attributes */
++  if ((flags & _O_CREAT) && (mode & _S_IREAD))
++  {
++    if (! (mode & _S_IWRITE))
++      dwFlagsAndAttributes  = FILE_ATTRIBUTE_READONLY; /* Sets file to 'read only' after the file gets closed */
++  }
++  if ( !(flags & _O_ACCMODE))
++  {
++    /* Equates to _O_RDONLY */
++    if (flags & _O_TRUNC)
++	{
++	  errno = EINVAL;
++	  g_free (wfilename);
++	  return -1;
++	}
+ 
+-  g_free (wfilename);
++	dwDesiredAccess |= GENERIC_READ;
++	dwSharedAccess  |= FILE_SHARE_WRITE;
++  }
++  if (flags & _O_WRONLY)
++  {
++    if (flags & _O_RDWR)
++	{
++	  errno = EINVAL;
++	  g_free (wfilename);
++	  return -1;
++	}
+ 
++	dwDesiredAccess |= GENERIC_WRITE;
++  }
++  if (flags & _O_RDWR)
++  {
++	dwDesiredAccess |= GENERIC_READ;
++	dwDesiredAccess |= GENERIC_WRITE;
++  }
++  if (flags & _O_TRUNC)
++  {
++    if (flags & _O_CREAT)
++	  dwDisposition = CREATE_ALWAYS;
++	else
++	  dwDisposition = TRUNCATE_EXISTING;
++  }
++  if ((flags & _O_CREAT) && !(flags & _O_TRUNC))
++  {
++    if (flags & _O_EXCL)
++	  dwDisposition = CREATE_NEW;
++	else
++	  dwDisposition = OPEN_ALWAYS;
++  }
++  if (flags & _O_CREAT)
++  {
++    /* Handle the other flags that can be attached to _O_CREAT */
++    if ((flags & _O_TEMPORARY) || (flags & _O_SHORT_LIVED))
++      dwFlagsAndAttributes |= FILE_ATTRIBUTE_TEMPORARY;
++
++    if (flags & _O_TEMPORARY)
++      dwFlagsAndAttributes |= FILE_FLAG_DELETE_ON_CLOSE;
++  }
++  if ((flags & _O_SEQUENTIAL) || (flags & _O_APPEND))
++  {
++    dwFlagsAndAttributes |= FILE_FLAG_SEQUENTIAL_SCAN;
++  }
++  else if (flags & _O_RANDOM)
++  {
++    dwFlagsAndAttributes |= FILE_FLAG_RANDOM_ACCESS;
++  }
++
++  if (0 == dwFlagsAndAttributes)
++    dwFlagsAndAttributes = FILE_ATTRIBUTE_NORMAL;
++  hFile = CreateFileW(wfilename, dwDesiredAccess, dwSharedAccess, NULL, dwDisposition, dwFlagsAndAttributes, NULL);
++
++  if (INVALID_HANDLE_VALUE == hFile)
++  {
++    retval = (-1);
++
++    switch (GetLastError ())
++    {
++#define CASE(a,b) case ERROR_##a: errno = b; break
++      CASE (FILE_NOT_FOUND, ENOENT);
++      CASE (PATH_NOT_FOUND, ENOENT);
++      CASE (ACCESS_DENIED, EACCES);
++      CASE (NOT_SAME_DEVICE, EXDEV);
++      CASE (LOCK_VIOLATION, EACCES);
++      CASE (SHARING_VIOLATION, EACCES);
++      CASE (FILE_EXISTS, EEXIST);
++      CASE (ALREADY_EXISTS, EEXIST);
++#undef CASE
++      default: errno = EIO;
++    }
++  }
++  else
++    retval = _open_osfhandle((long)hFile, flags);
++
++  if ((-1) != retval)
++  {
++    /* We have a valid file handle. Set its translation mode to text or binary, as appropriate */
++    if ((!(flags & _O_TEXT)) && (_fmode == _O_BINARY))
++      _setmode(retval, _O_BINARY);
++    else if ((flags & _O_TEXT) || (_fmode == _O_TEXT))
++      _setmode(retval, _O_TEXT);
++    else
++      _setmode(retval, _O_BINARY);
++  }
++
++  save_errno = errno;
++  g_free (wfilename);
+   errno = save_errno;
++
+   return retval;
+ #else
+   int fd;
+@@ -248,6 +355,8 @@ g_creat (const gchar *filename,
+ 	 int          mode)
+ {
+ #ifdef G_OS_WIN32
++  HANDLE hFile;
++  DWORD  dwFlagsAndAttributes  = FILE_ATTRIBUTE_NORMAL;
+   wchar_t *wfilename = g_utf8_to_utf16 (filename, -1, NULL, NULL, NULL);
+   int retval;
+   int save_errno;
+@@ -258,12 +367,41 @@ g_creat (const gchar *filename,
+       return -1;
+     }
+ 
+-  retval = _wcreat (wfilename, mode);
+-  save_errno = errno;
++  if (mode & _S_IREAD)
++  {
++    if (! (mode & _S_IWRITE))
++      dwFlagsAndAttributes  = FILE_ATTRIBUTE_READONLY; /* Sets file to 'read only' after the file gets closed */
++  }
+ 
+-  g_free (wfilename);
++  hFile = CreateFileW(wfilename, (GENERIC_READ | GENERIC_WRITE), (FILE_SHARE_READ | FILE_SHARE_DELETE),
++                                  NULL, CREATE_ALWAYS, dwFlagsAndAttributes, NULL);
++
++  if (INVALID_HANDLE_VALUE == hFile)
++  {
++    retval = (-1);
++
++    switch (GetLastError ())
++    {
++#define CASE(a,b) case ERROR_##a: errno = b; break
++      CASE (FILE_NOT_FOUND, ENOENT);
++      CASE (PATH_NOT_FOUND, ENOENT);
++      CASE (ACCESS_DENIED, EACCES);
++      CASE (NOT_SAME_DEVICE, EXDEV);
++      CASE (LOCK_VIOLATION, EACCES);
++      CASE (SHARING_VIOLATION, EACCES);
++      CASE (FILE_EXISTS, EEXIST);
++      CASE (ALREADY_EXISTS, EEXIST);
++#undef CASE
++      default: errno = EIO;
++    }
++  }
++  else
++    retval = _open_osfhandle((long)hFile, _O_RDWR);
+ 
++  save_errno = errno;
++  g_free (wfilename);
+   errno = save_errno;
++
+   return retval;
+ #else
+   return creat (filename, mode);
+@@ -699,33 +837,102 @@ g_fopen (const gchar *filename,
+ 	 const gchar *mode)
+ {
+ #ifdef G_OS_WIN32
+-  wchar_t *wfilename = g_utf8_to_utf16 (filename, -1, NULL, NULL, NULL);
+-  wchar_t *wmode;
+-  FILE *retval;
+-  int save_errno;
+-
+-  if (wfilename == NULL)
++  int   hFile;
++  int   flags  = 0;
++  gchar priv_mode[4];
++  FILE *retval = NULL;
++
++  if ((NULL == filename) || (NULL == mode))
++  {
++    errno = EINVAL;
++    goto out;
++  }
++  if ((strlen(mode) < 1) || (strlen(mode) > 3))
++  {
++    errno - EINVAL;
++    goto out;
++  }
++
++  strncpy(priv_mode, mode, 3);
++  priv_mode[3] = '\0';
++
++  /* Set up any flags to pass to 'g_open()' */
++  if (3 == strlen(priv_mode))
++  {
++    if (('c' == priv_mode[2]) || ('n' == priv_mode[2]))
++      priv_mode[2] = '\0';
++    else
+     {
+-      errno = EINVAL;
+-      return NULL;
++      if (0 == strcmp(priv_mode, "a+b"))
++        flags = _O_RDWR | _O_CREAT | _O_APPEND | _O_BINARY;
++      else if (0 == strcmp(priv_mode, "a+t"))
++        flags = _O_RDWR | _O_CREAT | _O_APPEND | _O_TEXT;
++      else if (0 == strcmp(priv_mode, "r+b"))
++        flags = _O_RDWR | _O_BINARY;
++      else if (0 == strcmp(priv_mode, "r+t"))
++        flags = _O_RDWR | _O_TEXT;
++      else if (0 == strcmp(priv_mode, "w+b"))
++        flags = _O_RDWR | _O_CREAT |_O_TRUNC | _O_BINARY;
++      else if (0 == strcmp(priv_mode, "w+t"))
++        flags = _O_RDWR | _O_CREAT |_O_TRUNC | _O_TEXT;
++      else
++	  {
++	    errno = EINVAL;
++        goto out;
++	  }
+     }
+-
+-  wmode = g_utf8_to_utf16 (mode, -1, NULL, NULL, NULL);
+-
+-  if (wmode == NULL)
++  }
++  if (2 == strlen(priv_mode))
++  {
++    if (('c' == priv_mode[1]) || ('n' == priv_mode[1]))
++      priv_mode[1] = '\0';
++    else
+     {
+-      g_free (wfilename);
+-      errno = EINVAL;
+-      return NULL;
++      if (0 == strcmp(priv_mode, "a+"))
++        flags = _O_RDWR | _O_CREAT | _O_APPEND;
++      else if (0 == strcmp(priv_mode, "ab"))
++        flags = _O_WRONLY | _O_CREAT | _O_APPEND | _O_BINARY;
++      else if (0 == strcmp(priv_mode, "at"))
++        flags = _O_WRONLY | _O_CREAT | _O_APPEND | _O_TEXT;
++      else if (0 == strcmp(priv_mode, "rb"))
++        flags = _O_RDONLY | _O_BINARY;
++      else if (0 == strcmp(priv_mode, "rt"))
++        flags = _O_RDONLY | _O_TEXT;
++      else if (0 == strcmp(priv_mode, "wb"))
++        flags = _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY;
++      else if (0 == strcmp(priv_mode, "wt"))
++        flags = _O_WRONLY | _O_CREAT | _O_TRUNC | _O_TEXT;
++      else
++	  {
++	    errno = EINVAL;
++        goto out;
++	  }
+     }
++  }
++  if (1 == strlen(priv_mode))
++  {
++    if (0 == strcmp(priv_mode, "a"))
++      flags = _O_WRONLY | _O_CREAT | _O_APPEND;
++    else if (0 == strcmp(priv_mode, "r"))
++      flags = _O_RDONLY;
++    else if (0 == strcmp(priv_mode, "w"))
++      flags = _O_WRONLY | _O_CREAT | _O_TRUNC;
++    else if ( !((0 == strcmp(priv_mode, "c")) || (0 == strcmp(priv_mode, "n"))))
++	{
++	  errno = EINVAL;
++      goto out;
++	}
++  }
+ 
+-  retval = _wfopen (wfilename, wmode);
+-  save_errno = errno;
++  hFile = g_open (filename, flags, (_S_IREAD | _S_IWRITE));
+ 
+-  g_free (wfilename);
+-  g_free (wmode);
++  if (INVALID_HANDLE_VALUE == (HANDLE)hFile)
++    /* 'errno' will have already been set by 'g_open()' */
++    retval = NULL;
++  else
++    retval = _fdopen(hFile, mode);
+ 
+-  errno = save_errno;
++out:
+   return retval;
+ #else
+   return fopen (filename, mode);
+-- 
+1.7.11.4
+
