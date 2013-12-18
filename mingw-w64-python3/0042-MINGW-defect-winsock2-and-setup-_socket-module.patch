@@ -1,0 +1,148 @@
+From 78a17fd46e8498173a24d53da3c6a1b4c7d0286d Mon Sep 17 00:00:00 2001
+From: Roumen Petrov <local@example.net>
+Date: Sat, 2 Mar 2013 13:35:28 +0200
+Subject: [PATCH 12/24] MINGW: defect winsock2 and setup _socket module
+
+---
+ Misc/config_mingw      |  3 +++
+ Modules/socketmodule.c |  6 ++++++
+ configure.ac           | 28 +++++++++++++++++++++++-----
+ pyconfig.h.in          |  7 +++++--
+ setup.py               |  4 ++++
+ 5 files changed, 41 insertions(+), 7 deletions(-)
+
+diff --git a/Misc/config_mingw b/Misc/config_mingw
+index 513065d..9be43fd 100644
+--- a/Misc/config_mingw
++++ b/Misc/config_mingw
+@@ -10,3 +10,6 @@ ac_cv_func_alarm=ignore
+ # files to ignore
+ ac_cv_file__dev_ptmx=ignore #NOTE: under MSYS environment device exist
+ ac_cv_file__dev_ptc=no
++
++# force detection of winsock2 functionality - require wxp or newer
++ac_cv_func_getpeername=yes
+diff --git a/Modules/socketmodule.c b/Modules/socketmodule.c
+index 0fd14ab..ddb569c 100644
+--- a/Modules/socketmodule.c
++++ b/Modules/socketmodule.c
+@@ -309,6 +309,12 @@ if_indextoname(index) -- return the corresponding interface name\n\
+   /* Do not include addrinfo.h for MSVC7 or greater. 'addrinfo' and
+    * EAI_* constants are defined in (the already included) ws2tcpip.h.
+    */
++#elif defined(__MINGW32__)
++  /* Do not include addrinfo.h as minimum supported version is
++   * _WIN32_WINNT >= WindowsXP(0x0501)
++   */
++#  define HAVE_GETADDRINFO
++#  define HAVE_GETNAMEINFO
+ #else
+ #  include "addrinfo.h"
+ #endif
+diff --git a/configure.ac b/configure.ac
+index 0ea0f34..79ea4f9 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -3484,21 +3484,36 @@ AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+ ],[])
+ AC_MSG_RESULT($was_it_defined)
+ 
++AC_CHECK_HEADERS([ws2tcpip.h])
+ AC_MSG_CHECKING(for addrinfo)
+ AC_CACHE_VAL(ac_cv_struct_addrinfo,
+-AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <netdb.h>]], [[struct addrinfo a]])],
++AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
++#ifdef HAVE_WS2TCPIP_H
++#  include <ws2tcpip.h>
++#else
++#  include <netdb.h>
++#endif]],
++    [[struct addrinfo a]])],
+   [ac_cv_struct_addrinfo=yes],
+   [ac_cv_struct_addrinfo=no]))
+ AC_MSG_RESULT($ac_cv_struct_addrinfo)
+ if test $ac_cv_struct_addrinfo = yes; then
+-	AC_DEFINE(HAVE_ADDRINFO, 1, [struct addrinfo (netdb.h)])
++	AC_DEFINE(HAVE_ADDRINFO, 1, [struct addrinfo])
+ fi
+ 
+ AC_MSG_CHECKING(for sockaddr_storage)
+ AC_CACHE_VAL(ac_cv_struct_sockaddr_storage,
+ AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+-#		include <sys/types.h>
+-#		include <sys/socket.h>]], [[struct sockaddr_storage s]])],
++#ifdef HAVE_WS2TCPIP_H
++#include <ws2tcpip.h>
++#endif
++#ifdef HAVE_SYS_TYPES_H
++#include <sys/types.h>
++#endif
++#ifdef HAVE_SYS_SOCKET_H
++#include <sys/socket.h>
++#endif]],
++    [[struct sockaddr_storage s]])],
+   [ac_cv_struct_sockaddr_storage=yes],
+   [ac_cv_struct_sockaddr_storage=no]))
+ AC_MSG_RESULT($ac_cv_struct_sockaddr_storage)
+@@ -4673,7 +4688,10 @@ fi
+ 
+ AC_CHECK_TYPE(socklen_t,,
+   AC_DEFINE(socklen_t,int,
+-            [Define to `int' if <sys/socket.h> does not define.]),[
++            [Define to `int' if <sys/socket.h> or <ws2tcpip.h> does not define.]),[
++#ifdef HAVE_WS2TCPIP_H
++#include <ws2tcpip.h>
++#endif
+ #ifdef HAVE_SYS_TYPES_H
+ #include <sys/types.h>
+ #endif
+diff --git a/pyconfig.h.in b/pyconfig.h.in
+index bf36f2a..0cc54c5 100644
+--- a/pyconfig.h.in
++++ b/pyconfig.h.in
+@@ -43,7 +43,7 @@
+ /* Define to 1 if you have the `acosh' function. */
+ #undef HAVE_ACOSH
+ 
+-/* struct addrinfo (netdb.h) */
++/* struct addrinfo */
+ #undef HAVE_ADDRINFO
+ 
+ /* Define to 1 if you have the `alarm' function. */
+@@ -1131,6 +1131,9 @@
+ /* Define to 1 if you have the `writev' function. */
+ #undef HAVE_WRITEV
+ 
++/* Define to 1 if you have the <ws2tcpip.h> header file. */
++#undef HAVE_WS2TCPIP_H
++
+ /* Define if the zlib library has inflateCopy */
+ #undef HAVE_ZLIB_COPY
+ 
+@@ -1456,7 +1459,7 @@
+ /* Define to `unsigned int' if <sys/types.h> does not define. */
+ #undef size_t
+ 
+-/* Define to `int' if <sys/socket.h> does not define. */
++/* Define to `int' if <sys/socket.h> or <ws2tcpip.h> does not define. */
+ #undef socklen_t
+ 
+ /* Define to `int' if <sys/types.h> doesn't define. */
+diff --git a/setup.py b/setup.py
+index d723f18..d09a64b 100644
+--- a/setup.py
++++ b/setup.py
+@@ -748,7 +748,11 @@ class PyBuildExt(build_ext):
+         exts.append( Extension('_posixsubprocess', ['_posixsubprocess.c']) )
+ 
+         # socket(2)
++        socket_libs = []
++        if host_platform.startswith(('mingw', 'win')):
++            socket_libs += ['ws2_32']
+         exts.append( Extension('_socket', ['socketmodule.c'],
++                               libraries = socket_libs,
+                                depends = ['socketmodule.h']) )
+         # Detect SSL support for the socket module (via _ssl)
+         search_for_ssl_incs_in = [
+-- 
+1.7.12.1
