@@ -1,0 +1,453 @@
+diff --git a/lib/CodeGen/AsmPrinter/Win64Exception.cpp b/lib/CodeGen/AsmPrinter/Win64Exception.cpp
+index 422b0fd..2bd1a4e 100644
+--- a/lib/CodeGen/AsmPrinter/Win64Exception.cpp
++++ b/lib/CodeGen/AsmPrinter/Win64Exception.cpp
+@@ -78,9 +78,9 @@ void Win64Exception::beginFunction(const MachineFunction *MF) {
+   if (!shouldEmitPersonality)
+     return;
+ 
+-  MCSymbol *GCCHandlerSym =
+-    Asm->GetExternalSymbolSymbol("_GCC_specific_handler");
+-  Asm->OutStreamer.EmitWin64EHHandler(GCCHandlerSym, true, true);
++  const MCSymbol *PersHandlerSym = TLOF.getCFIPersonalitySymbol(Per, Asm->Mang,
++                                                                MMI);
++  Asm->OutStreamer.EmitWin64EHHandler(PersHandlerSym, true, true);
+ 
+   Asm->OutStreamer.EmitLabel(Asm->GetTempSymbol("eh_func_begin",
+                                                 Asm->getFunctionNumber()));
+@@ -99,14 +99,8 @@ void Win64Exception::endFunction(const MachineFunction *) {
+   MMI->TidyLandingPads();
+ 
+   if (shouldEmitPersonality) {
+-    const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
+-    const Function *Per = MMI->getPersonalities()[MMI->getPersonalityIndex()];
+-    const MCSymbol *Sym = TLOF.getCFIPersonalitySymbol(Per, Asm->Mang, MMI);
+-
+     Asm->OutStreamer.PushSection();
+     Asm->OutStreamer.EmitWin64EHHandlerData();
+-    Asm->OutStreamer.EmitValue(MCSymbolRefExpr::Create(Sym, Asm->OutContext),
+-                               4);
+     EmitExceptionTable();
+     Asm->OutStreamer.PopSection();
+   }
+diff --git a/lib/MC/MCObjectFileInfo.cpp b/lib/MC/MCObjectFileInfo.cpp
+index da70728..502bcc1 100644
+--- a/lib/MC/MCObjectFileInfo.cpp
++++ b/lib/MC/MCObjectFileInfo.cpp
+@@ -575,11 +575,16 @@ void MCObjectFileInfo::InitCOFFMCObjectFileInfo(Triple T) {
+   // though it contains relocatable pointers.  In PIC mode, this is probably a
+   // big runtime hit for C++ apps.  Either the contents of the LSDA need to be
+   // adjusted or this should be a data section.
+-  LSDASection =
+-    Ctx->getCOFFSection(".gcc_except_table",
+-                        COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+-                        COFF::IMAGE_SCN_MEM_READ,
+-                        SectionKind::getReadOnly());
++  if (T.getOS() == Triple::Win32) {
++    // On Windows with SEH, the LSDA is emitted into the .xdata section
++    LSDASection = 0;
++  } else {
++    LSDASection =
++      Ctx->getCOFFSection(".gcc_except_table",
++                          COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
++                          COFF::IMAGE_SCN_MEM_READ,
++                          SectionKind::getReadOnly());
++  }
+ 
+   // Debug info.
+   DwarfAbbrevSection =
+diff --git a/lib/Target/X86/MCTargetDesc/X86MCAsmInfo.cpp b/lib/Target/X86/MCTargetDesc/X86MCAsmInfo.cpp
+index 93c4e3f..787e303 100644
+--- a/lib/Target/X86/MCTargetDesc/X86MCAsmInfo.cpp
++++ b/lib/Target/X86/MCTargetDesc/X86MCAsmInfo.cpp
+@@ -131,7 +131,8 @@ getNonexecutableStackSection(MCContext &Ctx) const {
+ void X86MCAsmInfoMicrosoft::anchor() { }
+ 
+ X86MCAsmInfoMicrosoft::X86MCAsmInfoMicrosoft(const Triple &Triple) {
+-  if (Triple.getArch() == Triple::x86_64) {
++  bool is64Bit = Triple.getArch() == Triple::x86_64;
++  if (is64Bit) {
+     GlobalPrefix = '\0';
+     PrivateGlobalPrefix = ".L";
+     HasMicrosoftFastStdCallMangling = false;
+@@ -142,12 +143,17 @@ X86MCAsmInfoMicrosoft::X86MCAsmInfoMicrosoft(const Triple &Triple) {
+   TextAlignFillValue = 0x90;
+ 
+   AllowAtInName = true;
++
++  // Exceptions handling
++  if (is64Bit)
++    ExceptionsType = ExceptionHandling::Win64;
+ }
+ 
+ void X86MCAsmInfoGNUCOFF::anchor() { }
+ 
+ X86MCAsmInfoGNUCOFF::X86MCAsmInfoGNUCOFF(const Triple &Triple) {
+-  if (Triple.getArch() == Triple::x86_64) {
++  bool is64Bit = Triple.getArch() == Triple::x86_64;
++  if (is64Bit) {
+     GlobalPrefix = '\0';
+     PrivateGlobalPrefix = ".L";
+     HasMicrosoftFastStdCallMangling = false;
+@@ -158,5 +164,8 @@ X86MCAsmInfoGNUCOFF::X86MCAsmInfoGNUCOFF(const Triple &Triple) {
+   TextAlignFillValue = 0x90;
+ 
+   // Exceptions handling
+-  ExceptionsType = ExceptionHandling::DwarfCFI;
++  if (is64Bit && Triple.getOS() == Triple::MinGW32)
++    ExceptionsType = ExceptionHandling::Win64;
++  else
++    ExceptionsType = ExceptionHandling::DwarfCFI;
+ }
+diff --git a/lib/Target/X86/X86AsmPrinter.h b/lib/Target/X86/X86AsmPrinter.h
+index cf47dc4..106cf0b 100644
+--- a/lib/Target/X86/X86AsmPrinter.h
++++ b/lib/Target/X86/X86AsmPrinter.h
+@@ -27,6 +27,8 @@ class LLVM_LIBRARY_VISIBILITY X86AsmPrinter : public AsmPrinter {
+   const X86Subtarget *Subtarget;
+   StackMaps SM;
+ 
++  void EmitUnwindingInstruction(const MachineInstr *MI);
++
+  public:
+   explicit X86AsmPrinter(TargetMachine &TM, MCStreamer &Streamer)
+     : AsmPrinter(TM, Streamer), SM(*this) {
+diff --git a/lib/Target/X86/X86ISelLowering.cpp b/lib/Target/X86/X86ISelLowering.cpp
+index e87e7ed..17cbf79 100644
+--- a/lib/Target/X86/X86ISelLowering.cpp
++++ b/lib/Target/X86/X86ISelLowering.cpp
+@@ -596,7 +596,8 @@ void X86TargetLowering::resetOperationActions() {
+   // FIXME - use subtarget debug flags
+   if (!Subtarget->isTargetDarwin() &&
+       !Subtarget->isTargetELF() &&
+-      !Subtarget->isTargetCygMing()) {
++      !Subtarget->isTargetCygMing() &&
++      !Subtarget->isTargetWin64()) {
+     setOperationAction(ISD::EH_LABEL, MVT::Other, Expand);
+   }
+ 
+diff --git a/lib/Target/X86/X86MCInstLower.cpp b/lib/Target/X86/X86MCInstLower.cpp
+index 78d45e8..4524e48 100644
+--- a/lib/Target/X86/X86MCInstLower.cpp
++++ b/lib/Target/X86/X86MCInstLower.cpp
+@@ -776,7 +776,129 @@ static void LowerPATCHPOINT(MCStreamer &OS, StackMaps &SM,
+   EmitNops(OS, NumBytes - EncodedBytes, Is64Bit);
+ }
+ 
++static bool isCalleeSavedReg(const MachineFunction *MF,
++                             const TargetRegisterInfo *RI, unsigned Reg) {
++  const uint16_t *NVRegs = RI->getCalleeSavedRegs(MF);
++  while (*NVRegs) {
++    if (*NVRegs == Reg)
++      return true;
++    NVRegs++;
++  }
++  return false;
++}
++
++void X86AsmPrinter::EmitUnwindingInstruction(const MachineInstr *MI) {
++  assert(MI->getFlag(MachineInstr::FrameSetup) &&
++         "Only call frame setup instructions allowed here!");
++  unsigned SReg, DReg;
++  unsigned Offset;
++  const X86RegisterInfo *RI =
++    static_cast<const X86RegisterInfo *>(TM.getRegisterInfo());
++  switch (MI->getOpcode()) {
++  default: llvm_unreachable("Unknown frame setup opcode!");
++  case X86::PUSH64r:
++    SReg = MI->getOperand(0).getReg();
++    if (isCalleeSavedReg(MI->getParent()->getParent(), RI, SReg))
++      OutStreamer.EmitWin64EHPushReg(RI->getSEHRegNum(SReg));
++    else
++      OutStreamer.EmitWin64EHAllocStack(8);
++    break;
++  case X86::SUB64ri8:
++  case X86::SUB64ri32: {
++    DReg = MI->getOperand(0).getReg();
++    Offset = MI->getOperand(2).getImm();
++    if (DReg == RI->getStackRegister()) {
++      OutStreamer.EmitWin64EHAllocStack(Offset);
++    }
++  } break;
++  case X86::MOV64rr:
++    DReg = MI->getOperand(0).getReg();
++    SReg = MI->getOperand(1).getReg();
++    if (DReg == RI->getFrameRegister(*MF) && SReg == RI->getStackRegister())
++      OutStreamer.EmitWin64EHSetFrame(RI->getSEHRegNum(DReg), 0);
++    break;
++  case X86::MOV64mr:
++  case X86::MOVAPSmr:
++    DReg = MI->getOperand(0).getReg();
++    Offset = MI->getOperand(0).getOffset();
++    SReg = MI->getOperand(1).getReg();
++    if (DReg == RI->getFrameRegister(*MF) || DReg == RI->getStackRegister()) {
++      if (MI->getOpcode() == X86::MOVAPSmr)
++        OutStreamer.EmitWin64EHSaveXMM(RI->getSEHRegNum(SReg), Offset);
++      else
++        OutStreamer.EmitWin64EHSaveReg(RI->getSEHRegNum(SReg), Offset);
++    }
++    break;
++  case X86::LEA64r:
++    DReg = MI->getOperand(0).getReg();
++    Offset = MI->getOperand(0).getOffset();
++    SReg = MI->getOperand(1).getReg();
++    if (SReg == RI->getStackRegister()) {
++      if (DReg == RI->getFrameRegister(*MF)) {
++        OutStreamer.EmitWin64EHSetFrame(RI->getSEHRegNum(DReg), Offset);
++      } else if (DReg == RI->getStackRegister()) {
++        OutStreamer.EmitWin64EHAllocStack(Offset);
++      }
++      else
++        llvm_unreachable("X86::X86::LEA64r not allowed with these operands");
++    }
++    else
++      llvm_unreachable("X86::X86::LEA64r not allowed with these operands");
++    break;
++  case X86::MOV64ri:
++    // Occurs before alloca()/call to __chkstk
++    if (!(MI->getNextNode()
++            && MI->getNextNode()->getOpcode() == X86::W64ALLOCA
++            && MI->getOperand(0).getReg() == X86::RAX))
++      llvm_unreachable("X86::MOV64ri only allowed before X86::W64ALLOCA");
++    break;
++  case X86::W64ALLOCA:
++    // Occurs if call to __chkstk/___chkstk is used. Adjust stack on CygMing.
++    if (getSubtarget().isTargetCygMing()) {
++      const MachineInstr *MoveMI = MI->getPrevNode();
++      if (!(MoveMI && MoveMI->getOpcode() == X86::MOV64ri))
++        llvm_unreachable("X86::MOV64ri required before X86::W64ALLOCA");
++      Offset = MoveMI->getOperand(1).getImm();
++      OutStreamer.EmitWin64EHAllocStack(Offset);
++    }
++    break;
++  case X86::SUB64rr:
++    // Occurs after call to __chkstk on Win64
++    if (!(MI->getPrevNode()
++            && MI->getPrevNode()->getOpcode() == X86::W64ALLOCA
++            && MI->getOperand(0).getReg() == RI->getStackRegister()
++            && MI->getOperand(2).getReg() == X86::RAX
++            && getSubtarget().isTargetWin64()))
++      llvm_unreachable("X86::SUB64rr only allowed after X86::W64ALLOCA");
++    const MachineInstr *MoveMI = MI->getPrevNode()->getPrevNode();
++    if (!(MoveMI && MoveMI->getOpcode() == X86::MOV64ri))
++      llvm_unreachable("X86::MOV64ri required before X86::W64ALLOCA");
++    Offset = MoveMI->getOperand(1).getImm();
++    OutStreamer.EmitWin64EHAllocStack(Offset);
++    break;
++  }
++  // Prolog ends if next instruction does not have the FrameSetup flag
++  // and is not the PROLOG_LABEL.
++  if (MI->getNextNode()) {
++    const MachineInstr *MI2 = MI->getNextNode();
++    if (!(MI2->getFlag(MachineInstr::FrameSetup) ||
++          (MI2->isPrologLabel() && MI2->getNextNode() &&
++           MI2->getNextNode()->getFlag(MachineInstr::FrameSetup)))) {
++      OutStreamer.EmitWin64EHEndProlog();
++    }
++  }
++}
++
+ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
++  // Emit end of prolog for Win64-style EH if there is no framesetup.
++  if (MAI->getExceptionHandlingType() == ExceptionHandling::Win64 &&
++      !MI->getFlag(MachineInstr::FrameSetup) &&
++      MI->getParent()->getParent()->getFunction()->needsUnwindTableEntry() &&
++      MI == MI->getParent()->instr_begin() &&
++      MI->getParent()->getNumber() == 0) {
++    OutStreamer.EmitWin64EHEndProlog();
++  }
++
+   X86MCInstLower MCInstLowering(*MF, *this);
+   switch (MI->getOpcode()) {
+   case TargetOpcode::DBG_VALUE:
+@@ -888,4 +1010,11 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
+   MCInst TmpInst;
+   MCInstLowering.Lower(MI, TmpInst);
+   OutStreamer.EmitInstruction(TmpInst);
++
++  // Emit SEH unwind info for Win64-style EH.
++  if (MAI->getExceptionHandlingType() == ExceptionHandling::Win64 &&
++      MI->getFlag(MachineInstr::FrameSetup) &&
++      MI->getParent()->getParent()->getFunction()->needsUnwindTableEntry()) {
++    EmitUnwindingInstruction(MI);
++  }
+ }
+diff --git a/test/CodeGen/X86/avx-win64-args.ll b/test/CodeGen/X86/avx-win64-args.ll
+index 85b2634..3b2f3d4 100644
+--- a/test/CodeGen/X86/avx-win64-args.ll
++++ b/test/CodeGen/X86/avx-win64-args.ll
+@@ -1,4 +1,6 @@
+ ; RUN: llc < %s -mcpu=corei7-avx -mattr=+avx | FileCheck %s
++; XFAIL: *
++; See PR16779.
+ target triple = "x86_64-pc-win32"
+ 
+ declare <8 x float> @foo(<8 x float>, i32)
+diff --git a/test/CodeGen/X86/win64_eh.ll b/test/CodeGen/X86/win64_eh.ll
+new file mode 100644
+index 0000000..fc6d28c
+--- /dev/null
++++ b/test/CodeGen/X86/win64_eh.ll
+@@ -0,0 +1,162 @@
++; RUN: llc < %s -O0 -mtriple=x86_64-pc-win32 | FileCheck %s -check-prefix=WIN64
++; RUN: llc < %s -O0 -mtriple=x86_64-pc-mingw32 | FileCheck %s -check-prefix=MINGW64
++
++; Check function with nor prolog
++define void @foo0() uwtable {
++entry:
++  ret void
++}
++; WIN64: .seh_proc foo0
++; WIN64: .seh_endprologue
++; WIN64: ret
++; WIN64: .seh_endproc
++
++; MINGW64: .seh_proc foo0
++; MINGW64: .seh_endprologue
++; MINGW64: ret
++; MINGW64: .seh_endproc
++
++; Checks a small stack allocation
++define void @foo1() uwtable {
++entry:
++  %baz = alloca [2000 x i16], align 2
++  ret void
++}
++; WIN64: .seh_proc foo1
++; WIN64: subq $4000, %rsp
++; WIN64: .seh_stackalloc 4000
++; WIN64: .seh_endprologue
++; WIN64: ret
++; WIN64: .seh_endproc
++
++; MINGW64: .seh_proc foo1
++; MINGW64: subq $4000, %rsp
++; MINGW64: .seh_stackalloc 4000
++; MINGW64: .seh_endprologue
++; MINGW64: ret
++; MINGW64: .seh_endproc
++
++
++; Checks a stack allocation requiring call to __chkstk
++define void @foo2() uwtable {
++entry:
++  %baz = alloca [4000 x i16], align 2
++  ret void
++}
++; WIN64: .seh_proc foo2
++; WIN64: movabsq $8000, %rax
++; WIN64: callq __chkstk
++; WIN64: subq %rax, %rsp
++; WIN64: .seh_endprologue
++; WIN64: ret
++; WIN64: .seh_endproc
++
++; MINGW64: .seh_proc foo2
++; MINGW64: movabsq $8000, %rax
++; MINGW64: callq ___chkstk
++; MINGW64: .seh_endprologue
++; MINGW64: ret
++; MINGW64: .seh_endproc
++
++
++; Checks stack push
++define i32 @foo3(i32 %f_arg, i32 %e_arg, i32 %d_arg, i32 %c_arg, i32 %b_arg, i32 %a_arg) uwtable {
++entry:
++  %a = alloca i32
++  %b = alloca i32
++  %c = alloca i32
++  %d = alloca i32
++  %e = alloca i32
++  %f = alloca i32
++  store i32 %a_arg, i32* %a
++  store i32 %b_arg, i32* %b
++  store i32 %c_arg, i32* %c
++  store i32 %d_arg, i32* %d
++  store i32 %e_arg, i32* %e
++  store i32 %f_arg, i32* %f
++  %tmp = load i32* %a
++  %tmp1 = mul i32 %tmp, 2
++  %tmp2 = load i32* %b
++  %tmp3 = mul i32 %tmp2, 3
++  %tmp4 = add i32 %tmp1, %tmp3
++  %tmp5 = load i32* %c
++  %tmp6 = mul i32 %tmp5, 5
++  %tmp7 = add i32 %tmp4, %tmp6
++  %tmp8 = load i32* %d
++  %tmp9 = mul i32 %tmp8, 7
++  %tmp10 = add i32 %tmp7, %tmp9
++  %tmp11 = load i32* %e
++  %tmp12 = mul i32 %tmp11, 11
++  %tmp13 = add i32 %tmp10, %tmp12
++  %tmp14 = load i32* %f
++  %tmp15 = mul i32 %tmp14, 13
++  %tmp16 = add i32 %tmp13, %tmp15
++  ret i32 %tmp16
++}
++; WIN64: .seh_proc foo3
++; WIN64: pushq %rsi
++; WIN64: .seh_pushreg 6
++; WIN64: subq $24, %rsp
++; WIN64: .seh_stackalloc 24
++; WIN64: .seh_endprologue
++; WIN64: ret
++; WIN64: .seh_endproc
++
++; MINGW64: .seh_proc foo3
++; MINGW64: pushq %rsi
++; MINGW64: .seh_pushreg 6
++; MINGW64: subq $24, %rsp
++; MINGW64: .seh_stackalloc 24
++; MINGW64: .seh_endprologue
++; MINGW64: ret
++; MINGW64: .seh_endproc
++
++
++; Check emission of eh handler and handler data
++declare i32 @_d_eh_personality(i32, i32, i64, i8*, i8*)
++declare void @_d_eh_resume_unwind(i8*)
++
++declare i32 @bar()
++
++define i32 @foo4() #0 {
++entry:
++  %step = alloca i32, align 4
++  store i32 0, i32* %step
++  %tmp = load i32* %step
++
++  %tmp1 = invoke i32 @bar()
++          to label %finally unwind label %landingpad
++
++finally:
++  store i32 1, i32* %step
++  br label %endtryfinally
++
++landingpad:
++  %landing_pad = landingpad { i8*, i32 } personality i32 (i32, i32, i64, i8*, i8*)* @_d_eh_personality
++          cleanup
++  %tmp3 = extractvalue { i8*, i32 } %landing_pad, 0
++  store i32 2, i32* %step
++  call void @_d_eh_resume_unwind(i8* %tmp3)
++  unreachable
++
++endtryfinally:
++  %tmp10 = load i32* %step
++  ret i32 %tmp10
++}
++; WIN64: .seh_proc foo4
++; WIN64: .seh_handler _d_eh_personality, @unwind, @except
++; WIN64: subq $56, %rsp
++; WIN64: .seh_stackalloc 56
++; WIN64: .seh_endprologue
++; WIN64: ret
++; WIN64: .seh_handlerdata
++; WIN64: .seh_endproc
++
++; MINGW64: .seh_proc foo4
++; MINGW64: .seh_handler _d_eh_personality, @unwind, @except
++; MINGW64: subq $56, %rsp
++; MINGW64: .seh_stackalloc 56
++; MINGW64: .seh_endprologue
++; MINGW64: ret
++; MINGW64: .seh_handlerdata
++; MINGW64: .seh_endproc
