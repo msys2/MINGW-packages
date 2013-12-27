@@ -1,0 +1,108 @@
+diff -urN a/Lib/distutils/command/install.py b/Lib/distutils/command/install.py
+--- a/Lib/distutils/command/install.py	2013-12-26 18:48:45.180299800 +0000
++++ b/Lib/distutils/command/install.py	2013-12-26 18:48:49.408541700 +0000
+@@ -370,7 +370,8 @@
+ 
+         # Convert directories from Unix /-separated syntax to the local
+         # convention.
+-        self.convert_paths('lib', 'purelib', 'platlib',
++        self.convert_paths('base', 'platbase',
++                           'lib', 'purelib', 'platlib',
+                            'scripts', 'data', 'headers',
+                            'userbase', 'usersite')
+ 
+diff -urN a/Lib/distutils/util.py b/Lib/distutils/util.py
+--- a/Lib/distutils/util.py	2013-12-26 18:48:45.218302000 +0000
++++ b/Lib/distutils/util.py	2013-12-26 18:48:49.410541800 +0000
+@@ -133,6 +133,13 @@
+         paths.remove('.')
+     if not paths:
+         return os.curdir
++    # On Windows, if paths is ['C:','folder','subfolder'] then
++    # os.path.join(*paths) will return 'C:folder\subfolder' which
++    # is thus relative to the CWD on that drive. So we work around
++    # this by adding a \ to path[0]
++    if (len(paths) > 0 and paths[0].endswith(':') and
++        sys.platform == "win32" and sys.version.find("GCC") >= 0):
++        paths[0] += '\\'
+     return os.path.join(*paths)
+ 
+ # convert_path ()
+@@ -143,6 +150,10 @@
+     relative, this is equivalent to "os.path.join(new_root,pathname)".
+     Otherwise, it requires making 'pathname' relative and then joining the
+     two, which is tricky on DOS/Windows and Mac OS.
++
++    If on Windows or OS/2 and both new_root and pathname are on different
++    drives, raises DistutilsChangeRootError as this is nonsensical,
++    otherwise use drive which can be in either of new_root or pathname.
+     """
+     if os.name == 'posix':
+         if not os.path.isabs(pathname):
+@@ -150,17 +161,20 @@
+         else:
+             return os.path.join(new_root, pathname[1:])
+ 
+-    elif os.name == 'nt':
+-        (drive, path) = os.path.splitdrive(pathname)
+-        if path[0] == '\\':
+-            path = path[1:]
+-        return os.path.join(new_root, path)
+-
+-    elif os.name == 'os2':
++    elif os.name == 'nt' or os.name == 'os2':
+         (drive, path) = os.path.splitdrive(pathname)
+         if path[0] == os.sep:
+             path = path[1:]
+-        return os.path.join(new_root, path)
++        (drive_r, path_r) = os.path.splitdrive(new_root)
++        drive_used = ''
++        if len(drive) == 2 and len(drive_r) == 2 and drive != drive_r:
++            raise DistutilsChangeRootError("root and pathname not on same drive (%s, %s)"
++                   % (drive_r,drive))
++        elif len(drive_r) == 2:
++            drive_used = drive_r+os.sep
++        else:
++            drive_used = drive+os.sep
++        return os.path.join(drive_used+path_r, path)
+ 
+     else:
+         raise DistutilsPlatformError("nothing known about platform '%s'" % os.name)
+diff -urN a/Makefile.pre.in b/Makefile.pre.in
+--- a/Makefile.pre.in	2013-12-26 18:48:46.025348200 +0000
++++ b/Makefile.pre.in	2013-12-26 18:48:49.412541900 +0000
+@@ -1263,6 +1263,12 @@
+ 	else true; \
+ 	fi
+ 
++ifeq ($(shell uname -o),Msys)
++DESTDIRFINAL=$(DESTDIR)
++else
++DESTDIRFINAL=$(DESTDIR)/
++endif
++
+ # Install the dynamically loadable modules
+ # This goes into $(exec_prefix)
+ sharedinstall: sharedmods
+@@ -1270,9 +1276,9 @@
+ 	   	--prefix=$(prefix) \
+ 		--install-scripts=$(BINDIR) \
+ 		--install-platlib=$(DESTSHARED) \
+-		--root=$(DESTDIR)/
+-	-rm $(DESTDIR)$(DESTSHARED)/_sysconfigdata.py
+-	-rm -r $(DESTDIR)$(DESTSHARED)/__pycache__
++		--root=$(DESTDIRFINAL)
++	-rm $(DESTDIRFINAL)$(DESTSHARED)/_sysconfigdata.py
++	-rm -r $(DESTDIRFINAL)$(DESTSHARED)/__pycache__ 
+ 
+ # Here are a couple of targets for MacOSX again, to install a full
+ # framework-based Python. frameworkinstall installs everything, the
+@@ -1346,7 +1352,7 @@
+ 	$(PYTHON_FOR_BUILD) $(srcdir)/Tools/scripts/setup.py install \
+ 	--prefix=$(prefix) \
+ 	--install-scripts=$(BINDIR) \
+-	--root=$(DESTDIR)/
++	--root=$(DESTDIRFINAL)
+ 
+ # Build the toplevel Makefile
+ Makefile.pre: $(srcdir)/Makefile.pre.in config.status
