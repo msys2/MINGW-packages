@@ -1,0 +1,1116 @@
+--- blender/CMakeLists.txt.orig	2014-01-17 13:43:00.420000000 +0400
++++ blender/CMakeLists.txt	2014-01-17 13:42:49.983600000 +0400
+@@ -177,6 +177,8 @@
+ 	if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
+ 		option(WITH_GHOST_XDND   "Enable drag'n'drop support on Linux using XDND protocol" ON)
+ 	endif()
++elseif(MINGW)
++	option(WITH_SYSTEM_GLEW "Use GLEW OpenGL wrapper library provided by the operating system" ON)
+ else()
+ 	# not an option for other OS's
+ 	set(WITH_SYSTEM_GLEW OFF)
+@@ -184,7 +186,7 @@
+ 
+ 
+ # (unix defaults to System OpenJPEG On)
+-if(UNIX AND NOT APPLE)
++if((UNIX AND NOT APPLE) OR MINGW)
+ 	set(PLATFORM_DEFAULT ON)
+ else()
+ 	set(PLATFORM_DEFAULT OFF)
+@@ -581,7 +583,7 @@
+ #-----------------------------------------------------------------------------
+ #Platform specifics
+ 
+-if(UNIX AND NOT APPLE)
++if((UNIX AND NOT APPLE) OR MINGW)
+ 	macro(find_package_wrapper)
+ 		string(TOUPPER ${ARGV0} _NAME_UPPER)
+ 		if(WITH_STATIC_LIBS)
+@@ -600,15 +602,30 @@
+ 	find_package_wrapper(ZLIB REQUIRED)
+ 	find_package_wrapper(Freetype REQUIRED)
+ 
++	if(MINGW)
++		set(LIBDIR ${MINGW_LIBS})
++	endif()
++	
+ 	if(WITH_PYTHON)
+-		# No way to set py33. remove for now.
+-		# find_package(PythonLibs)
++		if(MINGW)
++			# normally cached but not since we include them with blender
++			set(PYTHON_VERSION 3.3) #  CACHE STRING)
++			set(PYTHON_INCLUDE_DIR "${LIBDIR}/include/python${PYTHON_VERSION}m")  # CACHE PATH)
++			set(PYTHON_LIBRARY "${LIBDIR}/lib/libpython3.3m.dll.a")  # CACHE FILEPATH)
++
++			# uncached vars
++			set(PYTHON_INCLUDE_DIRS "${PYTHON_INCLUDE_DIR}")
++			set(PYTHON_LIBRARIES  "${PYTHON_LIBRARY}")
++		else()
++			# No way to set py33. remove for now.
++			# find_package(PythonLibs)
+ 
+-		# Use our own instead, since wothout py is such a rare case,
+-		# require this package
+-		# XXX Linking errors with debian static python :/
+-#		find_package_wrapper(PythonLibsUnix REQUIRED)
+-		find_package(PythonLibsUnix REQUIRED)
++			# Use our own instead, since wothout py is such a rare case,
++			# require this package
++			# XXX Linking errors with debian static python :/
++#			find_package_wrapper(PythonLibsUnix REQUIRED)
++			find_package(PythonLibsUnix REQUIRED)
++		endif()
+ 	endif()
+ 
+ 	if(WITH_IMAGE_OPENEXR)
+@@ -672,7 +689,11 @@
+ 	endif()
+ 
+ 	if(WITH_CODEC_FFMPEG)
+-		set(FFMPEG /usr CACHE PATH "FFMPEG Directory")
++		if(MINGW)
++			set(FFMPEG ${LIBDIR} CACHE PATH "FFMPEG Directory")
++		else()
++			set(FFMPEG /usr CACHE PATH "FFMPEG Directory")
++		endif()
+ 		set(FFMPEG_LIBRARIES avformat avcodec avutil avdevice swscale CACHE STRING "FFMPEG Libraries")
+ 
+ 		mark_as_advanced(FFMPEG)
+@@ -701,6 +722,9 @@
+ 		if(OPENCOLLADA_FOUND)
+ 			find_package_wrapper(XML2)
+ 			find_package_wrapper(PCRE)
++			if(MINGW)
++				list(APPEND OPENCOLLADA_LIBRARIES ${XML2_LIBRARY})
++			endif()
+ 		else()
+ 			set(WITH_OPENCOLLADA OFF)
+ 		endif()
+@@ -857,8 +881,13 @@
+ 			message(FATAL_ERROR "LLVM not found.")
+ 		endif()
+ 
+-		# Fix for conflict with Mesa llvmpipe
+-		set(PLATFORM_LINKFLAGS "${PLATFORM_LINKFLAGS} -Wl,--version-script=${CMAKE_SOURCE_DIR}/source/creator/blender.map")
++		if(MINGW)
++			# imagehelp is needed by LLVM 3.1 on MinGW, check lib\Support\Windows\Signals.inc
++			set(PLATFORM_LINKLIBS "${PLATFORM_LINKLIBS} -limagehlp")
++		else()
++			# Fix for conflict with Mesa llvmpipe
++			set(PLATFORM_LINKFLAGS "${PLATFORM_LINKFLAGS} -Wl,--version-script=${CMAKE_SOURCE_DIR}/source/creator/blender.map")
++		endif()
+ 	endif()
+ 
+ 	if(WITH_CYCLES_OSL)
+@@ -869,9 +898,13 @@
+ 		find_library(OSL_LIB_EXEC NAMES oslexec PATHS ${CYCLES_OSL}/lib)
+ 		find_library(OSL_LIB_COMP NAMES oslcomp PATHS ${CYCLES_OSL}/lib)
+ 		find_library(OSL_LIB_QUERY NAMES oslquery PATHS ${CYCLES_OSL}/lib)
+-		# Note: --whole-archive is needed to force loading of all symbols in liboslexec,
+-		# otherwise LLVM is missing the osl_allocate_closure_component function
+-		list(APPEND OSL_LIBRARIES ${OSL_LIB_COMP} -Wl,--whole-archive ${OSL_LIB_EXEC} -Wl,--no-whole-archive ${OSL_LIB_QUERY})
++		if(MINGW)
++			list(APPEND OSL_LIBRARIES ${OSL_LIB_COMP} ${OSL_LIB_EXEC} ${OSL_LIB_QUERY})
++		else()
++			# Note: --whole-archive is needed to force loading of all symbols in liboslexec,
++			# otherwise LLVM is missing the osl_allocate_closure_component function
++			list(APPEND OSL_LIBRARIES ${OSL_LIB_COMP} -Wl,--whole-archive ${OSL_LIB_EXEC} -Wl,--no-whole-archive ${OSL_LIB_QUERY})
++		endif()
+ 		find_path(OSL_INCLUDES OSL/oslclosure.h PATHS ${CYCLES_OSL}/include)
+ 		find_program(OSL_COMPILER NAMES oslc PATHS ${CYCLES_OSL}/bin)
+ 	
+@@ -885,621 +918,441 @@
+ 		endif()
+ 	endif()
+ 
+-	# OpenSuse needs lutil, ArchLinux not, for now keep, can avoid by using --as-needed
+-	set(PLATFORM_LINKLIBS "-lutil -lc -lm -lpthread")
+-
+-	if((NOT WITH_HEADLESS) AND (NOT WITH_GHOST_SDL))
+-		find_package(X11 REQUIRED)
+-		find_path(X11_XF86keysym_INCLUDE_PATH X11/XF86keysym.h ${X11_INC_SEARCH_PATH})
+-		mark_as_advanced(X11_XF86keysym_INCLUDE_PATH)
+-
+-		set(PLATFORM_LINKLIBS "${PLATFORM_LINKLIBS} ${X11_X11_LIB}")
+-
+-		if(WITH_X11_XINPUT)
+-			if(X11_Xinput_LIB)
+-				set(PLATFORM_LINKLIBS "${PLATFORM_LINKLIBS} ${X11_Xinput_LIB}")
+-			else()
+-				set(WITH_X11_XINPUT OFF)
+-			endif()
+-		endif()
+-
+-		if(WITH_X11_XF86VMODE)
+-			# XXX, why dont cmake make this available?
+-			FIND_LIBRARY(X11_Xxf86vmode_LIB Xxf86vm   ${X11_LIB_SEARCH_PATH})
+-			mark_as_advanced(X11_Xxf86vmode_LIB)
+-			if(X11_Xxf86vmode_LIB)
+-				set(PLATFORM_LINKLIBS "${PLATFORM_LINKLIBS} ${X11_Xxf86vmode_LIB}")
+-			else()
+-				set(WITH_X11_XF86VMODE OFF)
++	if(MINGW)
++		add_definitions(-DWIN32)
++		# keep GCC specific stuff here
++		include(CheckCSourceCompiles)
++		# Setup 64bit and 64bit windows systems
++		CHECK_C_SOURCE_COMPILES("
++			#ifdef __MINGW32__
++			#include <_mingw.h>
++			#endif
++			#ifndef __MINGW64_VERSION_MAJOR
++			#error
++			#endif
++			int main(void) { return 0; }
++			" 
++			WITH_MINGW64)
++		
++		if(WITH_MINGW64)
++			message(STATUS "Compiling MinGW-w64.")
++		else()
++			message(STATUS "Compiling with MinGW-w32.")
++			
++			if(WITH_RAYOPTIMIZATION)
++				message(WARNING "MinGW-w32 is known to be unstable with 'WITH_RAYOPTIMIZATION' option enabled.")
+ 			endif()
+ 		endif()
+-	endif()
+-
+-	if(CMAKE_SYSTEM_NAME MATCHES "Linux")
+-		if(NOT WITH_PYTHON_MODULE)
+-			# binreloc is linux only
+-			set(BINRELOC_INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/extern/binreloc/include)
+-			set(WITH_BINRELOC ON)
+-		endif()
+-	endif()
+-
+-	set(PLATFORM_LINKFLAGS "${PLATFORM_LINKFLAGS} -pthread")
+-
+-	# lfs on glibc, all compilers should use
+-	add_definitions(-D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE)
+-
+-	# GNU Compiler
+-	if(CMAKE_COMPILER_IS_GNUCC)
+-		set(PLATFORM_CFLAGS "-pipe -fPIC -funsigned-char -fno-strict-aliasing")
+-	# CLang is the same as GCC for now.
+-	elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
+-		set(PLATFORM_CFLAGS "-pipe -fPIC -funsigned-char -fno-strict-aliasing")
+-	# Solaris CC
+-	elseif(CMAKE_C_COMPILER_ID MATCHES "SunPro")
+-		set(PLATFORM_CFLAGS "-pipe -features=extensions -fPIC -D__FUNCTION__=__func__")
+ 		
+-	# Intel C++ Compiler
+-	elseif(CMAKE_C_COMPILER_ID MATCHES "Intel")
+-		# think these next two are broken
+-		find_program(XIAR xiar)
+-		if(XIAR)
+-			set(CMAKE_AR "${XIAR}")
+-		endif()
+-		mark_as_advanced(XIAR)
++		set(PLATFORM_LINKLIBS "-lshell32 -lshfolder -lgdi32 -lmsvcrt -lwinmm -lmingw32 -lm -lws2_32 -lz -lstdc++ -lole32 -luuid -lwsock32 -lpsapi")
++		set(PLATFORM_CFLAGS "-pipe -funsigned-char -fno-strict-aliasing")
+ 
+-		find_program(XILD xild)
+-		if(XILD)
+-			set(CMAKE_LINKER "${XILD}")
++		if(WITH_MINGW64)
++			set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpermissive")
++			set(PLATFORM_LINKLIBS "${PLATFORM_LINKLIBS} -lpthread")
++			
++			add_definitions(-DFREE_WINDOWS64 -DMS_WIN64)
++			# Turn off OpenMP since it causes crashes on render for subsurfed/multiresolution meshes
++			#set(WITH_OPENMP OFF)
+ 		endif()
+-		mark_as_advanced(XILD)
+-
+-		set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fp-model precise -prec_div -parallel")
+-		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fp-model precise -prec_div -parallel")
+-
+-		# set(PLATFORM_CFLAGS "${PLATFORM_CFLAGS} -diag-enable sc3")
+-		set(PLATFORM_CFLAGS "-pipe -fPIC -funsigned-char -fno-strict-aliasing")
+-		set(PLATFORM_LINKFLAGS "${PLATFORM_LINKFLAGS} -static-intel")
+-	endif()
+-
+-elseif(WIN32)
+ 
+-	add_definitions(-DWIN32)
+-
+-	if(MSVC)
+-		set(PLATFORM_LINKLIBS ws2_32 vfw32 winmm kernel32 user32 gdi32 comdlg32 advapi32 shfolder shell32 ole32 oleaut32 uuid psapi)
+-
+-		# MSVC11 SDL is not hard linked to dxguid.lib
+-		if(MSVC11 AND WITH_SDL)
+-			set(PLATFORM_LINKLIBS ${PLATFORM_LINKLIBS} dxguid)
+-		endif()
++		add_definitions(-D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE)
++		add_definitions(-DFREE_WINDOWS)
++		set(PLATFORM_LINKFLAGS "-Xlinker --stack=2097152")
++		
++		set(WINTAB_INC ${LIBDIR}/include)
++		
++	else()
++		# OpenSuse needs lutil, ArchLinux not, for now keep, can avoid by using --as-needed
++		set(PLATFORM_LINKLIBS "-lutil -lc -lm -lpthread")
+ 
+-		add_definitions(/D_CRT_NONSTDC_NO_DEPRECATE /D_CRT_SECURE_NO_DEPRECATE /D_SCL_SECURE_NO_DEPRECATE /D_CONSOLE /D_LIB)
++		if((NOT WITH_HEADLESS) AND (NOT WITH_GHOST_SDL))
++			find_package(X11 REQUIRED)
++			find_path(X11_XF86keysym_INCLUDE_PATH X11/XF86keysym.h ${X11_INC_SEARCH_PATH})
++			mark_as_advanced(X11_XF86keysym_INCLUDE_PATH)
++
++			set(PLATFORM_LINKLIBS "${PLATFORM_LINKLIBS} ${X11_X11_LIB}")
++
++			if(WITH_X11_XINPUT)
++				if(X11_Xinput_LIB)
++					set(PLATFORM_LINKLIBS "${PLATFORM_LINKLIBS} ${X11_Xinput_LIB}")
++				else()
++					set(WITH_X11_XINPUT OFF)
++				endif()
++			endif()
+ 
+-		# MSVC11 needs _ALLOW_KEYWORD_MACROS to build
+-		if(MSVC11 OR MSVC12)
+-			add_definitions(/D_ALLOW_KEYWORD_MACROS)
++			if(WITH_X11_XF86VMODE)
++				# XXX, why dont cmake make this available?
++				FIND_LIBRARY(X11_Xxf86vmode_LIB Xxf86vm   ${X11_LIB_SEARCH_PATH})
++				mark_as_advanced(X11_Xxf86vmode_LIB)
++				if(X11_Xxf86vmode_LIB)
++					set(PLATFORM_LINKLIBS "${PLATFORM_LINKLIBS} ${X11_Xxf86vmode_LIB}")
++				else()
++					set(WITH_X11_XF86VMODE OFF)
++				endif()
++			endif()
+ 		endif()
+ 
+-		set(CMAKE_CXX_FLAGS "/nologo /J /Gd /EHsc /MP" CACHE STRING "MSVC MT C++ flags " FORCE)
+-		set(CMAKE_C_FLAGS   "/nologo /J /Gd /MP"       CACHE STRING "MSVC MT C++ flags " FORCE)
+-
+-		if(CMAKE_CL_64)
+-			set(CMAKE_CXX_FLAGS_DEBUG "/Od /Gm /RTC1 /MTd /Zi /MP" CACHE STRING "MSVC MT flags " FORCE)
+-		else()
+-			set(CMAKE_CXX_FLAGS_DEBUG "/Od /Gm /RTC1 /MTd /ZI /MP" CACHE STRING "MSVC MT flags " FORCE)
+-		endif()
+-		set(CMAKE_CXX_FLAGS_RELEASE "/O2 /Ob2 /MT /MP" CACHE STRING "MSVC MT flags " FORCE)
+-		set(CMAKE_CXX_FLAGS_MINSIZEREL "/O1 /Ob1 /MT /MP" CACHE STRING "MSVC MT flags " FORCE)
+-		set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "/O2 /Ob1 /MT /Zi /MP" CACHE STRING "MSVC MT flags " FORCE)
+-		if(CMAKE_CL_64)
+-			set(CMAKE_C_FLAGS_DEBUG "/Od /Gm /RTC1 /MTd /Zi /MP" CACHE STRING "MSVC MT flags " FORCE)
+-		else()
+-			set(CMAKE_C_FLAGS_DEBUG "/Od /Gm /RTC1 /MTd /ZI /MP" CACHE STRING "MSVC MT flags " FORCE)
++		if(CMAKE_SYSTEM_NAME MATCHES "Linux")
++			if(NOT WITH_PYTHON_MODULE)
++				# binreloc is linux only
++				set(BINRELOC_INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/extern/binreloc/include)
++				set(WITH_BINRELOC ON)
++			endif()
+ 		endif()
+-		set(CMAKE_C_FLAGS_RELEASE "/O2 /Ob2 /MT /MP" CACHE STRING "MSVC MT flags " FORCE)
+-		set(CMAKE_C_FLAGS_MINSIZEREL "/O1 /Ob1 /MT /MP" CACHE STRING "MSVC MT flags " FORCE)
+-		set(CMAKE_C_FLAGS_RELWITHDEBINFO "/O2 /Ob1 /MT /Zi /MP" CACHE STRING "MSVC MT flags " FORCE)
+-
+-		# most msvc warnings are C & C++
+-		set(_WARNINGS "/W3 /wd4018 /wd4244 /wd4305 /wd4800 /wd4181 /wd4065 /wd4267 /we4013 /wd4200")
+-		set(C_WARNINGS "${_WARNINGS}")
+-		set(CXX_WARNINGS "${_WARNINGS}")
+-		unset(_WARNINGS)
+ 
+-		set(PLATFORM_LINKFLAGS "/SUBSYSTEM:CONSOLE /STACK:2097152 /INCREMENTAL:NO /NODEFAULTLIB:msvcrt.lib /NODEFAULTLIB:msvcmrt.lib /NODEFAULTLIB:msvcurt.lib /NODEFAULTLIB:msvcrtd.lib")
++		set(PLATFORM_LINKFLAGS "${PLATFORM_LINKFLAGS} -pthread")
+ 
+-		# MSVC only, Mingw doesnt need
+-		if(CMAKE_CL_64)
+-			set(PLATFORM_LINKFLAGS "/MACHINE:X64 /OPT:NOREF ${PLATFORM_LINKFLAGS}")
+-		else()
+-			set(PLATFORM_LINKFLAGS "/MACHINE:IX86 /LARGEADDRESSAWARE ${PLATFORM_LINKFLAGS}")
+-		endif()
+-
+-		set(PLATFORM_LINKFLAGS_DEBUG "/NODEFAULTLIB:libcmt.lib /NODEFAULTLIB:libc.lib")
++		# lfs on glibc, all compilers should use
++		add_definitions(-D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE)
+ 
+-		if(NOT DEFINED LIBDIR)
+-			# Setup 64bit and 64bit windows systems
+-			if(CMAKE_CL_64)
+-				message(STATUS "64 bit compiler detected.")
+-				set(LIBDIR_BASE ${CMAKE_SOURCE_DIR}/../lib/win64)
+-			else()
+-				message(STATUS "32 bit compiler detected.")
+-				set(LIBDIR_BASE ${CMAKE_SOURCE_DIR}/../lib/windows)
+-			endif()
+-			if(MSVC12)
+-				message(STATUS "Visual C++ 2013 detected.")
+-				set(LIBDIR ${LIBDIR_BASE}_vc12)
+-			elseif(MSVC11)
+-				message(STATUS "Visual C++ 2012 detected.")
+-				set(LIBDIR ${LIBDIR_BASE}_vc11)
+-			else()
+-				set(LIBDIR ${LIBDIR_BASE})
++		# GNU Compiler
++		if(CMAKE_COMPILER_IS_GNUCC)
++			set(PLATFORM_CFLAGS "-pipe -fPIC -funsigned-char -fno-strict-aliasing")
++		# CLang is the same as GCC for now.
++		elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
++			set(PLATFORM_CFLAGS "-pipe -fPIC -funsigned-char -fno-strict-aliasing")
++		# Solaris CC
++		elseif(CMAKE_C_COMPILER_ID MATCHES "SunPro")
++			set(PLATFORM_CFLAGS "-pipe -features=extensions -fPIC -D__FUNCTION__=__func__")
++			
++		# Intel C++ Compiler
++		elseif(CMAKE_C_COMPILER_ID MATCHES "Intel")
++			# think these next two are broken
++			find_program(XIAR xiar)
++			if(XIAR)
++				set(CMAKE_AR "${XIAR}")
+ 			endif()
+-		else()
+-			message(STATUS using LIBDIR  ${LIBDIR})
+-		endif()
++			mark_as_advanced(XIAR)
+ 
+-		# Add each of our libraries to our cmake_prefix_path so find_package() could work
+-		FILE(GLOB children RELATIVE ${LIBDIR} ${LIBDIR}/*)
+-		FOREACH(child ${children})
+-		IF(IS_DIRECTORY ${LIBDIR}/${child})
+-			LIST(APPEND CMAKE_PREFIX_PATH  ${LIBDIR}/${child})
+-		ENDIF()
+-		ENDFOREACH()
+-
+-		set(ZLIB_INCLUDE_DIRS ${LIBDIR}/zlib/include)
+-		set(ZLIB_LIBRARIES ${LIBDIR}/zlib/lib/libz_st.lib)
+-		set(ZLIB_INCLUDE_DIR ${LIBDIR}/zlib/include)
+-		set(ZLIB_LIBRARY ${LIBDIR}/zlib/lib/libz_st.lib)
+-		set(ZLIB_DIR ${LIBDIR}/zlib)
+-		find_package(zlib) # we want to find before finding things that depend on it like png
+-
+-
+-		find_package(png)
+-		if(NOT PNG_FOUND)
+-			set(PNG_PNG_INCLUDE_DIR ${LIBDIR}/png/include)
+-			message(WARNING "Using HARDCODED libpng locations")
+-			set(PNG_LIBRARIES libpng)
+-			set(PNG "${LIBDIR}/png")
+-			set(PNG_INCLUDE_DIR "${PNG}/include")
+-			set(PNG_LIBPATH ${PNG}/lib) # not cmake defined
+-		endif()
+-
+-		find_package(jpeg REQUIRED)
+-
+-		set(PTHREADS_INCLUDE_DIRS ${LIBDIR}/pthreads/include)
+-		set(PTHREADS_LIBRARIES ${LIBDIR}/pthreads/lib/pthreadVC2.lib)
+-
+-		set(FREETYPE ${LIBDIR}/freetype)
+-		set(FREETYPE_INCLUDE_DIRS
+-			${LIBDIR}/freetype/include
+-			${LIBDIR}/freetype/include/freetype2
+-		)
+-		set(FREETYPE_LIBRARY ${LIBDIR}/freetype/lib/freetype2ST.lib)
+-		find_package(freetype REQUIRED)
+-
+-		if(WITH_FFTW3)
+-			set(FFTW3 ${LIBDIR}/fftw3)
+-			set(FFTW3_LIBRARIES libfftw)
+-			set(FFTW3_INCLUDE_DIRS ${FFTW3}/include)
+-			set(FFTW3_LIBPATH ${FFTW3}/lib)
+-		endif()
+-
+-		if(WITH_OPENCOLLADA)
+-			set(OPENCOLLADA ${LIBDIR}/opencollada)
+-
+-			set(OPENCOLLADA_INCLUDE_DIRS
+-				${OPENCOLLADA}/include/opencollada/COLLADAStreamWriter
+-				${OPENCOLLADA}/include/opencollada/COLLADABaseUtils
+-				${OPENCOLLADA}/include/opencollada/COLLADAFramework
+-				${OPENCOLLADA}/include/opencollada/COLLADASaxFrameworkLoader
+-				${OPENCOLLADA}/include/opencollada/GeneratedSaxParser
+-			)
+-
+-			set(OPENCOLLADA_LIBRARIES
+-				${OPENCOLLADA}/lib/opencollada/OpenCOLLADASaxFrameworkLoader.lib
+-				${OPENCOLLADA}/lib/opencollada/OpenCOLLADAFramework.lib
+-				${OPENCOLLADA}/lib/opencollada/OpenCOLLADABaseUtils.lib
+-				${OPENCOLLADA}/lib/opencollada/OpenCOLLADAStreamWriter.lib
+-				${OPENCOLLADA}/lib/opencollada/MathMLSolver.lib
+-				${OPENCOLLADA}/lib/opencollada/GeneratedSaxParser.lib
+-				${OPENCOLLADA}/lib/opencollada/xml.lib
+-				${OPENCOLLADA}/lib/opencollada/buffer.lib
+-				${OPENCOLLADA}/lib/opencollada/ftoa.lib
+-				${OPENCOLLADA}/lib/opencollada/UTF.lib
+-			)
+-			set(PCRE_LIBRARIES
+-				${OPENCOLLADA}/lib/opencollada/pcre.lib
+-			)
+-		endif()
+-
+-		if(WITH_CODEC_FFMPEG)
+-			set(FFMPEG_INCLUDE_DIRS
+-				${LIBDIR}/ffmpeg/include
+-				${LIBDIR}/ffmpeg/include/msvc
+-			)
+-			find_package(FFMPEG)
+-			if(NOT FFMPEG_FOUND)
+-				message(WARNING "Using HARDCODED ffmpeg locations")
+-				# MSVC11 FFMPEG libs are newer
+-				if(MSVC11)
+-					set(FFMPEG_LIBRARY_VERSION 54)
+-					set(FFMPEG_LIBRARY_VERSION_AVU 52)
+-				else()
+-					set(FFMPEG_LIBRARY_VERSION 53)
+-					set(FFMPEG_LIBRARY_VERSION_AVU 51)
+-				endif()
+-				set(FFMPEG_LIBRARIES
+-					${LIBDIR}/ffmpeg/lib/avcodec-${FFMPEG_LIBRARY_VERSION}.lib
+-					${LIBDIR}/ffmpeg/lib/avformat-${FFMPEG_LIBRARY_VERSION}.lib
+-					${LIBDIR}/ffmpeg/lib/avdevice-${FFMPEG_LIBRARY_VERSION}.lib
+-					${LIBDIR}/ffmpeg/lib/avutil-${FFMPEG_LIBRARY_VERSION_AVU}.lib
+-					${LIBDIR}/ffmpeg/lib/swscale-2.lib
+-					)
++			find_program(XILD xild)
++			if(XILD)
++				set(CMAKE_LINKER "${XILD}")
+ 			endif()
+-		endif()
++			mark_as_advanced(XILD)
+ 
+-		if(WITH_IMAGE_OPENEXR)
+-			set(OPENEXR_ROOT_DIR ${LIBDIR}/openexr)
+-			set(OPENEXR_VERSION "2.1")
+-			find_package(OPENEXR REQUIRED)
+-			if(NOT OPENEXR_FOUND)
+-			message(WARNING "Using HARDCODED OpenEXR locations")
+-			set(OPENEXR ${LIBDIR}/openexr)
+-			set(OPENEXR_INCLUDE_DIR ${OPENEXR}/include)
+-			set(OPENEXR_INCLUDE_DIRS ${OPENEXR}/include/OpenEXR)
+-			set(OPENEXR_LIBPATH ${OPENEXR}/lib)
+-			set(OPENEXR_LIBRARIES
+-				${OPENEXR_LIBPATH}/Iex.lib
+-				${OPENEXR_LIBPATH}/Half.lib
+-				${OPENEXR_LIBPATH}/IlmImf.lib
+-				${OPENEXR_LIBPATH}/Imath.lib
+-				${OPENEXR_LIBPATH}/IlmThread.lib
+-			)
+-			endif(NOT OPENEXR_FOUND)
+-		endif()
++			set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fp-model precise -prec_div -parallel")
++			set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fp-model precise -prec_div -parallel")
+ 
+-		if(WITH_IMAGE_TIFF)
+-		# Try to find tiff first then complain and set static and maybe wrong paths
+-		find_package(TIFF)
+-		if(NOT TIFF_FOUND)
+-			message(WARNING "Using HARDCODED libtiff locations")
+-			set(TIFF_LIBRARY ${LIBDIR}/tiff/lib/libtiff.lib)
+-			set(TIFF_INCLUDE_DIR ${LIBDIR}/tiff/include)
+-		endif()
++			# set(PLATFORM_CFLAGS "${PLATFORM_CFLAGS} -diag-enable sc3")
++			set(PLATFORM_CFLAGS "-pipe -fPIC -funsigned-char -fno-strict-aliasing")
++			set(PLATFORM_LINKFLAGS "${PLATFORM_LINKFLAGS} -static-intel")
+ 		endif()
++	endif()
+ 
+-		if(WITH_JACK)
+-			set(JACK_INCLUDE_DIRS
+-				${LIBDIR}/jack/include/jack
+-				${LIBDIR}/jack/include
+-			)
+-			set(JACK_LIBRARIES ${LIBDIR}/jack/lib/libjack.lib)
+-		endif()
++elseif(MSVC)
+ 
+-		if(WITH_PYTHON)
+-			set(PYTHON_VERSION 3.3) # CACHE STRING)
++	add_definitions(-DWIN32)
+ 
+-			string(REPLACE "." "" _PYTHON_VERSION_NO_DOTS ${PYTHON_VERSION})
+-			# Use shared libs for vc2008 and vc2010 until we actually have vc2010 libs
+-			set(PYTHON_LIBRARY ${LIBDIR}/python/lib/python${_PYTHON_VERSION_NO_DOTS}.lib)
+-			unset(_PYTHON_VERSION_NO_DOTS)
++	set(PLATFORM_LINKLIBS ws2_32 vfw32 winmm kernel32 user32 gdi32 comdlg32 advapi32 shfolder shell32 ole32 oleaut32 uuid psapi)
+ 
+-			# Shared includes for both vc2008 and vc2010
+-			set(PYTHON_INCLUDE_DIR ${LIBDIR}/python/include/python${PYTHON_VERSION})
++	# MSVC11 SDL is not hard linked to dxguid.lib
++	if(MSVC11 AND WITH_SDL)
++		set(PLATFORM_LINKLIBS ${PLATFORM_LINKLIBS} dxguid)
++	endif()
+ 
+-			# uncached vars
+-			set(PYTHON_INCLUDE_DIRS "${PYTHON_INCLUDE_DIR}")
+-			set(PYTHON_LIBRARIES  "${PYTHON_LIBRARY}")
+-		endif()
++	add_definitions(/D_CRT_NONSTDC_NO_DEPRECATE /D_CRT_SECURE_NO_DEPRECATE /D_SCL_SECURE_NO_DEPRECATE /D_CONSOLE /D_LIB)
+ 
+-		if(WITH_BOOST)
+-			if(WITH_CYCLES_OSL)
+-				set(boost_extra_libs wave)
+-			endif(WITH_CYCLES_OSL)
+-			if(WITH_INTERNATIONAL)
+-				list(APPEND boost_extra_libs locale)
+-			endif(WITH_INTERNATIONAL)
+-			find_package(Boost COMPONENTS date_time filesystem thread regex system ${boost_extra_libs})
+-			IF(NOT Boost_FOUND)
+-				message(WARNING "USING HARDCODED boost locations")
+-				set(BOOST ${LIBDIR}/boost)
+-				set(BOOST_INCLUDE_DIR ${BOOST}/include)
+-				if(MSVC11)
+-					set(BOOST_LIBPATH ${BOOST}/lib)
+-					set(BOOST_POSTFIX "vc110-mt-s-1_53.lib")
+-					set(BOOST_DEBUG_POSTFIX "vc110-mt-sgd-1_53.lib")
+-				else()
+-					set(BOOST_LIBPATH ${BOOST}/lib)
+-					set(BOOST_POSTFIX "vc90-mt-s-1_49.lib")
+-					set(BOOST_DEBUG_POSTFIX "vc90-mt-sgd-1_49.lib")
+-				endif()
+-				set(BOOST_LIBRARIES
+-					optimized libboost_date_time-${BOOST_POSTFIX} optimized libboost_filesystem-${BOOST_POSTFIX}
+-					optimized libboost_regex-${BOOST_POSTFIX}
+-					optimized libboost_system-${BOOST_POSTFIX} optimized libboost_thread-${BOOST_POSTFIX}
+-					debug libboost_date_time-${BOOST_DEBUG_POSTFIX} debug libboost_filesystem-${BOOST_DEBUG_POSTFIX}
+-					debug libboost_regex-${BOOST_DEBUG_POSTFIX}
+-					debug libboost_system-${BOOST_DEBUG_POSTFIX} debug libboost_thread-${BOOST_DEBUG_POSTFIX})
+-				if(WITH_CYCLES_OSL)
+-					set(BOOST_LIBRARIES ${BOOST_LIBRARIES}
+-						optimized libboost_wave-${BOOST_POSTFIX}
+-						debug libboost_wave-${BOOST_DEBUG_POSTFIX})
+-				endif()
+-				if(WITH_INTERNATIONAL)
+-					set(BOOST_LIBRARIES ${BOOST_LIBRARIES}
+-						optimized libboost_locale-${BOOST_POSTFIX}
+-						debug libboost_locale-${BOOST_DEBUG_POSTFIX})
+-				endif()
+-			else() # we found boost using find_package
+-				set(BOOST_INCLUDE_DIR ${Boost_INCLUDE_DIRS})
+-				set(BOOST_LIBRARIES ${Boost_LIBRARIES})
+-				set(BOOST_LIBPATH ${Boost_LIBRARY_DIRS})
+-			endif()
+-			set(BOOST_DEFINITIONS "-DBOOST_ALL_NO_LIB")
+-		endif()
+-			
+-		if(WITH_OPENIMAGEIO)
+-			find_package(OpenImageIO)
+-			set(OPENIMAGEIO ${LIBDIR}/openimageio)
+-			set(OPENIMAGEIO_INCLUDE_DIRS ${OPENIMAGEIO}/include)
+-			set(OPENIMAGEIO_LIBRARIES optimized OpenImageIO debug OpenImageIO_d)
+-			set(OPENIMAGEIO_LIBPATH ${OPENIMAGEIO}/lib)
+-			set(OPENIMAGEIO_DEFINITIONS "-DUSE_TBB=0")
+-		endif()
++	# MSVC11 needs _ALLOW_KEYWORD_MACROS to build
++	if(MSVC11 OR MSVC12)
++		add_definitions(/D_ALLOW_KEYWORD_MACROS)
++	endif()
+ 
+-		if(WITH_LLVM)
+-			set(LLVM_DIRECTORY ${LIBDIR}/llvm CACHE PATH	"Path to the LLVM installation")
+-			file(GLOB LLVM_LIBRARY ${LLVM_DIRECTORY}/lib/*.lib)
+-		endif()
+-	
+-		if(WITH_OPENCOLORIO)
+-			set(OPENCOLORIO ${LIBDIR}/opencolorio)
+-			set(OPENCOLORIO_INCLUDE_DIRS ${OPENCOLORIO}/include)
+-			set(OPENCOLORIO_LIBRARIES OpenColorIO)
+-			set(OPENCOLORIO_LIBPATH ${LIBDIR}/opencolorio/lib)
+-			set(OPENCOLORIO_DEFINITIONS)
+-		endif()
+-		
++	set(CMAKE_CXX_FLAGS "/nologo /J /Gd /EHsc /MP" CACHE STRING "MSVC MT C++ flags " FORCE)
++	set(CMAKE_C_FLAGS   "/nologo /J /Gd /MP"       CACHE STRING "MSVC MT C++ flags " FORCE)
+ 
+-		if(WITH_MOD_CLOTH_ELTOPO)
+-			set(LAPACK ${LIBDIR}/lapack)
+-			# set(LAPACK_INCLUDE_DIR ${LAPACK}/include)
+-			set(LAPACK_LIBPATH ${LAPACK}/lib)
+-			set(LAPACK_LIBRARIES
+-				${LIBDIR}/lapack/lib/libf2c.lib
+-				${LIBDIR}/lapack/lib/clapack_nowrap.lib
+-				${LIBDIR}/lapack/lib/BLAS_nowrap.lib
+-			)
+-		endif()
++	if(CMAKE_CL_64)
++		set(CMAKE_CXX_FLAGS_DEBUG "/Od /Gm /RTC1 /MTd /Zi /MP" CACHE STRING "MSVC MT flags " FORCE)
++	else()
++		set(CMAKE_CXX_FLAGS_DEBUG "/Od /Gm /RTC1 /MTd /ZI /MP" CACHE STRING "MSVC MT flags " FORCE)
++	endif()
++	set(CMAKE_CXX_FLAGS_RELEASE "/O2 /Ob2 /MT /MP" CACHE STRING "MSVC MT flags " FORCE)
++	set(CMAKE_CXX_FLAGS_MINSIZEREL "/O1 /Ob1 /MT /MP" CACHE STRING "MSVC MT flags " FORCE)
++	set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "/O2 /Ob1 /MT /Zi /MP" CACHE STRING "MSVC MT flags " FORCE)
++	if(CMAKE_CL_64)
++		set(CMAKE_C_FLAGS_DEBUG "/Od /Gm /RTC1 /MTd /Zi /MP" CACHE STRING "MSVC MT flags " FORCE)
++	else()
++		set(CMAKE_C_FLAGS_DEBUG "/Od /Gm /RTC1 /MTd /ZI /MP" CACHE STRING "MSVC MT flags " FORCE)
++	endif()
++	set(CMAKE_C_FLAGS_RELEASE "/O2 /Ob2 /MT /MP" CACHE STRING "MSVC MT flags " FORCE)
++	set(CMAKE_C_FLAGS_MINSIZEREL "/O1 /Ob1 /MT /MP" CACHE STRING "MSVC MT flags " FORCE)
++	set(CMAKE_C_FLAGS_RELWITHDEBINFO "/O2 /Ob1 /MT /Zi /MP" CACHE STRING "MSVC MT flags " FORCE)
++
++	# most msvc warnings are C & C++
++	set(_WARNINGS "/W3 /wd4018 /wd4244 /wd4305 /wd4800 /wd4181 /wd4065 /wd4267 /we4013 /wd4200")
++	set(C_WARNINGS "${_WARNINGS}")
++	set(CXX_WARNINGS "${_WARNINGS}")
++	unset(_WARNINGS)
++
++	set(PLATFORM_LINKFLAGS "/SUBSYSTEM:CONSOLE /STACK:2097152 /INCREMENTAL:NO /NODEFAULTLIB:msvcrt.lib /NODEFAULTLIB:msvcmrt.lib /NODEFAULTLIB:msvcurt.lib /NODEFAULTLIB:msvcrtd.lib")
++
++	# MSVC only, Mingw doesnt need
++	if(CMAKE_CL_64)
++		set(PLATFORM_LINKFLAGS "/MACHINE:X64 /OPT:NOREF ${PLATFORM_LINKFLAGS}")
++	else()
++		set(PLATFORM_LINKFLAGS "/MACHINE:IX86 /LARGEADDRESSAWARE ${PLATFORM_LINKFLAGS}")
++	endif()
+ 
+-		# used in many places so include globally, like OpenGL
+-		blender_include_dirs_sys("${PTHREADS_INCLUDE_DIRS}")
++	set(PLATFORM_LINKFLAGS_DEBUG "/NODEFAULTLIB:libcmt.lib /NODEFAULTLIB:libc.lib")
+ 
+-	elseif(CMAKE_COMPILER_IS_GNUCC)
+-		# keep GCC specific stuff here
+-		include(CheckCSourceCompiles)
++	if(NOT DEFINED LIBDIR)
+ 		# Setup 64bit and 64bit windows systems
+-		CHECK_C_SOURCE_COMPILES("
+-			#ifndef __MINGW64__
+-			#error
+-			#endif
+-			int main(void) { return 0; }
+-			" 
+-			WITH_MINGW64)
+-		
+-		if(WITH_MINGW64)
+-			message(STATUS "Compiling for 64 bit with MinGW-w64.")
+-			set(LIBDIR ${CMAKE_SOURCE_DIR}/../lib/mingw64)
++		if(CMAKE_CL_64)
++			message(STATUS "64 bit compiler detected.")
++			set(LIBDIR_BASE ${CMAKE_SOURCE_DIR}/../lib/win64)
+ 		else()
+-			message(STATUS "Compiling for 32 bit with MinGW-w32.")
+-			set(LIBDIR ${CMAKE_SOURCE_DIR}/../lib/mingw32)
+-			
+-			if(WITH_RAYOPTIMIZATION)
+-				message(WARNING "MinGW-w32 is known to be unstable with 'WITH_RAYOPTIMIZATION' option enabled.")
+-			endif()
++			message(STATUS "32 bit compiler detected.")
++			set(LIBDIR_BASE ${CMAKE_SOURCE_DIR}/../lib/windows)
+ 		endif()
+-		
+-		set(PLATFORM_LINKLIBS "-lshell32 -lshfolder -lgdi32 -lmsvcrt -lwinmm -lmingw32 -lm -lws2_32 -lz -lstdc++ -lole32 -luuid -lwsock32 -lpsapi")
+-		set(PLATFORM_CFLAGS "-pipe -funsigned-char -fno-strict-aliasing")
+-
+-		if(WITH_MINGW64)
+-			set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpermissive")
+-			set(PLATFORM_LINKLIBS "${PLATFORM_LINKLIBS} -lpthread")
+-			
+-			add_definitions(-DFREE_WINDOWS64 -DMS_WIN64)
+-			# Turn off OpenMP since it causes crashes on render for subsurfed/multiresolution meshes
+-			set(WITH_OPENMP OFF)
++		if(MSVC12)
++			message(STATUS "Visual C++ 2013 detected.")
++			set(LIBDIR ${LIBDIR_BASE}_vc12)
++		elseif(MSVC11)
++			message(STATUS "Visual C++ 2012 detected.")
++			set(LIBDIR ${LIBDIR_BASE}_vc11)
++		else()
++			set(LIBDIR ${LIBDIR_BASE})
+ 		endif()
++	else()
++		message(STATUS using LIBDIR  ${LIBDIR})
++	endif()
+ 
+-		add_definitions(-D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE)
+-
+-		add_definitions(-DFREE_WINDOWS)
+-
++	# Add each of our libraries to our cmake_prefix_path so find_package() could work
++	FILE(GLOB children RELATIVE ${LIBDIR} ${LIBDIR}/*)
++	FOREACH(child ${children})
++	IF(IS_DIRECTORY ${LIBDIR}/${child})
++		LIST(APPEND CMAKE_PREFIX_PATH  ${LIBDIR}/${child})
++	ENDIF()
++	ENDFOREACH()
++
++	set(ZLIB_INCLUDE_DIRS ${LIBDIR}/zlib/include)
++	set(ZLIB_LIBRARIES ${LIBDIR}/zlib/lib/libz_st.lib)
++	set(ZLIB_INCLUDE_DIR ${LIBDIR}/zlib/include)
++	set(ZLIB_LIBRARY ${LIBDIR}/zlib/lib/libz_st.lib)
++	set(ZLIB_DIR ${LIBDIR}/zlib)
++	find_package(zlib) # we want to find before finding things that depend on it like png
++
++
++	find_package(png)
++	if(NOT PNG_FOUND)
++		set(PNG_PNG_INCLUDE_DIR ${LIBDIR}/png/include)
++		message(WARNING "Using HARDCODED libpng locations")
++		set(PNG_LIBRARIES libpng)
+ 		set(PNG "${LIBDIR}/png")
+ 		set(PNG_INCLUDE_DIR "${PNG}/include")
+ 		set(PNG_LIBPATH ${PNG}/lib) # not cmake defined
++	endif()
+ 
+-		if(WITH_MINGW64)
+-			set(JPEG_LIBRARIES jpeg)
+-		else()
+-			set(JPEG_LIBRARIES libjpeg)
+-		endif()
+-		set(PNG_LIBRARIES png)
++	find_package(jpeg REQUIRED)
+ 
+-		set(ZLIB ${LIBDIR}/zlib)
+-		set(ZLIB_INCLUDE_DIRS ${ZLIB}/include)
+-		set(ZLIB_LIBPATH ${ZLIB}/lib)
+-		set(ZLIB_LIBRARIES z)
+-
+-		set(JPEG "${LIBDIR}/jpeg")
+-		set(JPEG_INCLUDE_DIR "${JPEG}/include")
+-		set(JPEG_LIBPATH ${JPEG}/lib) # not cmake defined
+-		
+-		# comes with own pthread library
+-		if(NOT WITH_MINGW64)
+-			set(PTHREADS ${LIBDIR}/pthreads)
+-			#set(PTHREADS_INCLUDE_DIRS ${PTHREADS}/include)
+-			set(PTHREADS_LIBPATH ${PTHREADS}/lib)
+-			set(PTHREADS_LIBRARIES pthreadGC2)
+-		endif()
+-		
+-		set(FREETYPE ${LIBDIR}/freetype)
+-		set(FREETYPE_INCLUDE_DIRS ${FREETYPE}/include ${FREETYPE}/include/freetype2)
+-		set(FREETYPE_LIBPATH ${FREETYPE}/lib)
+-		set(FREETYPE_LIBRARY freetype)
+-
+-		if(WITH_FFTW3)
+-			set(FFTW3 ${LIBDIR}/fftw3)
+-			set(FFTW3_LIBRARIES fftw3)
+-			set(FFTW3_INCLUDE_DIRS ${FFTW3}/include)
+-			set(FFTW3_LIBPATH ${FFTW3}/lib)
+-		endif()
+-
+-		if(WITH_OPENCOLLADA)
+-			set(OPENCOLLADA ${LIBDIR}/opencollada)
+-			set(OPENCOLLADA_INCLUDE_DIRS
+-				${OPENCOLLADA}/include/opencollada/COLLADAStreamWriter
+-				${OPENCOLLADA}/include/opencollada/COLLADABaseUtils
+-				${OPENCOLLADA}/include/opencollada/COLLADAFramework
+-				${OPENCOLLADA}/include/opencollada/COLLADASaxFrameworkLoader
+-				${OPENCOLLADA}/include/opencollada/GeneratedSaxParser
+-			)
+-			set(OPENCOLLADA_LIBPATH ${OPENCOLLADA}/lib/opencollada)
+-			set(OPENCOLLADA_LIBRARIES OpenCOLLADAStreamWriter OpenCOLLADASaxFrameworkLoader OpenCOLLADAFramework OpenCOLLADABaseUtils GeneratedSaxParser UTF MathMLSolver buffer ftoa xml)
+-			set(PCRE_LIBRARIES pcre)
+-		endif()
+-
+-		if(WITH_CODEC_FFMPEG)
+-			set(FFMPEG ${LIBDIR}/ffmpeg)
+-			set(FFMPEG_INCLUDE_DIRS ${FFMPEG}/include)
+-			if(WITH_MINGW64)
+-				set(FFMPEG_LIBRARIES avcodec.dll avformat.dll avdevice.dll avutil.dll swscale.dll swresample.dll)
++	set(PTHREADS_INCLUDE_DIRS ${LIBDIR}/pthreads/include)
++	set(PTHREADS_LIBRARIES ${LIBDIR}/pthreads/lib/pthreadVC2.lib)
++
++	set(FREETYPE ${LIBDIR}/freetype)
++	set(FREETYPE_INCLUDE_DIRS
++		${LIBDIR}/freetype/include
++		${LIBDIR}/freetype/include/freetype2
++	)
++	set(FREETYPE_LIBRARY ${LIBDIR}/freetype/lib/freetype2ST.lib)
++	find_package(freetype REQUIRED)
++
++	if(WITH_FFTW3)
++		set(FFTW3 ${LIBDIR}/fftw3)
++		set(FFTW3_LIBRARIES libfftw)
++		set(FFTW3_INCLUDE_DIRS ${FFTW3}/include)
++		set(FFTW3_LIBPATH ${FFTW3}/lib)
++	endif()
++
++	if(WITH_OPENCOLLADA)
++		set(OPENCOLLADA ${LIBDIR}/opencollada)
++
++		set(OPENCOLLADA_INCLUDE_DIRS
++			${OPENCOLLADA}/include/opencollada/COLLADAStreamWriter
++			${OPENCOLLADA}/include/opencollada/COLLADABaseUtils
++			${OPENCOLLADA}/include/opencollada/COLLADAFramework
++			${OPENCOLLADA}/include/opencollada/COLLADASaxFrameworkLoader
++			${OPENCOLLADA}/include/opencollada/GeneratedSaxParser
++		)
++
++		set(OPENCOLLADA_LIBRARIES
++			${OPENCOLLADA}/lib/opencollada/OpenCOLLADASaxFrameworkLoader.lib
++			${OPENCOLLADA}/lib/opencollada/OpenCOLLADAFramework.lib
++			${OPENCOLLADA}/lib/opencollada/OpenCOLLADABaseUtils.lib
++			${OPENCOLLADA}/lib/opencollada/OpenCOLLADAStreamWriter.lib
++			${OPENCOLLADA}/lib/opencollada/MathMLSolver.lib
++			${OPENCOLLADA}/lib/opencollada/GeneratedSaxParser.lib
++			${OPENCOLLADA}/lib/opencollada/xml.lib
++			${OPENCOLLADA}/lib/opencollada/buffer.lib
++			${OPENCOLLADA}/lib/opencollada/ftoa.lib
++			${OPENCOLLADA}/lib/opencollada/UTF.lib
++		)
++		set(PCRE_LIBRARIES
++			${OPENCOLLADA}/lib/opencollada/pcre.lib
++		)
++	endif()
++
++	if(WITH_CODEC_FFMPEG)
++		set(FFMPEG_INCLUDE_DIRS
++			${LIBDIR}/ffmpeg/include
++			${LIBDIR}/ffmpeg/include/msvc
++		)
++		find_package(FFMPEG)
++		if(NOT FFMPEG_FOUND)
++			message(WARNING "Using HARDCODED ffmpeg locations")
++			# MSVC11 FFMPEG libs are newer
++			if(MSVC11)
++				set(FFMPEG_LIBRARY_VERSION 54)
++				set(FFMPEG_LIBRARY_VERSION_AVU 52)
+ 			else()
+-				set(FFMPEG_LIBRARIES avcodec-53 avformat-53 avdevice-53 avutil-51 swscale-2)
++				set(FFMPEG_LIBRARY_VERSION 53)
++				set(FFMPEG_LIBRARY_VERSION_AVU 51)
+ 			endif()
+-			set(FFMPEG_LIBPATH ${FFMPEG}/lib)
+-		endif()
+-
+-		if(WITH_IMAGE_OPENEXR)
+-			set(OPENEXR ${LIBDIR}/openexr)
+-			set(OPENEXR_INCLUDE_DIR ${OPENEXR}/include)
+-			set(OPENEXR_INCLUDE_DIRS ${OPENEXR}/include/OpenEXR)
+-			set(OPENEXR_LIBRARIES Half IlmImf Imath IlmThread Iex)
+-			set(OPENEXR_LIBPATH ${OPENEXR}/lib)
++			set(FFMPEG_LIBRARIES
++				${LIBDIR}/ffmpeg/lib/avcodec-${FFMPEG_LIBRARY_VERSION}.lib
++				${LIBDIR}/ffmpeg/lib/avformat-${FFMPEG_LIBRARY_VERSION}.lib
++				${LIBDIR}/ffmpeg/lib/avdevice-${FFMPEG_LIBRARY_VERSION}.lib
++				${LIBDIR}/ffmpeg/lib/avutil-${FFMPEG_LIBRARY_VERSION_AVU}.lib
++				${LIBDIR}/ffmpeg/lib/swscale-2.lib
++				)
+ 		endif()
++	endif()
+ 
+-		if(WITH_IMAGE_TIFF)
+-			set(TIFF ${LIBDIR}/tiff)
+-			set(TIFF_LIBRARY tiff)
+-			set(TIFF_INCLUDE_DIR ${TIFF}/include)
+-			set(TIFF_LIBPATH ${TIFF}/lib)
+-		endif()
++	if(WITH_IMAGE_OPENEXR)
++		set(OPENEXR_ROOT_DIR ${LIBDIR}/openexr)
++		set(OPENEXR_VERSION "2.1")
++		find_package(OPENEXR REQUIRED)
++		if(NOT OPENEXR_FOUND)
++		message(WARNING "Using HARDCODED OpenEXR locations")
++		set(OPENEXR ${LIBDIR}/openexr)
++		set(OPENEXR_INCLUDE_DIR ${OPENEXR}/include)
++		set(OPENEXR_INCLUDE_DIRS ${OPENEXR}/include/OpenEXR)
++		set(OPENEXR_LIBPATH ${OPENEXR}/lib)
++		set(OPENEXR_LIBRARIES
++			${OPENEXR_LIBPATH}/Iex.lib
++			${OPENEXR_LIBPATH}/Half.lib
++			${OPENEXR_LIBPATH}/IlmImf.lib
++			${OPENEXR_LIBPATH}/Imath.lib
++			${OPENEXR_LIBPATH}/IlmThread.lib
++		)
++		endif(NOT OPENEXR_FOUND)
++	endif()
+ 
+-		if(WITH_JACK)
+-			set(JACK ${LIBDIR}/jack)
+-			set(JACK_INCLUDE_DIRS ${JACK}/include/jack ${JACK}/include)
+-			set(JACK_LIBRARIES jack)
+-			set(JACK_LIBPATH ${JACK}/lib)
++	if(WITH_IMAGE_TIFF)
++	# Try to find tiff first then complain and set static and maybe wrong paths
++	find_package(TIFF)
++	if(NOT TIFF_FOUND)
++		message(WARNING "Using HARDCODED libtiff locations")
++		set(TIFF_LIBRARY ${LIBDIR}/tiff/lib/libtiff.lib)
++		set(TIFF_INCLUDE_DIR ${LIBDIR}/tiff/include)
++	endif()
++	endif()
+ 
+-			# TODO, gives linking errors, force off
+-			set(WITH_JACK OFF)
+-		endif()
++	if(WITH_JACK)
++		set(JACK_INCLUDE_DIRS
++			${LIBDIR}/jack/include/jack
++			${LIBDIR}/jack/include
++		)
++		set(JACK_LIBRARIES ${LIBDIR}/jack/lib/libjack.lib)
++	endif()
+ 
+-		if(WITH_PYTHON)
+-			# normally cached but not since we include them with blender
+-			set(PYTHON_VERSION 3.3) #  CACHE STRING)
+-			set(PYTHON_INCLUDE_DIR "${LIBDIR}/python/include/python${PYTHON_VERSION}")  # CACHE PATH)
+-			set(PYTHON_LIBRARY "${LIBDIR}/python/lib/python33mw.lib")  # CACHE FILEPATH)
++	if(WITH_PYTHON)
++		set(PYTHON_VERSION 3.3) # CACHE STRING)
+ 
+-			# uncached vars
+-			set(PYTHON_INCLUDE_DIRS "${PYTHON_INCLUDE_DIR}")
+-			set(PYTHON_LIBRARIES  "${PYTHON_LIBRARY}")
+-		endif()
++		string(REPLACE "." "" _PYTHON_VERSION_NO_DOTS ${PYTHON_VERSION})
++		# Use shared libs for vc2008 and vc2010 until we actually have vc2010 libs
++		set(PYTHON_LIBRARY ${LIBDIR}/python/lib/python${_PYTHON_VERSION_NO_DOTS}.lib)
++		unset(_PYTHON_VERSION_NO_DOTS)
++
++		# Shared includes for both vc2008 and vc2010
++		set(PYTHON_INCLUDE_DIR ${LIBDIR}/python/include/python${PYTHON_VERSION})
++
++		# uncached vars
++		set(PYTHON_INCLUDE_DIRS "${PYTHON_INCLUDE_DIR}")
++		set(PYTHON_LIBRARIES  "${PYTHON_LIBRARY}")
++	endif()
+ 
+-		if(WITH_BOOST)
++	if(WITH_BOOST)
++		if(WITH_CYCLES_OSL)
++			set(boost_extra_libs wave)
++		endif(WITH_CYCLES_OSL)
++		if(WITH_INTERNATIONAL)
++			list(APPEND boost_extra_libs locale)
++		endif(WITH_INTERNATIONAL)
++		find_package(Boost COMPONENTS date_time filesystem thread regex system ${boost_extra_libs})
++		IF(NOT Boost_FOUND)
++			message(WARNING "USING HARDCODED boost locations")
+ 			set(BOOST ${LIBDIR}/boost)
+ 			set(BOOST_INCLUDE_DIR ${BOOST}/include)
+-			if(WITH_MINGW64)
+-				set(BOOST_POSTFIX "mgw47-mt-s-1_49")
+-				set(BOOST_DEBUG_POSTFIX "mgw47-mt-sd-1_49")
++			if(MSVC11)
++				set(BOOST_LIBPATH ${BOOST}/lib)
++				set(BOOST_POSTFIX "vc110-mt-s-1_53.lib")
++				set(BOOST_DEBUG_POSTFIX "vc110-mt-sgd-1_53.lib")
+ 			else()
+-				set(BOOST_POSTFIX "mgw46-mt-s-1_49")
+-				set(BOOST_DEBUG_POSTFIX "mgw46-mt-sd-1_49")
++				set(BOOST_LIBPATH ${BOOST}/lib)
++				set(BOOST_POSTFIX "vc90-mt-s-1_49.lib")
++				set(BOOST_DEBUG_POSTFIX "vc90-mt-sgd-1_49.lib")
+ 			endif()
+ 			set(BOOST_LIBRARIES
+-				optimized boost_date_time-${BOOST_POSTFIX} boost_filesystem-${BOOST_POSTFIX}
+-				boost_regex-${BOOST_POSTFIX}
+-				boost_system-${BOOST_POSTFIX} boost_thread-${BOOST_POSTFIX}
+-				debug boost_date_time-${BOOST_DEBUG_POSTFIX} boost_filesystem-${BOOST_DEBUG_POSTFIX}
+-				boost_regex-${BOOST_DEBUG_POSTFIX}
+-				boost_system-${BOOST_DEBUG_POSTFIX} boost_thread-${BOOST_DEBUG_POSTFIX})
+-			if(WITH_INTERNATIONAL)
++				optimized libboost_date_time-${BOOST_POSTFIX} optimized libboost_filesystem-${BOOST_POSTFIX}
++				optimized libboost_regex-${BOOST_POSTFIX}
++				optimized libboost_system-${BOOST_POSTFIX} optimized libboost_thread-${BOOST_POSTFIX}
++				debug libboost_date_time-${BOOST_DEBUG_POSTFIX} debug libboost_filesystem-${BOOST_DEBUG_POSTFIX}
++				debug libboost_regex-${BOOST_DEBUG_POSTFIX}
++				debug libboost_system-${BOOST_DEBUG_POSTFIX} debug libboost_thread-${BOOST_DEBUG_POSTFIX})
++			if(WITH_CYCLES_OSL)
+ 				set(BOOST_LIBRARIES ${BOOST_LIBRARIES}
+-					optimized boost_locale-${BOOST_POSTFIX}
+-					debug boost_locale-${BOOST_DEBUG_POSTFIX}) 
++					optimized libboost_wave-${BOOST_POSTFIX}
++					debug libboost_wave-${BOOST_DEBUG_POSTFIX})
+ 			endif()
+-			if(WITH_CYCLES_OSL)
++			if(WITH_INTERNATIONAL)
+ 				set(BOOST_LIBRARIES ${BOOST_LIBRARIES}
+-					optimized boost_wave-${BOOST_POSTFIX}
+-					debug boost_wave-${BOOST_DEBUG_POSTFIX}) 
++					optimized libboost_locale-${BOOST_POSTFIX}
++					debug libboost_locale-${BOOST_DEBUG_POSTFIX})
+ 			endif()
+-			set(BOOST_LIBPATH ${BOOST}/lib)
+-			set(BOOST_DEFINITIONS "-DBOOST_ALL_NO_LIB -DBOOST_THREAD_USE_LIB ")
+-		endif()
+-			
+-		if(WITH_OPENIMAGEIO)
+-			set(OPENIMAGEIO ${LIBDIR}/openimageio)
+-			set(OPENIMAGEIO_INCLUDE_DIRS ${OPENIMAGEIO}/include)
+-			set(OPENIMAGEIO_LIBRARIES OpenImageIO)
+-			set(OPENIMAGEIO_LIBPATH ${OPENIMAGEIO}/lib)
+-			set(OPENIMAGEIO_DEFINITIONS "")
+-		endif()
+-		
+-		if(WITH_LLVM)
+-			set(LLVM_DIRECTORY ${LIBDIR}/llvm CACHE PATH	"Path to the LLVM installation")
+-			set(LLVM_LIBPATH ${LLVM_DIRECTORY}/lib)
+-			# Explicitly set llvm lib order.
+-			#---- WARNING ON GCC ORDER OF LIBS IS IMPORTANT, DO NOT CHANGE! ---------
+-			set(LLVM_LIBRARY LLVMSelectionDAG LLVMCodeGen LLVMScalarOpts LLVMAnalysis LLVMArchive
+-				LLVMAsmParser LLVMAsmPrinter
+-				LLVMBitReader LLVMBitWriter
+-				LLVMDebugInfo LLVMExecutionEngine
+-				LLVMInstCombine LLVMInstrumentation
+-				LLVMInterpreter LLVMJIT
+-				LLVMLinker LLVMMC
+-				LLVMMCDisassembler LLVMMCJIT
+-				LLVMMCParser LLVMObject
+-				LLVMRuntimeDyld 
+-				LLVMSupport
+-				LLVMTableGen LLVMTarget
+-				LLVMTransformUtils LLVMVectorize
+-				LLVMX86AsmParser LLVMX86AsmPrinter
+-				LLVMX86CodeGen LLVMX86Desc
+-				LLVMX86Disassembler LLVMX86Info
+-				LLVMX86Utils LLVMipa
+-				LLVMipo LLVMCore)
+-			# imagehelp is needed by LLVM 3.1 on MinGW, check lib\Support\Windows\Signals.inc
+-			set(PLATFORM_LINKLIBS "${PLATFORM_LINKLIBS} -limagehlp")
++		else() # we found boost using find_package
++			set(BOOST_INCLUDE_DIR ${Boost_INCLUDE_DIRS})
++			set(BOOST_LIBRARIES ${Boost_LIBRARIES})
++			set(BOOST_LIBPATH ${Boost_LIBRARY_DIRS})
+ 		endif()
++		set(BOOST_DEFINITIONS "-DBOOST_ALL_NO_LIB")
++	endif()
+ 		
+-		if(WITH_OPENCOLORIO)
+-			set(OPENCOLORIO ${LIBDIR}/opencolorio)
+-			set(OPENCOLORIO_INCLUDE_DIRS ${OPENCOLORIO}/include)
+-			set(OPENCOLORIO_LIBRARIES OpenColorIO)
+-			set(OPENCOLORIO_LIBPATH ${OPENCOLORIO}/lib)
+-			set(OPENCOLORIO_DEFINITIONS)
+-		endif()
+-
+-		set(PLATFORM_LINKFLAGS "-Xlinker --stack=2097152")
++	if(WITH_OPENIMAGEIO)
++		find_package(OpenImageIO)
++		set(OPENIMAGEIO ${LIBDIR}/openimageio)
++		set(OPENIMAGEIO_INCLUDE_DIRS ${OPENIMAGEIO}/include)
++		set(OPENIMAGEIO_LIBRARIES optimized OpenImageIO debug OpenImageIO_d)
++		set(OPENIMAGEIO_LIBPATH ${OPENIMAGEIO}/lib)
++		set(OPENIMAGEIO_DEFINITIONS "-DUSE_TBB=0")
++	endif()
+ 
+-		## DISABLE - causes linking errors 
+-		## for re-distribution, so users dont need mingw installed
+-		# set(PLATFORM_LINKFLAGS "${PLATFORM_LINKFLAGS} -static-libgcc -static-libstdc++")
++	if(WITH_LLVM)
++		set(LLVM_DIRECTORY ${LIBDIR}/llvm CACHE PATH	"Path to the LLVM installation")
++		file(GLOB LLVM_LIBRARY ${LLVM_DIRECTORY}/lib/*.lib)
++	endif()
+ 
++	if(WITH_OPENCOLORIO)
++		set(OPENCOLORIO ${LIBDIR}/opencolorio)
++		set(OPENCOLORIO_INCLUDE_DIRS ${OPENCOLORIO}/include)
++		set(OPENCOLORIO_LIBRARIES OpenColorIO)
++		set(OPENCOLORIO_LIBPATH ${LIBDIR}/opencolorio/lib)
++		set(OPENCOLORIO_DEFINITIONS)
+ 	endif()
+ 	
+-	# Things common to both mingw and MSVC  should go here
++
++	if(WITH_MOD_CLOTH_ELTOPO)
++		set(LAPACK ${LIBDIR}/lapack)
++		# set(LAPACK_INCLUDE_DIR ${LAPACK}/include)
++		set(LAPACK_LIBPATH ${LAPACK}/lib)
++		set(LAPACK_LIBRARIES
++			${LIBDIR}/lapack/lib/libf2c.lib
++			${LIBDIR}/lapack/lib/clapack_nowrap.lib
++			${LIBDIR}/lapack/lib/BLAS_nowrap.lib
++		)
++	endif()
++
++	# used in many places so include globally, like OpenGL
++	blender_include_dirs_sys("${PTHREADS_INCLUDE_DIRS}")
+ 
+ 	set(WINTAB_INC ${LIBDIR}/wintab/include)
+ 
