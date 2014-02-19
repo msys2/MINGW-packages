@@ -1,0 +1,263 @@
+--- a/numpy/lib/tests/test_io.py	2013-10-30 19:32:51.000000000 +0100
++++ b/numpy/lib/tests/test_io.py	2014-02-10 08:30:12.903607138 +0100
+@@ -4,7 +4,9 @@
+ import gzip
+ import os
+ import threading
+-from tempfile import mkstemp, mktemp, NamedTemporaryFile
++import shutil
++import contextlib
++from tempfile import mkstemp, mkdtemp, NamedTemporaryFile
+ import time
+ import warnings
+ import gc
+@@ -21,6 +23,12 @@
+     assert_raises, run_module_suite)
+ from numpy.testing import assert_warns, assert_, build_err_msg
+ 
++@contextlib.contextmanager
++def tempdir(change_dir=False):
++    tmpdir = mkdtemp()
++    yield tmpdir
++    shutil.rmtree(tmpdir)
++
+ 
+ class TextIO(BytesIO):
+     """Helper IO class.
+@@ -145,14 +153,14 @@
+     @np.testing.dec.slow
+     def test_big_arrays(self):
+         L = (1 << 31) + 100000
+-        tmp = mktemp(suffix='.npz')
+         a = np.empty(L, dtype=np.uint8)
+-        np.savez(tmp, a=a)
+-        del a
+-        npfile = np.load(tmp)
+-        a = npfile['a']
+-        npfile.close()
+-        os.remove(tmp)
++        with tempdir() as tmpdir:
++            tmp = open(os.path.join(tmpdir, "file.npz"), "w")
++            np.savez(tmp, a=a)
++            del a
++            npfile = np.load(tmp)
++            a = npfile['a']
++            npfile.close()
+ 
+     def test_multiple_arrays(self):
+         a = np.array([[1, 2], [3, 4]], float)
+commit 0bb46c1448b0d3f5453d5182a17ea7ac5854ee15
+Author: Julian Taylor <jtaylor.debian@googlemail.com>
+Date:   Wed Feb 5 23:01:47 2014 +0100
+
+    ENH: remove insecure mktemp use
+    
+    mktemp only returns a filename, a malicous user could replace it before
+    it gets used.
+
+diff --git a/numpy/core/tests/test_memmap.py b/numpy/core/tests/test_memmap.py
+index 6de6319..10e7a08 100644
+--- a/numpy/core/tests/test_memmap.py
++++ b/numpy/core/tests/test_memmap.py
+@@ -1,7 +1,7 @@
+ from __future__ import division, absolute_import, print_function
+ 
+ import sys
+-from tempfile import NamedTemporaryFile, TemporaryFile, mktemp
++from tempfile import NamedTemporaryFile, TemporaryFile
+ import os
+ 
+ from numpy import memmap
+@@ -33,12 +33,11 @@ class TestMemmap(TestCase):
+         assert_array_equal(self.data, newfp)
+ 
+     def test_open_with_filename(self):
+-        tmpname = mktemp('', 'mmap')
+-        fp = memmap(tmpname, dtype=self.dtype, mode='w+',
+-                       shape=self.shape)
+-        fp[:] = self.data[:]
+-        del fp
+-        os.unlink(tmpname)
++        with NamedTemporaryFile() as tmp:
++            fp = memmap(tmp.name, dtype=self.dtype, mode='w+',
++                        shape=self.shape)
++            fp[:] = self.data[:]
++            del fp
+ 
+     def test_unnamed_file(self):
+         with TemporaryFile() as f:
+@@ -55,17 +54,16 @@ class TestMemmap(TestCase):
+         del fp
+ 
+     def test_filename(self):
+-        tmpname = mktemp('', 'mmap')
+-        fp = memmap(tmpname, dtype=self.dtype, mode='w+',
+-                       shape=self.shape)
+-        abspath = os.path.abspath(tmpname)
+-        fp[:] = self.data[:]
+-        self.assertEqual(abspath, fp.filename)
+-        b = fp[:1]
+-        self.assertEqual(abspath, b.filename)
+-        del b
+-        del fp
+-        os.unlink(tmpname)
++        with NamedTemporaryFile() as tmp:
++            fp = memmap(tmp.name, dtype=self.dtype, mode='w+',
++                        shape=self.shape)
++            abspath = os.path.abspath(tmp.name)
++            fp[:] = self.data[:]
++            self.assertEqual(abspath, fp.filename)
++            b = fp[:1]
++            self.assertEqual(abspath, b.filename)
++            del b
++            del fp
+ 
+     def test_filename_fileobj(self):
+         fp = memmap(self.tmpfp, dtype=self.dtype, mode="w+",
+diff --git a/numpy/core/tests/test_multiarray.py b/numpy/core/tests/test_multiarray.py
+index c2ac009..a6f7b34 100644
+--- a/numpy/core/tests/test_multiarray.py
++++ b/numpy/core/tests/test_multiarray.py
+@@ -2316,12 +2316,11 @@ class TestIO(object):
+         self.x = rand(shape) + rand(shape).astype(np.complex)*1j
+         self.x[0,:, 1] = [nan, inf, -inf, nan]
+         self.dtype = self.x.dtype
+-        self.filename = tempfile.mktemp()
++        self.file = tempfile.NamedTemporaryFile()
++        self.filename = self.file.name
+ 
+     def tearDown(self):
+-        if os.path.isfile(self.filename):
+-            os.unlink(self.filename)
+-            #tmp_file.close()
++        self.file.close()
+ 
+     def test_bool_fromstring(self):
+         v = np.array([True, False, True, False], dtype=np.bool_)
+@@ -2349,7 +2348,6 @@ class TestIO(object):
+         y = np.fromfile(f, dtype=self.dtype)
+         f.close()
+         assert_array_equal(y, self.x.flat)
+-        os.unlink(self.filename)
+ 
+     def test_roundtrip_filename(self):
+         self.x.tofile(self.filename)
+@@ -2535,7 +2529,6 @@ class TestIO(object):
+         s = f.read()
+         f.close()
+         assert_equal(s, '1.51,2.0,3.51,4.0')
+-        os.unlink(self.filename)
+ 
+     def test_tofile_format(self):
+         x = np.array([1.51, 2, 3.51, 4], dtype=float)
+diff --git a/numpy/f2py/__init__.py b/numpy/f2py/__init__.py
+index ccdbd4e..fcfd185 100644
+--- a/numpy/f2py/__init__.py
++++ b/numpy/f2py/__init__.py
+@@ -28,20 +28,20 @@ def compile(source,
+     from numpy.distutils.exec_command import exec_command
+     import tempfile
+     if source_fn is None:
+-        fname = os.path.join(tempfile.mktemp()+'.f')
++        f = tempfile.NamedTemporaryFile(suffix='.f')
+     else:
+-        fname = source_fn
+-
+-    f = open(fname, 'w')
+-    f.write(source)
+-    f.close()
+-
+-    args = ' -c -m %s %s %s'%(modulename, fname, extra_args)
+-    c = '%s -c "import numpy.f2py as f2py2e;f2py2e.main()" %s' %(sys.executable, args)
+-    s, o = exec_command(c)
+-    if source_fn is None:
+-        try: os.remove(fname)
+-        except OSError: pass
++        f = open(source_fn, 'w')
++
++    try:
++        f.write(source)
++        f.flush()
++
++        args = ' -c -m %s %s %s'%(modulename, f.name, extra_args)
++        c = '%s -c "import numpy.f2py as f2py2e;f2py2e.main()" %s' % \
++                (sys.executable, args)
++        s, o = exec_command(c)
++    finally:
++        f.close()
+     return s
+ 
+ from numpy.testing import Tester
+diff --git a/numpy/f2py/f2py2e.py b/numpy/f2py/f2py2e.py
+index ff9d19e..25407d4 100755
+--- a/numpy/f2py/f2py2e.py
++++ b/numpy/f2py/f2py2e.py
+@@ -91,7 +91,7 @@ Options:
+                    --lower is assumed with -h key, and --no-lower without -h key.
+ 
+   --build-dir <dirname>  All f2py generated files are created in <dirname>.
+-                   Default is tempfile.mktemp().
++                   Default is tempfile.mkdtemp().
+ 
+   --overwrite-signature  Overwrite existing signature file.
+ 
+@@ -424,7 +424,7 @@ def run_compile():
+         del sys.argv[i]
+     else:
+         remove_build_dir = 1
+-        build_dir = os.path.join(tempfile.mktemp())
++        build_dir = tempfile.mkdtemp()
+ 
+     _reg1 = re.compile(r'[-][-]link[-]')
+     sysinfo_flags = [_m for _m in sys.argv[1:] if _reg1.match(_m)]
+commit 524b9eaa33ec67e34eb31a208e02bb934f778096
+Author: Julian Taylor <jtaylor.debian@googlemail.com>
+Date:   Sat Feb 8 11:55:36 2014 +0100
+
+    TST: fix test_io.TestSavezLoad
+
+diff --git a/numpy/lib/tests/test_io.py b/numpy/lib/tests/test_io.py
+index 2ee5c83..8995fad 100644
+--- a/numpy/lib/tests/test_io.py
++++ b/numpy/lib/tests/test_io.py
+@@ -187,7 +187,7 @@ class TestSavezLoad(RoundtripTest, TestCase):
+         L = (1 << 31) + 100000
+         a = np.empty(L, dtype=np.uint8)
+         with tempdir() as tmpdir:
+-            tmp = open(os.path.join(tmpdir, "file.npz"), "w")
++            tmp = os.path.join(tmpdir, "file.npz")
+             np.savez(tmp, a=a)
+             del a
+             npfile = np.load(tmp)
+commit 8296aa0b911c036c984e23665ee0f7ddca579b91
+Author: Julian Taylor <jtaylor.debian@googlemail.com>
+Date:   Sat Feb 8 13:40:26 2014 +0100
+
+    TST: clean up tempfile in test_closing_zipfile_after_load
+
+diff --git a/numpy/lib/tests/test_io.py b/numpy/lib/tests/test_io.py
+index 2ee5c83..6aae3d2 100644
+--- a/numpy/lib/tests/test_io.py
++++ b/numpy/lib/tests/test_io.py
+@@ -295,13 +295,14 @@ class TestSavezLoad(RoundtripTest, TestCase):
+         # Check that zipfile owns file and can close it.
+         # This needs to pass a file name to load for the
+         # test.
+-        fd, tmp = mkstemp(suffix='.npz')
+-        os.close(fd)
+-        np.savez(tmp, lab='place holder')
+-        data = np.load(tmp)
+-        fp = data.zip.fp
+-        data.close()
+-        assert_(fp.closed)
++        with tempdir() as tmpdir:
++            fd, tmp = mkstemp(suffix='.npz', dir=tmpdir)
++            os.close(fd)
++            np.savez(tmp, lab='place holder')
++            data = np.load(tmp)
++            fp = data.zip.fp
++            data.close()
++            assert_(fp.closed)
+ 
+ 
+ class TestSaveTxt(TestCase):
