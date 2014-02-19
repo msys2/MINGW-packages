@@ -1,0 +1,144 @@
+diff -Naur a/Lib/ntpath.py b/Lib/ntpath.py
+--- a/Lib/ntpath.py	2013-11-10 11:36:40.000000000 +0400
++++ b/Lib/ntpath.py	2014-02-18 09:32:57.860600000 +0400
+@@ -24,9 +24,22 @@
+ curdir = '.'
+ pardir = '..'
+ extsep = '.'
+-sep = '\\'
++# Generally we prefer forwards slashes for MinGW-w64 Python,
++# but should probably defer to the C code and a set of #defines
++# with the following precedence and logic:
++# DIRSEP_MSYSTEM    = If MSYSTEM env. var is set then / otherwise \.
++# DIRSEP_ARGV0      = Whichever of / and \ is more prevalent in argv0
++#                     (if equal DIRSEP_FORWARDS or DIRSEP_BACKWARDS)
++# DIRSEP_FORWARDS   = Always /
++# DIRSEP_BACKWARDS  = Always \
++# .. note, UNC paths are always converted to backslashes.
++if sys.platform == "win32" and "MSYSTEM" in os.environ:
++    sep = '/'
++    altsep = '\\'
++else:
++    sep = '\\'
++    altsep = '/'
+ pathsep = ';'
+-altsep = '/'
+ defpath = '.;C:\\bin'
+ if 'ce' in sys.builtin_module_names:
+     defpath = '\\Windows'
+@@ -61,7 +74,7 @@
+ # Join two (or more) paths.
+ 
+ def join(a, *p):
+-    """Join two or more pathname components, inserting "\\" as needed.
++    """Join two or more pathname components, inserting sep as needed.
+     If any component is an absolute path, all previous path components
+     will be discarded."""
+     path = a
+@@ -105,13 +118,13 @@
+                 if b[0] in "/\\":
+                     path += b
+                 else:
+-                    path += "\\" + b
++                    path += sep + b
+             else:
+                 # path is not empty and does not end with a backslash,
+                 # but b is empty; since, e.g., split('a/') produces
+                 # ('a', ''), it's best if join() adds a backslash in
+                 # this case.
+-                path += '\\'
++                path += sep
+ 
+     return path
+ 
+@@ -399,13 +412,19 @@
+     """Normalize path, eliminating double slashes, etc."""
+     # Preserve unicode (if path is unicode)
+     backslash, dot = (u'\\', u'.') if isinstance(path, unicode) else ('\\', '.')
++    isUNC = path.startswith('\\\\')
++    this_sep = sep
++    other_sep = altsep
++    if isUNC:
++        this_sep = backslash
++        other_sep = '/'
+     if path.startswith(('\\\\.\\', '\\\\?\\')):
+         # in the case of paths with these prefixes:
+         # \\.\ -> device names
+         # \\?\ -> literal paths
+         # do not do any normalization, but return the path unchanged
+         return path
+-    path = path.replace("/", "\\")
++    path = path.replace(other_sep, this_sep)
+     prefix, path = splitdrive(path)
+     # We need to be careful here. If the prefix is empty, and the path starts
+     # with a backslash, it could either be an absolute path on the current
+@@ -418,15 +437,15 @@
+     # is any better behaviour for such edge cases.
+     if prefix == '':
+         # No drive letter - preserve initial backslashes
+-        while path[:1] == "\\":
+-            prefix = prefix + backslash
++        while path[:1] == this_sep:
++            prefix = prefix + this_sep
+             path = path[1:]
+     else:
+         # We have a drive letter - collapse initial backslashes
+-        if path.startswith("\\"):
+-            prefix = prefix + backslash
+-            path = path.lstrip("\\")
+-    comps = path.split("\\")
++        if path.startswith(sep):
++            prefix = prefix + this_sep
++            path = path.lstrip(this_sep)
++    comps = path.split(this_sep)
+     i = 0
+     while i < len(comps):
+         if comps[i] in ('.', ''):
+@@ -435,7 +454,7 @@
+             if i > 0 and comps[i-1] != '..':
+                 del comps[i-1:i+1]
+                 i -= 1
+-            elif i == 0 and prefix.endswith("\\"):
++            elif i == 0 and prefix.endswith(this_sep):
+                 del comps[i]
+             else:
+                 i += 1
+@@ -444,7 +463,7 @@
+     # If the path is now empty, substitute '.'
+     if not prefix and not comps:
+         comps.append(dot)
+-    return prefix + backslash.join(comps)
++    return prefix + this_sep.join(comps)
+ 
+ 
+ # Return an absolute path.
+diff -Naur a/Python/pythonrun.c b/Python/pythonrun.c
+--- a/Python/pythonrun.c	2013-11-10 11:36:41.000000000 +0400
++++ b/Python/pythonrun.c	2014-02-18 09:32:57.860600000 +0400
+@@ -666,13 +666,24 @@
+     PyInterpreterState_Delete(interp);
+ }
+ 
+-static char *progname = "python";
++static char progname[PATH_MAX+1] = "python";
+ 
+ void
+ Py_SetProgramName(char *pn)
+ {
+     if (pn && *pn)
+-        progname = pn;
++        strncpy(progname, pn, PATH_MAX);
++    pn = &progname[0];
++#ifdef __MINGW32__
++    char* msystem = Py_GETENV("MSYSTEM");
++    char altsep = msystem ? '\\' : '/';
++    char sep    = msystem ? '/'  : '\\';
++    char* seps = strchr(pn, altsep);
++    while(seps) {
++        *seps = sep;
++        seps = strchr(seps, altsep);
++    }
++#endif
+ }
+ 
+ char *

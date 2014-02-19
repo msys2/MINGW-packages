@@ -1,0 +1,130 @@
+diff -Naur a/configure.ac b/configure.ac
+--- a/configure.ac	2014-02-18 09:32:13.821800000 +0400
++++ b/configure.ac	2014-02-18 09:32:20.420600000 +0400
+@@ -3550,21 +3550,36 @@
+ ],[])
+ AC_MSG_RESULT($was_it_defined)
+ 
++AC_CHECK_HEADERS([ws2tcpip.h])
+ AC_MSG_CHECKING(for addrinfo)
+ AC_CACHE_VAL(ac_cv_struct_addrinfo,
+-AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <netdb.h>]], [[struct addrinfo a]])],
++AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
++#ifdef HAVE_WS2TCPIP_H
++#  include <ws2tcpip.h>
++#else
++#  include <netdb.h>
++#endif]],
++    [[struct addrinfo a]])],
+   [ac_cv_struct_addrinfo=yes],
+   [ac_cv_struct_addrinfo=no]))
+ AC_MSG_RESULT($ac_cv_struct_addrinfo)
+ if test $ac_cv_struct_addrinfo = yes; then
+-	AC_DEFINE(HAVE_ADDRINFO, 1, [struct addrinfo (netdb.h)])
++	AC_DEFINE(HAVE_ADDRINFO, 1, [struct addrinfo])
+ fi
+ 
+ AC_MSG_CHECKING(for sockaddr_storage)
+ AC_CACHE_VAL(ac_cv_struct_sockaddr_storage,
+ AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+-#		include <sys/types.h>
+-#		include <sys/socket.h>]], [[struct sockaddr_storage s]])],
++#ifdef HAVE_WS2TCPIP_H
++#include <ws2tcpip.h>
++#endif
++#ifdef HAVE_SYS_TYPES_H
++#include <sys/types.h>
++#endif
++#ifdef HAVE_SYS_SOCKET_H
++#include <sys/socket.h>
++#endif]],
++    [[struct sockaddr_storage s]])],
+   [ac_cv_struct_sockaddr_storage=yes],
+   [ac_cv_struct_sockaddr_storage=no]))
+ AC_MSG_RESULT($ac_cv_struct_sockaddr_storage)
+@@ -4703,7 +4718,10 @@
+ 
+ AC_CHECK_TYPE(socklen_t,,
+   AC_DEFINE(socklen_t,int,
+-            [Define to `int' if <sys/socket.h> does not define.]),[
++            [Define to `int' if <sys/socket.h> or <ws2tcpip.h> does not define.]),[
++#ifdef HAVE_WS2TCPIP_H
++#include <ws2tcpip.h>
++#endif
+ #ifdef HAVE_SYS_TYPES_H
+ #include <sys/types.h>
+ #endif
+diff -Naur a/Misc/config_mingw b/Misc/config_mingw
+--- a/Misc/config_mingw	2014-02-18 09:31:47.052200000 +0400
++++ b/Misc/config_mingw	2014-02-18 09:32:20.514200000 +0400
+@@ -10,3 +10,6 @@
+ # files to ignore
+ ac_cv_file__dev_ptmx=ignore #NOTE: under MSYS environment device exist
+ ac_cv_file__dev_ptc=no
++
++# force detection of winsock2 functionality - require wxp or newer
++ac_cv_func_getpeername=yes
+diff -Naur a/Modules/socketmodule.c b/Modules/socketmodule.c
+--- a/Modules/socketmodule.c	2013-11-10 11:36:41.000000000 +0400
++++ b/Modules/socketmodule.c	2014-02-18 09:32:20.514200000 +0400
+@@ -313,6 +313,12 @@
+   /* Do not include addrinfo.h for MSVC7 or greater. 'addrinfo' and
+    * EAI_* constants are defined in (the already included) ws2tcpip.h.
+    */
++#elif defined(__MINGW32__)
++  /* Do not include addrinfo.h as minimum supported version is
++   * _WIN32_WINNT >= WindowsXP(0x0501)
++   */
++#  define HAVE_GETADDRINFO
++#  define HAVE_GETNAMEINFO
+ #else
+ #  include "addrinfo.h"
+ #endif
+diff -Naur a/pyconfig.h.in b/pyconfig.h.in
+--- a/pyconfig.h.in	2014-02-18 09:31:53.526200000 +0400
++++ b/pyconfig.h.in	2014-02-18 09:32:20.514200000 +0400
+@@ -49,7 +49,7 @@
+ /* Define to 1 if you have the `acosh' function. */
+ #undef HAVE_ACOSH
+ 
+-/* struct addrinfo (netdb.h) */
++/* struct addrinfo */
+ #undef HAVE_ADDRINFO
+ 
+ /* Define to 1 if you have the `alarm' function. */
+@@ -913,6 +913,9 @@
+    */
+ #undef HAVE_WORKING_TZSET
+ 
++/* Define to 1 if you have the <ws2tcpip.h> header file. */
++#undef HAVE_WS2TCPIP_H
++
+ /* Define if the zlib library has inflateCopy */
+ #undef HAVE_ZLIB_COPY
+ 
+@@ -1251,7 +1254,7 @@
+ /* Define to `unsigned int' if <sys/types.h> does not define. */
+ #undef size_t
+ 
+-/* Define to `int' if <sys/socket.h> does not define. */
++/* Define to `int' if <sys/socket.h> or <ws2tcpip.h> does not define. */
+ #undef socklen_t
+ 
+ /* Define to `int' if <sys/types.h> doesn't define. */
+diff -Naur a/setup.py b/setup.py
+--- a/setup.py	2014-02-18 09:32:20.311400000 +0400
++++ b/setup.py	2014-02-18 09:32:20.529800000 +0400
+@@ -787,9 +787,12 @@
+         exts.append( Extension('_csv', ['_csv.c']) )
+ 
+         # socket(2)
++        _socket_libs = math_libs
++        if host_platform == 'win32':
++            _socket_libs.append('ws2_32')
+         exts.append( Extension('_socket', ['socketmodule.c', 'timemodule.c'],
+                                depends=['socketmodule.h'],
+-                               libraries=math_libs) )
++                               libraries=_socket_libs) )
+         # Detect SSL support for the socket module (via _ssl)
+         search_for_ssl_incs_in = [
+                               '/usr/local/ssl/include',
