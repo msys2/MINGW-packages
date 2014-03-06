@@ -17,6 +17,8 @@ What we need to do:
 
 * Python3: porting Python-3.3.4
 
+* Python3: porting Python-3.4.
+
 * Resolve conflict between QtCreator/qbs
 
 * Guile: Fix 64-bit building.
@@ -28,3 +30,12 @@ What we need to do:
 * clang: 64-bit version is not properly work when using clang++
 
 * octopi: Fix to properly work with pacman.
+
+* ImageMagick: Fix building latest version.
+
+* Rust: Fix building with external Clang.
+
+* Meld: Fix to not open itself in compare windows.
+
+* PCRE: Fix tests failure (Julia issue).
+
