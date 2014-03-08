@@ -9,6 +9,8 @@ What we need to do:
 * Qt5: Fix building when another version is installed in system. Need rearrange 
   CFLAGS/LDFLAGS and place system wide flags at the end.
 
+* Qt5: Consider merging PKGBUILDs of qt5 and qt5-static.
+
 * Qt4: Add package.
 
 * Blender: Fix to use filesystem layout as on Linux.
