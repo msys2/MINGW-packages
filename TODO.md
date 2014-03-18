@@ -15,11 +15,7 @@ What we need to do:
 
 * Blender: Fix to use filesystem layout as on Linux.
 
-* Python2/3: Fix testsuite
-
-* Python3: porting Python-3.3.4
-
-* Python3: porting Python-3.4.
+* Python2/3: Fix testsuite.
 
 * Resolve conflict between QtCreator/qbs
 
