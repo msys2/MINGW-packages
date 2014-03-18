@@ -37,3 +37,4 @@ What we need to do:
 
 * PCRE: Fix tests failure (Julia issue).
 
+* Ray should investigate removing DESTDIRFINAL stuff from Python.
