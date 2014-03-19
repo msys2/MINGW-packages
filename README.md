@@ -3,9 +3,11 @@ MINGW-packages
 
 Package scripts for MinGW-w64 targets to build under MSYS2.
 
-To build these, run msys2_shell.bat then from the bash prompt:
-cd <package-name>
+To build these, run msys2_shell.bat then from the bash prompt.
+
+    cd ${package-name}
     makepkg-mingw
 
-To install the build package(s):
-    pacman -U <package-name>*.pkg.tar.xz
+To install the build package(s).
+
+    pacman -U ${package-name}*.pkg.tar.xz
