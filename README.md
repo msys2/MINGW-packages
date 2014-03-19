@@ -8,6 +8,6 @@ To build these, run msys2_shell.bat then from the bash prompt.
     cd ${package-name}
     makepkg-mingw
 
-To install the build package(s).
+To install the built package(s).
 
     pacman -U ${package-name}*.pkg.tar.xz
