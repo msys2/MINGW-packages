@@ -1,10 +1,6 @@
 What we need to do:
 
-* libwinpthreads/libgomp: Fix issue with semaphores.
-
 * GIMP: Fix loading python extensions when GIMP is starting from bash.
-
-* innoextract: Fix crashing on startup.
 
 * Qt5: Fix building when another version is installed in system. Need rearrange 
   CFLAGS/LDFLAGS and place system wide flags at the end.
@@ -28,8 +24,6 @@ What we need to do:
 * clang: 64-bit version is not properly work when using clang++
 
 * octopi: Fix to properly work with pacman.
-
-* ImageMagick: Fix building latest version.
 
 * Rust: Fix building with external Clang.
 
