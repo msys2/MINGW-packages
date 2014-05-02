@@ -3,12 +3,16 @@
 
 _realname=qt5-static
 _mingw_suff=mingw-w64-${CARCH}
+#_configure=./configure.bat
+_configure=./configure
 # When using the configure bash script, MSYS2 make is
 # probably a better choice as otherwise the Makefiles
 # can have MSYS2 paths in them. We try to handle this
-# but it is ad-hoc at best. '${_make}' docs fails ATM
+# but it is ad-hoc at best.
 _make=make
 #_make=${MINGW_PREFIX}/bin/mingw32-make
+_opengl=angle
+#_opengl=desktop
 pkgname="${_mingw_suff}-${_realname}"
 _ver_base=5.3.0-beta
 pkgver=${_ver_base//-/}
@@ -52,6 +56,7 @@ source=("http://download.qt-project.org/development_releases/qt/${pkgver%.*}/${_
         qt-5.2.1-win32-g-Enable-static-builds.patch
         qt-5.2.1-win32-g-Add-QMAKE_EXTENSION_IMPORTLIB-defaulting-to-.patch
         qt-5.2.1-qmlimportscanner-Ensure-the-correct-variant-is-run.patch
+        qt5-add-angle-support.patch
         qt-5.3.0-icu-add-U_LIB_SUFFIX_C_NAME.patch
         qt-5.3.0-beta-0001-fix-debug_and_release-builds.patch
         qt-5.3.0-beta-0001-qdoc-increase-stack-size-for-win32-g-too.patch
@@ -66,12 +71,13 @@ md5sums=('4f4a8302c52ef80bbb62bf764e682e47'
          '0f2e3a2f790b07442f0964f4f2f96596'
          'b0706aaa70fe6cb9a4b77676b808e1b0'
          'd7d745b5915cff6a7e7f4cc4e9760de0'
+         'e2d98dd1a5f95a3b84f5cd7cb44130bb'
          '6384ff636647fce0bc153e42d4aab769'
          '734ba2c458cb46f1c812413d3db404df'
          '6914a82ad728ff0da3c959f53367384c'
-         '1259c9487744757c81a9d4c507348d9e')
+         '655025d19501de43956a2625db54d2ca')
 
-translate_to_native() {
+translate_for_make() {
   if [ "${_make}" = "make" ]; then
     echo "${1}"
   else
@@ -91,6 +97,10 @@ prepare() {
   # My qt-5.2.1 win32-g++ static patches are against qtbase's dev branch.
   pushd qtbase
   patch -p1 -i ${srcdir}/qt-5.2.1-win32-g-Enable-static-builds.patch
+  # Despite qt-5.2.1-use-.dll.a-as-MINGW_IMPORT_LIB-extension.patch the following .a (i.e. non-import)
+  # static libraries end up being made:
+  #   ActiveQt (which is always built statically), libQt5OpenGLExtensions{d}.a, libQt5PlatformSupport{d}.a
+  #   libQt5QmlDevTools.a, libQt5UiTools{d}.a libqtmain{d}.a
   patch -p1 -i ${srcdir}/qt-5.2.1-win32-g-Add-QMAKE_EXTENSION_IMPORTLIB-defaulting-to-.patch
   patch -p1 -i ${srcdir}/qt-5.2.1-qmlimportscanner-Ensure-the-correct-variant-is-run.patch
   patch -p1 -i ${srcdir}/qt-5.3.0-beta-0001-fix-debug_and_release-builds.patch
@@ -98,6 +108,9 @@ prepare() {
   patch -p1 -i ${srcdir}/qt-5.3.0-beta-0001-fix-install-qt-harfbuzz.patch
   popd
 
+  if [ "${_opengl}" = "angle" ]; then
+    patch -p1 -i ${srcdir}/qt5-add-angle-support.patch
+  fi
   patch -p1 -i ${srcdir}/qt-5.3.0-icu-add-U_LIB_SUFFIX_C_NAME.patch
 
   # See: https://bugreports.qt-project.org/browse/QTBUG-37902
@@ -106,12 +119,12 @@ prepare() {
 
   local _optim=
   case ${MINGW_CHOST} in
-  i686*)
-    _optim="-march=i686 -mtune=core2"
-  ;;
-  x86_64*)
-    _optim="-march=nocona -mtune=core2"
-  ;;
+    i686*)
+      _optim="-march=i686 -mtune=core2"
+    ;;
+    x86_64*)
+      _optim="-march=nocona -mtune=core2"
+    ;;
   esac
 
   # Determine the CFLAGS, DEBUG_CFLAGS and LDFLAGS that we will tell {g++,gcc}-base.conf about
@@ -119,8 +132,8 @@ prepare() {
   CFLAGS_MKS_DEBUG="${CFLAGS} ${DEBUG_CFLAGS}"
   LDFLAGS_MKS="${LDFLAGS}"
   # If not using MSYS2 make then transform -I${MINGW_PREFIX}/blah or -L${MINGW_PREFIX}/blah from MSYS2 to native
-  CFLAGS_MKS_RELEASE=$(translate_to_native "${CFLAGS_MKS_RELEASE}")
-  CFLAGS_MKS_DEBUG=$(translate_to_native "${CFLAGS_MKS_DEBUG}")
+  CFLAGS_MKS_RELEASE=$(translate_for_make "${CFLAGS_MKS_RELEASE}")
+  CFLAGS_MKS_DEBUG=$(translate_for_make "${CFLAGS_MKS_DEBUG}")
   LDFLAGS_MKS=$(translate_to_native "${LDFLAGS_MKS}")
 
   sed -i "s|%OPTIMIZE_OPT%|${_optim}|g" qtbase/mkspecs/win32-g++/qmake.conf
@@ -129,13 +142,15 @@ prepare() {
   sed -i "s|^QMAKE_CFLAGS_DEBUG *+= .*$|QMAKE_CFLAGS_DEBUG         += ${CFLAGS_MKS_DEBUG}|g" qtbase/mkspecs/common/{g++,gcc}-base.conf
   sed -i "/^QMAKE_LFLAGS_RPATH/s| -Wl,-rpath,||g" qtbase/mkspecs/common/gcc-base-unix.conf
   sed -i "/^QMAKE_LFLAGS\s/s|+=|+= ${LDFLAGS_MKS}|g" qtbase/mkspecs/common/gcc-base.conf
-}
 
-build() {
   # To keep the build folder name quite small (MAXPATH limit)
   # the source folder (long) is renamed to $CARCH (i686 or x86_64)
   [ -d ${CARCH} ] && rm -rf ${CARCH}
+  cd ${srcdir}
   mv ${_pkgfqn} ${CARCH}
+}
+
+build() {
   cd ${CARCH}
   touch qtbase/.gitignore
   #BUILD_WIN=$(pwd -W)
@@ -144,59 +159,63 @@ build() {
   mkdir -p ${pkgdir}${MINGW_PREFIX}/qt5-static
   pushd ${pkgdir}${MINGW_PREFIX}/qt5-static > /dev/null
   QTDIR_WIN=$(pwd -W)
-  echo "QTDIR_WIN $QTDIR_WIN"
   popd > /dev/null
 
+  local _extra_inc_string="$(pkg-config --cflags dbus-1)"
   local -a _extra_inc
-  for _inc in $(translate_to_native "$(pkg-config --cflags dbus-1)"); do
+  for _inc in "$(translate_for_make $_extra_inc_string)"; do
     _extra_inc+=("$_inc")
   done
-  plain "_extra_inc is ${_extra_inc[@]}"
-  export PATH=${srcdir}/${CARCH}/qtbase/bin:${srcdir}/${CARCH}/qtbase/lib:${MINGW_PREFIX}/qt5-static/bin:${MINGW_PREFIX}/bin:"${PATH}"
 
-  # We're deliberately knocking out the system includes of -I/mingw64/include and system libraries of -L/mingw64/lib (actually all -I and -L)
-  # .. there's another way but Ossi and Thiago didn't want to go there .. (REFERENCE?)
-  # .. for us an alternative that will probably work is to prepend LDFLAGS with -LC:/repo/mingw-w64-qt5-static/src/${CARCH}/qtbase/lib
-  #
+  export PATH="${srcdir}/${CARCH}/qtbase/bin:${srcdir}/${CARCH}/qtbase/lib:${MINGW_PREFIX}/qt5-static/bin:${MINGW_PREFIX}/bin:${PATH}"
+
+  # Set the correct one of _extra_inc or _extra_inc_string, never both.
+  if [ "${_configure}" = "./configure.bat" ]; then
+    _extra_inc_string=${_extra_inc_string//-I/:}
+    _extra_inc_string=${_extra_inc_string// /}
+    _extra_inc=("")
+    plain "_extra_inc_string (for ${_configure}) is ${_extra_inc_string}"
+  else
+    _extra_inc_string=""
+    plain "_extra_inc (for ${_configure}) is ${_extra_inc[@]}"
+  fi
+  export CPATH="${MINGW_PREFIX}/${MINGW_CHOST}/include:${MINGW_PREFIX}/include:${MINGW_PREFIX}/include/noX:${_extra_inc_string}"
+  # export LIB="${MINGW_PREFIX}/${MINGW_CHOST}/lib:${MINGW_PREFIX}/lib"
   # Qt manages the compiler flags for release / debug configs separately, so having our own values (-O2) is harmful here ..
-  # I think that we should unset CFLAGS/CXXFLAGS before building Qt since gcc-base.conf is responsible for managing
-  # them. We need to patch the values of QMAKE_CFLAGS_OPTIMIZE, QMAKE_CFLAGS_DEBUG in there instead, reworking the seds (^)
-  # export CFLAGS=$(echo $CFLAGS | sed 's#\([ ]*-I[^ ]*\)##g')
-  # export CXXFLAGS=$(echo $CXXFLAGS | sed 's#\([ ]*-I[^ ]*\)##g')
   unset CFLAGS
   unset CXXFLAGS
   unset LDFLAGS
 
   OPENSSL_LIBS="-lssl -lcrypto -lcrypt32 -lgdi32" \
-    ./configure \
-        -prefix ${QTDIR_WIN} \
-        -opengl desktop \
-        -opensource \
-        -confirm-license \
-        -device-option QMAKE_EXTENSION_IMPORTLIB="dll.a" \
-        -platform win32-g++ \
-        -static \
-        -debug-and-release \
-        "${_extra_inc[@]}" \
-        -no-fontconfig \
-        -qt-zlib \
-        -qt-pcre \
-        -qt-libpng \
-        -qt-libjpeg \
-        -qt-harfbuzz \
-        -qt-freetype \
-        -icu \
-        -no-gtkstyle \
-        -no-glib \
-        -qt-sql-sqlite \
-        -openssl-linked \
-        -dbus \
-        -make libs \
-        -make tools \
-        -nomake examples \
-        -nomake tests
+  ${_configure} \
+    -prefix ${QTDIR_WIN} \
+    -opengl ${_opengl} \
+    -opensource \
+    -confirm-license \
+    -device-option QMAKE_EXTENSION_IMPORTLIB="dll.a" \
+    -platform win32-g++ \
+    -static \
+    -debug-and-release \
+    "${_extra_inc[@]}" \
+    -no-fontconfig \
+    -qt-zlib \
+    -qt-pcre \
+    -qt-libpng \
+    -qt-libjpeg \
+    -qt-harfbuzz \
+    -qt-freetype \
+    -icu \
+    -no-gtkstyle \
+    -no-glib \
+    -qt-sql-sqlite \
+    -openssl-linked \
+    -dbus \
+    -make libs \
+    -make tools \
+    -nomake examples \
+    -nomake tests
 
-  ${_make}
+  ${_make} ${MAKEFLAGS}
 }
 
 package() {
@@ -205,7 +224,7 @@ package() {
 
   export PATH=${pkgdir}${MINGW_PREFIX}/qt5-static/bin:${pkgdir}${MINGW_PREFIX}/bin:${srcdir}/${CARCH}/qtbase/bin:${srcdir}/${CARCH}/qtbase/lib:${PATH}
 
-  ${_make} -j1 install #INSTALL_ROOT="${pkgdir}"
+  ${_make} -j1 install
   ${_make} -j1 docs
   ${_make} -j1 install_qch_docs
 
