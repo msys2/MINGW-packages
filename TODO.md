@@ -7,7 +7,8 @@ What we need to do:
 
 * Qt5: Consider merging PKGBUILDs of qt5 and qt5-static.
 
-* Qt4: Add package.
+* Qt4: Add package <- I (Ray) think we ignore software that hasn't moved to Qt5.
+  .. it is probably not being maintained and would thus be removed soon anyway.
 
 * Blender: Fix to use filesystem layout as on Linux.
 
@@ -31,4 +32,8 @@ What we need to do:
 
 * PCRE: Fix tests failure (Julia issue).
 
-* Ray should investigate removing DESTDIRFINAL stuff from Python.
+* Python: Ray should investigate removing DESTDIRFINAL stuff.
+
+* Python3: Port new Python2's 0500-add-python-config-sh.patch (python-config-u.sh)
+
+* General: Compile a static bash and a static pacman into /sbin if possible.
