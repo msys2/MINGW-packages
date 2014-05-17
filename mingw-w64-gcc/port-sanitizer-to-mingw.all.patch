@@ -1,0 +1,143 @@
+--- gcc-4.9.0/libsanitizer/sanitizer_common/sanitizer_libc.cc.orig	2013-12-05 13:18:38.000000000 +0400
++++ gcc-4.9.0/libsanitizer/sanitizer_common/sanitizer_libc.cc	2014-05-01 00:29:57.757747133 +0400
+@@ -18,7 +18,11 @@
+ static inline void break_optimization(void *arg) {
+ #if SANITIZER_WINDOWS
+   // FIXME: make sure this is actually enough.
++#  ifdef __GNUC__
++  __asm__ __volatile__("" : : "r" (arg) : "memory");
++#  else
+   __asm;
++#  endif
+ #else
+   __asm__ __volatile__("" : : "r" (arg) : "memory");
+ #endif
+--- gcc-4.9.0/libsanitizer/asan/asan_win.cc.orig	2013-12-05 13:18:38.000000000 +0400
++++ gcc-4.9.0/libsanitizer/asan/asan_win.cc	2014-05-01 00:42:24.026263199 +0400
+@@ -67,9 +67,6 @@
+ }
+ 
+ void *AsanDoesNotSupportStaticLinkage() {
+-#if defined(_DEBUG)
+-#error Please build the runtime with a non-debug CRT: /MD or /MT
+-#endif
+   return 0;
+ }
+ 
+--- gcc-4.9.0/libsanitizer/asan/asan_malloc_win.cc.orig	2013-12-05 13:18:38.000000000 +0400
++++ gcc-4.9.0/libsanitizer/asan/asan_malloc_win.cc	2014-05-01 00:41:46.400136656 +0400
+@@ -130,18 +130,18 @@
+ # ifdef _WIN64
+ #  error ReplaceSystemMalloc was not tested on x64
+ # endif
+-  char *crt_malloc;
+-  if (GetRealFunctionAddress("malloc", (void**)&crt_malloc)) {
++  uptr crt_malloc;
++  if (GetRealFunctionAddress("malloc", &crt_malloc)) {
+     // Replace malloc in the CRT dll with a jump to our malloc.
+     DWORD old_prot, unused;
+-    CHECK(VirtualProtect(crt_malloc, 16, PAGE_EXECUTE_READWRITE, &old_prot));
+-    REAL(memset)(crt_malloc, 0xCC /* int 3 */, 16);  // just in case.
++    CHECK(VirtualProtect((void *)crt_malloc, 16, PAGE_EXECUTE_READWRITE, &old_prot));
++    REAL(memset)((void *)crt_malloc, 0xCC /* int 3 */, 16);  // just in case.
+ 
+     ptrdiff_t jmp_offset = (char*)malloc - (char*)crt_malloc - 5;
+-    crt_malloc[0] = 0xE9;  // jmp, should be followed by an offset.
+-    REAL(memcpy)(crt_malloc + 1, &jmp_offset, sizeof(jmp_offset));
++    ((unsigned char*)crt_malloc)[0] = 0xE9;  // jmp, should be followed by an offset.
++    REAL(memcpy)(((char *)crt_malloc) + 1, &jmp_offset, sizeof(jmp_offset));
+ 
+-    CHECK(VirtualProtect(crt_malloc, 16, old_prot, &unused));
++    CHECK(VirtualProtect((void *)crt_malloc, 16, old_prot, &unused));
+ 
+     // FYI: FlushInstructionCache is needed on Itanium etc but not on x86/x64.
+   }
+--- gcc-4.9.0/libsanitizer/configure.ac.orig	2014-04-30 23:28:43.473119000 +0400
++++ gcc-4.9.0/libsanitizer/configure.ac	2014-05-01 00:50:38.376883205 +0400
+@@ -73,6 +73,7 @@
+ "") AC_MSG_ERROR([can't build without awk]) ;;
+ esac
+ 
++ACX_LT_HOST_FLAGS
+ AC_SUBST(enable_shared)
+ AC_SUBST(enable_static)
+ 
+@@ -95,10 +96,10 @@
+ AC_CHECK_FUNCS(clock_getres clock_gettime clock_settime)
+ 
+ # Common libraries that we need to link against for all sanitizer libs.
+-link_sanitizer_common='-lpthread -ldl -lm'
++link_sanitizer_common="-lpthread      -lm $lt_host_flags"
+ 
+ # Set up the set of additional libraries that we need to link against for libasan.
+-link_libasan=$link_sanitizer_common
++link_libasan="$link_sanitizer_common -ldbghelp"
+ AC_SUBST(link_libasan)
+ 
+ # Set up the set of additional libraries that we need to link against for libtsan.
+--- gcc-4.9.0/libsanitizer/configure.orig	2014-04-22 13:44:36.000000000 +0400
++++ gcc-4.9.0/libsanitizer/configure	2014-05-01 03:32:52.580600918 +0400
+@@ -626,6 +626,7 @@
+ TSAN_SUPPORTED_TRUE
+ enable_static
+ enable_shared
++lt_host_flags
+ CXXCPP
+ OTOOL64
+ OTOOL
+@@ -15379,6 +15380,31 @@
+ 
+ 
+ 
++
++
++case $host in
++  *-cygwin* | *-mingw*)
++    # 'host' will be top-level target in the case of a target lib,
++    # we must compare to with_cross_host to decide if this is a native
++    # or cross-compiler and select where to install dlls appropriately.
++    if test -n "$with_cross_host" &&
++	test x"$with_cross_host" != x"no"; then
++      lt_host_flags='-no-undefined -bindir "$(toolexeclibdir)"';
++    else
++      lt_host_flags='-no-undefined -bindir "$(bindir)"';
++    fi
++    ;;
++  *)
++    lt_host_flags=
++    ;;
++esac
++
++
++
++
++
++
++
+ for ac_prog in gawk mawk nawk awk
+ do
+   # Extract the first word of "$ac_prog", so it can be a program name with args.
+@@ -15506,10 +15532,10 @@
+ 
+ 
+ # Common libraries that we need to link against for all sanitizer libs.
+-link_sanitizer_common='-lpthread -ldl -lm'
++link_sanitizer_common="-lpthread      -lm $lt_host_flags"
+ 
+ # Set up the set of additional libraries that we need to link against for libasan.
+-link_libasan=$link_sanitizer_common
++link_libasan="$link_sanitizer_common -ldbghelp"
+ 
+ 
+ # Set up the set of additional libraries that we need to link against for libtsan.
+--- gcc-4.9.0/libsanitizer/ubsan/ubsan_value.h.orig	2013-12-05 13:18:38.000000000 +0400
++++ gcc-4.9.0/libsanitizer/ubsan/ubsan_value.h	2014-05-01 00:52:12.811448854 +0400
+@@ -14,7 +14,7 @@
+ 
+ // For now, only support linux and darwin. Other platforms should be easy to
+ // add, and probably work as-is.
+-#if !defined(__linux__) && !defined(__APPLE__)
++#if !defined(__linux__) && !defined(__APPLE__) && !defined(_WIN32)
+ #error "UBSan not supported for this platform!"
+ #endif
+ 
