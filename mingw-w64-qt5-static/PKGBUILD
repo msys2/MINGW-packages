@@ -1,35 +1,55 @@
 # Maintainer: Alexey Pavlov <alexpux@gmail.com>
 # Maintainer: Ray Donnelly <mingw.android@gmail.com>
 
-_realname=qt5-static
-_mingw_suff=mingw-w64-${CARCH}
-#_configure=./configure.bat
-_configure=./configure
+_variant=-static
+_realname=qt5${_variant}
+
+# qt5-static must be kept in its own prefix hierarchy
+# as otherwise it will conflict with qt5 itself
+if [ "${_variant}" = "-static" ]; then
+  _qt5_prefix="${MINGW_PREFIX}/${_realname}"
+else
+  _qt5_prefix="${MINGW_PREFIX}"
+fi
+
+# So that both configure shell script and configure.exe
+# are tested on MSYS2, we use both depending on variant
+if [ "${_variant}" = "-static" ]; then
+  _configure=./configure
+else
+  _configure=./configure.bat
+fi
+
 # Getting crashes that only happen in release builds?
 # Define this and you may have a hope of figuring out
 # why ..
 _debuggable_release=no
 #_debuggable_release=yes
+
 # When using the configure bash script, MSYS2 make is
 # probably a better choice as otherwise the Makefiles
 # can have MSYS2 paths in them. We try to handle this
 # but it is ad-hoc at best.
-_make=make
-#_make=${MINGW_PREFIX}/bin/mingw32-make
+if [ "${_configure}" = "./configure" ]; then
+  _make=make
+else
+  _make=${MINGW_PREFIX}/bin/mingw32-make
+fi
+
 #_opengl=angle
 _opengl=desktop
 _opengl_for_configure="${_opengl}"
-pkgname="${_mingw_suff}-${_realname}"
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 _ver_base=5.3.0
 pkgver=${_ver_base//-/}
-pkgrel=1
+pkgrel=2
 arch=('any')
 pkgdesc="A cross-platform application and UI framework (mingw-w64 static)"
 url='http://qt-project.org/'
 install=qt5-${CARCH}.install
 license=('GPL3' 'LGPL' 'FDL' 'custom')
-depends=("${_mingw_suff}-gcc-libs"
-         "${_mingw_suff}-qtbinpatcher")
+depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
+         "${MINGW_PACKAGE_PREFIX}-qtbinpatcher")
 makedepends=("perl"
              "gperf"
              "m4"
@@ -37,18 +57,18 @@ makedepends=("perl"
              "patch"
              "diffutils"
              "make"
-             "${_mingw_suff}-gcc"
-             "${_mingw_suff}-postgresql"
-             "${_mingw_suff}-libmariadbclient"
-             "${_mingw_suff}-libfbclient"
-             "${_mingw_suff}-python2"
-             "${_mingw_suff}-ruby"
-             "${_mingw_suff}-dbus"
-             "${_mingw_suff}-make"
-             "${_mingw_suff}-pkg-config"
-             "${_mingw_suff}-icu"
-             "${_mingw_suff}-icu-debug-libs")
-groups=("${_mingw_suff}-qt" "${_mingw_suff}-qt5")
+             "${MINGW_PACKAGE_PREFIX}-gcc"
+             "${MINGW_PACKAGE_PREFIX}-postgresql"
+             "${MINGW_PACKAGE_PREFIX}-libmariadbclient"
+             "${MINGW_PACKAGE_PREFIX}-libfbclient"
+             "${MINGW_PACKAGE_PREFIX}-python2"
+             "${MINGW_PACKAGE_PREFIX}-ruby"
+             "${MINGW_PACKAGE_PREFIX}-dbus"
+             "${MINGW_PACKAGE_PREFIX}-make"
+             "${MINGW_PACKAGE_PREFIX}-pkg-config"
+             "${MINGW_PACKAGE_PREFIX}-icu"
+             "${MINGW_PACKAGE_PREFIX}-icu-debug-libs")
+groups=("${MINGW_PACKAGE_PREFIX}-qt" "${MINGW_PACKAGE_PREFIX}-qt5")
 options=('!strip' 'staticlibs')
 _pkgfqn="qt-everywhere-opensource-src-${_ver_base}"
 source=(#"${_pkgfqn}.tar.xz"
@@ -183,8 +203,10 @@ prepare() {
   esac
 
   # Determine the CFLAGS, DEBUG_CFLAGS and LDFLAGS that we will tell qmake.conf about
-  # Since this is qt5-static, we's like to add -Os in an attempt to reduce size a little.
-  # .. however there's an ICE in GCC 4.9.0 so force -O2 instead.
+  # Since this is qt5-static, we's like to add -Os in an attempt to reduce size a little,
+  # however there's an ICE in GCC 4.9.0:
+  # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=61207
+  # .. so force -O2 instead.
   if [ "${_debuggable_release}" = "yes" ]; then
     QMAKE_LFLAGS_RELEASE=
     CFLAGS_MKS_RELEASE="${CFLAGS} -O2 -g"
@@ -216,8 +238,8 @@ build() {
   #BUILD_WIN=$(pwd -W)
   #echo "BUILD_WIN $BUILD_WIN"
 
-  mkdir -p ${pkgdir}${MINGW_PREFIX}/qt5-static
-  pushd ${pkgdir}${MINGW_PREFIX}/qt5-static > /dev/null
+  mkdir -p ${pkgdir}${_qt5_prefix}
+  pushd ${pkgdir}${_qt5_prefix} > /dev/null
   QTDIR_WIN=$(pwd -W)
   popd > /dev/null
 
@@ -228,7 +250,7 @@ build() {
   done
 
   export EXTERNAL_ANGLE=1
-  export PATH="${srcdir}/${CARCH}/qtbase/bin:${srcdir}/${CARCH}/qtbase/lib:${MINGW_PREFIX}/qt5-static/bin:${MINGW_PREFIX}/bin:${PATH}"
+  export PATH="${srcdir}/${CARCH}/qtbase/bin:${srcdir}/${CARCH}/qtbase/lib:${_qt5_prefix}/bin:${MINGW_PREFIX}/bin:${PATH}"
 
   # Set the correct one of _extra_inc or _extra_inc_string, never both.
   if [ "${_configure}" = "./configure.bat" ]; then
@@ -246,6 +268,25 @@ build() {
   if [ "${_configure}" = "./configure" ]; then
     _extra_config+=("-no-gtkstyle")
     _extra_config+=("-no-glib")
+  fi
+
+  # Determine the SQL driver configuration, variant dependent.
+  # static can't use anything but -qt-sql-sqlite both for size
+  # reasons and because shared libraries get auto-detected and
+  # built as plugins.
+  local -a _sql_config
+  if [ "${_variant}" = "-static" ]; then
+    _sql_config+=("-no-sql-ibase")
+    _sql_config+=("-no-sql-psql")
+    _sql_config+=("-no-sql-mysql")
+    _sql_config+=("-no-sql-odbc")
+    _sql_config+=("-qt-sql-sqlite")
+  else
+    _sql_config+=("-sql-ibase")
+    _sql_config+=("-sql-psql")
+    _sql_config+=("-sql-mysql")
+    _sql_config+=("-sql-odbc")
+    _sql_config+=("-qt-sql-sqlite")
   fi
 
   export CPATH="${MINGW_PREFIX}/${MINGW_CHOST}/include:${MINGW_PREFIX}/include:${MINGW_PREFIX}/include/noX:${_extra_inc_string}"
@@ -280,7 +321,7 @@ build() {
     -qt-freetype \
     -no-icu \
     "${_extra_config[@]}" \
-    -qt-sql-sqlite \
+    "${_sql_config[@]}" \
     -openssl-linked \
     -dbus \
     -make libs \
@@ -305,14 +346,14 @@ package() {
 
   cd ${CARCH}
 
-  export PATH=${pkgdir}${MINGW_PREFIX}/qt5-static/bin:${pkgdir}${MINGW_PREFIX}/bin:${srcdir}/${CARCH}/qtbase/bin:${srcdir}/${CARCH}/qtbase/lib:${PATH}
+  export PATH=${pkgdir}${_qt5_prefix}/bin:${pkgdir}${MINGW_PREFIX}/bin:${srcdir}/${CARCH}/qtbase/bin:${srcdir}/${CARCH}/qtbase/lib:${PATH}
 
   ${_make} -j1 install
   ${_make} -j1 docs
   ${_make} -j1 install_qch_docs
 
   install -D -m644 LGPL_EXCEPTION.txt \
-    "${pkgdir}${MINGW_PREFIX}/qt5-static"/share/licenses/qt5/LGPL_EXCEPTION.txt
+    "${pkgdir}${_qt5_prefix}"/share/licenses/qt5/LGPL_EXCEPTION.txt
 
   # Remove dlls from lib/
   rm -f "${pkgdir}${MINGW_PREFIX}/lib"/*.dll
@@ -320,7 +361,7 @@ package() {
   # Workaround for installing empty .pc files
   plain "---> Fix pkgconfig files..."
   local _pc_files=( $(find ${srcdir}/${CARCH} -type f -name Qt5*.pc) )
-  cp -f ${_pc_files[@]} ${pkgdir}${MINGW_PREFIX}/qt5-static/lib/pkgconfig/
+  cp -f ${_pc_files[@]} ${pkgdir}${_qt5_prefix}/lib/pkgconfig/
 
   # Fix wrong path in prl files
   # find "${pkgdir}${MINGW_PREFIX}/lib" -type f -name '*.prl' \
