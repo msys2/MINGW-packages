@@ -11,3 +11,7 @@ To build these, run msys2_shell.bat then from the bash prompt.
 To install the built package(s).
 
     pacman -U ${package-name}*.pkg.tar.xz
+
+When creating a PKGBUILD use 2 spaces for each tab
+
+    expand -t 2 PKGBUILD > PKGBUILD.new; mv PKGBUILD.new PKGBUILD
