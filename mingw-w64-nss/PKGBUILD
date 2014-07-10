@@ -1,0 +1,148 @@
+# Maintainer: Alexey Pavlov <alexpux@gmail.com>
+
+_realname=nss
+
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=3.16.3
+_nsprver=4.10.6
+pkgrel=1
+pkgdesc="Mozilla Network Security Services (mingw-w64)"
+arch=('any')
+url="http://www.mozilla.org/projects/security/pki/nss/"
+license=('MPL')
+depends=("${MINGW_PACKAGE_PREFIX}-nspr"
+        "${MINGW_PACKAGE_PREFIX}-sqlite3"
+        "${MINGW_PACKAGE_PREFIX}-zlib")
+makedepends=("${MINGW_PACKAGE_PREFIX}-gcc" "zip" "perl")
+options=('staticlibs' 'strip' '!emptydirs')
+source=(ftp://ftp.mozilla.org/pub/security/nss/releases/NSS_${pkgver//./_}_RTM/src/${_realname}-${pkgver}.tar.gz
+        http://ftp.mozilla.org/pub/mozilla.org/mozilla/libraries/win32/moztools-static.zip
+        nss.pc.in
+        nss-config.in
+        ssl-renegotiate-transitional.patch
+        nss-3.14.3-build.patch
+        manifest
+        blank-cert8.db
+        blank-key3.db
+        blank-secmod.db)
+md5sums=('949c05c91391907c8857abcbd7048788'
+         'd9c6516eb4dca209e4b7ae46a4758ffa'
+         '0e61093d83eaa259a32ed058eeaf0018'
+         'cab273601a06972583bdd4db3ead779a'
+         'd83c7b61abb7e9f8f7bcd157183d1ade'
+         'bab1bb522443127b6eba75e46b1260b7'
+         '9634847026a86bbfc395c7be23d30458'
+         'a5ae49867124ac75f029a9a33af31bad'
+         '9315689bbd9f28ceebd47894f99fccbd'
+         '73bc040a0542bba387e6dd7fb9fd7d23')
+
+prepare() {
+  cd ${srcdir}/${_realname}-${pkgver}
+  
+  # Adds transitional SSL renegotiate support - patch from Debian
+  patch -Np3 -i ${srcdir}/ssl-renegotiate-transitional.patch
+  patch -Np1 -i ${srcdir}/nss-3.14.3-build.patch
+
+  # Respect LDFLAGS
+  sed -e 's/\$(MKSHLIB) -o/\$(MKSHLIB) \$(LDFLAGS) -o/' \
+      -i nss/coreconf/rules.mk
+  
+  cp ${srcdir}/moztools/bin/nsinstall.exe .
+  cp ${srcdir}/manifest nsinstall.exe.manifest
+}
+
+build() {
+  cd ${srcdir}/${_realname}-${pkgver}
+  
+  export BUILD_OPT=1
+  export NSS_USE_SYSTEM_SQLITE=1
+  export NSS_ENABLE_ECC=1
+  export NSPR_INCLUDE_DIR="`nspr-config --includedir`"
+  export NSPR_LIB_DIR="`nspr-config --libdir`"
+  export SQLITE_LIB_DIR=${MINGW_PREFIX}/lib
+  export XCFLAGS="${CFLAGS}"
+
+  local conf64=
+  [[ "$CARCH" = "x86_64" ]] && {
+    conf64="USE_64=1"
+  }
+
+  make -j1 -C nss OS_TARGET=WINNT OS_RELEASE=5.0 XP_WIN=1 \
+    NSINSTALL=${srcdir}/${_realname}-${pkgver}/nsinstall NS_USE_GCC=1 ${conf64} \
+    NSS_USE_SYSTEM_SQLITE=1 USE_SYSTEM_ZLIB=1 ZLIB_LIBS=${MINGW_PREFIX}/lib/libz.dll.a \
+    CC=gcc RC=windres RANLIB=ranlib
+}
+
+package() {
+  cd ${srcdir}/${_realname}-${pkgver}
+  install -d "${pkgdir}${MINGW_PREFIX}"/{bin,include/nss3,lib/{nss,pkgconfig}}
+
+  NSS_VMAJOR=$(grep '#define.*NSS_VMAJOR' nss/lib/nss/nss.h | awk '{print $3}')
+  NSS_VMINOR=$(grep '#define.*NSS_VMINOR' nss/lib/nss/nss.h | awk '{print $3}')
+  NSS_VPATCH=$(grep '#define.*NSS_VPATCH' nss/lib/nss/nss.h | awk '{print $3}')
+
+  sed ../nss.pc.in \
+    -e "s,%libdir%,${MINGW_PREFIX}/lib,g" \
+    -e "s,%prefix%,${MINGW_PREFIX},g" \
+    -e "s,%exec_prefix%,${MINGW_PREFIX}/bin,g" \
+    -e "s,%includedir%,${MINGW_PREFIX}/include/nss3,g" \
+    -e "s,%NSPR_VERSION%,${_nsprver},g" \
+    -e "s,%NSS_VERSION%,${pkgver},g" \
+    > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/nss.pc"
+  cp -f ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/nss.pc "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/mozilla-nss.pc"
+
+  sed ../nss-config.in \
+    -e "s,@libdir@,${MINGW_PREFIX}/lib,g" \
+    -e "s,@prefix@,${MINGW_PREFIX}/bin,g" \
+    -e "s,@exec_prefix@,${MINGW_PREFIX}/bin,g" \
+    -e "s,@includedir@,${MINGW_PREFIX}/include/nss3,g" \
+    -e "s,@MOD_MAJOR_VERSION@,${NSS_VMAJOR},g" \
+    -e "s,@MOD_MINOR_VERSION@,${NSS_VMINOR},g" \
+    -e "s,@MOD_PATCH_VERSION@,${NSS_VPATCH},g" \
+    > "${pkgdir}${MINGW_PREFIX}/bin/nss-config"
+  chmod 755 "${pkgdir}${MINGW_PREFIX}/bin/nss-config"
+
+  
+  # Copy the binary libraries we want
+  for file in softokn nss nssutil \
+              ssl smime nssdbm
+  do
+    install -m 755 dist/*.OBJ/lib/${file}3.dll ${pkgdir}${MINGW_PREFIX}/bin/
+    install -m 644 dist/*.OBJ/lib/lib${file}3.dll.a ${pkgdir}${MINGW_PREFIX}/lib/lib${file}3.dll.a
+  done
+
+  install -m 755 dist/*.OBJ/lib/nssckbi.dll ${pkgdir}${MINGW_PREFIX}/bin/
+  install -m 755 dist/*.OBJ/lib/freebl3.dll ${pkgdir}${MINGW_PREFIX}/bin/
+
+  # Install the empty NSS db files
+  mkdir -p ${pkgdir}${MINGW_PREFIX}/etc/pki/nssdb
+  install -m 644 ${srcdir}/blank-cert8.db ${pkgdir}${MINGW_PREFIX}/etc/pki/nssdb/cert8.db
+  install -m 644 ${srcdir}/blank-key3.db ${pkgdir}${MINGW_PREFIX}/etc/pki/nssdb/key3.db
+  install -m 644 ${srcdir}/blank-secmod.db ${pkgdir}${MINGW_PREFIX}/etc/pki/nssdb/secmod.db
+
+  # Copy the development libraries we want
+  for file in libcrmf.dll.a libnssb.dll.a libnssckfw.dll.a
+  do
+    install -m 644 dist/*.OBJ/lib/$file ${pkgdir}${MINGW_PREFIX}/lib/
+  done
+
+  # Copy the binaries we want
+  for file in certutil cmsutil crlutil modutil pk12util signtool signver ssltap
+  do
+    install -m 755 dist/*.OBJ/bin/$file.exe ${pkgdir}${MINGW_PREFIX}/bin/
+  done
+
+  # Copy the binaries we ship as unsupported
+  for file in atob btoa derdump ocspclnt pp selfserv shlibsign strsclnt symkeyutil \
+   tstclnt vfyserv vfychain
+  do
+    install -m 755 dist/*.OBJ/bin/$file.exe ${pkgdir}${MINGW_PREFIX}/lib/nss/
+  done
+
+  # Copy the include files we want
+  for file in dist/public/nss/*.h
+  do
+    install -m 644 $file ${pkgdir}${MINGW_PREFIX}/include/nss3
+  done
+
+}
