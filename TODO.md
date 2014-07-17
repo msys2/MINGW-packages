@@ -14,8 +14,6 @@ What we need to do:
 
 * Python2/3: Fix testsuite.
 
-* Resolve conflict between QtCreator/qbs
-
 * Guile: Fix 64-bit building.
 
 * Perl: Need to find maintainer for it:) It very buggy to use
@@ -31,9 +29,5 @@ What we need to do:
 * Meld: Fix to not open itself in compare windows.
 
 * PCRE: Fix tests failure (Julia issue).
-
-* Python: Ray should investigate removing DESTDIRFINAL stuff.
-
-* Python3: Port new Python2's 0500-add-python-config-sh.patch (python-config-u.sh)
 
 * General: Compile a static bash and a static pacman into /sbin if possible.
