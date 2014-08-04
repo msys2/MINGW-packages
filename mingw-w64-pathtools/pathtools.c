@@ -6,7 +6,7 @@
 
 #include "pathtools.h"
 
-static char *
+char *
 malloc_copy_string (char const * original)
 {
   char * result = (char *) malloc (sizeof(char*) * strlen(original)+1);
