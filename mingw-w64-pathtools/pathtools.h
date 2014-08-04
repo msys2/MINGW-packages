@@ -37,6 +37,8 @@
 #endif /* defined(IMPLEMENT_SYS_GET_EXECUTABLE_PATH) */
 
 /* These functions are used to support relocation.*/
+char * malloc_copy_string (char const * original);
+char * sanitise_path(char * path);
 
 /* Returns the malloc'ed string. Caller should free using free(void*) */
 //static char * malloc_copy_string (char const * original);
@@ -53,10 +55,5 @@ char * get_relative_path (char const * from, char const * to);
 
 /* returns relocated path from single unix path. Caller should free using free(void*) */
 const char * get_relocated_single_path(char const * unix_path);
-
-/* Debug functions */
-void get_relative_path_debug (char const * from, char const * to, char const * expected);
-void simplify_path_debug (const char * input, const char * expected);
-void sanitise_path_debug(char const * path, char const * expected);
 
 #endif 

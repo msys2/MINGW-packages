@@ -17,7 +17,7 @@ malloc_copy_string (char const * original)
   return result;
 }
 
-static char *
+char *
 sanitise_path(char * path)
 {
   size_t path_size = strlen(path);
@@ -35,25 +35,6 @@ sanitise_path(char * path)
     memmove(path_p, path_p + 1, path_size--);
   }
   return path;
-}
-
-void
-sanitise_path_debug(char const * path, char const * expected)
-{
-  char * path_copy = (char *) alloca (strlen(path)+1);
-  strcpy (path_copy, path);
-  path_copy = sanitise_path (path_copy);
-
-  int ok = (strcmp(path_copy, expected) == 0) ? 1 : 0;
-  if (ok)
-  {
-    printf ("PASS: %s cleans up to %s\n", path, path_copy);
-  }
-  else
-  {
-    printf ("FAIL: %s cleans up to %s, should be %s\n", path, path_copy, expected);
-    _exit(1);
-  }
 }
 
 char *
@@ -232,28 +213,6 @@ simplify_path (char * path)
   *result_p = '\0';
 }
 
-void
-simplify_path_debug (const char * input, const char * expected)
-{
-  char * input_copy = malloc_copy_string (input);
-  if ( input_copy == NULL )
-  {
-    _exit(1);
-  }
-  simplify_path (input_copy);
-  int ok = (strcmp(input_copy, expected) == 0) ? 1 : 0;
-  if (ok)
-  {
-    printf ("PASS: %s simplifies to %s\n", input, input_copy);
-  }
-  else
-  {
-    printf ("FAIL: %s simplifies to %s, should be %s\n", input, input_copy, expected);
-    _exit(1);
-  }
-  free ((void *)input_copy);
-}
-
 /* Returns actual_to by calculating the relative path from -> to and
    applying that to actual_from. An assumption that actual_from is a
    dir is made, and it may or may not end with a '/' */
@@ -263,30 +222,6 @@ get_relocated_path (char const * from, char const * to, char const * actual_from
   char const * relative_from_to = get_relative_path (from, to);
   char * actual_to = (char *) malloc (strlen(actual_from) + 2 + strlen(relative_from_to));
   return actual_to;
-}
-
-void
-get_relative_path_debug (char const * from, char const * to, char const * expected)
-{
-  char const * result = get_relative_path (from, to);
-  if ( result == NULL )
-  {
-    _exit(1);
-  }
-  else
-  {
-    int ok = (strcmp(result, expected) == 0) ? 1 : 0;
-    if (ok)
-    {
-      printf ("PASS: %s to %s is %s\n", from, to, result);
-    }
-    else
-    {
-      printf ("FAIL: %s to %s is %s, should be %s\n", from, to, result, expected);
-      _exit(1);
-    }
-    free ((void *)result);
-  }
 }
 
 int
