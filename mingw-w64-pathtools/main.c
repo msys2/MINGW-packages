@@ -80,7 +80,7 @@ const char *
 X509_get_default_private_dir(void)
 {
 #if defined(__MINGW32__)
-  static char * stored_path[PATH_MAX];
+  static char stored_path[PATH_MAX];
   static int stored = 0;
   if (stored == 0)
   {
