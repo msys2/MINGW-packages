@@ -3,7 +3,7 @@ import qbs
 CppApplication {
     type: "application" // To suppress bundle generation on Mac
     consoleApplication: true
-    files: "pathtools.c"
+    files: ['main.c', 'pathtools.h', 'pathtools.c']
     
     Group {     // Properties for the produced executable
         fileTagsFilter: product.type

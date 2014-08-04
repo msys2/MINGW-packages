@@ -4,34 +4,7 @@
    Licensed under CC0. No warranty.
  */
 
-#if defined(__APPLE__)
-#include <stdlib.h>
-#else
-#include <malloc.h>
-#endif
-#include <limits.h>
-#include <stdio.h>
-#include <string.h>
-#if defined(__linux__) || defined(__CYGWIN__) || defined(__MSYS__)
-#include <alloca.h>
-#endif
-#include <unistd.h>
-
-/* If you don't define this, then get_executable_path()
-   can only use argv[0] which will often not work well */
-#define IMPLEMENT_SYS_GET_EXECUTABLE_PATH
-
-#if defined(IMPLEMENT_SYS_GET_EXECUTABLE_PATH)
-#if defined(__linux__) || defined(__CYGWIN__) || defined(__MSYS__)
-/* Nothing needed, unistd.h is enough. */
-#elif defined(__APPLE__)
-#include <mach-o/dyld.h>
-#elif defined(_WIN32)
-#define WIN32_MEAN_AND_LEAN
-#include <windows.h>
-#include <psapi.h>
-#endif
-#endif /* defined(IMPLEMENT_SYS_GET_EXECUTABLE_PATH) */
+#include "pathtools.h"
 
 static char *
 malloc_copy_string (char const * original)
@@ -337,7 +310,7 @@ get_executable_path(char const * argv0, char * result, ssize_t max_size)
 #elif defined(_WIN32)
     unsigned long bufsize = (unsigned long)max_size;
     system_result_size = GetModuleFileNameA(NULL, system_result, bufsize);
-    if (system_result_size == 0 || system_result_size == bufsize)
+    if (system_result_size == 0 || system_result_size == (ssize_t)bufsize)
     {
       /* Error, possibly not enough space. */
       system_result_size = -1;
@@ -434,76 +407,4 @@ get_relocated_single_path(char const * unix_path)
   strcpy(new_path, win_part);
   strcat(new_path, unix_part);
   return new_path;
-}
-
-#define X509_PRIVATE_DIR "/mingw64/ssl/private"
-const char *
-X509_get_default_private_dir(void)
-{
-#ifdef __MINGW32__
-  return get_relocated_single_path (X509_PRIVATE_DIR);
-#else
-  return (X509_PRIVATE_DIR);
-#endif
-}
-
-int main(int argc, char *argv[])
-{
-#define BINDIR  "/mingw64/bin"
-#define DATADIR "/mingw64/share"
-
-  char exe_path[PATH_MAX];
-  get_executable_path (argv[0], &exe_path[0], sizeof(exe_path)/sizeof(exe_path[0]));
-  printf ("executable path is %s\n", exe_path);
-
-  char * rel_to_datadir = get_relative_path (BINDIR, DATADIR);
-  if (strrchr (exe_path, '/') != NULL)
-  {
-     strrchr (exe_path, '/')[1] = '\0';
-  }
-  strcat (exe_path, rel_to_datadir);
-  simplify_path (&exe_path[0]);
-  printf("real path of DATADIR is %s\n", exe_path);
-
-  if (argc >= 2)
-  {
-    get_relative_path_debug (argv[argc-2], argv[argc-1], 0);
-  }
-  get_relative_path_debug ("/a/b/c/d",                "/a/b/c",            "..");
-  get_relative_path_debug ("/a/b/c/d/",               "/a/b/c/",           "../");
-  get_relative_path_debug ("/",                       "/",                 "/");
-  get_relative_path_debug ("/a/testone/c/d",          "/a/testtwo/c",      "../../../testtwo/c");
-  get_relative_path_debug ("/a/testone/c/d/",         "/a/testtwo/c/",     "../../../testtwo/c/");
-  get_relative_path_debug ("/home/part2/part3/part4", "/work/proj1/proj2", "../../../../work/proj1/proj2");
-
-  simplify_path_debug ("a/b/..", "a");
-  simplify_path_debug ("a/b/c/../../", "a/");
-  simplify_path_debug ("a/../a/..",    "");
-  simplify_path_debug ("../a/../a/",   "../a/");
-
-  simplify_path_debug ("./././",     "./");
-  simplify_path_debug ("/test/",     "/test/");
-  simplify_path_debug (".",          ".");
-  simplify_path_debug ("..",         "..");
-  simplify_path_debug ("../",        "../");
-  simplify_path_debug ("././.",      ".");
-  simplify_path_debug ("../..",      "../..");
-  simplify_path_debug ("/",          "/");
-  simplify_path_debug ("./test/",    "./test/");
-  simplify_path_debug ("./test",     "./test");
-  simplify_path_debug ("/test",      "/test");
-  simplify_path_debug ("../test",    "../test");
-  simplify_path_debug ("../../test", "../../test");
-  simplify_path_debug ("../test/..", "..");
-  simplify_path_debug (".././../",   "../../");
-
-  sanitise_path_debug ("C:\\windows\\path", "C:/windows/path");
-  sanitise_path_debug ("", "");
-  sanitise_path_debug ("\\\\", "/");
-
-  char const * win_path = X509_get_default_private_dir ();
-  printf ("%s -> %s\n", X509_PRIVATE_DIR, win_path);
-  free ((void *)win_path);
-
-  return 0;
 }
