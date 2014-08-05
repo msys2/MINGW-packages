@@ -434,12 +434,10 @@ msys2_get_relocated_path_list(char const * paths)
 
   char **arr = NULL;
   size_t count = split_path_list(paths, ':', &arr);
-  printf ("found %d tokens.\n", (int)count);
   int result_size = 1 + (count - 1); /* count - 1 is for ; delim. */
   size_t i;
   for (i = 0; i < count; ++i)
   {
-    printf ("string #%d: %s\n", (int)i, arr[i]);
     arr[i] = (char *) strip_n_prefix_folders (arr[i], 1);
     result_size += strlen (arr[i]) + strlen (win_part);
   }

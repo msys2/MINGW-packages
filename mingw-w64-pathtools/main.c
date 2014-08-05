@@ -158,11 +158,11 @@ int main(int argc, char *argv[])
   char const * win_path = X509_get_default_private_dir ();
   printf ("%s -> %s\n", X509_PRIVATE_DIR, win_path);
 
-  char const * trusts = get_msys2_relocated_path_list (TRUST_PATHS);
+  char * trusts = msys2_get_relocated_path_list (TRUST_PATHS);
   printf ("%s -> %s\n", TRUST_PATHS, trusts);
   free ((void*)trusts);
 
-  char const * single = get_msys2_relocated_path_list (SINGLE_PATH_LIST);
+  char * single = msys2_get_relocated_path_list (SINGLE_PATH_LIST);
   printf ("%s -> %s\n", SINGLE_PATH_LIST, single);
   free ((void*)single);
   

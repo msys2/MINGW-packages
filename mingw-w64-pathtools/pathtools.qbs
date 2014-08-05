@@ -10,4 +10,3 @@ CppApplication {
         qbs.install: true
     }
 }
-
