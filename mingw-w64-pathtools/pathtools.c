@@ -343,3 +343,101 @@ get_relocated_single_path(char const * unix_path)
   strcat(new_path, unix_part);
   return new_path;
 }
+
+int split_paths (const char *str, char c, char ***arr)
+{
+    int count = 1;
+    int token_len = 1;
+    int i = 0;
+    char *p;
+    char *t;
+
+    p = str;
+    while (*p != '\0')
+    {
+        if (*p == c)
+            count++;
+        p++;
+    }
+
+    *arr = (char**) malloc(sizeof(char*) * count);
+    if (*arr == NULL)
+        exit(1);
+
+    p = str;
+    while (*p != '\0')
+    {
+        if (*p == c)
+        {
+            (*arr)[i] = (char*) malloc( sizeof(char) * token_len );
+            if ((*arr)[i] == NULL)
+                exit(1);
+
+            token_len = 0;
+            i++;
+        }
+        p++;
+        token_len++;
+    }
+    (*arr)[i] = (char*) malloc( sizeof(char) * token_len );
+    if ((*arr)[i] == NULL)
+        exit(1);
+
+    i = 0;
+    p = str;
+    t = ((*arr)[i]);
+    while (*p != '\0')
+    {
+        if (*p != c && *p != '\0')
+        {
+            *t = *p;
+            t++;
+        }
+        else
+        {
+            *t = '\0';
+            i++;
+            t = ((*arr)[i]);
+        }
+        p++;
+    }
+
+    return count;
+}
+
+const char *
+get_relocated_path_list(char const * paths)
+{
+    char win_part[MAX_PATH];
+    get_executable_path (NULL, &win_part[0], MAX_PATH);
+    strip_n_suffix_folders (&win_part[0], 2); /* 2 because the file name is present. */
+
+    int c = 0;
+    char **arr = NULL;
+    c = split_paths(paths, ':', &arr);
+    printf("found %d tokens.\n", c);
+    int res_len=1+(c-1);
+    int i=0;
+    for (i = 0; i < c; i++)
+    {
+        printf("string #%d: %s\n", i, arr[i]);
+        arr[i] = (char *) strip_n_prefix_folders (arr[i], 1);
+        res_len+=strlen (arr[i]) + strlen (win_part);
+    }
+    printf("Total length: %d\n", res_len);
+    char * new_path = (char *) malloc (res_len);
+    for (i = 0; i < c; i++)
+    {
+        if (i ==0)
+            strcpy(new_path, win_part);
+        else
+            strcat(new_path, win_part);
+        //char * unix_part = (char *) strip_n_prefix_folders (arr[i], 1);
+        strcat(new_path, arr[i]);
+        if (i < c-1)
+            strcat(new_path, ";");
+    }
+    new_path[res_len] = '\0';
+
+    return new_path;
+}

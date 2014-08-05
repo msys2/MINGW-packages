@@ -96,6 +96,8 @@ X509_get_default_private_dir(void)
 #endif
 }
 
+#define TRUST_PATHS "/mingw64/etc/pki/ca-trust/source:/mingw64/share/pki/ca-trust-source"
+
 int main(int argc, char *argv[])
 {
 #define BINDIR  "/mingw64/bin"
@@ -153,5 +155,7 @@ int main(int argc, char *argv[])
   char const * win_path = X509_get_default_private_dir ();
   printf ("%s -> %s\n", X509_PRIVATE_DIR, win_path);
 
+  char const * trusts = get_relocated_path_list(TRUST_PATHS);
+  printf ("%s -> %s\n", TRUST_PATHS, trusts);
   return 0;
 }
