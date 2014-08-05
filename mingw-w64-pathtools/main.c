@@ -4,6 +4,8 @@
    Licensed under CC0. No warranty.
  */
 
+#include <limits.h>
+
 #include "pathtools.h"
 
 void
@@ -11,7 +13,7 @@ sanitise_path_debug(char const * path, char const * expected)
 {
   char * path_copy = (char *) alloca (strlen(path)+1);
   strcpy (path_copy, path);
-  path_copy = sanitise_path (path_copy);
+  sanitise_path (path_copy);
 
   int ok = (strcmp(path_copy, expected) == 0) ? 1 : 0;
   if (ok)
@@ -84,7 +86,7 @@ X509_get_default_private_dir(void)
   static int stored = 0;
   if (stored == 0)
   {
-    char const * relocated = get_relocated_single_path (X509_PRIVATE_DIR);
+    char const * relocated = msys2_get_relocated_single_path (X509_PRIVATE_DIR);
     strncpy (stored_path, relocated, PATH_MAX);
     stored_path[PATH_MAX-1] = '\0';
     free ((void *)relocated);
@@ -97,6 +99,7 @@ X509_get_default_private_dir(void)
 }
 
 #define TRUST_PATHS "/mingw64/etc/pki/ca-trust/source:/mingw64/share/pki/ca-trust-source"
+#define SINGLE_PATH_LIST "/mingw64"
 
 int main(int argc, char *argv[])
 {
@@ -104,7 +107,7 @@ int main(int argc, char *argv[])
 #define DATADIR "/mingw64/share"
 
   char exe_path[PATH_MAX];
-  get_executable_path (argv[0], &exe_path[0], sizeof(exe_path)/sizeof(exe_path[0]));
+  get_executable_path (argv[0], &exe_path[0], sizeof(exe_path) / sizeof(exe_path[0]));
   printf ("executable path is %s\n", exe_path);
 
   char * rel_to_datadir = get_relative_path (BINDIR, DATADIR);
@@ -155,7 +158,13 @@ int main(int argc, char *argv[])
   char const * win_path = X509_get_default_private_dir ();
   printf ("%s -> %s\n", X509_PRIVATE_DIR, win_path);
 
-  char const * trusts = get_relocated_path_list(TRUST_PATHS);
+  char const * trusts = get_msys2_relocated_path_list (TRUST_PATHS);
   printf ("%s -> %s\n", TRUST_PATHS, trusts);
+  free ((void*)trusts);
+
+  char const * single = get_msys2_relocated_path_list (SINGLE_PATH_LIST);
+  printf ("%s -> %s\n", SINGLE_PATH_LIST, single);
+  free ((void*)single);
+  
   return 0;
 }

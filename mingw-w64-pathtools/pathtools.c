@@ -4,10 +4,39 @@
    Licensed under CC0. No warranty.
  */
 
+#if defined(__APPLE__)
+#include <stdlib.h>
+#else
+#include <malloc.h>
+#endif
+#include <limits.h>
+#include <stdio.h>
+#include <string.h>
+#if defined(__linux__) || defined(__CYGWIN__) || defined(__MSYS__)
+#include <alloca.h>
+#endif
+#include <unistd.h>
+
+/* If you don't define this, then get_executable_path()
+   can only use argv[0] which will often not work well */
+#define IMPLEMENT_SYS_GET_EXECUTABLE_PATH
+
+#if defined(IMPLEMENT_SYS_GET_EXECUTABLE_PATH)
+#if defined(__linux__) || defined(__CYGWIN__) || defined(__MSYS__)
+/* Nothing needed, unistd.h is enough. */
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#elif defined(_WIN32)
+#define WIN32_MEAN_AND_LEAN
+#include <windows.h>
+#include <psapi.h>
+#endif
+#endif /* defined(IMPLEMENT_SYS_GET_EXECUTABLE_PATH) */
+
 #include "pathtools.h"
 
 char *
-malloc_copy_string (char const * original)
+malloc_copy_string(char const * original)
 {
   char * result = (char *) malloc (sizeof(char*) * strlen(original)+1);
   if (result != NULL)
@@ -17,14 +46,14 @@ malloc_copy_string (char const * original)
   return result;
 }
 
-char *
+void
 sanitise_path(char * path)
 {
   size_t path_size = strlen(path);
 
   /* Replace any '\' with '/' */
   char * path_p = path;
-  while ((path_p = strchr(path_p, '\\')) != NULL)
+  while ((path_p = strchr (path_p, '\\')) != NULL)
   {
     *path_p = '/';
   }
@@ -34,11 +63,11 @@ sanitise_path(char * path)
   {
     memmove(path_p, path_p + 1, path_size--);
   }
-  return path;
+  return;
 }
 
 char *
-get_relative_path (char const * from, char const * to)
+get_relative_path(char const * from, char const * to)
 {
   size_t from_size = strlen (from);
   size_t to_size = strlen (to);
@@ -56,8 +85,8 @@ get_relative_path (char const * from, char const * to)
       || result == NULL
       || from == NULL
       || from[0] != '/'
-      || strchr(to, '.') != NULL
-      || strchr(from, '.') != NULL)
+      || strchr (to, '.') != NULL
+      || strchr (from, '.') != NULL)
   {
     return malloc_copy_string (to);
   }
@@ -95,7 +124,7 @@ get_relative_path (char const * from, char const * to)
   to += match_size;
   size_t ndotdots = 0;
   char const* from_last = from + strlen(from) - 1;
-  while ((from = strchr(from, '/')) && from != from_last)
+  while ((from = strchr (from, '/')) && from != from_last)
   {
     ++ndotdots;
     ++from;
@@ -126,7 +155,7 @@ get_relative_path (char const * from, char const * to)
 }
 
 void
-simplify_path (char * path)
+simplify_path(char * path)
 {
   ssize_t n_toks = 1; /* in-case we need an empty initial token. */
   ssize_t i, j;
@@ -134,13 +163,14 @@ simplify_path (char * path)
   size_t in_size = strlen (path);
   int it_ended_with_a_slash = (path[in_size - 1] == '/') ? 1 : 0;
   char * result = path;
-  char * result_p = sanitise_path(result);
+  sanitise_path(result);
+  char * result_p = result;
 
   do
   {
     ++n_toks;
     ++result_p;
-  } while ((result_p = strchr(result_p, '/')) != NULL);
+  } while ((result_p = strchr (result_p, '/')) != NULL);
 
   result_p = result;
   char const ** toks = (char const **) alloca (sizeof(char const*) * n_toks);
@@ -158,7 +188,7 @@ simplify_path (char * path)
       *result_p++ = '\0';
     }
     toks[n_toks++] = result_p;
-  } while ((result_p = strchr(result_p, '/')) != NULL);
+  } while ((result_p = strchr (result_p, '/')) != NULL);
 
   /* Remove all non-leading '.' and any '..' we can match
      with an earlier forward path (i.e. neither '.' nor '..') */
@@ -331,8 +361,59 @@ strip_n_suffix_folders(char * path, size_t n)
   return;
 }
 
-const char *
-get_relocated_single_path(char const * unix_path)
+size_t
+split_path_list(char const * path_list, char split_char, char *** arr)
+{
+  size_t path_count;
+  size_t path_list_size;
+  char const * path_list_p;
+
+  path_list_p = path_list;
+  if (path_list == NULL || path_list[0] == '\0')
+  {
+    return 0;
+  }
+  path_list_size = strlen (path_list);
+
+  path_count = 0;
+  do
+  {
+    ++path_count;
+    ++path_list_p;
+  }
+  while ((path_list_p = strchr (path_list_p, split_char)) != NULL);
+
+  /* allocate everything in one go. */
+  char * all_memory = (char *) malloc (sizeof(char *) * path_count + strlen(path_list) + 1);
+  if (all_memory == NULL)
+    return 0;
+  *arr = (char **)all_memory;
+  all_memory += sizeof(char *) * path_count;
+
+  path_count = 0;
+  path_list_p = path_list;
+  char const * next_path_list_p = 0;
+  do
+  {
+    next_path_list_p = strchr (path_list_p, split_char);
+    if (next_path_list_p != NULL)
+    {
+      ++next_path_list_p;
+    }
+    size_t this_size = (next_path_list_p != NULL)
+                       ? next_path_list_p - path_list_p - 1
+                       : &path_list[path_list_size] - path_list_p;
+    memcpy (all_memory, path_list_p, this_size);
+    all_memory[this_size] = '\0';
+    (*arr)[path_count++] = all_memory;
+    all_memory += this_size + 1;
+  } while ((path_list_p = next_path_list_p) != NULL);
+
+  return path_count;
+}
+
+char const *
+msys2_get_relocated_single_path(char const * unix_path)
 {
   char * unix_part = (char *) strip_n_prefix_folders (unix_path, 1);
   char win_part[MAX_PATH];
@@ -344,100 +425,39 @@ get_relocated_single_path(char const * unix_path)
   return new_path;
 }
 
-int split_paths (const char *str, char c, char ***arr)
+char *
+msys2_get_relocated_path_list(char const * paths)
 {
-    int count = 1;
-    int token_len = 1;
-    int i = 0;
-    char *p;
-    char *t;
+  char win_part[MAX_PATH];
+  get_executable_path (NULL, &win_part[0], MAX_PATH);
+  strip_n_suffix_folders (&win_part[0], 2); /* 2 because the file name is present. */
 
-    p = str;
-    while (*p != '\0')
+  char **arr = NULL;
+  size_t count = split_path_list(paths, ':', &arr);
+  printf ("found %d tokens.\n", (int)count);
+  int result_size = 1 + (count - 1); /* count - 1 is for ; delim. */
+  size_t i;
+  for (i = 0; i < count; ++i)
+  {
+    printf ("string #%d: %s\n", (int)i, arr[i]);
+    arr[i] = (char *) strip_n_prefix_folders (arr[i], 1);
+    result_size += strlen (arr[i]) + strlen (win_part);
+  }
+  char * result = (char *) malloc (result_size);
+  if (result == NULL)
+  {
+    return NULL;
+  }
+  result[0] = '\0';
+  for (i = 0; i < count; ++i)
+  {
+    strcat (result, win_part);
+    strcat (result, arr[i]);
+    if (i != count-1)
     {
-        if (*p == c)
-            count++;
-        p++;
+      strcat (result, ";");
     }
-
-    *arr = (char**) malloc(sizeof(char*) * count);
-    if (*arr == NULL)
-        exit(1);
-
-    p = str;
-    while (*p != '\0')
-    {
-        if (*p == c)
-        {
-            (*arr)[i] = (char*) malloc( sizeof(char) * token_len );
-            if ((*arr)[i] == NULL)
-                exit(1);
-
-            token_len = 0;
-            i++;
-        }
-        p++;
-        token_len++;
-    }
-    (*arr)[i] = (char*) malloc( sizeof(char) * token_len );
-    if ((*arr)[i] == NULL)
-        exit(1);
-
-    i = 0;
-    p = str;
-    t = ((*arr)[i]);
-    while (*p != '\0')
-    {
-        if (*p != c && *p != '\0')
-        {
-            *t = *p;
-            t++;
-        }
-        else
-        {
-            *t = '\0';
-            i++;
-            t = ((*arr)[i]);
-        }
-        p++;
-    }
-
-    return count;
-}
-
-const char *
-get_relocated_path_list(char const * paths)
-{
-    char win_part[MAX_PATH];
-    get_executable_path (NULL, &win_part[0], MAX_PATH);
-    strip_n_suffix_folders (&win_part[0], 2); /* 2 because the file name is present. */
-
-    int c = 0;
-    char **arr = NULL;
-    c = split_paths(paths, ':', &arr);
-    printf("found %d tokens.\n", c);
-    int res_len=1+(c-1);
-    int i=0;
-    for (i = 0; i < c; i++)
-    {
-        printf("string #%d: %s\n", i, arr[i]);
-        arr[i] = (char *) strip_n_prefix_folders (arr[i], 1);
-        res_len+=strlen (arr[i]) + strlen (win_part);
-    }
-    printf("Total length: %d\n", res_len);
-    char * new_path = (char *) malloc (res_len);
-    for (i = 0; i < c; i++)
-    {
-        if (i ==0)
-            strcpy(new_path, win_part);
-        else
-            strcat(new_path, win_part);
-        //char * unix_part = (char *) strip_n_prefix_folders (arr[i], 1);
-        strcat(new_path, arr[i]);
-        if (i < c-1)
-            strcat(new_path, ";");
-    }
-    new_path[res_len] = '\0';
-
-    return new_path;
+  }
+  free ((void*)arr);
+  return result;
 }

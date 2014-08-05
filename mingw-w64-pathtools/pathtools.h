@@ -7,53 +7,43 @@
 #ifndef PATHTOOLS_H
 #define PATHTOOLS_H
 
+#include <unistd.h>
 #if defined(__APPLE__)
 #include <stdlib.h>
 #else
 #include <malloc.h>
 #endif
-#include <limits.h>
 #include <stdio.h>
-#include <string.h>
-#if defined(__linux__) || defined(__CYGWIN__) || defined(__MSYS__)
-#include <alloca.h>
-#endif
-#include <unistd.h>
 
-/* If you don't define this, then get_executable_path()
-   can only use argv[0] which will often not work well */
-#define IMPLEMENT_SYS_GET_EXECUTABLE_PATH
+char * malloc_copy_string(char const * original);
 
-#if defined(IMPLEMENT_SYS_GET_EXECUTABLE_PATH)
-#if defined(__linux__) || defined(__CYGWIN__) || defined(__MSYS__)
-/* Nothing needed, unistd.h is enough. */
-#elif defined(__APPLE__)
-#include <mach-o/dyld.h>
-#elif defined(_WIN32)
-#define WIN32_MEAN_AND_LEAN
-#include <windows.h>
-#include <psapi.h>
-#endif
-#endif /* defined(IMPLEMENT_SYS_GET_EXECUTABLE_PATH) */
-
-/* These functions are used to support relocation.*/
-char * malloc_copy_string (char const * original);
-char * sanitise_path(char * path);
-
-/* Returns the malloc'ed string. Caller should free using free(void*) */
-//static char * malloc_copy_string (char const * original);
+/* In-place replaces any '\' with '/' and any '//' with '/' */
+void sanitise_path(char * path);
 
 /* Uses a host OS specific function to determine the path of the executable,
    if IMPLEMENT_SYS_GET_EXECUTABLE_PATH is defined, otherwise uses argv0. */
 int get_executable_path(char const * argv0, char * result, ssize_t max_size);
 
-/* Where possible, removes occourances of '.' and 'path/..' */
-void simplify_path (char * path);
+/* Where possible, in-place removes occourances of '.' and 'path/..' */
+void simplify_path(char * path);
 
-/* mallocs and returns the path to get from from to to. Caller should free using free(void*) */
-char * get_relative_path (char const * from, char const * to);
+/* Allocates (via malloc) and returns the path to get from from to to. */
+char * get_relative_path(char const * from, char const * to);
 
-/* returns relocated path from single unix path. Caller should free using free(void*) */
-const char * get_relocated_single_path(char const * unix_path);
+/* Allocates (via malloc) and returns a relocated path from a single Unix path.
+   This function makes large assumptions regarding PREFIX and is therefore very
+   much an MSYS2-only function. It operates by removing the first folder of the
+   input and final folder of the program executable then appending the input to
+   that.
+*/
+char const * msys2_get_relocated_single_path(char const * unix_path);
 
-#endif 
+/* Allocates (via malloc) and for each ':' delimited Unix sub-path,  returns the
+   result of applying the procedure detailed for msys2_get_relocated_single_path
+   on that Unix sub-path with the results joined up again with a ';' delimiter.
+   It implements the same logic in msys2_get_relocated_single_path to reduce the
+   the number of mallocs.
+*/
+char * msys2_get_relocated_path_list(char const * paths);
+
+#endif /* PATHTOOLS_H */
