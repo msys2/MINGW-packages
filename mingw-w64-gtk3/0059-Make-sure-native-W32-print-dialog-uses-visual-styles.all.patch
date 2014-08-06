@@ -1,0 +1,246 @@
+From f70215109d436f87ae21bc85267332836d17d642 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=D0=A0=D1=83=D1=81=D0=BB=D0=B0=D0=BD=20=D0=98=D0=B6=D0=B1?=
+ =?UTF-8?q?=D1=83=D0=BB=D0=B0=D1=82=D0=BE=D0=B2?= <lrn1986@gmail.com>
+Date: Tue, 29 Jul 2014 08:18:32 +0000
+Subject: [PATCH] Make sure native W32 print dialog uses visual styles
+
+For that to happen the libgtk3 is embedded with a manifest that requests
+common controls library 6.x, and GTK lazily calls InitCommonControlsEx()
+to initialize those. Then this manifest is used to temporarily override
+the process activation contest when loading comdlg32 (which contains the
+code for the print dialog), ensuring that it too depends on common
+controls 6.x, even if the application that uses GTK does not.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=733773
+---
+ configure.ac                  |  1 +
+ gtk/Makefile.am               |  4 +-
+ gtk/gtk-win32.rc.in           |  1 +
+ gtk/gtkprintoperation-win32.c | 22 +++++++++++
+ gtk/gtkwin32.c                | 91 +++++++++++++++++++++++++++++++++++++++++++
+ gtk/libgtk3.manifest.in       | 21 ++++++++++
+ 6 files changed, 139 insertions(+), 1 deletion(-)
+ create mode 100644 gtk/libgtk3.manifest.in
+
+diff --git a/configure.ac b/configure.ac
+index 058fe47..6599c2e 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1889,6 +1889,7 @@ gtk/Makefile
+ gtk/makefile.msc
+ gtk/gtkversion.h
+ gtk/gtk-win32.rc
++gtk/libgtk3.manifest
+ gtk/inspector/Makefile
+ gtk/native/Makefile
+ util/Makefile
+diff --git a/gtk/Makefile.am b/gtk/Makefile.am
+index 8130c53..74c0d90 100644
+--- a/gtk/Makefile.am
++++ b/gtk/Makefile.am
+@@ -85,7 +85,7 @@ gtk_win32_symbols = -export-symbols $(srcdir)/gtk.def
+ gtk_win32_res = gtk-win32-res.o
+ gtk_win32_res_ldflag = -Wl,gtk-win32-res.o
+ 
+-gtk-win32-res.o : gtk-win32.rc
++gtk-win32-res.o : gtk-win32.rc libgtk3.manifest
+ 	$(WINDRES) gtk-win32.rc $@
+ 
+ gtk.def: libgtk-3.la
+@@ -1708,6 +1708,8 @@ EXTRA_DIST +=                   \
+ 	$(adwaita_sources)	\
+ 	$(win32_theme_sources)	\
+ 	$(gsettings_SCHEMAS)	\
++	libgtk3.manifest	\
++	libgtk3.manifest.in	\
+ 	gtk-win32.rc		\
+ 	gtk-win32.rc.in		\
+ 	gtkwin32embed.h		\
+diff --git a/gtk/gtk-win32.rc.in b/gtk/gtk-win32.rc.in
+index 4a42d5a..96befcf 100644
+--- a/gtk/gtk-win32.rc.in
++++ b/gtk/gtk-win32.rc.in
+@@ -28,3 +28,4 @@ VS_VERSION_INFO VERSIONINFO
+       VALUE "Translation", 0x409, 1200
+     END
+   END
++2 24 libgtk3.manifest
+diff --git a/gtk/gtkprintoperation-win32.c b/gtk/gtkprintoperation-win32.c
+index e59eb9f..1b79ca6 100644
+--- a/gtk/gtkprintoperation-win32.c
++++ b/gtk/gtkprintoperation-win32.c
+@@ -41,6 +41,9 @@
+ #include "gtk.h"
+ #include "gtkwin32embedwidget.h"
+ 
++/* from gtkwin32.c */
++static void _gtk_load_dll_with_gtk3_manifest (const char *dllname);
++
+ #define MAX_PAGE_RANGES 20
+ #define STATUS_POLLING_TIME 2000
+ 
+@@ -1657,6 +1660,25 @@ gtk_print_operation_run_with_dialog (GtkPrintOperation *op,
+   GtkPrintOperationPrivate *priv;
+   IPrintDialogCallback *callback;
+   HPROPSHEETPAGE prop_page;
++  static volatile gsize common_controls_initialized = 0;
++
++  if (g_once_init_enter (&common_controls_initialized))
++    {
++      BOOL initialized;
++      INITCOMMONCONTROLSEX icc;
++
++      memset (&icc, 0, sizeof (icc));
++      icc.dwSize = sizeof (icc);
++      icc.dwICC = ICC_WIN95_CLASSES;
++
++      initialized = InitCommonControlsEx (&icc);
++      if (!initialized)
++        g_warning ("Failed to InitCommonControlsEx: %lu\n", GetLastError ());
++
++      _gtk_load_dll_with_libgtk3_manifest ("comdlg32.dll");
++
++      g_once_init_leave (&common_controls_initialized, initialized ? 1 : 0);
++    }
+   
+   *do_print = FALSE;
+ 
+diff --git a/gtk/gtkwin32.c b/gtk/gtkwin32.c
+index e8bd7ef..039c927 100644
+--- a/gtk/gtkwin32.c
++++ b/gtk/gtkwin32.c
+@@ -30,6 +30,7 @@
+ 
+ #define STRICT
+ #include <windows.h>
++#include <commctrl.h>
+ #undef STRICT
+ 
+ static HMODULE gtk_dll;
+@@ -49,6 +50,96 @@ DllMain (HINSTANCE hinstDLL,
+   return TRUE;
+ }
+ 
++static BOOL CALLBACK
++find_first_manifest (HMODULE  module_handle,
++                     LPCSTR   resource_type,
++                     LPSTR    resource_name,
++                     LONG_PTR user_data)
++{
++  LPSTR *result_name = (LPSTR *) user_data;
++
++  if (resource_type == RT_MANIFEST)
++    {
++      if (IS_INTRESOURCE (resource_name))
++        *result_name = resource_name;
++      else
++        *result_name = g_strdup (resource_name);
++      return FALSE;
++    }
++  return TRUE;
++}
++
++
++/**
++ * Grabs the first manifest it finds in libgtk3 (which is expected to be the
++ * common-controls-6.0.0.0 manifest we embedded to enable visual styles),
++ * uses it to create a process-default activation context, activates that
++ * context, loads up the library passed in @dllname, then deactivates and
++ * releases the context.
++ *
++ * In practice this is used to force system DLLs (like comdlg32) to be
++ * loaded as if the application had the same manifest as libgtk3
++ * (otherwise libgtk3 manifest only affests libgtk3 itself).
++ * This way application does not need to have a manifest or to link
++ * against comctl32.
++ *
++ * Note that loaded library handle leaks, so only use this function in
++ * g_once_init_enter (leaking once is OK, Windows will clean up after us).
++ */
++void
++_gtk_load_dll_with_libgtk3_manifest (const gchar *dll_name)
++{
++  HANDLE activation_ctx_handle;
++  ACTCTXA activation_ctx_descriptor;
++  ULONG_PTR activation_cookie;
++  LPSTR resource_name;
++
++  memset (&activation_ctx_descriptor, 0, sizeof (activation_ctx_descriptor));
++  activation_ctx_descriptor.cbSize = sizeof (activation_ctx_descriptor);
++  activation_ctx_descriptor.dwFlags =
++    ACTCTX_FLAG_RESOURCE_NAME_VALID |
++    ACTCTX_FLAG_HMODULE_VALID |
++    ACTCTX_FLAG_SET_PROCESS_DEFAULT |
++    0;
++  activation_ctx_descriptor.hModule = gtk_dll;
++
++  resource_name = NULL;
++
++  EnumResourceNames (gtk_dll, RT_MANIFEST,
++      find_first_manifest, (LONG_PTR) &resource_name);
++
++  /* In practice, resulting DLL will have manifest resource under index 2.
++   * Fall back to that value if we can't find resource index
++   * programmatically.
++   */
++  if (resource_name != NULL)
++    activation_ctx_descriptor.lpResourceName = resource_name;
++  else
++    activation_ctx_descriptor.lpResourceName = MAKEINTRESOURCEA (2);
++
++  activation_ctx_handle = CreateActCtx (&activation_ctx_descriptor);
++
++  if (activation_ctx_handle == INVALID_HANDLE_VALUE)
++    g_warning ("Failed to CreateActCtx: %lu\n", GetLastError ());
++  else
++    {
++      activation_cookie = 0;
++
++      if (ActivateActCtx (activation_ctx_handle, &activation_cookie) == FALSE)
++        g_warning ("Failed to ActivateActCtx: %lu\n", GetLastError ());
++  
++      LoadLibraryA (dll_name);
++ 
++      if (DeactivateActCtx (0, activation_cookie) == FALSE)
++        g_warning ("Failed to DeactivateActCtx: %lu\n", GetLastError ());
++  
++      ReleaseActCtx (activation_ctx_handle);
++    }
++  
++  if (!IS_INTRESOURCE (resource_name))
++    g_free (resource_name);
++}
++
+ const gchar *
+ _gtk_get_libdir (void)
+ {
+diff --git a/gtk/libgtk3.manifest.in b/gtk/libgtk3.manifest.in
+new file mode 100644
+index 0000000..6e1677e
+--- /dev/null
++++ b/gtk/libgtk3.manifest.in
+@@ -0,0 +1,21 @@
++<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
++<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
++  <assemblyIdentity
++      version="1.0.0.0"
++      processorArchitecture="@EXE_MANIFEST_ARCHITECTURE@"
++      name="libgtk3"
++      type="win32"
++  />
++  <dependency>
++    <dependentAssembly>
++      <assemblyIdentity
++          type="win32"
++          name="Microsoft.Windows.Common-Controls"
++          version="6.0.0.0"
++          processorArchitecture="@EXE_MANIFEST_ARCHITECTURE@"
++          publicKeyToken="6595b64144ccf1df"
++          language="*"
++      />
++    </dependentAssembly>
++  </dependency>
++</assembly>
+-- 
+1.8.5.3
+
