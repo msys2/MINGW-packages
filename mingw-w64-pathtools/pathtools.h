@@ -32,6 +32,6 @@ char * get_relative_path(char const * from, char const * to);
 
 size_t split_path_list(char const * path_list, char split_char, char *** arr);
 
-char * get_relocated_path_list(char const * from, char const * topathlist);
+char * get_relocated_path_list(char const * from_bindir, char const * topathlist);
 
 #endif /* PATHTOOLS_H */

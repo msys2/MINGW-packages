@@ -370,7 +370,7 @@ split_path_list(char const * path_list, char split_char, char *** arr)
 }
 
 char *
-get_relocated_path_list(char const * from, char const * topathlist)
+get_relocated_path_list(char const * from_bindir, char const * topathlist)
 {
   char exe_path[MAX_PATH];
   get_executable_path (NULL, &exe_path[0], sizeof(exe_path) / sizeof(exe_path[0]));
@@ -391,7 +391,7 @@ get_relocated_path_list(char const * from, char const * topathlist)
   size_t i;
   for (i = 0; i < count; ++i)
   {
-    char * rel_to_datadir = get_relative_path (from, arr[i]);
+    char * rel_to_datadir = get_relative_path (from_bindir, arr[i]);
     char *currpath;
     currpath = (char *) malloc (strlen(exe_path) + strlen(rel_to_datadir) + 2);
     strcpy(currpath, exe_path);
@@ -411,7 +411,7 @@ get_relocated_path_list(char const * from, char const * topathlist)
     strcat (result, arr[i]);
     if (i != count-1)
     {
-#ifdef (_WIN32)
+#if defined(_WIN32)
       strcat (result, ";");
 #else
       strcat (result, ":");
