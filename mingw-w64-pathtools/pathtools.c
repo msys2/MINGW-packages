@@ -459,3 +459,46 @@ msys2_get_relocated_path_list(char const * paths)
   free ((void*)arr);
   return result;
 }
+
+char *
+get_relocated_path_list(char const * from, char const * topathlist)
+{
+  char exe_path[MAX_PATH];
+  get_executable_path (NULL, &exe_path[0], sizeof(exe_path) / sizeof(exe_path[0]));
+  if (strrchr (exe_path, '/') != NULL)
+  {
+     strrchr (exe_path, '/')[1] = '\0';
+  }
+
+  char **arr = NULL;
+  size_t count = split_path_list(topathlist, ':', &arr);
+  int result_size = 1 + (count - 1); /* count - 1 is for ; delim. */
+  size_t i;
+  for (i = 0; i < count; ++i)
+  {
+    char * rel_to_datadir = get_relative_path (from, arr[i]);
+    char *currpath;
+    currpath = (char *) malloc (strlen(exe_path) + strlen(rel_to_datadir) + 2);
+    strcpy(currpath, exe_path);
+    strcat(currpath, rel_to_datadir);
+    simplify_path (currpath);
+    arr[i] = currpath;
+    result_size += strlen (arr[i]);
+  }
+  char * result = (char *) malloc (result_size);
+  if (result == NULL)
+  {
+    return NULL;
+  }
+  result[0] = '\0';
+  for (i = 0; i < count; ++i)
+  {
+    strcat (result, arr[i]);
+    if (i != count-1)
+    {
+      strcat (result, ";");
+    }
+  }
+  free ((void*)arr);
+  return result;
+}

@@ -30,6 +30,8 @@ void simplify_path(char * path);
 /* Allocates (via malloc) and returns the path to get from from to to. */
 char * get_relative_path(char const * from, char const * to);
 
+char * get_relocated_path_list(char const * from, char const * topathlist);
+
 /* Allocates (via malloc) and returns a relocated path from a single Unix path.
    This function makes large assumptions regarding PREFIX and is therefore very
    much an MSYS2-only function. It operates by removing the first folder of the

@@ -166,5 +166,8 @@ int main(int argc, char *argv[])
   printf ("%s -> %s\n", SINGLE_PATH_LIST, single);
   free ((void*)single);
   
+  char *multi = get_relocated_path_list(BINDIR, TRUST_PATHS);
+  printf ("%s -> %s\n", TRUST_PATHS, multi);
+  free ((void*)multi);
   return 0;
 }
