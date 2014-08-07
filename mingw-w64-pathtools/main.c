@@ -7,6 +7,7 @@
 #include <limits.h>
 
 #include "pathtools.h"
+#include "msys2_relocate.h"
 
 void
 sanitise_path_debug(char const * path, char const * expected)
@@ -167,7 +168,8 @@ int main(int argc, char *argv[])
   free ((void*)single);
   
   char *multi = get_relocated_path_list(BINDIR, TRUST_PATHS);
-  printf ("%s -> %s\n", TRUST_PATHS, multi);
+  printf ("Source pathlist: %s \n", TRUST_PATHS);
+  printf ("Real pathlist: %s\n", multi);
   free ((void*)multi);
   return 0;
 }
