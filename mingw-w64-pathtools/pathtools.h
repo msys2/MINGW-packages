@@ -40,6 +40,6 @@ strip_n_prefix_folders(char const * path, size_t n);
 void
 strip_n_suffix_folders(char * path, size_t n);
 
-char * get_relocated_path_list(char const * from_bindir, char const * topathlist);
+char * get_relocated_path_list(char const * from, char const * to_path_list);
 
 #endif /* PATHTOOLS_H */
