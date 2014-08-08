@@ -1,0 +1,132 @@
+# Maintainer: Alexey Pavlov <alexpux@gmail.com>
+
+_realname=ca-certificates
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=20140325
+pkgrel=1
+pkgdesc='Common CA certificates'
+arch=('any')
+url='http://packages.qa.debian.org/c/ca-certificates.html'
+license=('MPL' 'GPL')
+install="ca-certificates-${CARCH}.install"
+source=("http://ftp.debian.org/debian/pool/main/c/${_realname}/${_realname}_${pkgver}.tar.xz"
+        'certdata2pem-redhat.patch'
+        'trust-fixes'
+        'update-ca-trust'
+        'update-ca-trust.8')
+depends=("${MINGW_PACKAGE_PREFIX}-p11-kit")
+makedepends=("${MINGW_PACKAGE_PREFIX}-openssl"
+             "${MINGW_PACKAGE_PREFIX}-p11-kit"
+             "${MINGW_PACKAGE_PREFIX}-python2"
+             'asciidoc' 'python2' 'libxslt' 'sed' 'grep')
+md5sums=('0436aba482091da310bd762e1deca8b4'
+         '2c8500579308a100425f4ddb0d61a9ea'
+         'ecfa72ad51c9a1c4488a3474b8def35b'
+         'b9e6692146cda711e3b7d2974502e446'
+         'b00295801f7b39694ad16869e846c227')
+
+prepare() {
+  cd ${srcdir}/${_realname}
+  cp ${srcdir}/trust-fixes mozilla/
+  cp ${srcdir}/update-ca-trust sbin/
+  cp ${srcdir}/update-ca-trust.8 sbin/
+  patch -p1 -i ${srcdir}/certdata2pem-redhat.patch
+  sed "s|/usr/bin/python|${MINGW_PREFIX}/bin/python2|g" -i mozilla/certdata2pem.py
+}
+
+build() {
+  cd ${srcdir}/${_realname}/mozilla
+  ${MINGW_PREFIX}/bin/python2 certdata2pem.py
+  
+  (
+    cat <<EOF
+# This is a bundle of X.509 certificates of public Certificate
+# Authorities.  It was generated from the Mozilla root CA list.
+# These certificates are in the OpenSSL "TRUSTED CERTIFICATE"
+# format and have trust bits set accordingly.
+#
+# Source: mozilla/security/nss/lib/ckfw/builtins/certdata.txt
+#
+# Generated from:
+EOF
+    grep -w NSS_BUILTINS_LIBRARY_VERSION nssckbi.h | awk '{print "# " $2 " " $3}';
+    echo '#';
+  ) > ${srcdir}/${_realname}/ca-bundle.trust.crt
+
+  > info.trust
+  > info.notrust
+
+  local f=
+  for f in *.crt
+  do
+    echo "processing $f"
+    tbits=`sed -n '/^# openssl-trust/{s/^.*=//;p;}' $f`
+    distbits=`sed -n '/^# openssl-distrust/{s/^.*=//;p;}' $f`
+    alias=`sed -n '/^# alias=/{s/^.*=//;p;q;}' $f | sed "s/'//g" | sed 's/"//g'`
+    targs=""
+
+    if [ -n "$tbits" ]
+    then
+      for t in $tbits
+      do
+        targs="${targs} -addtrust $t"
+      done
+    fi
+    if [ -n "$distbits" ]
+    then
+      for t in $distbits
+      do
+        targs="${targs} -addreject $t"
+      done
+    fi
+    if [ -n "$targs" ]
+    then
+      echo "trust flags $targs for $f" >> info.trust
+      ${MINGW_PREFIX}/bin/openssl x509 -text -in "$f" -trustout $targs -setalias "$alias" >> ${srcdir}/${_realname}/ca-bundle.trust.crt
+    else
+      echo "no trust flags for $f" >> tee -a info.notrust
+      ${MINGW_PREFIX}/bin/openssl x509 -text -in "$f" -setalias "$alias" >> ${srcdir}/${_realname}/ca-bundle.neutral-trust.crt
+    fi
+  done
+  for p in *.p11-kit
+  do
+    cat $p >> ${srcdir}/${_realname}/ca-bundle.supplement.p11-kit
+  done
+  cat trust-fixes >> ${srcdir}/${_realname}/ca-bundle.supplement.p11-kit
+}
+
+package() {
+  cd ${srcdir}/${_realname}
+  
+  mkdir -p ${pkgdir}${MINGW_PREFIX}/{bin,lib,share}
+  mkdir -p ${pkgdir}${MINGW_PREFIX}/etc
+  mkdir -p ${pkgdir}${MINGW_PREFIX}/share/man/man8
+  
+  sed -e "s|@PREFIX@|${MINGW_PREFIX}|g" -i sbin/update-ca-trust
+  cp -f sbin/update-ca-trust ${pkgdir}${MINGW_PREFIX}/bin/
+  cp -f sbin/update-ca-trust.8 ${pkgdir}${MINGW_PREFIX}/share/man/man8/
+
+  # for p11-kit
+  mkdir -p ${pkgdir}${MINGW_PREFIX}/lib/p11-kit
+  cp -f sbin/update-ca-trust ${pkgdir}${MINGW_PREFIX}/lib/p11-kit/p11-kit-extract-trust
+
+  mkdir -p ${pkgdir}${MINGW_PREFIX}/share/pki/ca-trust-source
+  for file in ca-bundle.{trust.crt,neutral-trust.crt,supplement.p11-kit}
+  do
+    cp -f $file ${pkgdir}${MINGW_PREFIX}/share/pki/ca-trust-source
+  done
+
+  # touch all files overwritten by update-ca-trust for easy cleanup
+  mkdir -p ${pkgdir}${MINGW_PREFIX}/etc/pki/ca-trust/{extracted,source}
+  mkdir -p ${pkgdir}${MINGW_PREFIX}/etc/pki/ca-trust/source/{anchors,blacklist}
+  mkdir -p ${pkgdir}${MINGW_PREFIX}/etc/pki/ca-trust/extracted/{openssl,pem,java}
+  touch ${pkgdir}${MINGW_PREFIX}/etc/pki/ca-trust/extracted/openssl/ca-bundle.trust.crt
+  touch ${pkgdir}${MINGW_PREFIX}/etc/pki/ca-trust/extracted/pem/{tls,email,objsign}-ca-bundle.pem
+  touch ${pkgdir}${MINGW_PREFIX}/etc/pki/ca-trust/extracted/java/cacerts
+
+  # for OpenSSL and static ca-certificates consumers
+  mkdir -p ${pkgdir}${MINGW_PREFIX}/ssl/certs
+  cp -f ${pkgdir}${MINGW_PREFIX}/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem ${pkgdir}${MINGW_PREFIX}/ssl/certs/ca-bundle.crt
+  cp -f ${pkgdir}${MINGW_PREFIX}/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem ${pkgdir}${MINGW_PREFIX}/ssl/cert.pem
+  cp -f ${pkgdir}${MINGW_PREFIX}/etc/pki/ca-trust/extracted/openssl/ca-bundle.trust.crt ${pkgdir}${MINGW_PREFIX}/ssl/certs/ca-bundle.trust.crt
+}
