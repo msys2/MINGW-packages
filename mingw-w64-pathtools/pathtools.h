@@ -32,6 +32,14 @@ char * get_relative_path(char const * from, char const * to);
 
 size_t split_path_list(char const * path_list, char split_char, char *** arr);
 
+/* Advances path along by the amount that removes n prefix folders. */
+char const *
+strip_n_prefix_folders(char const * path, size_t n);
+
+/* NULL terminates path to remove n suffix folders. */
+void
+strip_n_suffix_folders(char * path, size_t n);
+
 char * get_relocated_path_list(char const * from_bindir, char const * topathlist);
 
 #endif /* PATHTOOLS_H */

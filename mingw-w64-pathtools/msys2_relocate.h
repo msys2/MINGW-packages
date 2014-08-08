@@ -7,14 +7,6 @@
 #ifndef MSYS2_RELOCATE_H
 #define MSYS2_RELOCATE_H
 
-#include <unistd.h>
-#if defined(__APPLE__)
-#include <stdlib.h>
-#else
-#include <malloc.h>
-#endif
-#include <stdio.h>
-
 /* Allocates (via malloc) and returns a relocated path from a single Unix path.
    This function makes large assumptions regarding PREFIX and is therefore very
    much an MSYS2-only function. It operates by removing the first folder of the
