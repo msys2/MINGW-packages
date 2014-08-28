@@ -108,7 +108,7 @@ int main(int argc, char *argv[])
 #define DATADIR "/mingw64/share"
 
   char exe_path[PATH_MAX];
-  get_executable_path (argv[0], &exe_path[0], sizeof(exe_path) / sizeof(exe_path[0]));
+  get_executable_path (argv[0], &exe_path[0], sizeof (exe_path) / sizeof (exe_path[0]));
   printf ("executable path is %s\n", exe_path);
 
   char * rel_to_datadir = get_relative_path (BINDIR, DATADIR);
@@ -124,12 +124,14 @@ int main(int argc, char *argv[])
   {
     get_relative_path_debug (argv[argc-2], argv[argc-1], 0);
   }
-  get_relative_path_debug ("/a/b/c/d",                "/a/b/c",            "..");
-  get_relative_path_debug ("/a/b/c/d/",               "/a/b/c/",           "../");
-  get_relative_path_debug ("/",                       "/",                 "/");
-  get_relative_path_debug ("/a/testone/c/d",          "/a/testtwo/c",      "../../../testtwo/c");
-  get_relative_path_debug ("/a/testone/c/d/",         "/a/testtwo/c/",     "../../../testtwo/c/");
-  get_relative_path_debug ("/home/part2/part3/part4", "/work/proj1/proj2", "../../../../work/proj1/proj2");
+  get_relative_path_debug (NULL,                      NULL,                              "./");
+  get_relative_path_debug ("/mingw64/bin",            "/mingw64/etc/pkcs11/pkcs11.conf", "../etc/pkcs11/pkcs11.conf");
+  get_relative_path_debug ("/a/b/c/d",                "/a/b/c",                          "..");
+  get_relative_path_debug ("/a/b/c/d/",               "/a/b/c/",                         "../");
+  get_relative_path_debug ("/",                       "/",                               "/");
+  get_relative_path_debug ("/a/testone/c/d",          "/a/testtwo/c",                    "../../../testtwo/c");
+  get_relative_path_debug ("/a/testone/c/d/",         "/a/testtwo/c/",                   "../../../testtwo/c/");
+  get_relative_path_debug ("/home/part2/part3/part4", "/work/proj1/proj2",               "../../../../work/proj1/proj2");
 
   simplify_path_debug ("a/b/..", "a");
   simplify_path_debug ("a/b/c/../../", "a/");
