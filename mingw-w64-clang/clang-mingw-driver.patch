@@ -36,7 +36,7 @@ new file mode 100644
 index 0000000..87c0aa2
 --- /dev/null
 +++ b/lib/Driver/MinGWToolChain.cpp
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,147 @@
 +//===--- MinGWToolChain.cpp - MinGWToolChain Implementation -----------------------===//
 +//
 +//                     The LLVM Compiler Infrastructure
@@ -68,7 +68,7 @@ index 0000000..87c0aa2
 +
 +MinGW::MinGW(const Driver &D, const llvm::Triple& Triple,
 +             const ArgList &Args)
-+  : ToolChain(D, Triple, Args) {
++  : Generic_GCC(D, Triple, Args) {
 +  //TODO: libc++ directory
 +
 +  // Get GCC version string for library and header directories
@@ -108,24 +108,8 @@ index 0000000..87c0aa2
 +  return new tools::MinGW::Link(*this);
 +}
 +
-+bool MinGW::IsIntegratedAssemblerDefault() const {
-+  return true;
-+}
-+
-+Tool *MinGW::buildAssembler() const {
-+  return new tools::MinGW::Assemble(*this);
-+}
-+
-+bool MinGW::IsUnwindTablesDefault() const {
-+  return getArch() == llvm::Triple::x86_64;
-+}
-+
 +bool MinGW::isPICDefault() const {
 +  return getArch() == llvm::Triple::x86_64;
-+}
-+
-+bool MinGW::isPIEDefault() const {
-+  return false;
 +}
 +
 +bool MinGW::isPICDefaultForced() const {
@@ -168,8 +152,13 @@ index 0000000..87c0aa2
 +  // Check if libc++ has been enabled and provide its include paths if so.
 +  if (GetCXXStdlibType(DriverArgs) == ToolChain::CST_Libcxx) {
 +    // libc++ is always installed at a fixed path on Linux currently.
++#ifdef _WIN32
++    addSystemInclude(DriverArgs, CC1Args,
++                     getDriver().Dir + "/../include/c++/v1");
++#else
 +    addSystemInclude(DriverArgs, CC1Args,
 +                     getDriver().SysRoot + "/usr/include/c++/v1");
++#endif
 +    return;
 +  }
 +#ifdef _WIN32
@@ -199,19 +188,16 @@ diff --git a/lib/Driver/ToolChains.h b/lib/Driver/ToolChains.h
 index d5d0581..556afed 100644
 --- a/lib/Driver/ToolChains.h
 +++ b/lib/Driver/ToolChains.h
-@@ -740,6 +740,32 @@ protected:
+@@ -740,6 +740,28 @@ protected:
    virtual Tool *buildAssembler() const;
  };
  
-+class LLVM_LIBRARY_VISIBILITY MinGW : public ToolChain {
++class LLVM_LIBRARY_VISIBILITY MinGW : public Generic_GCC {
 +public:
 +  MinGW(const Driver &D, const llvm::Triple &Triple,
 +        const llvm::opt::ArgList &Args);
 +
-+  virtual bool IsIntegratedAssemblerDefault() const;
-+  virtual bool IsUnwindTablesDefault() const;
 +  virtual bool isPICDefault() const;
-+  virtual bool isPIEDefault() const;
 +  virtual bool isPICDefaultForced() const;
 +
 +  virtual void
@@ -223,7 +209,6 @@ index d5d0581..556afed 100644
 +
 +protected:
 +  virtual Tool *buildLinker() const;
-+  virtual Tool *buildAssembler() const;
 +
 +private:
 +  std::string GCCVersion;
@@ -236,39 +221,20 @@ diff --git a/lib/Driver/Tools.cpp b/lib/Driver/Tools.cpp
 index 892810e..a670502 100644
 --- a/lib/Driver/Tools.cpp
 +++ b/lib/Driver/Tools.cpp
-@@ -7089,6 +7089,163 @@ Command *visualstudio::Compile::GetCommand(Compilation &C, const JobAction &JA,
+@@ -7089,6 +7089,176 @@ Command *visualstudio::Compile::GetCommand(Compilation &C, const JobAction &JA,
    return new Command(JA, *this, Args.MakeArgString(Exec), CmdArgs);
  }
  
 +/// MinGW Tools
-+void MinGW::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
-+                                   const InputInfo &Output,
-+                                   const InputInfoList &Inputs,
-+                                   const ArgList &Args,
-+                                   const char *LinkingOutput) const {
-+  ArgStringList CmdArgs;
-+
-+  if (getToolChain().getArch() == llvm::Triple::x86) {
-+    CmdArgs.push_back("--32");
-+  } else if (getToolChain().getArch() == llvm::Triple::x86_64) {
-+    CmdArgs.push_back("--64");
++void MinGW::Link::AddLibGCC(const ArgList &Args, ArgStringList &CmdArgs) const {
++  if (Args.hasArg(options::OPT_static) ||
++      Args.hasArg(options::OPT_static_libgcc)) {
++    CmdArgs.push_back("-lgcc");
++    CmdArgs.push_back("-lgcc_eh");
++  } else {
++    CmdArgs.push_back("-lgcc_s");
++    CmdArgs.push_back("-lgcc");
 +  }
-+
-+  Args.AddAllArgValues(CmdArgs, options::OPT_Wa_COMMA,
-+                       options::OPT_Xassembler);
-+
-+  CmdArgs.push_back("-o");
-+  CmdArgs.push_back(Output.getFilename());
-+
-+  for (InputInfoList::const_iterator
-+         it = Inputs.begin(), ie = Inputs.end(); it != ie; ++it) {
-+    const InputInfo &II = *it;
-+    CmdArgs.push_back(II.getFilename());
-+  }
-+
-+  const char *Exec =
-+    Args.MakeArgString(getToolChain().GetProgramPath("as"));
-+  C.addCommand(new Command(JA, *this, Exec, CmdArgs));
 +}
 +
 +void MinGW::Link::ConstructJob(Compilation &C, const JobAction &JA,
@@ -293,8 +259,8 @@ index 892810e..a670502 100644
 +  if (!D.SysRoot.empty())
 +    CmdArgs.push_back(Args.MakeArgString("--sysroot=" + D.SysRoot));
 +
-+  if (Args.hasArg(options::OPT_s))
-+    CmdArgs.push_back("-s");
++  /*if (Args.hasArg(options::OPT_s))
++    CmdArgs.push_back("-s");*/
 +
 +  CmdArgs.push_back("-m");
 +  if (TC.getArch() == llvm::Triple::x86)
@@ -302,34 +268,52 @@ index 892810e..a670502 100644
 +  if (TC.getArch() == llvm::Triple::x86_64)
 +    CmdArgs.push_back("i386pep");
 +
++  if (Args.hasArg(options::OPT_mwindows))
++    CmdArgs.push_back("--subsystem windows");
++  else if (Args.hasArg(options::OPT_mconsole))
++    CmdArgs.push_back("--subsystem console");
++
 +  if (Args.hasArg(options::OPT_static))
 +    CmdArgs.push_back("-Bstatic");
 +  else {
-+    CmdArgs.push_back("-Bdynamic");
 +    // -shared means building DLL
-+    if (Args.hasArg(options::OPT_shared)) {
++    if (Args.hasArg(options::OPT_shared))
 +      CmdArgs.push_back("--shared");
-+      CmdArgs.push_back("-Bdynamic");
-+      if (TC.getArch() == llvm::Triple::x86)
-+        CmdArgs.push_back("-e DllMainCRTStartup");
-+      else
-+        CmdArgs.push_back("-e _DllMainCRTStartup@12");
++    else if (Args.hasArg(options::OPT_mdll))
++      CmdArgs.push_back("--dll");
++    CmdArgs.push_back("-Bdynamic");
++    CmdArgs.push_back("-e");
++    if (TC.getArch() == llvm::Triple::x86)
++      CmdArgs.push_back("_DllMainCRTStartup@12");
++    else
++      CmdArgs.push_back("DllMainCRTStartup");
 +
-+      CmdArgs.push_back("--enable-auto-image-base");
-+    }
++    CmdArgs.push_back("--enable-auto-image-base");
 +  }
 +
-+  CmdArgs.push_back("-o");
-+  CmdArgs.push_back(Output.getFilename());
++  AddLinkerInputs(TC, Inputs, Args, CmdArgs);
++
++  Args.AddAllArgs(CmdArgs, options::OPT_e);
++  // FIXME: add -N, -n flags
++  Args.AddLastArg(CmdArgs, options::OPT_r);
++  Args.AddLastArg(CmdArgs, options::OPT_s);
++  Args.AddLastArg(CmdArgs, options::OPT_t);
++  Args.AddAllArgs(CmdArgs, options::OPT_u_Group);
++  Args.AddLastArg(CmdArgs, options::OPT_Z_Flag);
 +
 +  if (!Args.hasArg(options::OPT_nostdlib) &&
 +      !Args.hasArg(options::OPT_nostartfiles)) {
-+    if (Args.hasArg(options::OPT_shared))
++    if (Args.hasArg(options::OPT_shared) || Args.hasArg(options::OPT_mdll)) {
 +      CmdArgs.push_back(Args.MakeArgString(TC.GetFilePath("dllcrt2.o")));
-+    else {
-+    CmdArgs.push_back(Args.MakeArgString(TC.GetFilePath("crt2.o")));
-+    CmdArgs.push_back(Args.MakeArgString(TC.GetFilePath("crtbegin.o")));
++    } else {
++      if (Args.hasArg(options::OPT_municode))
++        CmdArgs.push_back(Args.MakeArgString(TC.GetFilePath("crt2u.o")));
++      else
++        CmdArgs.push_back(Args.MakeArgString(TC.GetFilePath("crt2.o")));
 +    }
++    if (Args.hasArg(options::OPT_pg))
++      CmdArgs.push_back(Args.MakeArgString(TC.GetFilePath("gcrt2.o")));
++    CmdArgs.push_back(Args.MakeArgString(TC.GetFilePath("crtbegin.o")));
 +  }
 +
 +  Args.AddAllArgs(CmdArgs, options::OPT_L);
@@ -340,13 +324,14 @@ index 892810e..a670502 100644
 +       i != e; ++i)
 +    CmdArgs.push_back(Args.MakeArgString(StringRef("-L") + *i));
 +
-+  AddLinkerInputs(TC, Inputs, Args, CmdArgs);
++  CmdArgs.push_back("-o");
++  CmdArgs.push_back(Output.getFilename());
 +
 +  //TODO: Add ASan stuff here
 +
 +  //TODO: Add profile stuff here
 +
-+  if (D.CCCIsCXX() &&
++  /*if (D.CCCIsCXX() &&
 +      !Args.hasArg(options::OPT_nostdlib) &&
 +      !Args.hasArg(options::OPT_nodefaultlibs)) {
 +    bool OnlyLibstdcxxStatic = Args.hasArg(options::OPT_static_libstdcxx) &&
@@ -356,19 +341,27 @@ index 892810e..a670502 100644
 +    TC.AddCXXStdlibLibArgs(Args, CmdArgs);
 +    if (OnlyLibstdcxxStatic)
 +      CmdArgs.push_back("-Bdynamic");
-+  }
++  }*/
 +
 +  if (!Args.hasArg(options::OPT_nostdlib)) {
 +    if (!Args.hasArg(options::OPT_nodefaultlibs)) {
-+      CmdArgs.push_back("--start-group");
++      //CmdArgs.push_back("--start-group");
 +
++      if (Args.hasArg(options::OPT_fstack_protector) ||
++          Args.hasArg(options::OPT_fstack_protector_all)) {
++        CmdArgs.push_back("-lssp_nonshared");
++        CmdArgs.push_back("-lssp");
++      }
 +      if (Args.hasArg(options::OPT_fopenmp))
 +        CmdArgs.push_back("-lgomp");
 +
-+      AddLibgcc(TC.getTriple(), D, CmdArgs, Args);
++      //AddLibgcc(TC.getTriple(), D, CmdArgs, Args);
++      AddLibGCC(Args, CmdArgs);
 +
 +      //TODO: remove unconditionally linking pthreads library
 +      // Currently required for OpenMP and posix-threading libgcc
++      if (Args.hasArg(options::OPT_pg))
++        CmdArgs.push_back("-lgmon");
 +      CmdArgs.push_back("-lpthread");
 +
 +      // add system libraries
@@ -377,18 +370,23 @@ index 892810e..a670502 100644
 +      CmdArgs.push_back("-lmoldname");
 +      CmdArgs.push_back("-lmingwex");
 +      CmdArgs.push_back("-lmsvcrt");
++      if (Args.hasArg(options::OPT_mwindows)) {
++        CmdArgs.push_back("-lgdi32");
++        CmdArgs.push_back("-lcomdlg32");
++      }
 +      CmdArgs.push_back("-ladvapi32");
 +      CmdArgs.push_back("-lshell32");
 +      CmdArgs.push_back("-luser32");
 +      CmdArgs.push_back("-lkernel32");
 +
-+      CmdArgs.push_back("--end-group");
-+      AddLibgcc(TC.getTriple(), D, CmdArgs, Args);
++      //CmdArgs.push_back("--end-group");
++      //AddLibgcc(TC.getTriple(), D, CmdArgs, Args);
++      AddLibGCC(Args, CmdArgs);
 +    }
 +
 +    if (!Args.hasArg(options::OPT_nostartfiles)) {
 +      // Add crtfastmath.o if available and fast math is enabled.
-+      getToolChain().AddFastMathRuntimeIfAvailable(Args, CmdArgs);
++      TC.AddFastMathRuntimeIfAvailable(Args, CmdArgs);
 +
 +      CmdArgs.push_back(Args.MakeArgString(TC.GetFilePath("crtend.o")));
 +    }
@@ -404,28 +402,15 @@ diff --git a/lib/Driver/Tools.h b/lib/Driver/Tools.h
 index 873969b..3265ce1 100644
 --- a/lib/Driver/Tools.h
 +++ b/lib/Driver/Tools.h
-@@ -614,6 +614,37 @@ namespace visualstudio {
+@@ -614,6 +614,25 @@ namespace visualstudio {
    };
  } // end namespace visualstudio
  
 +  /// MinGW -- Directly call GNU Binutils assembler and linker
 +namespace MinGW {
-+  class LLVM_LIBRARY_VISIBILITY Assemble : public Tool  {
-+  public:
-+    Assemble(const ToolChain &TC) : Tool("dragonfly::Assemble", "assembler",
-+                                         TC) {}
-+
-+    virtual bool hasIntegratedCPP() const { return false; }
-+
-+    virtual void ConstructJob(Compilation &C, const JobAction &JA,
-+                              const InputInfo &Output,
-+                              const InputInfoList &Inputs,
-+                              const llvm::opt::ArgList &TCArgs,
-+                              const char *LinkingOutput) const;
-+  };
 +  class LLVM_LIBRARY_VISIBILITY Link : public Tool  {
 +  public:
-+    Link(const ToolChain &TC) : Tool("dragonfly::Link", "linker", TC) {}
++    Link(const ToolChain &TC) : Tool("MinGW::Link", "linker", TC) {}
 +
 +    virtual bool hasIntegratedCPP() const { return false; }
 +    virtual bool isLinkJob() const { return true; }
@@ -435,9 +420,10 @@ index 873969b..3265ce1 100644
 +                              const InputInfoList &Inputs,
 +                              const llvm::opt::ArgList &TCArgs,
 +                              const char *LinkingOutput) const;
++  private:
++    void AddLibGCC(const llvm::opt::ArgList &Args, ArgStringList &CmdArgs) const;
 +  };
 +} // end namespace MinGW
-+
 +
  namespace arm {
    StringRef getARMFloatABI(const Driver &D, const llvm::opt::ArgList &Args,
@@ -553,3 +539,16 @@ index bb1fe2d..9877216 100644
        break;
      }
    case llvm::Triple::DragonFly:
+--- a/include/clang/Driver/Options.td	2014-08-07 08:51:51.000000000 +0400
++++ b/include/clang/Driver/Options.td	2014-09-08 10:02:24.295600000 +0400
+@@ -1041,6 +1041,10 @@
+ def masm_EQ : Joined<["-"], "masm=">, Group<m_Group>, Flags<[DriverOption]>;
+ def mcmodel_EQ : Joined<["-"], "mcmodel=">, Group<m_Group>;
+ def mconstant_cfstrings : Flag<["-"], "mconstant-cfstrings">, Group<clang_ignored_m_Group>;
++def mconsole : Joined<["-"], "mconsole">, Group<m_Group>, Flags<[DriverOption]>;
++def mwindows : Joined<["-"], "mwindows">, Group<m_Group>, Flags<[DriverOption]>;
++def mdll : Joined<["-"], "mdll">, Group<m_Group>, Flags<[DriverOption]>;
++def municode : Joined<["-"], "municode">, Group<m_Group>, Flags<[DriverOption]>;
+ def mcpu_EQ : Joined<["-"], "mcpu=">, Group<m_Group>;
+ def mdynamic_no_pic : Joined<["-"], "mdynamic-no-pic">, Group<m_Group>;
+ def mfix_and_continue : Flag<["-"], "mfix-and-continue">, Group<clang_ignored_m_Group>;
