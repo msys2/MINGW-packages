@@ -1,12 +1,18 @@
 # Maintainer: Alexey Pavlov <alexpux@gmail.com>
 # Maintainer: Ray Donnelly <mingw.android@gmail.com>
 
+# Please keep this file exactly the same (except _variant=)
+# as {mingw-w64-qt5/PKGBUILD,mingw-w64-qt5-static/PKGBUILD}
 _variant=-static
 #_variant=-shared
 if [ "${_variant}" = "-static" ]; then
   _namesuff="-static"
+  _freetype2="-qt-freetype"
+  _fastbuild="yes"
 else
   _namesuff=
+  _freetype2="-system-freetype"
+  _fastbuild="no"
 fi
 
 _realname=qt5${_namesuff}
@@ -88,7 +94,7 @@ makedepends=("bison"
              "make"
              "patch"
              "perl"
-             "ruby"
+             "${MINGW_PACKAGE_PREFIX}-ruby"
              "${MINGW_PACKAGE_PREFIX}-gcc"
              "${MINGW_PACKAGE_PREFIX}-pkg-config"
              "${MINGW_PACKAGE_PREFIX}-python2"
@@ -139,7 +145,8 @@ source=(#"${_pkgfqn}.tar.xz"
         0027-qt-5.3.1-msys-perl.patch
         0028-qt-5.3.1-Revert-untangle-use-of-system-vs.-shell-path-list-se.patch
         0029-qt-5.3.1-Revert-fix-quoting-and-path-separators-in-qtPrepareT.patch
-        0030-workaround-ansidecl-h-PTR-define-conflict.patch)
+        0030-qt-5.3.1-workaround-ansidecl-h-PTR-define-conflict.patch
+        0031-qt-5.3.1-Hack-around-masm-pri-build-race-condition.patch)
 md5sums=('f9a24a0d5645efa0715b6ff0fa13d60f'
          'e3210b753ba04762de2ed4cb9c786bf1'
          '356f7fcf93869e92cd232ef70160ab58'
@@ -170,14 +177,31 @@ md5sums=('f9a24a0d5645efa0715b6ff0fa13d60f'
          '01e8030718f088178559a28958a05350'
          '288dac91744ddf4d3ac39544fb381466'
          'ede60e9e199e57052e1df95efb65d232'
-         '4b60988f913708dd8ee3a79a2eac4cae')
-translate_for_make() {
-  if [ "${_make}" = "make" ]; then
+         '4b60988f913708dd8ee3a79a2eac4cae'
+         '965bd95523fa46fbd3f5a7be27a44459')
+
+# Translates using cygpath according to the ${_make} being used
+# (so either mingw32-make or MSYS2 make can be used)
+path_conv_for_make() {
+  if [ "${_make}" = "mingw32-make" ]; then
+    echo -n "${1}" | sed "s|${MINGW_PREFIX}|$(cygpath -m ${MINGW_PREFIX})|g"
+  else # MSYS2 make
     MINGW_PREFIX_W=$(cygpath -m ${MINGW_PREFIX})
     echo -n "${1}" | sed "s|${MINGW_PREFIX_W}|$(cygpath -u ${MINGW_PREFIX})|g"
-  else
-    echo -n "${1}" | sed "s|${MINGW_PREFIX}|$(cygpath -m ${MINGW_PREFIX})|g"
   fi
+}
+
+# Runs pkg-config with all arguments, then calls path_conv_for_make on each
+# result and then adds delimiter between -I/-L/-l and path - both configure
+# and configure.bat prefer this. Results returned as an array.
+pkg_config_qt5() {
+  local _res=$(pkg-config $*)
+  local -a _final=()
+  for _part in $(path_conv_for_make "${_res}"); do
+      _final+=($(echo -n "${_part}" | sed "s|-\([ILl]\)\(.*\)|-\1|g"))
+      _final+=($(echo -n "${_part}" | sed "s|-\([ILl]\)\(.*\)|\2|g"))
+  done
+  echo "${_final[@]}"
 }
 
 prepare() {
@@ -245,8 +269,10 @@ prepare() {
     # due to qtPrepareTool adding them with $$shell_quote
     patch -p1 -i ${srcdir}/0028-qt-5.3.1-Revert-untangle-use-of-system-vs.-shell-path-list-se.patch
     patch -p1 -i ${srcdir}/0029-qt-5.3.1-Revert-fix-quoting-and-path-separators-in-qtPrepareT.patch
-    patch -p1 -i ${srcdir}/0030-workaround-ansidecl-h-PTR-define-conflict.patch
+    patch -p1 -i ${srcdir}/0030-qt-5.3.1-workaround-ansidecl-h-PTR-define-conflict.patch
   popd > /dev/null
+
+  patch -p1 -i ${srcdir}/0031-qt-5.3.1-Hack-around-masm-pri-build-race-condition.patch
 
   # See: https://bugreports.qt-project.org/browse/QTBUG-37902
   # _ver_num=${_ver_base%%-*}
@@ -263,88 +289,72 @@ prepare() {
   esac
 
   # Determine the CFLAGS, DEBUG_CFLAGS and LDFLAGS that we will tell qmake.conf about
-  # Since this is qt5-static, we's like to add -Os in an attempt to reduce size a little,
-  # however there's an ICE in GCC 4.9.0:
+  # If this is qt5-static, we'd like to add -Os in an attempt to reduce size a little,
+  # however there's an ICE in GCC 4.9.1 with x86_64, so must tread carefully.
   # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=61207
-  # .. so force -O2 instead.
+  if [ "${_variant}" = "-static" -a "${CARCH}" = "i686" ]; then
+    OPTIM_O="-Os"
+  else
+    OPTIM_O="-O2"
+  fi
+
   if [ "${_debuggable_release}" = "yes" ]; then
     QMAKE_LFLAGS_RELEASE=
-    CFLAGS_MKS_RELEASE="${CFLAGS} -O2 -g"
+    CFLAGS_MKS_RELEASE="${CFLAGS} ${OPTIM_O} -g"
   else
     QMAKE_LFLAGS_RELEASE="-Wl,-s"
-    CFLAGS_MKS_RELEASE="${CFLAGS} -O2"
+    CFLAGS_MKS_RELEASE="${CFLAGS} ${OPTIM_O}"
   fi
   CFLAGS_MKS_DEBUG="${CFLAGS} ${DEBUG_CFLAGS}"
   # If not using MSYS2 make then transform -I${MINGW_PREFIX}/blah or -L${MINGW_PREFIX}/blah from MSYS2 to native
-  CFLAGS_MKS_RELEASE=$(translate_for_make "${CFLAGS_MKS_RELEASE}")
-  CFLAGS_MKS_DEBUG=$(translate_for_make "${CFLAGS_MKS_DEBUG}")
-
+  CFLAGS_MKS_RELEASE=$(path_conv_for_make "${CFLAGS_MKS_RELEASE}")
+  CFLAGS_MKS_DEBUG=$(path_conv_for_make "${CFLAGS_MKS_DEBUG}")
+  LDFLAGS_MKS=$(path_conv_for_make "${LDFLAGS_MKS}")
   sed -i "s|%OPTIMIZE_OPT%|${_optim}|g" qtbase/mkspecs/win32-g++/qmake.conf
-  # TODO :: Fix this.
   sed -i "s|%STATICFLAGS%|${_namesuff}|g" qtbase/mkspecs/win32-g++/qmake.conf
-  sed -i "s|^QMAKE_CFLAGS_RELEASE * = .*$|QMAKE_CFLAGS_RELEASE    = ${CFLAGS_MKS_RELEASE}|g"   qtbase/mkspecs/win32-g++/qmake.conf
-  sed -i "s|^QMAKE_CFLAGS_DEBUG * = .*$|QMAKE_CFLAGS_DEBUG      = ${CFLAGS_MKS_DEBUG}|g"       qtbase/mkspecs/win32-g++/qmake.conf
-  sed -i "s|^QMAKE_LFLAGS_RELEASE * = .*$|QMAKE_LFLAGS_RELEASE    = ${QMAKE_LFLAGS_RELEASE}|g" qtbase/mkspecs/win32-g++/qmake.conf
+  sed -i "s|^QMAKE_CFLAGS_RELEASE.*= .*$|QMAKE_CFLAGS_RELEASE    = ${CFLAGS_MKS_RELEASE}|g" qtbase/mkspecs/win32-g++/qmake.conf
+  sed -i "s|^QMAKE_CFLAGS_DEBUG.*= .*$|QMAKE_CFLAGS_DEBUG      = ${CFLAGS_MKS_DEBUG}|g" qtbase/mkspecs/win32-g++/qmake.conf
+  sed -i "s|^QMAKE_LFLAGS_RELEASE.*= .*$|QMAKE_LFLAGS_RELEASE    = ${QMAKE_LFLAGS_RELEASE}|g" qtbase/mkspecs/win32-g++/qmake.conf
 
-  # To keep the build folder name quite small (MAXPATH limit)
+  # To keep the build folder name quite small (PATH_MAX limit)
   # the source folder (long) is renamed to $CARCH (i686 or x86_64)
-  [ -d ${CARCH} ] && rm -rf ${CARCH}
   cd ${srcdir}
+  [ -d ${CARCH} ] && rm -rf ${CARCH}
   mv ${_pkgfqn} ${CARCH}
 }
 
 build() {
   cd ${CARCH}
   touch qtbase/.gitignore
-  #BUILD_WIN=$(pwd -W)
-  #echo "BUILD_WIN $BUILD_WIN"
 
   mkdir -p ${pkgdir}${_qt5_prefix}
   pushd ${pkgdir}${_qt5_prefix} > /dev/null
   QTDIR_WIN=$(pwd -W)
   popd > /dev/null
 
-  if [ "${_variant}" = "-static" ]; then
-    local _extra_inc_string="$(pkg-config --cflags dbus-1)"
-    local _extra_lib_string="$(pkg-config --libs dbus-1)"
-  else
-    local _extra_inc_string="$(pkg-config --cflags-only-I dbus-1 libxml-2.0 freetype2)"
-    local _extra_lib_string="$(pkg-config --libs dbus-1 libxml-2.0 freetype2)"
+  local _freetype2_pkgconf=""
+  if [ "${_freetype2}" = "-system-freetype" ]; then
+    _freetype2_pkgconf="freetype2"
   fi
 
-  if [ "{_opengl}" = "angle" ]; then
-    _extra_inc_string=$_extra_inc_string" -I${_qt5_prefix}/include/GLSLANG"
+  local -a _extra_incpaths=($(pkg_config_qt5 --cflags-only-I dbus-1 libxml-2.0 ${_freetype2_pkgconf}))
+  if [ "${_opengl}" = "angle" ]; then
+    export EXTERNAL_ANGLE=1
+    _extra_incpaths+=("-I")
+    _extra_incpaths+=("${MINGW_PREFIX}/include/GLSLANG")
   fi
+  _extra_incpaths+=("-I")
+  _extra_incpaths+=("${MINGW_PREFIX}/include/noX")
+  _extra_incpaths+=("-I")
+  _extra_incpaths+=("${MINGW_PREFIX}/include/mariadb")
 
-  local -a _extra_inc
-  for _inc in $(translate_for_make "$_extra_inc_string"); do
-    _extra_inc+=("$_inc")
-  done
+# This *could* be used but we'd have to make sure it's correct for all variants first.
+#  local -a _extra_libpaths=($(pkg_config_qt5 --libs-only-L dbus-1 libxml-2.0 freetype2))
+#  local -a _extra_libs=($(pkg_config_qt5 --libs-only-l dbus-1 libxml-2.0 freetype2))
+  local -a _extra_libpaths=()
+  local -a _extra_libs=()
 
-  local -a _extra_lib
-  for _lib in $(translate_for_make "$_extra_lib_string"); do
-    _extra_lib+=("$_lib")
-  done
-
-  export EXTERNAL_ANGLE=1
-  export PATH="${srcdir}/${CARCH}/qtbase/bin:${srcdir}/${CARCH}/qtbase/lib:${_qt5_prefix}/bin:${PATH}"
-
-  # Set the correct one of _extra_inc or _extra_inc_string, never both.
-  if [ "${_configure}" = "./configure.bat" ]; then
-    _extra_inc_string=${_extra_inc_string//-I/:}
-    _extra_inc_string=${_extra_inc_string// /}
-    _extra_lib_string=${_extra_lib_string//-L/:}
-    _extra_lib_string=${_extra_lib_string// /}
-    unset _extra_inc
-    unset _extra_lib
-    plain "_extra_inc_string (for ${_configure}) is ${_extra_inc_string}"
-    plain "_extra_lib_string (for ${_configure}) is ${_extra_lib_string}"
-  else
-    _extra_inc_string=""
-    _extra_lib_string=""
-    plain "_extra_inc (for ${_configure}) is ${_extra_inc[@]}"
-    plain "_extra_lib (for ${_configure}) is ${_extra_lib[@]}"
-  fi
+  export PATH="${srcdir}/${CARCH}/qtbase/bin:${srcdir}/${CARCH}/qtbase/lib:${PATH}"
 
   # Set other config stuff that's configure-script-type dependent.
   local -a _extra_config
@@ -375,10 +385,10 @@ build() {
     _variant_CPATH=${MINGW_PREFIX}/include/mariadb:
   fi
 
+  # May be better to have a variable of _fastbuild
+  # instead for the two -nomake switches below?
   if [ "${_variant}" = "-static" ]; then
     export OPENSSL_LIBS="-lssl -lcrypto -lcrypt32 -lgdi32"
-    _extra_config+=("-nomake")
-    _extra_config+=("examples")
   fi
 
   local -a _variant_config
@@ -391,7 +401,6 @@ build() {
     _variant_config+=("-qt-libpng")
     _variant_config+=("-qt-libjpeg")
     _variant_config+=("-qt-harfbuzz")
-    _variant_config+=("-qt-freetype")
     _variant_config+=("-no-icu")
   else
     _variant_config+=("-shared")
@@ -399,11 +408,15 @@ build() {
     _variant_config+=("-icu")
     _variant_config+=("-fontconfig")
     _variant_config+=("-system-harfbuzz")
-    _variant_config+=("-system-freetype")
   fi
 
-  # mariadb is probably only wanted for shared build.
-  export CPATH="${MINGW_PREFIX}/${MINGW_CHOST}/include:${MINGW_PREFIX}/include:${MINGW_PREFIX}/include/noX:${MINGW_PREFIX}/include/mariadb:${_variant_CPATH}${_extra_inc_string}"
+  local -a _fastbuild_config
+  if [ "${_fastbuild}" = "yes" ]; then
+    _fastbuild_config+=("-nomake")
+    _fastbuild_config+=("examples")
+    _fastbuild_config+=("-nomake")
+    _fastbuild_config+=("tests")
+  fi
 
   # Qt manages the compiler flags for release / debug configs separately, so having our own values (-O2) is harmful here ..
   unset CFLAGS
@@ -422,14 +435,16 @@ build() {
     -device-option QMAKE_EXTENSION_IMPORTLIB="dll.a" \
     -platform win32-g++ \
     -debug-and-release \
+    "${_extra_incpaths[@]}" \
+    "${_extra_libpaths[@]}" \
+    "${_extra_libs[@]}" \
     -no-iconv \
     -dbus \
-    -nomake tests \
-    "${_extra_inc[@]}" \
-    "${_extra_lib[@]}" \
+    "${_freetype2}" \
     "${_extra_config[@]}" \
     "${_sql_config[@]}" \
-    "${_variant_config[@]}"
+    "${_variant_config[@]}" \
+    "${_fastbuild_config[@]}"
 
   # There is a race condition / dependency problem with libqtiff and dumpdoc.exe which
   # can happen at -j9 so make twice (dumpdoc.exe depends on libqtiff but can get built
@@ -442,6 +457,11 @@ build() {
   # find "${QTDIR}" -name Makefile -exec sed -i "s|/usr/lib/qt/bin/qhelpgenerator|${QTDIR}/qttools/bin/qhelpgenerator|g" {} +
   # find "${QTDIR}" -name Makefile.qmake-docs -exec sed -i "s|/usr/lib/qt/bin/qhelpgenerator|${QTDIR}/qttools/bin/qhelpgenerator|g" {} +
   # sed -i "s|/usr/lib/qt/bin/qhelpgenerator|${QTDIR}/qttools/bin/qhelpgenerator|g" qtwebkit/Source/Makefile.api
+}
+
+check() {
+  cd ${CARCH}
+  make check -j1 -k
 }
 
 package() {
