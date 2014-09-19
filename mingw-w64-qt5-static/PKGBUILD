@@ -15,16 +15,31 @@ _debuggable_release=no
 # Using -O0 results in a Qt5WebKitd.dll that is > 2.5GB
 # so force -Og. If you really need to, change this back
 # to -O0, leave it blank or comment it out.
-OPTIM_D="-Og"
+# Update: I think specifying anything here leads to huge
+# Qt5WebKitd.dll, never commit with this set to anything
+# -O0 is the default for GCC anyway, but qt5webkit seems
+# to use a different flag if nothing explictly specified
+# OPTIM_D="-Og"
 
 if [ "${_variant}" = "-static" ]; then
   _namesuff="-static"
   _freetype2="-qt-freetype"
   _fastbuild="yes"
+#  _ltcg="yes"
+  _ltcg="no"
 else
   _namesuff=
   _freetype2="-system-freetype"
   _fastbuild="no"
+  _ltcg="no"
+fi
+
+# Thiago's patch doesn't contain the configure script changes
+# needed, you may be able to get somewhere with this in the
+# meantime (probably not though!)
+if [ "${_ltcg}" = "yes" ]; then
+   LTCG_CFLAGS="-flto-partition=1to1 -flto -ffat-lto-objects"
+   LTCG_LFLAGS="-flto-partition=1to1 -flto -ffat-lto-objects"
 fi
 
 _realname=qt5${_namesuff}
@@ -122,6 +137,7 @@ source=(#"${_pkgfqn}.tar.xz"
         http://download.qt-project.org/official_releases/qt/${pkgver%.*}/${_ver_base}/single/${_pkgfqn}.tar.xz
         #http://download.qt-project.org/snapshots/qt/${pkgver%.*}/${_ver_base}/2014-05-07_85/src/qt-everywhere-opensource-src-${_ver_base}.tar.xz
         #"qt3d"::"git://gitorious.org/qt/qt3d.git"
+        0001-Add-link-time-optimization-support-for-Clang-GCC-and.patch
         0001-qt-5.3.0-oracle-driver-prompt.patch
         0002-qt-5.3.0-use-fbclient-instead-of-gds32.patch
         0003-qt-5.3.0-use-mingw-built-mysql-library.patch
@@ -154,6 +170,7 @@ source=(#"${_pkgfqn}.tar.xz"
         0031-qt-5.3.1-Fix-masm-pri-build-race-condition.patch
         0032-qt-5.3.2-Disable-jitted-Regexp-for-Mingw-64-bit-94712.patch)
 md5sums=('c4e893678e3d8388ab04d059523d1d78'
+         'a2fa66089b171ebb76a6e0bda2ef4ca8'
          'e3210b753ba04762de2ed4cb9c786bf1'
          '356f7fcf93869e92cd232ef70160ab58'
          'b0b5cc641cf8ebc2660fa819bede0089'
@@ -218,6 +235,11 @@ prepare() {
   # MSYS2 gperf cannot handle \r\n.
   find . -name "*.gperf" -exec dos2unix "{}" \;
 
+  pushd qtbase > /dev/null
+    rm -f mkspecs/features/ltcg.prf > /dev/null 2>&1 || true
+    patch -p1 -i ${srcdir}/0001-Add-link-time-optimization-support-for-Clang-GCC-and.patch
+  popd
+
   patch -p1 -i ${srcdir}/0001-qt-5.3.0-oracle-driver-prompt.patch
   patch -p1 -i ${srcdir}/0002-qt-5.3.0-use-fbclient-instead-of-gds32.patch
   patch -p1 -i ${srcdir}/0003-qt-5.3.0-use-mingw-built-mysql-library.patch
@@ -277,6 +299,12 @@ prepare() {
     patch -p1 -i ${srcdir}/0030-qt-5.3.1-workaround-ansidecl-h-PTR-define-conflict.patch
   popd > /dev/null
 
+  # See discussion at https://bugreports.qt-project.org/browse/QTBUG-41292
+  # I think what is possibly happening instead is that the Debug and Release
+  # builds are happening in parallel and this causes the error. While Ossi's
+  # suggestion (below) doesn't fix the problem entirely, it makes the chances
+  # of it happening near 0. Ossi we should have a different target file for
+  # RegExpJitTables.h for each of release and debug.
   patch -p1 -i ${srcdir}/0031-qt-5.3.1-Fix-masm-pri-build-race-condition.patch
   patch -p1 -i ${srcdir}/0032-qt-5.3.2-Disable-jitted-Regexp-for-Mingw-64-bit-94712.patch
 
@@ -284,13 +312,13 @@ prepare() {
   # _ver_num=${_ver_base%%-*}
   # sed -i "s/^MODULE_VERSION = .*$/MODULE_VERSION = ${_ver_num}/g" qtenginio/.qmake.conf
 
-  local _optim=
+  local _ARCH_TUNE=
   case ${MINGW_CHOST} in
     i686*)
-      _optim="-march=i686 -mtune=core2"
+      _ARCH_TUNE="-march=i686 -mtune=core2"
     ;;
     x86_64*)
-      _optim="-march=nocona -mtune=core2"
+      _ARCH_TUNE="-march=nocona -mtune=core2"
     ;;
   esac
 
@@ -300,27 +328,30 @@ prepare() {
   # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=61207
   # Unlike OPTIM_D, please keep this one down here since it is not user selectable due
   # to the GCC bug.
+  # This is the default, prevent re-appending.
+  # OPTIM_O="-O2"
   if [ "${_variant}" = "-static" -a "${CARCH}" = "i686" ]; then
     OPTIM_O="-Os"
-  else
-    OPTIM_O="-O2"
   fi
 
   if [ "${_debuggable_release}" = "yes" ]; then
     QMAKE_LFLAGS_RELEASE=
-    CFLAGS_MKS_RELEASE="${_optim} ${OPTIM_O} -g"
+    OPTIM_O=${OPTIM_O}" -g"
   else
     QMAKE_LFLAGS_RELEASE="-Wl,-s"
-    CFLAGS_MKS_RELEASE="${_optim} ${OPTIM_O}"
   fi
-  CFLAGS_MKS_DEBUG="${_optim} ${OPTIM_D}"
-  # If not using MSYS2 make then transform -I${MINGW_PREFIX}/blah or -L${MINGW_PREFIX}/blah from MSYS2 to native
-  CFLAGS_MKS_RELEASE=$(path_conv_for_make "${CFLAGS_MKS_RELEASE}")
-  CFLAGS_MKS_DEBUG=$(path_conv_for_make "${CFLAGS_MKS_DEBUG}")
-  LDFLAGS_MKS=$(path_conv_for_make "${LDFLAGS_MKS}")
-  sed -i "s|^QMAKE_CFLAGS_RELEASE.*= .*$|QMAKE_CFLAGS_RELEASE    = ${CFLAGS_MKS_RELEASE}|g" qtbase/mkspecs/win32-g++/qmake.conf
-  sed -i "s|^QMAKE_CFLAGS_DEBUG.*= .*$|QMAKE_CFLAGS_DEBUG      = ${CFLAGS_MKS_DEBUG}|g" qtbase/mkspecs/win32-g++/qmake.conf
-  sed -i "s|^QMAKE_LFLAGS_RELEASE.*= .*$|QMAKE_LFLAGS_RELEASE    = ${QMAKE_LFLAGS_RELEASE}|g" qtbase/mkspecs/win32-g++/qmake.conf
+
+  # Append these ones ..
+  sed -i "s|^QMAKE_CFLAGS .*= \(.*\)$|QMAKE_CFLAGS            = \1 ${_ARCH_TUNE} ${LTCG_CFLAGS}|g" qtbase/mkspecs/win32-g++/qmake.conf
+  if [ -n "$OPTIM_D" ]; then
+    sed -i "s|^QMAKE_CFLAGS_DEBUG .*= \(.*\)$|QMAKE_CFLAGS_DEBUG      = \1 ${OPTIM_D}|g" qtbase/mkspecs/win32-g++/qmake.conf
+  fi
+  if [ -n "$OPTIM_O" ]; then
+    sed -i "s|^QMAKE_CFLAGS_RELEASE .*= \(.*\)$|QMAKE_CFLAGS_RELEASE    = \1 ${OPTIM_O}|g" qtbase/mkspecs/win32-g++/qmake.conf
+  fi
+  sed -i "s|^QMAKE_LFLAGS            =\(.*\)$|QMAKE_LFLAGS            = \1 ${LTCG_LFLAGS}|g" qtbase/mkspecs/win32-g++/qmake.conf
+  # But overwrite this one.
+  sed -i "s|^QMAKE_LFLAGS_RELEASE .*= \(.*\)$|QMAKE_LFLAGS_RELEASE    = ${QMAKE_LFLAGS_RELEASE}|g" qtbase/mkspecs/win32-g++/qmake.conf
 
   # To keep the build folder name quite small (PATH_MAX limit)
   # the source folder (long) is renamed to $CARCH (i686 or x86_64)
@@ -522,3 +553,21 @@ package() {
 #   ./auto/qscriptjstestsuite/${CONFIG}/tst_qscriptjstestsuite.exe -silent >> qscriptjstestsuite.log
 #   popd
 # done
+
+# i686 build failure with yarr:
+# export PATH=/mingw32/bin:$PATH
+# export PKG_CONFIG_PATH=/mingw32/lib/pkgconfig
+# pushd /e/m2/repo/mingw-w64-qt5/src/i686/qtdeclarative/src/qml
+# make
+# make[4]: Entering directory '/e/m2/repo/mingw-w64-qt5/src/i686/qtdeclarative/src/qml'
+# g++ -Wl,-s -shared -Wl,--out-implib,E:/m2/repo/mingw-w64-qt5/src/i686/qtdeclarative/lib/libQt5Qml.dll.a -o ../../lib/Qt5Qml.dll object_script.Qt5Qml.Release  -lshell32 -LE:/m2/repo/mingw-w64-qt5/src/i686/qtbase/lib -lQt5Network -lQt5Core .obj/release/Qt5Qml_resource_res.o
+# ./.obj/release/YarrInterpreter.o:YarrInterpreter.cpp:(.text+0x622): undefined reference to `JSC::Yarr::wordcharCreate()'
+# ./.obj/release/YarrInterpreter.o:YarrInterpreter.cpp:(.text+0x693): undefined reference to `JSC::Yarr::newlineCreate()'
+# E:/msys64/mingw32/bin/../lib/gcc/i686-w64-mingw32/4.9.1/../../../../i686-w64-mingw32/bin/ld.exe: ./.obj/release/YarrInterpreter.o: bad reloc address 0x12 in section `.text$_ZN3WTF15BumpPointerPool6createEj[__ZN3WTF15BumpPointerPool6createEj]'
+# collect2.exe: error: ld returned 1 exit status
+# Makefile.Release:534: recipe for target '../../lib/Qt5Qml.dll' failed
+
+# pushd /e/m2/repo/mingw-w64-qt5/src/i686/qtdeclarative/src/qml
+# export PATH=/mingw32/bin:$PATH
+# export PKG_CONFIG_PATH=/mingw32/lib/pkgconfig
+# E:/m2/repo/mingw-w64-qt5/src/i686/qtbase/bin/qmake.exe -o Makefile qml.pro
