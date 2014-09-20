@@ -1,7 +1,11 @@
 /*
       .Some useful path tools.
-   Written by Ray Donnelly in 2014.
-   Licensed under CC0. No warranty.
+        .ASCII only for now.
+   .Written by Ray Donnelly in 2014.
+   .Licensed under CC0 (and anything.
+  .else you need to license it under).
+      .No warranties whatsoever.
+  .email: <mingw.android@gmail.com>.
  */
 
 #ifndef PATHTOOLS_H

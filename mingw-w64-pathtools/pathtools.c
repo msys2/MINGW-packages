@@ -1,7 +1,11 @@
 /*
       .Some useful path tools.
-   Written by Ray Donnelly in 2014.
-   Licensed under CC0. No warranty.
+        .ASCII only for now.
+   .Written by Ray Donnelly in 2014.
+   .Licensed under CC0 (and anything.
+  .else you need to license it under).
+      .No warranties whatsoever.
+  .email: <mingw.android@gmail.com>.
  */
 
 #if defined(__APPLE__)
@@ -38,7 +42,7 @@
 char *
 malloc_copy_string(char const * original)
 {
-  char * result = (char *) malloc (sizeof(char*) * strlen(original)+1);
+  char * result = (char *) malloc (sizeof (char*) * strlen (original)+1);
   if (result != NULL)
   {
     strcpy (result, original);
@@ -49,7 +53,7 @@ malloc_copy_string(char const * original)
 void
 sanitise_path(char * path)
 {
-  size_t path_size = strlen(path);
+  size_t path_size = strlen (path);
 
   /* Replace any '\' with '/' */
   char * path_p = path;
@@ -59,37 +63,47 @@ sanitise_path(char * path)
   }
   /* Replace any '//' with '/' */
   path_p = path;
-  while ((path_p = strstr(path_p, "//")) != NULL)
+  while ((path_p = strstr (path_p, "//")) != NULL)
   {
-    memmove(path_p, path_p + 1, path_size--);
+    memmove (path_p, path_p + 1, path_size--);
   }
   return;
 }
 
 char *
-get_relative_path(char const * from, char const * to)
+get_relative_path(char const * from_in, char const * to_in)
 {
-  size_t from_size = strlen (from);
-  size_t to_size = strlen (to);
+  size_t from_size = (from_in == NULL) ? 0 : strlen (from_in);
+  size_t to_size = (to_in == NULL) ? 0 : strlen (to_in);
   size_t max_size = (from_size + to_size) * 2 + 4;
-  char * common_part = (char *) alloca (max_size);
-  char * result = (char *) alloca (max_size);
+  char * scratch_space = (char *) alloca (from_size + 1 + to_size + 1 + max_size + max_size);
+  char * from;
+  char * to;
+  char * common_part;
+  char * result;
   size_t count;
 
-  /* If either alloca failed, no from was given, from is not absolute
-     or either to or from contains '.' then return a copy of to; it's
-     the best we can do in this instance (though we could call a path
-     normalization function for some of these conditions).
-   */
-  if (common_part == NULL
-      || result == NULL
-      || from == NULL
-      || from[0] != '/'
-      || strchr (to, '.') != NULL
-      || strchr (from, '.') != NULL)
+  /* No to, return "./" */
+  if (to_in == NULL)
   {
-    return malloc_copy_string (to);
+    return malloc_copy_string ("./");
   }
+
+  /* If alloca failed or no from was given return a copy of to */
+  if (   from_in == NULL
+      || scratch_space == NULL )
+  {
+    return malloc_copy_string (to_in);
+  }
+
+  from = scratch_space;
+  strcpy (from, from_in);
+  to = from + from_size + 1;
+  strcpy (to, to_in);
+  common_part = to + to_size + 1;
+  result = common_part + max_size;
+  simplify_path (from);
+  simplify_path (to);
 
   result[0] = '\0';
 
@@ -173,7 +187,7 @@ simplify_path(char * path)
   } while ((result_p = strchr (result_p, '/')) != NULL);
 
   result_p = result;
-  char const ** toks = (char const **) alloca (sizeof(char const*) * n_toks);
+  char const ** toks = (char const **) alloca (sizeof (char const*) * n_toks);
   n_toks = 0;
   do
   {
@@ -219,7 +233,7 @@ simplify_path(char * path)
       if (removals[j] >= 0) /* Can become -2 */
       {
         --n_toks;
-        memmove (&toks[removals[j]], &toks[removals[j]+1], (n_toks - removals[j])*sizeof(char*));
+        memmove (&toks[removals[j]], &toks[removals[j]+1], (n_toks - removals[j])*sizeof (char*));
         --i;
         if (!j)
         {
@@ -384,11 +398,11 @@ split_path_list(char const * path_list, char split_char, char *** arr)
   while ((path_list_p = strchr (path_list_p, split_char)) != NULL);
 
   /* allocate everything in one go. */
-  char * all_memory = (char *) malloc (sizeof(char *) * path_count + strlen(path_list) + 1);
+  char * all_memory = (char *) malloc (sizeof (char *) * path_count + strlen(path_list) + 1);
   if (all_memory == NULL)
     return 0;
   *arr = (char **)all_memory;
-  all_memory += sizeof(char *) * path_count;
+  all_memory += sizeof (char *) * path_count;
 
   path_count = 0;
   path_list_p = path_list;
@@ -417,7 +431,7 @@ get_relocated_path_list(char const * from, char const * to_path_list)
 {
   char exe_path[MAX_PATH];
   char * temp;
-  get_executable_path (NULL, &exe_path[0], sizeof(exe_path) / sizeof(exe_path[0]));
+  get_executable_path (NULL, &exe_path[0], sizeof (exe_path) / sizeof (exe_path[0]));
   if ((temp = strrchr (exe_path, '/')) != NULL)
   {
     temp[1] = '\0';
