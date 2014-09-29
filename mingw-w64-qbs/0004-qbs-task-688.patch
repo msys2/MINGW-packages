@@ -1,0 +1,210 @@
+From 8ed13aecfc40c505c76d433bf2926c8b7c179802 Mon Sep 17 00:00:00 2001
+From: Christian Kandeler <christian.kandeler@digia.com>
+Date: Mon, 22 Sep 2014 14:19:29 +0200
+Subject: [PATCH] libqtprofilesetup: Fix mingw use case.
+
+- Don't assume the mkspec has "mingw" in its name.
+- Relax overly pedantic tests in gcc.js: If a library
+  name is an actual file path, then use it as one,
+  regardless of what it looks like.
+- Some autotest adaptations.
+
+Task-number: QBS-688
+Change-Id: I1d0d51b04ae81d4c10f8cdcc18d6447233e44863
+---
+ share/qbs/modules/cpp/gcc.js            |  8 +++-----
+ src/lib/corelib/tools/hostosinfo.h      |  8 --------
+ src/lib/qtprofilesetup/qtmoduleinfo.cpp | 10 +++++++---
+ tests/auto/blackbox/tst_blackbox.cpp    | 19 +++++++++++--------
+ tests/auto/shared.h                     | 11 +++++++++++
+ 5 files changed, 32 insertions(+), 24 deletions(-)
+
+diff --git a/share/qbs/modules/cpp/gcc.js b/share/qbs/modules/cpp/gcc.js
+index 3554eb4..8dccd0f 100644
+--- a/share/qbs/modules/cpp/gcc.js
++++ b/share/qbs/modules/cpp/gcc.js
+@@ -1,4 +1,4 @@
+-var PathTools = loadExtension("qbs.PathTools");
++var File = loadExtension("qbs.File");
+ var WindowsUtils = loadExtension("qbs.WindowsUtils");
+
+ function linkerFlags(product, inputs) {
+@@ -39,8 +39,7 @@ function linkerFlags(product, inputs) {
+     prefix = ModUtils.moduleProperty(product, "staticLibraryPrefix");
+     suffixes = ModUtils.moduleProperty(product, "supportedStaticLibrarySuffixes");
+     for (i in staticLibraries) {
+-        if (PathTools.isLibraryFileName(product, FileInfo.fileName(staticLibraries[i]), prefix,
+-                                        suffixes, false)) {
++        if (File.exists(staticLibraries[i])) {
+             args.push(staticLibraries[i]);
+         } else {
+             args.push('-l' + staticLibraries[i]);
+@@ -50,8 +49,7 @@ function linkerFlags(product, inputs) {
+     prefix = ModUtils.moduleProperty(product, "dynamicLibraryPrefix");
+     suffix = ModUtils.moduleProperty(product, "dynamicLibrarySuffix");
+     for (i in dynamicLibraries) {
+-        if (PathTools.isLibraryFileName(product, FileInfo.fileName(dynamicLibraries[i]), prefix,
+-                                        [suffix], true)) {
++        if (File.exists(dynamicLibraries[i])) {
+             args.push(dynamicLibraries[i]);
+         } else {
+             args.push('-l' + dynamicLibraries[i]);
+diff --git a/src/lib/corelib/tools/hostosinfo.h b/src/lib/corelib/tools/hostosinfo.h
+index 5495e86..12e33fe 100644
+--- a/src/lib/corelib/tools/hostosinfo.h
++++ b/src/lib/corelib/tools/hostosinfo.h
+@@ -41,17 +41,14 @@
+ #define QTC_HOST_EXE_SUFFIX ".exe"
+ #define QTC_HOST_DYNAMICLIB_PREFIX ""
+ #define QTC_HOST_DYNAMICLIB_SUFFIX ".dll"
+-#define QTC_HOST_OBJECT_SUFFIX ".obj"
+ #elif defined(Q_OS_DARWIN)
+ #define QTC_HOST_EXE_SUFFIX ""
+ #define QTC_HOST_DYNAMICLIB_PREFIX "lib"
+ #define QTC_HOST_DYNAMICLIB_SUFFIX ".dylib"
+-#define QTC_HOST_OBJECT_SUFFIX ".o"
+ #else
+ #define QTC_HOST_EXE_SUFFIX ""
+ #define QTC_HOST_DYNAMICLIB_PREFIX "lib"
+ #define QTC_HOST_DYNAMICLIB_SUFFIX ".so"
+-#define QTC_HOST_OBJECT_SUFFIX ".o"
+ #endif // Q_OS_WIN
+
+ namespace qbs {
+@@ -86,11 +83,6 @@ public:
+                 + QLatin1String(QTC_HOST_DYNAMICLIB_SUFFIX);
+     }
+
+-    static QString objectName(const QString &baseName)
+-    {
+-        return baseName + QLatin1String(QTC_HOST_OBJECT_SUFFIX);
+-    }
+-
+     static Qt::CaseSensitivity fileNameCaseSensitivity()
+     {
+         return isWindowsHost() ? Qt::CaseInsensitive: Qt::CaseSensitive;
+diff --git a/src/lib/qtprofilesetup/qtmoduleinfo.cpp b/src/lib/qtprofilesetup/qtmoduleinfo.cpp
+index e55cd0c..88f68d9 100644
+--- a/src/lib/qtprofilesetup/qtmoduleinfo.cpp
++++ b/src/lib/qtprofilesetup/qtmoduleinfo.cpp
+@@ -212,11 +212,15 @@ void QtModuleInfo::setupLibraries(const QtEnvironment &qtEnv, bool debugBuild,
+         if (equalsOffset == -1)
+             continue;
+         if (simplifiedLine.startsWith("QMAKE_PRL_TARGET")) {
+-            libFilePath = libDir
+-                    + QString::fromLatin1(simplifiedLine.mid(equalsOffset + 1).trimmed());
++            const bool isMingw = qtEnv.mkspecName.contains(QLatin1String("win"))
++                    && qtEnv.mkspecName.contains(QLatin1String("g++"));
++            libFilePath = libDir;
++            if (isMingw)
++                libFilePath += QLatin1String("lib");
++            libFilePath += QString::fromLatin1(simplifiedLine.mid(equalsOffset + 1).trimmed());
+             if (qtEnv.mkspecName.contains(QLatin1String("msvc")))
+                 libFilePath += QLatin1String(".lib");
+-            else if (qtEnv.mkspecName.contains(QLatin1String("mingw")))
++            else if (isMingw)
+                 libFilePath += QLatin1String(".a");
+             continue;
+         }
+diff --git a/tests/auto/blackbox/tst_blackbox.cpp b/tests/auto/blackbox/tst_blackbox.cpp
+index 515bab7..7db8318 100644
+--- a/tests/auto/blackbox/tst_blackbox.cpp
++++ b/tests/auto/blackbox/tst_blackbox.cpp
+@@ -538,9 +538,11 @@ static bool symlinkExists(const QString &linkFilePath)
+
+ void TestBlackbox::clean()
+ {
+-    const QString appObjectFilePath = productBuildDir("app") + "/.obj/main.cpp" + QTC_HOST_OBJECT_SUFFIX;
++    const QString appObjectFilePath = productBuildDir("app")
++            + objectFileName("/.obj/main.cpp", buildProfileName);
+     const QString appExeFilePath = executableFilePath("app");
+-    const QString depObjectFilePath = productBuildDir("dep") + "/.obj/dep.cpp" + QTC_HOST_OBJECT_SUFFIX;
++    const QString depObjectFilePath = productBuildDir("dep")
++            + objectFileName("/.obj/dep.cpp", buildProfileName);
+     const QString depLibBase = productBuildDir("dep") + '/' + QTC_HOST_DYNAMICLIB_PREFIX + "dep";
+     QString depLibFilePath;
+     QStringList symlinks;
+@@ -826,7 +828,7 @@ void TestBlackbox::track_qobject_change()
+     const QString productFilePath = executableFilePath("i");
+     QVERIFY2(regularFileExists(productFilePath), qPrintable(productFilePath));
+     QString moc_bla_objectFileName = productBuildDir("i")
+-            + "/.obj/GeneratedFiles/moc_bla.cpp" QTC_HOST_OBJECT_SUFFIX;
++            + objectFileName("/.obj/GeneratedFiles/moc_bla.cpp", buildProfileName);
+     QVERIFY2(regularFileExists(moc_bla_objectFileName), qPrintable(moc_bla_objectFileName));
+
+     QTest::qSleep(1000);
+@@ -855,7 +857,7 @@ void TestBlackbox::trackAddFile()
+     output = process.readAllStandardOutput().split('\n');
+     QCOMPARE(output.takeFirst().trimmed().constData(), "Hello World!");
+     QCOMPARE(output.takeFirst().trimmed().constData(), "NARF!");
+-    QString unchangedObjectFile = buildDir + "/someapp/narf.cpp" QTC_HOST_OBJECT_SUFFIX;
++    QString unchangedObjectFile = buildDir + objectFileName("/someapp/narf.cpp", buildProfileName);
+     QDateTime unchangedObjectFileTime1 = QFileInfo(unchangedObjectFile).lastModified();
+
+     waitForNewTimestamp();
+@@ -961,7 +963,7 @@ void TestBlackbox::trackRemoveFile()
+     QCOMPARE(output.takeFirst().trimmed().constData(), "Hello World!");
+     QCOMPARE(output.takeFirst().trimmed().constData(), "NARF!");
+     QCOMPARE(output.takeFirst().trimmed().constData(), "ZORT!");
+-    QString unchangedObjectFile = buildDir + "/someapp/narf.cpp" QTC_HOST_OBJECT_SUFFIX;
++    QString unchangedObjectFile = buildDir + objectFileName("/someapp/narf.cpp", buildProfileName);
+     QDateTime unchangedObjectFileTime1 = QFileInfo(unchangedObjectFile).lastModified();
+
+     waitForNewTimestamp();
+@@ -990,7 +992,7 @@ void TestBlackbox::trackRemoveFile()
+     QCOMPARE(unchangedObjectFileTime1, unchangedObjectFileTime2);
+
+     // the object file for the removed cpp file should have vanished too
+-    QCOMPARE(regularFileExists(buildDir + "/someapp/zort.cpp" QTC_HOST_OBJECT_SUFFIX), false);
++    QVERIFY(!regularFileExists(buildDir + objectFileName("/someapp/zort.cpp", buildProfileName)));
+ }
+
+ void TestBlackbox::trackAddFileTag()
+@@ -1040,7 +1042,7 @@ void TestBlackbox::trackRemoveFileTag()
+
+     // check if the artifacts are here that will become stale in the 2nd step
+     QVERIFY(regularFileExists(productBuildDir("someapp")
+-                              + "/.obj/main_foo.cpp" QTC_HOST_OBJECT_SUFFIX));
++                              + objectFileName("/.obj/main_foo.cpp", buildProfileName)));
+     QVERIFY(regularFileExists(productBuildDir("someapp") + "/main_foo.cpp"));
+     QVERIFY(regularFileExists(productBuildDir("someapp") + "/main.foo"));
+
+@@ -1065,7 +1067,8 @@ void TestBlackbox::trackRemoveFileTag()
+     QCOMPARE(output.takeFirst().trimmed().constData(), "there's no foo here");
+
+     // check if stale artifacts have been removed
+-    QCOMPARE(regularFileExists(productBuildDir("someapp") + "/.obj/main_foo.cpp" QTC_HOST_OBJECT_SUFFIX), false);
++    QCOMPARE(regularFileExists(productBuildDir("someapp")
++                               + objectFileName("/.obj/main_foo.cpp", buildProfileName)), false);
+     QCOMPARE(regularFileExists(productBuildDir("someapp") + "/main_foo.cpp"), false);
+     QCOMPARE(regularFileExists(productBuildDir("someapp") + "/main.foo"), false);
+ }
+diff --git a/tests/auto/shared.h b/tests/auto/shared.h
+index e092036..2c4476d 100644
+--- a/tests/auto/shared.h
++++ b/tests/auto/shared.h
+@@ -30,6 +30,8 @@
+ #define QBS_TEST_SHARED_H
+
+ #include <tools/hostosinfo.h>
++#include <tools/profile.h>
++#include <tools/settings.h>
+
+ #include <QFile>
+ #include <QtTest>
+@@ -67,4 +69,13 @@ inline void copyFileAndUpdateTimestamp(const QString &source, const QString &tar
+     touch(target);
+ }
+
++inline QString objectFileName(const QString &baseName, const QString &profileName)
++{
++    qbs::Settings settings((QString()));
++    qbs::Profile profile(profileName, &settings);
++    const QString suffix = profile.value("qbs.toolchain").toStringList().contains("msvc")
++            ? "obj" : "o";
++    return baseName + '.' + suffix;
++}
++
+ #endif // Include guard.
+--
+2.1.1
