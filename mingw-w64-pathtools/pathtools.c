@@ -497,3 +497,42 @@ get_relocated_path_list(char const * from, char const * to_path_list)
   free ((void*)arr);
   return result;
 }
+
+char *
+single_path_relocation(const char *from, const char *to)
+{
+#if defined(__MINGW32__)
+  char exe_path[PATH_MAX];
+  get_executable_path (NULL, &exe_path[0], sizeof(exe_path)/sizeof(exe_path[0]));
+  if (strrchr (exe_path, '/') != NULL)
+  {
+     strrchr (exe_path, '/')[1] = '\0';
+  }
+  char * rel_to_datadir = get_relative_path (from, to);
+  strcat (exe_path, rel_to_datadir);
+  simplify_path (&exe_path[0]);
+  return malloc_copy_string(exe_path);
+#else
+  return malloc_copy_string(to);
+#endif
+}
+
+char *
+pathlist_relocation(const char *from_path, const char *to_path_list)
+{
+#if defined(__MINGW32__)
+  static char stored_path[PATH_MAX];
+  static int stored = 0;
+  if (stored == 0)
+  {
+    char const * relocated = get_relocated_path_list(from_path, to_path_list);
+    strncpy (stored_path, relocated, PATH_MAX);
+    stored_path[PATH_MAX-1] = '\0';
+    free ((void *)relocated);
+    stored = 1;
+  }
+  return stored_path;
+#else
+  return (to_path_list);
+#endif
+}
