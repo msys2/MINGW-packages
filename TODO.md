@@ -7,11 +7,6 @@ What we need to do:
 
 * Qt5: Consider merging PKGBUILDs of qt5 and qt5-static.
 
-* Qt4: Add package <- I (Ray) think we ignore software that hasn't moved to Qt5.
-  .. it is probably not being maintained and would thus be removed soon anyway.
-
-* Blender: Fix to use filesystem layout as on Linux.
-
 * Python2/3: Fix testsuite.
 
 * Guile: Fix 64-bit building.
@@ -20,8 +15,6 @@ What we need to do:
 
 * gperf: not working in many situations.
 
-* clang: 64-bit version is not properly work when using clang++
-
 * octopi: Fix to properly work with pacman.
 
 * Rust: Fix building with external Clang.
@@ -29,5 +22,7 @@ What we need to do:
 * Meld: Fix to not open itself in compare windows.
 
 * PCRE: Fix tests failure (Julia issue).
+
+* Fix NCURSES to work properly.
 
 * General: Compile a static bash and a static pacman into /sbin if possible.
