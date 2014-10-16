@@ -2,11 +2,6 @@ What we need to do:
 
 * GIMP: Fix loading python extensions when GIMP is starting from bash.
 
-* Qt5: Fix building when another version is installed in system. Need rearrange 
-  CFLAGS/LDFLAGS and place system wide flags at the end.
-
-* Qt5: Consider merging PKGBUILDs of qt5 and qt5-static.
-
 * Python2/3: Fix testsuite.
 
 * Guile: Fix 64-bit building.
@@ -26,3 +21,9 @@ What we need to do:
 * Fix NCURSES to work properly.
 
 * General: Compile a static bash and a static pacman into /sbin if possible.
+
+* Martell reports the following packages are without static libraries:
+
+   fontconfig gcrypt speex theora matroska openal32 openjpeg
+   theoradec theoraenc libopus libopencore-amrnb libopencore-amrwb
+   libcelt0 libgnutls libgme libembl libspeexdsp
