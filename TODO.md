@@ -1,5 +1,19 @@
 What we need to do:
 
+* Qt Creator: Registering as a post mortem debugger doesn't work (-wincrashevent)
+              reports:
+              Starting executable failed:
+              E:/msys64/mingw64/bin: No such file or directory.
+
+* Post mortem debugging: Running programs from mintty prevents Windows PMD from
+                         being invoked.
+
+* Octopi: Finish this. It mostly works.
+
+* Qt5 Static: CMake support doesn't link to ws2_32 nor use -static linkflag.
+
+* KDE Frameworks + Konsole / Yakuake: Port all of these and replace mintty.
+
 * GIMP: Fix loading python extensions when GIMP is starting from bash.
 
 * Python2/3: Fix testsuite.
@@ -10,8 +24,6 @@ What we need to do:
 
 * gperf: not working in many situations.
 
-* octopi: Fix to properly work with pacman.
-
 * Rust: Fix building with external Clang.
 
 * Meld: Fix to not open itself in compare windows.
@@ -19,8 +31,6 @@ What we need to do:
 * PCRE: Fix tests failure (Julia issue).
 
 * Fix NCURSES to work properly.
-
-* General: Compile a static bash and a static pacman into /sbin if possible.
 
 * Martell reports the following packages are without static libraries:
 
