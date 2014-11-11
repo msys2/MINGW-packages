@@ -1,0 +1,265 @@
+#  TIFFlib 4.0.3 mingw bug fix patch 
+#  Received from J. David Bryan 
+#
+#
+#  This patch is applied before building TIFFlib.
+#
+#
+#  Actions:
+#
+#   * All of the Win32 API functions in "tif_win32.c" take OS file handles.
+#     However, the corresponding wrapper functions receive C library file
+#     descriptors.  The patch converts the file descriptors to handles.
+#
+#
+#  Invoke as:
+#
+#   patch -s -p1 -d /usr/local/src/tiff-4.0.3 -i /opt/utilities/patches/tiff-4.0.3-mingw-bugfix.diff
+
+
+diff -u -r -N original/libtiff/tif_win32.c patched/libtiff/tif_win32.c
+--- original/libtiff/tif_win32.c	2011-12-22 13:07:57 -0500
++++ patched/libtiff/tif_win32.c	2013-10-13 02:06:28 -0400
+@@ -31,6 +31,7 @@
+ #include "tiffiop.h"
+ 
+ #include <windows.h>
++#include <io.h>
+ 
+ static tmsize_t
+ _tiffReadProc(thandle_t fd, void* buf, tmsize_t size)
+@@ -38,6 +39,7 @@
+ 	/* tmsize_t is 64bit on 64bit systems, but the WinAPI ReadFile takes
+ 	 * 32bit sizes, so we loop through the data in suitable 32bit sized
+ 	 * chunks */
++	HANDLE hndl = (HANDLE)_get_osfhandle((int)fd);
+ 	uint8* ma;
+ 	uint64 mb;
+ 	DWORD n;
+@@ -51,7 +53,7 @@
+ 		n=0x80000000UL;
+ 		if ((uint64)n>mb)
+ 			n=(DWORD)mb;
+-		if (!ReadFile(fd,(LPVOID)ma,n,&o,NULL))
++		if (!ReadFile(hndl,(LPVOID)ma,n,&o,NULL))
+ 			return(0);
+ 		ma+=o;
+ 		mb-=o;
+@@ -68,6 +70,7 @@
+ 	/* tmsize_t is 64bit on 64bit systems, but the WinAPI WriteFile takes
+ 	 * 32bit sizes, so we loop through the data in suitable 32bit sized
+ 	 * chunks */
++	HANDLE hndl = (HANDLE)_get_osfhandle((int)fd);
+ 	uint8* ma;
+ 	uint64 mb;
+ 	DWORD n;
+@@ -81,7 +84,7 @@
+ 		n=0x80000000UL;
+ 		if ((uint64)n>mb)
+ 			n=(DWORD)mb;
+-		if (!WriteFile(fd,(LPVOID)ma,n,&o,NULL))
++		if (!WriteFile(hndl,(LPVOID)ma,n,&o,NULL))
+ 			return(0);
+ 		ma+=o;
+ 		mb-=o;
+@@ -95,6 +98,7 @@
+ static uint64
+ _tiffSeekProc(thandle_t fd, uint64 off, int whence)
+ {
++	HANDLE hndl = (HANDLE)_get_osfhandle((int)fd);
+ 	LARGE_INTEGER offli;
+ 	DWORD dwMoveMethod;
+ 	offli.QuadPart = off;
+@@ -113,7 +117,7 @@
+ 			dwMoveMethod = FILE_BEGIN;
+ 			break;
+ 	}
+-	offli.LowPart=SetFilePointer(fd,offli.LowPart,&offli.HighPart,dwMoveMethod);
++	offli.LowPart=SetFilePointer(hndl,offli.LowPart,&offli.HighPart,dwMoveMethod);
+ 	if ((offli.LowPart==INVALID_SET_FILE_POINTER)&&(GetLastError()!=NO_ERROR))
+ 		offli.QuadPart=0;
+ 	return(offli.QuadPart);
+@@ -122,14 +126,16 @@
+ static int
+ _tiffCloseProc(thandle_t fd)
+ {
+-	return (CloseHandle(fd) ? 0 : -1);
++	// _close() will also close the underlying HANDLE
++	return (_close((int)fd) ? 0 : -1);
+ }
+ 
+ static uint64
+ _tiffSizeProc(thandle_t fd)
+ {
++	HANDLE hndl = (HANDLE)_get_osfhandle((int)fd);
+ 	ULARGE_INTEGER m;
+-	m.LowPart=GetFileSize(fd,&m.HighPart);
++	m.LowPart=GetFileSize(hndl,&m.HighPart);
+ 	return(m.QuadPart);
+ }
+ 
+@@ -156,6 +162,7 @@
+ static int
+ _tiffMapProc(thandle_t fd, void** pbase, toff_t* psize)
+ {
++	HANDLE hndl = (HANDLE)_get_osfhandle((int)fd);
+ 	uint64 size;
+ 	tmsize_t sizem;
+ 	HANDLE hMapFile;
+@@ -167,7 +174,7 @@
+ 
+ 	/* By passing in 0 for the maximum file size, it specifies that we
+ 	   create a file mapping object for the full file size. */
+-	hMapFile = CreateFileMapping(fd, NULL, PAGE_READONLY, 0, 0, NULL);
++	hMapFile = CreateFileMapping(hndl, NULL, PAGE_READONLY, 0, 0, NULL);
+ 	if (hMapFile == NULL)
+ 		return (0);
+ 	*pbase = MapViewOfFile(hMapFile, FILE_MAP_READ, 0, 0, 0);
+@@ -233,7 +240,8 @@
+ TIFFOpen(const char* name, const char* mode)
+ {
+ 	static const char module[] = "TIFFOpen";
+-	thandle_t fd;
++	HANDLE hndl;
++	int fd;
+ 	int m;
+ 	DWORD dwMode;
+ 	TIFF* tif;
+@@ -249,19 +257,25 @@
+ 		default:			return ((TIFF*)0);
+ 	}
+         
+-	fd = (thandle_t)CreateFileA(name,
++	hndl = CreateFileA(name,
+ 		(m == O_RDONLY)?GENERIC_READ:(GENERIC_READ | GENERIC_WRITE),
+ 		FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, dwMode,
+ 		(m == O_RDONLY)?FILE_ATTRIBUTE_READONLY:FILE_ATTRIBUTE_NORMAL,
+ 		NULL);
+-	if (fd == INVALID_HANDLE_VALUE) {
++	if (hndl == INVALID_HANDLE_VALUE) {
+ 		TIFFErrorExt(0, module, "%s: Cannot open", name);
+ 		return ((TIFF *)0);
+ 	}
+ 
+-	tif = TIFFFdOpen((int)fd, name, mode);
++	fd = _open_osfhandle((intptr_t)hndl, (m | _O_BINARY));
++	if (fd < 0) {
++		TIFFErrorExt(0, module, "%s: Cannot create fd", name);
++		return ((TIFF *)0);
++	}
++
++	tif = TIFFFdOpen(fd, name, mode);
+ 	if(!tif)
+-		CloseHandle(fd);
++		_close(fd);	// this will close the underlying hndl as well
+ 	return tif;
+ }
+ 
+@@ -272,7 +286,8 @@
+ TIFFOpenW(const wchar_t* name, const char* mode)
+ {
+ 	static const char module[] = "TIFFOpenW";
+-	thandle_t fd;
++	HANDLE hndl;
++	int fd;
+ 	int m;
+ 	DWORD dwMode;
+ 	int mbsize;
+@@ -290,12 +305,12 @@
+ 		default:			return ((TIFF*)0);
+ 	}
+ 
+-	fd = (thandle_t)CreateFileW(name,
++	hndl = CreateFileW(name,
+ 		(m == O_RDONLY)?GENERIC_READ:(GENERIC_READ|GENERIC_WRITE),
+ 		FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, dwMode,
+ 		(m == O_RDONLY)?FILE_ATTRIBUTE_READONLY:FILE_ATTRIBUTE_NORMAL,
+ 		NULL);
+-	if (fd == INVALID_HANDLE_VALUE) {
++	if (hndl == INVALID_HANDLE_VALUE) {
+ 		TIFFErrorExt(0, module, "%S: Cannot open", name);
+ 		return ((TIFF *)0);
+ 	}
+@@ -314,10 +329,15 @@
+ 				    NULL, NULL);
+ 	}
+ 
+-	tif = TIFFFdOpen((int)fd,
+-			 (mbname != NULL) ? mbname : "<unknown>", mode);
++	fd = _open_osfhandle((intptr_t)hndl, (m | _O_BINARY));
++	if (fd < 0) {
++		TIFFErrorExt(0, module, "%s: Cannot create fd", name);
++		return ((TIFF *)0);
++	}
++
++	tif = TIFFFdOpen(fd, (mbname != NULL) ? mbname : "<unknown>", mode);
+ 	if(!tif)
+-		CloseHandle(fd);
++		_close(fd);	// this will close the underlying hndl as well
+ 
+ 	_TIFFfree(mbname);
+ 
+diff -u -r -N original/libtiff/tiffio.h patched/libtiff/tiffio.h
+--- original/libtiff/tiffio.h	2012-07-29 12:34:26 -0400
++++ patched/libtiff/tiffio.h	2013-10-13 02:05:38 -0400
+@@ -81,30 +81,7 @@
+ #define __WIN32__
+ #endif
+ 
+-/*
+- * On windows you should define USE_WIN32_FILEIO if you are using tif_win32.c
+- * or AVOID_WIN32_FILEIO if you are using something else (like tif_unix.c).
+- *
+- * By default tif_unix.c is assumed.
+- */
+-
+-#if defined(_WINDOWS) || defined(__WIN32__) || defined(_Windows)
+-#  if !defined(__CYGWIN) && !defined(AVOID_WIN32_FILEIO) && !defined(USE_WIN32_FILEIO)
+-#    define AVOID_WIN32_FILEIO
+-#  endif
+-#endif
+-
+-#if defined(USE_WIN32_FILEIO)
+-# define VC_EXTRALEAN
+-# include <windows.h>
+-# ifdef __WIN32__
+-DECLARE_HANDLE(thandle_t);     /* Win32 file handle */
+-# else
+-typedef HFILE thandle_t;       /* client data handle */
+-# endif /* __WIN32__ */
+-#else
+ typedef void* thandle_t;       /* client data handle */
+-#endif /* USE_WIN32_FILEIO */
+ 
+ /*
+  * Flags to pass to TIFFPrintDirectory to control
+diff -u -r -N original/tools/fax2ps.c patched/tools/fax2ps.c
+--- original/tools/fax2ps.c	2011-04-02 15:30:20 -0400
++++ patched/tools/fax2ps.c	2013-10-13 02:05:38 -0400
+@@ -393,11 +393,7 @@
+ 	while ((n = read(fileno(stdin), buf, sizeof (buf))) > 0)
+ 	    write(fileno(fd), buf, n);
+ 	lseek(fileno(fd), 0, SEEK_SET);
+-#if defined(_WIN32) && defined(USE_WIN32_FILEIO)
+-	tif = TIFFFdOpen(_get_osfhandle(fileno(fd)), "temp", "r");
+-#else
+ 	tif = TIFFFdOpen(fileno(fd), "temp", "r");
+-#endif
+ 	if (tif) {
+ 	    fax2ps(tif, npages, pages, "<stdin>");
+ 	    TIFFClose(tif);
+diff -u -r -N original/tools/fax2tiff.c patched/tools/fax2tiff.c
+--- original/tools/fax2tiff.c	2010-03-10 14:56:49 -0500
++++ patched/tools/fax2tiff.c	2013-10-13 02:05:38 -0400
+@@ -264,11 +264,7 @@
+ 			    "%s: %s: Can not open\n", argv[0], argv[optind]);
+ 			continue;
+ 		}
+-#if defined(_WIN32) && defined(USE_WIN32_FILEIO)
+-                TIFFSetClientdata(faxTIFF, (thandle_t)_get_osfhandle(fileno(in)));
+-#else
+                 TIFFSetClientdata(faxTIFF, (thandle_t)fileno(in));
+-#endif
+ 		TIFFSetFileName(faxTIFF, (const char*)argv[optind]);
+ 		TIFFSetField(out, TIFFTAG_IMAGEWIDTH, xsize);
+ 		TIFFSetField(out, TIFFTAG_BITSPERSAMPLE, 1);
