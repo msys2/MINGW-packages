@@ -1,16 +1,20 @@
 What we need to do:
 
+* Qt Creator: Registering as a post mortem debugger doesn't work (-wincrashevent)
+              reports:
+              Starting executable failed:
+              E:/msys64/mingw64/bin: No such file or directory.
+
+* Post mortem debugging: Running programs from mintty prevents Windows PMD from
+                         being invoked.
+
+* Octopi: Finish this. It mostly works.
+
+* Qt5 Static: CMake support doesn't link to ws2_32 nor use -static linkflag.
+
+* KDE Frameworks + Konsole / Yakuake: Port all of these and replace mintty.
+
 * GIMP: Fix loading python extensions when GIMP is starting from bash.
-
-* Qt5: Fix building when another version is installed in system. Need rearrange 
-  CFLAGS/LDFLAGS and place system wide flags at the end.
-
-* Qt5: Consider merging PKGBUILDs of qt5 and qt5-static.
-
-* Qt4: Add package <- I (Ray) think we ignore software that hasn't moved to Qt5.
-  .. it is probably not being maintained and would thus be removed soon anyway.
-
-* Blender: Fix to use filesystem layout as on Linux.
 
 * Python2/3: Fix testsuite.
 
@@ -20,14 +24,16 @@ What we need to do:
 
 * gperf: not working in many situations.
 
-* clang: 64-bit version is not properly work when using clang++
-
-* octopi: Fix to properly work with pacman.
-
 * Rust: Fix building with external Clang.
 
 * Meld: Fix to not open itself in compare windows.
 
 * PCRE: Fix tests failure (Julia issue).
 
-* General: Compile a static bash and a static pacman into /sbin if possible.
+* Fix NCURSES to work properly.
+
+* Martell reports the following packages are without static libraries:
+
+   fontconfig gcrypt speex theora matroska openal32 openjpeg
+   theoradec theoraenc libopus libopencore-amrnb libopencore-amrwb
+   libcelt0 libgnutls libgme libembl libspeexdsp

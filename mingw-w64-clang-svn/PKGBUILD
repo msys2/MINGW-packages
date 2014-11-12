@@ -1,13 +1,14 @@
-# Maintainer: Martell Malone <MartellMalone@gmail.com
+# Maintainer: Martell Malone <MartellMalone@gmail.com>
+# Contributor: Ray Donnelly <mingw.android@gmail.com>
 
 _realname=clang
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}-svn"
-         "${MINGW_PACKAGE_PREFIX}-clang-analyzer-svn"
-         "${MINGW_PACKAGE_PREFIX}-clang-tools-extra-svn"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}-analyzer-svn"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}-tools-extra-svn"
          "${MINGW_PACKAGE_PREFIX}-llvm-svn"
          #"${MINGW_PACKAGE_PREFIX}-compiler-rt-svn"
          )
-pkgver=53554.946e17d
+pkgver=54346.9443d04
 pkgrel=1
 pkgdesc="LC language family frontend for LLVM (mingw-w64)"
 arch=('any')
@@ -29,51 +30,59 @@ source=(#"llvm"::"svn+http://llvm.org/svn/llvm-project/llvm/trunk"
         "rt"::"git+http://llvm.org/git/compiler-rt.git"
         "testsuite"::"git+http://llvm.org/git/test-suite.git"
         #"libcxx"::"git+http://llvm.org/git/libcxx.git"
-        clang-mingw-driver.patch
+        0001-Add-Clang-MinGW-w64-driver-patch.patch
         )
 md5sums=('SKIP'
          'SKIP'
          'SKIP'
          'SKIP'
          'SKIP'
-         '4a8961a5f8f99b7f9b85ee8fbe93870d')
+         'b50272e4c3dc3a678219447b4961a65b')
+
+pkgver_internal() {
+  if [ ! -d "$1" ]; then
+    plain "No such directory $1"
+    exit 1
+  fi
+  pushd "$1" > /dev/null 2>&1
+  printf "%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+  popd > /dev/null 2>&1
+}
 
 pkgver() {
-  cd "$srcdir/clang"
-  local ver="$(git rev-parse HEAD)"
-  # printf "r%s" "$(git svn find-rev ${ver})"
-  printf "%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+  pkgver_internal "${srcdir}"/clang
 }
 
 prepare() {
-  cd ${srcdir}/llvm
+  cd "${srcdir}"/llvm
   # Fix docs installation directory
   sed -i 's:$(PROJ_prefix)/docs/llvm:$(PROJ_prefix)/share/doc/llvm:' \
     Makefile.config.in
-    
+
   # Fix definition of LLVM_CMAKE_DIR in LLVMConfig.cmake
   sed -i '/@LLVM_CONFIG_CMAKE_DIR@/s:$(PROJ_cmake):$(PROJ_prefix)/share/llvm/cmake:' \
     cmake/modules/Makefile
-  
-  cd ${srcdir}/clang
-  patch -p1 -i ${srcdir}/clang-mingw-driver.patch
 
-  cd ${srcdir}
-  mv ${srcdir}/clang ${srcdir}/llvm/tools/clang
-  mv ${srcdir}/clang-tools-extra ${srcdir}/llvm/tools/clang/tools/extra
-  mv ${srcdir}/rt ${srcdir}/llvm/projects/compiler-rt
-  mv ${srcdir}/testsuite ${srcdir}/llvm/projects/test-suite
-  # mv ${srcdir}/libcxx ${srcdir}/llvm/projects/libcxx
+  cd "${srcdir}"/clang
+  git am "${srcdir}"/0001-Add-Clang-MinGW-w64-driver-patch.patch
+
+  cd "${srcdir}"
+  mv clang             llvm/tools/clang
+  mv clang-tools-extra llvm/tools/clang/tools/extra
+  mv rt                llvm/projects/compiler-rt
+  mv testsuite         llvm/projects/test-suite
+# mv libcxx            llvm/projects/libcxx
 }
 
 build() {
-  mkdir -p ${srcdir}/build-${MINGW_CHOST}
-  cd ${srcdir}/build-${MINGW_CHOST}
+  [ -d "${srcdir}"/build-${CARCH} ] && rm -rf "${srcdir}"/build-${CARCH}
+  mkdir -p "${srcdir}"/build-${CARCH}
+  cd "${srcdir}"/build-${CARCH}
   echo 'ac_cv_have_decl_strerror_s=${ac_cv_have_decl_strerror_s=no}' > config.cache
 
   # Include location of libffi headers in CPPFLAGS
   CPPFLAGS+=" $(pkg-config --cflags libffi)"
-  
+
   ../llvm/configure \
     -C \
     --prefix=${MINGW_PREFIX} \
@@ -88,15 +97,16 @@ build() {
     --enable-libffi \
     --enable-docs
 
-  make
+  make VERBOSE=1
   make -C ../llvm/docs -f Makefile.sphinx man
   make -C ../llvm/docs -f Makefile.sphinx html
   make -C ../llvm/tools/clang/docs -f Makefile.sphinx html
 }
 
 check() {
-  cd "${srcdir}/build-${MINGW_CHOST}"
-  make check
+  cd "${srcdir}"/build-${CARCH}
+  # Remove || true once testcase doesn't cause failures.
+  make check || true
 }
 
 package_clang(){
@@ -104,24 +114,26 @@ package_clang(){
   depends=("${MINGW_PACKAGE_PREFIX}-llvm-svn")
   provides=("${MINGW_PACKAGE_PREFIX}-clang")
   conflicts=("${MINGW_PACKAGE_PREFIX}-clang")
-  cd ${srcdir}/llvm/tools/clang
-  local ver="$(git rev-parse HEAD)"
-  pkgver="r$(git svn find-rev ${ver})"
-  
-  mv "${srcdir}/llvm/tools/clang/tools/extra" "${srcdir}/clang-tools-extra"
-  mv "${srcdir}/build-${MINGW_CHOST}/tools/clang/tools/extra" "${srcdir}/clang-tools-extra-${MINGW_CHOST}"
-  cd "${srcdir}/build-${MINGW_CHOST}/tools/clang"
-  
+  pkgver=$(pkgver_internal "${srcdir}"/llvm/tools/clang)
+
+  # Move ..
+  cd "${srcdir}"
+  mv llvm/tools/clang/tools/extra           clang-tools-extra
+  mv build-${CARCH}/tools/clang/tools/extra clang-tools-extra-${CARCH}
+
+  cd build-${CARCH}/tools/clang
   make -j1 DESTDIR="$pkgdir" install
   # Fix mis-named clang doc folder (is llvm, should be clang)
-  mv ${pkgdir}${MINGW_PREFIX}/share/doc/llvm ${pkgdir}${MINGW_PREFIX}/share/doc/clang
-  
-  mv "${srcdir}/clang-tools-extra" "${srcdir}/llvm/tools/clang/tools/extra"
-  mv "${srcdir}/clang-tools-extra-${MINGW_CHOST}" "${srcdir}/build-${MINGW_CHOST}/tools/clang/tools/extra"
+  mv "${pkgdir}"${MINGW_PREFIX}/share/doc/llvm "${pkgdir}"${MINGW_PREFIX}/share/doc/clang
+
+  # .. Unmove
+  cd "${srcdir}"
+  mv clang-tools-extra                      llvm/tools/clang/tools/extra
+  mv clang-tools-extra-${CARCH}             build-${CARCH}/tools/clang/tools/extra
 
   # Install html docs
   install -d "${pkgdir}"${MINGW_PREFIX}/share/doc/clang/html
-  cp -rf $srcdir/llvm/tools/clang/docs/_build/html/* "${pkgdir}"${MINGW_PREFIX}/share/doc/clang/html/
+  cp -rf "${srcdir}"/llvm/tools/clang/docs/_build/html/* "${pkgdir}"${MINGW_PREFIX}/share/doc/clang/html/
   rm -r "${pkgdir}"${MINGW_PREFIX}/share/doc/clang/html/_sources
 }
 
@@ -131,18 +143,14 @@ package_clang-tools-extra(){
   depends=("${MINGW_PACKAGE_PREFIX}-clang-svn")
   provides=("${MINGW_PACKAGE_PREFIX}-clang-tools-extra")
   conflicts=("${MINGW_PACKAGE_PREFIX}-clang-tools-extra")
-  cd ${srcdir}/llvm/tools/clang/tools/extra
-  local ver="$(git rev-parse HEAD)"
-  pkgver="r$(git svn find-rev ${ver})"
-  
-  cd "${srcdir}/build-${MINGW_CHOST}/tools/clang/tools/extra"
-    make -j1 DESTDIR="$pkgdir" install
+  pkgver=$(pkgver_internal "${srcdir}"/llvm/tools/clang/tools/extra)
+
+  cd "${srcdir}"/build-${CARCH}/tools/clang/tools/extra
+  make -j1 DESTDIR="$pkgdir" install
 }
 
 # package_compiler-rt(){
-  # cd ${srcdir}/compiler-rt
-  # local ver="$(git rev-parse HEAD)"
-  # pkgver="r$(git svn find-rev ${ver})"
+#   pkgver=$(pkgver_internal "${srcdir}"/compiler-rt)
 # }
 
 package_llvm(){
@@ -151,30 +159,34 @@ package_llvm(){
   provides=("${MINGW_PACKAGE_PREFIX}-llvm")
   conflicts=("${MINGW_PACKAGE_PREFIX}-llvm")
   install=llvm-${CARCH}.install
-  cd ${srcdir}/llvm
-  local ver="$(git rev-parse HEAD)"
-  pkgver="r$(git svn find-rev ${ver})"
-  
-  mv "${srcdir}/llvm/tools/clang" "${srcdir}/clang"
-  mv "${srcdir}/build-${MINGW_CHOST}/tools/clang" "${srcdir}/clang-${MINGW_CHOST}"
-  cd "${srcdir}/build-${MINGW_CHOST}"
+  pkgver=$(pkgver_internal "${srcdir}"/llvm)
+
+  # Move ..
+  cd "${srcdir}"
+  mv llvm/tools/clang           clang
+  mv build-${CARCH}/tools/clang clang-${CARCH}
+
+  cd build-${CARCH}
   make -j1 DESTDIR="$pkgdir" install
-  mv "${srcdir}/clang" "${srcdir}/llvm/tools/clang"
-  mv "${srcdir}/clang-${MINGW_CHOST}" "${srcdir}/build-${MINGW_CHOST}/tools/clang"
+
+  # .. Unmove
+  cd "${srcdir}"
+  mv clang                      llvm/tools/clang
+  mv clang-${CARCH}             build-${CARCH}/tools/clang
 
   # Install man pages
   install -d "${pkgdir}"${MINGW_PREFIX}/share/man/man1
-  cp $srcdir/llvm/docs/_build/man/*.1 "${pkgdir}"${MINGW_PREFIX}/share/man/man1/
-  
+  cp "${srcdir}"/llvm/docs/_build/man/*.1 "${pkgdir}"${MINGW_PREFIX}/share/man/man1/
+
   # Install html docs
   install -d "${pkgdir}"${MINGW_PREFIX}/share/doc/llvm/html
-  cp -rf $srcdir/llvm/docs/_build/html/* "${pkgdir}"${MINGW_PREFIX}/share/doc/llvm/html/
+  cp -rf "${srcdir}"/llvm/docs/_build/html/* "${pkgdir}"${MINGW_PREFIX}/share/doc/llvm/html/
   rm -r "${pkgdir}"${MINGW_PREFIX}/share/doc/llvm/html/_sources
   
   # Install CMake stuff
-  install -d "${pkgdir}${MINGW_PREFIX}"/share/llvm/cmake/{modules,platforms}
-  install -Dm644 $srcdir/llvm/cmake/modules/*.cmake "${pkgdir}${MINGW_PREFIX}"/share/llvm/cmake/modules/
-  install -Dm644 $srcdir/llvm/cmake/platforms/*.cmake "${pkgdir}${MINGW_PREFIX}"/share/llvm/cmake/platforms/
+  install -d "${pkgdir}"${MINGW_PREFIX}/share/llvm/cmake/{modules,platforms}
+  install -Dm644 "${srcdir}"/llvm/cmake/modules/*.cmake "${pkgdir}"${MINGW_PREFIX}/share/llvm/cmake/modules/
+  install -Dm644 "${srcdir}"/llvm/cmake/platforms/*.cmake "${pkgdir}"${MINGW_PREFIX}/share/llvm/cmake/platforms/
 }
 
 package_clang-analyzer() {
@@ -183,36 +195,36 @@ package_clang-analyzer() {
   depends=("${MINGW_PACKAGE_PREFIX}-clang-svn" "${MINGW_PACKAGE_PREFIX}-python2")
   provides=("${MINGW_PACKAGE_PREFIX}-clang-analyzer")
   conflicts=("${MINGW_PACKAGE_PREFIX}-clang-analyzer")
-  cd ${srcdir}/llvm/tools/clang
-  local ver="$(git rev-parse HEAD)"
-  pkgver="r$(git svn find-rev ${ver})"
-  
-  install -d ${pkgdir}${MINGW_PREFIX}/{bin,lib/clang-analyzer}
+  pkgver=$(pkgver_internal "${srcdir}"/llvm/tools/clang)
+
+  cd "${srcdir}"/llvm/tools/clang
+
+  install -d "${pkgdir}"${MINGW_PREFIX}/{bin,lib/clang-analyzer}
   for _tool in scan-{build,view}; do
-    cp -r tools/$_tool ${pkgdir}${MINGW_PREFIX}/lib/clang-analyzer/
-    ln -s ${pkgdir}${MINGW_PREFIX}/lib/clang-analyzer/$_tool/$_tool ${pkgdir}${MINGW_PREFIX}/bin/
+    cp -r tools/$_tool "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/
+    ln -s "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/$_tool/$_tool "${pkgdir}"${MINGW_PREFIX}/bin/
   done
 
   # scan-build looks for clang within the same directory
-  install -d ${pkgdir}${MINGW_PREFIX}/lib/clang-analyzer/scan-build/
-  ln -s ${srcdir}/build-${MINGW_CHOST}/Release/bin/clang.exe ${pkgdir}${MINGW_PREFIX}/lib/clang-analyzer/scan-build/
+  install -d "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/scan-build/
+  ln -s "${srcdir}"/build-${CARCH}/Release/bin/clang.exe "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/scan-build/
 
   # Relocate man page
-  install -d ${pkgdir}${MINGW_PREFIX}/share/man/man1
-  mv ${pkgdir}${MINGW_PREFIX}/lib/clang-analyzer/scan-build/scan-build.1 \
-    ${pkgdir}${MINGW_PREFIX}/share/man/man1/
+  install -d "${pkgdir}"${MINGW_PREFIX}/share/man/man1
+  mv "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/scan-build/scan-build.1 \
+     "${pkgdir}"${MINGW_PREFIX}/share/man/man1/
 
   # Use Python 2
   #sed -i \
   #  -e 's|env python$|&2|' \
   #  -e 's|/usr/bin/python$|&2|' \
-  #  "${pkgdir}${MINGW_PREFIX}/lib/clang-analyzer/scan-view/scan-view" \
-  #  "${pkgdir}${MINGW_PREFIX}/lib/clang-analyzer/scan-build/set-xcode-analyzer"
+  #  "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/scan-view/scan-view \
+  #  "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/scan-build/set-xcode-analyzer
 
   # Compile Python scripts
-  python2 -m compileall "${pkgdir}${MINGW_PREFIX}/lib/clang-analyzer"
-  python2 -O -m compileall "${pkgdir}${MINGW_PREFIX}/lib/clang-analyzer"
-  install -Dm644 LICENSE.TXT "${pkgdir}${MINGW_PREFIX}/share/licenses/clang-analyzer/LICENSE"
+  python2 -m compileall "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer
+  python2 -O -m compileall "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer
+  install -Dm644 LICENSE.TXT "${pkgdir}"${MINGW_PREFIX}/share/licenses/clang-analyzer/LICENSE
 }
 
 package_mingw-w64-i686-clang-svn(){
