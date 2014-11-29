@@ -37,3 +37,5 @@ What we need to do:
    fontconfig gcrypt speex theora matroska openal32 openjpeg
    theoradec theoraenc libopus libopencore-amrnb libopencore-amrwb
    libcelt0 libgnutls libgme libembl libspeexdsp
+
+* Bison: Add path relocation when locating m4
