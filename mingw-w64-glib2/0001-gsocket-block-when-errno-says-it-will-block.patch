@@ -1,0 +1,274 @@
+From 177ff38e103a76b7cd153c4c8014159eb6a9eb60 Mon Sep 17 00:00:00 2001
+From: Ignacio Casal Quinteiro <icq@gnome.org>
+Date: Mon, 22 Dec 2014 16:38:50 +0100
+Subject: [PATCH] gsocket: block when errno says it will block
+
+On windows it may happen we recreate a gsocket
+out of a fd from another gsocket that already
+got the FD_WRITE event. If this happens in order
+to get another FD_WRITE we need to have tried an
+operation that might need such event. What we do
+here is to first try to do the operation and
+then if errno specifies that we might block then
+wait for that event to occur.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=741707
+---
+ gio/gsocket.c | 147 ++++++++++++++++++++++++++++++----------------------------
+ 1 file changed, 77 insertions(+), 70 deletions(-)
+
+diff --git a/gio/gsocket.c b/gio/gsocket.c
+index d9e135d..f144674 100644
+--- a/gio/gsocket.c
++++ b/gio/gsocket.c
+@@ -2230,31 +2230,31 @@ g_socket_accept (GSocket       *socket,
+ 
+   while (TRUE)
+     {
+-      if (socket->priv->blocking &&
+-	  !g_socket_condition_wait (socket,
+-				    G_IO_IN, cancellable, error))
+-	return NULL;
+-
+       if ((ret = accept (socket->priv->fd, NULL, 0)) < 0)
+ 	{
+ 	  int errsv = get_socket_errno ();
+ 
+-	  win32_unset_event_mask (socket, FD_ACCEPT);
+-
+ 	  if (errsv == EINTR)
+ 	    continue;
+ 
+-	  if (socket->priv->blocking)
+-	    {
+ #ifdef WSAEWOULDBLOCK
+-	      if (errsv == WSAEWOULDBLOCK)
+-		continue;
++          if (errsv == WSAEWOULDBLOCK)
+ #else
+-	      if (errsv == EWOULDBLOCK ||
+-		  errsv == EAGAIN)
+-		continue;
++          if (errsv == EWOULDBLOCK ||
++              errsv == EAGAIN)
+ #endif
+-	    }
++            {
++              win32_unset_event_mask (socket, FD_ACCEPT);
++
++              if (socket->priv->blocking)
++                {
++                  if (!g_socket_condition_wait (socket,
++                                                G_IO_IN, cancellable, error))
++                    return NULL;
++
++                  continue;
++                }
++            }
+ 
+ 	  g_set_error (error, G_IO_ERROR,
+ 		       socket_io_error_from_errno (errsv),
+@@ -2368,6 +2368,8 @@ g_socket_connect (GSocket         *socket,
+ 	  if (errsv == WSAEWOULDBLOCK)
+ #endif
+ 	    {
++              win32_unset_event_mask (socket, FD_CONNECT);
++
+ 	      if (socket->priv->blocking)
+ 		{
+ 		  if (g_socket_condition_wait (socket, G_IO_OUT, cancellable, error))
+@@ -2602,11 +2604,6 @@ g_socket_receive_with_blocking (GSocket       *socket,
+ 
+   while (1)
+     {
+-      if (blocking &&
+-	  !g_socket_condition_wait (socket,
+-				    G_IO_IN, cancellable, error))
+-	return -1;
+-
+       if ((ret = recv (socket->priv->fd, buffer, size, 0)) < 0)
+ 	{
+ 	  int errsv = get_socket_errno ();
+@@ -2614,17 +2611,24 @@ g_socket_receive_with_blocking (GSocket       *socket,
+ 	  if (errsv == EINTR)
+ 	    continue;
+ 
+-	  if (blocking)
+-	    {
+ #ifdef WSAEWOULDBLOCK
+-	      if (errsv == WSAEWOULDBLOCK)
+-		continue;
++          if (errsv == WSAEWOULDBLOCK)
+ #else
+-	      if (errsv == EWOULDBLOCK ||
+-		  errsv == EAGAIN)
+-		continue;
++          if (errsv == EWOULDBLOCK ||
++              errsv == EAGAIN)
+ #endif
+-	    }
++            {
++              win32_unset_event_mask (socket, FD_READ);
++
++              if (blocking)
++                {
++                  if (!g_socket_condition_wait (socket,
++                                                G_IO_IN, cancellable, error))
++                    return -1;
++
++                  continue;
++                }
++            }
+ 
+ 	  win32_unset_event_mask (socket, FD_READ);
+ 
+@@ -2777,11 +2781,6 @@ g_socket_send_with_blocking (GSocket       *socket,
+ 
+   while (1)
+     {
+-      if (blocking &&
+-	  !g_socket_condition_wait (socket,
+-				    G_IO_OUT, cancellable, error))
+-	return -1;
+-
+       if ((ret = send (socket->priv->fd, buffer, size, G_SOCKET_DEFAULT_SEND_FLAGS)) < 0)
+ 	{
+ 	  int errsv = get_socket_errno ();
+@@ -2790,21 +2789,23 @@ g_socket_send_with_blocking (GSocket       *socket,
+ 	    continue;
+ 
+ #ifdef WSAEWOULDBLOCK
+-	  if (errsv == WSAEWOULDBLOCK)
+-	    win32_unset_event_mask (socket, FD_WRITE);
+-#endif
+-
+-	  if (blocking)
+-	    {
+-#ifdef WSAEWOULDBLOCK
+-	      if (errsv == WSAEWOULDBLOCK)
+-		continue;
++          if (errsv == WSAEWOULDBLOCK)
+ #else
+-	      if (errsv == EWOULDBLOCK ||
+-		  errsv == EAGAIN)
+-		continue;
++          if (errsv == EWOULDBLOCK ||
++              errsv == EAGAIN)
+ #endif
+-	    }
++            {
++              win32_unset_event_mask (socket, FD_WRITE);
++
++              if (blocking)
++                {
++                  if (!g_socket_condition_wait (socket,
++                                                G_IO_OUT, cancellable, error))
++                    return -1;
++
++                  continue;
++                }
++            }
+ 
+ 	  g_set_error (error, G_IO_ERROR,
+ 		       socket_io_error_from_errno (errsv),
+@@ -3874,11 +3875,6 @@ g_socket_send_message (GSocket                *socket,
+ 
+     while (1)
+       {
+-	if (socket->priv->blocking &&
+-	    !g_socket_condition_wait (socket,
+-				      G_IO_OUT, cancellable, error))
+-	  return -1;
+-
+ 	result = sendmsg (socket->priv->fd, &msg, flags | G_SOCKET_DEFAULT_SEND_FLAGS);
+ 	if (result < 0)
+ 	  {
+@@ -3890,7 +3886,13 @@ g_socket_send_message (GSocket                *socket,
+ 	    if (socket->priv->blocking &&
+ 		(errsv == EWOULDBLOCK ||
+ 		 errsv == EAGAIN))
+-	      continue;
++              {
++                if (!g_socket_condition_wait (socket,
++                                              G_IO_OUT, cancellable, error))
++                  return -1;
++
++                continue;
++              }
+ 
+ 	    g_set_error (error, G_IO_ERROR,
+ 			 socket_io_error_from_errno (errsv),
+@@ -3942,11 +3944,6 @@ g_socket_send_message (GSocket                *socket,
+ 
+     while (1)
+       {
+-	if (socket->priv->blocking &&
+-	    !g_socket_condition_wait (socket,
+-				      G_IO_OUT, cancellable, error))
+-	  return -1;
+-
+ 	if (address)
+ 	  result = WSASendTo (socket->priv->fd,
+ 			      bufs, num_vectors,
+@@ -3967,11 +3964,18 @@ g_socket_send_message (GSocket                *socket,
+ 	      continue;
+ 
+ 	    if (errsv == WSAEWOULDBLOCK)
+-	      win32_unset_event_mask (socket, FD_WRITE);
++              {
++                win32_unset_event_mask (socket, FD_WRITE);
+ 
+-	    if (socket->priv->blocking &&
+-		errsv == WSAEWOULDBLOCK)
+-	      continue;
++                if (socket->priv->blocking)
++                  {
++                    if (!g_socket_condition_wait (socket,
++                                                  G_IO_OUT, cancellable, error))
++                      return -1;
++
++                    continue;
++                  }
++              }
+ 
+ 	    g_set_error (error, G_IO_ERROR,
+ 			 socket_io_error_from_errno (errsv),
+@@ -4634,11 +4638,6 @@ g_socket_receive_message (GSocket                 *socket,
+     /* do it */
+     while (1)
+       {
+-	if (socket->priv->blocking &&
+-	    !g_socket_condition_wait (socket,
+-				      G_IO_IN, cancellable, error))
+-	  return -1;
+-
+ 	addrlen = sizeof addr;
+ 	if (address)
+ 	  result = WSARecvFrom (socket->priv->fd,
+@@ -4658,11 +4657,19 @@ g_socket_receive_message (GSocket                 *socket,
+ 	    if (errsv == WSAEINTR)
+ 	      continue;
+ 
+-	    win32_unset_event_mask (socket, FD_READ);
++            if (errsv == WSAEWOULDBLOCK)
++              {
++                win32_unset_event_mask (socket, FD_READ);
+ 
+-	    if (socket->priv->blocking &&
+-		errsv == WSAEWOULDBLOCK)
+-	      continue;
++                if (socket->priv->blocking)
++                  {
++                    if (!g_socket_condition_wait (socket,
++                                                  G_IO_IN, cancellable, error))
++                      return -1;
++
++                    continue;
++                  }
++              }
+ 
+ 	    g_set_error (error, G_IO_ERROR,
+ 			 socket_io_error_from_errno (errsv),
+-- 
+2.1.0
+
