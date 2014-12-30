@@ -1,0 +1,125 @@
+diff -urN cmake-3.1.0.orig/Source/cmGlobalGenerator.cxx cmake-3.1.0/Source/cmGlobalGenerator.cxx
+--- cmake-3.1.0.orig/Source/cmGlobalGenerator.cxx	2014-12-30 23:29:27.497906500 +0000
++++ cmake-3.1.0/Source/cmGlobalGenerator.cxx	2014-12-30 23:19:59.737689100 +0000
+@@ -1392,7 +1392,8 @@
+         {
+         if((target.GetPropertyAsBool("AUTOMOC")
+               || target.GetPropertyAsBool("AUTOUIC")
+-              || target.GetPropertyAsBool("AUTORCC"))
++              || target.GetPropertyAsBool("AUTORCC")
++              || target.GetPropertyAsBool("AUTOSTATICPLUGINS"))
+             && !target.IsImported())
+           {
+           cmQtAutoGenerators autogen;
+diff -urN cmake-3.1.0.orig/Source/cmQtAutoGenerators.cxx cmake-3.1.0/Source/cmQtAutoGenerators.cxx
+--- cmake-3.1.0.orig/Source/cmQtAutoGenerators.cxx	2014-12-30 23:29:27.527906500 +0000
++++ cmake-3.1.0/Source/cmQtAutoGenerators.cxx	2014-12-30 23:32:29.531577200 +0000
+@@ -148,20 +148,20 @@
+     }
+ }
+ 
+-static std::string getAutogenTargetName(cmTarget const* target)
++static std::string getAutogenTargetName(cmTarget const* target, char const* suffix = "_automoc")
+ {
+   std::string autogenTargetName = target->GetName();
+-  autogenTargetName += "_automoc";
++  autogenTargetName += suffix;
+   return autogenTargetName;
+ }
+ 
+-static std::string getAutogenTargetDir(cmTarget const* target)
++static std::string getAutogenTargetDir(cmTarget const* target, const char* suffix = "_automoc")
+ {
+   cmMakefile* makefile = target->GetMakefile();
+   std::string targetDir = makefile->GetCurrentOutputDirectory();
+   targetDir += makefile->GetCMakeInstance()->GetCMakeFilesDirectory();
+   targetDir += "/";
+-  targetDir += getAutogenTargetName(target);
++  targetDir += getAutogenTargetName(target, suffix);
+   targetDir += ".dir/";
+   return targetDir;
+ }
+@@ -193,10 +193,27 @@
+ 
+     target->AddSource(mocCppFile);
+     }
++  /* in macro(_populate_Core_plugin_properties ..), we could have:
++   * set_property(TARGET PROPERTY AUTOSTATICPLUGINS True)
++   * set_property(TARGET Qt5::Core APPEND PROPERTY STATIC_PLUGINS ${Plugin}) */
++  if (target->GetPropertyAsBool("AUTOSTATICPLUGINS"))
++    {
++    std::string autostaticPluginsTargetName = getAutogenTargetName(target, "_plugin_import");
++    std::string staticPluginsCppFile = makefile->GetCurrentOutputDirectory();
++    staticPluginsCppFile += "/";
++    staticPluginsCppFile += autostaticPluginsTargetName;
++    staticPluginsCppFile += ".cpp";
++    makefile->GetOrCreateSource(staticPluginsCppFile, true);
++    makefile->AppendProperty("ADDITIONAL_MAKE_CLEAN_FILES",
++                            staticPluginsCppFile.c_str(), false);
++  
++    target->AddSource(staticPluginsCppFile);
++    }
++
+   // create a custom target for running generators at buildtime:
+-  std::string autogenTargetName = getAutogenTargetName(target);
++  std::string autogenTargetName = getAutogenTargetName(target, "_autogen");
+ 
+-  std::string targetDir = getAutogenTargetDir(target);
++  std::string targetDir = getAutogenTargetDir(target, "_autogen");
+ 
+   cmCustomCommandLine currentLine;
+   currentLine.push_back(makefile->GetSafeDefinition("CMAKE_COMMAND"));
+@@ -554,6 +571,42 @@
+     {
+     const_cast<cmTarget*>(target)->AddSource(*fileIt);
+     }
++
++  /*
++   * Need to do some crap like .. recursively find all linked libraries for any executables, and form
++   * a list of all plugins. I don't think this achieves this and it probably needs to be extracted from
++   * this uic / rcc stuff anyway, I am trying to share the "autogen" target here, maybe foolishly.
++   * Need to check the interactions with:
++   *   bool cmQtAutoGenerators::InitializeAutogenTarget(cmTarget* target)
++   *   void cmQtAutoGenerators::SetupAutoGenerateTarget(cmTarget const* target)
++   */
++
++  bool haveStaticPlugins = false;
++  const cmTarget::LinkLibraryVectorType& libs = target->GetOriginalLinkLibraries();
++  for (cmTarget::LinkLibraryVectorType::const_iterator li = libs.begin(); li != libs.end(); ++li)
++  {
++      cmTarget *tgt = makefile->FindTargetToUse(li->first);
++      const char *staticPlugins;
++      if (tgt && (staticPlugins = tgt->GetProperty("STATIC_PLUGINS", makefile))) {
++          /* Have we got a semi-colon separated list of plugins? Hopefully. */
++          haveStaticPlugins = true;
++      }
++  }
++
++  if (haveStaticPlugins)
++  {
++      std::string static_plugins_output_dir = target->GetSupportDirectory();
++      cmSystemTools::MakeDirectory(static_plugins_output_dir.c_str());
++      std::string static_plugins_output_file = static_plugins_output_dir;
++      static_plugins_output_file += "/" + target->GetName() + "_plugin_import.cpp";
++      makefile->AppendProperty("ADDITIONAL_MAKE_CLEAN_FILES",
++                              static_plugins_output_file.c_str(), false);
++      const_cast<cmTarget*>(target)->AddSource(static_plugins_output_file);
++  }
++
++  /*
++   * End need to do some crap like (didn't handle recurison ^ or writing the file) ..
++   */
+ }
+ 
+ void cmQtAutoGenerators::SetupAutoMocTarget(cmTarget const* target,
+diff -urN cmake-3.1.0.orig/Source/cmTarget.cxx cmake-3.1.0/Source/cmTarget.cxx
+--- cmake-3.1.0.orig/Source/cmTarget.cxx	2014-12-30 23:29:27.527906500 +0000
++++ cmake-3.1.0/Source/cmTarget.cxx	2014-12-30 23:19:59.807689200 +0000
+@@ -342,6 +342,7 @@
+     this->SetPropertyDefault("AUTOMOC", 0);
+     this->SetPropertyDefault("AUTOUIC", 0);
+     this->SetPropertyDefault("AUTORCC", 0);
++    this->SetPropertyDefault("AUTOSTATICPLUGINS", 0);
+     this->SetPropertyDefault("AUTOMOC_MOC_OPTIONS", 0);
+     this->SetPropertyDefault("AUTOUIC_OPTIONS", 0);
+     this->SetPropertyDefault("AUTORCC_OPTIONS", 0);
