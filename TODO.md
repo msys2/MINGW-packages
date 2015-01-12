@@ -39,3 +39,5 @@ What we need to do:
    libcelt0 libgnutls libgme libembl libspeexdsp
 
 * Bison: Add path relocation when locating m4
+
+* Add the Oyrol, Urho3D and Godot engines
