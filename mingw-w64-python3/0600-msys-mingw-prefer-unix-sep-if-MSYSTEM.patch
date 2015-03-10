@@ -1,23 +1,19 @@
-diff -urN a/Include/osdefs.h b/Include/osdefs.h
---- a/Include/osdefs.h	2014-10-11 14:21:54.729296000 +0100
-+++ b/Include/osdefs.h	2014-10-11 14:21:56.586402200 +0100
-@@ -10,8 +10,13 @@
- /* Mod by chrish: QNX has WATCOM, but isn't DOS */
- #if !defined(__QNX__)
- #if defined(MS_WINDOWS) || defined(__BORLANDC__) || defined(__WATCOMC__) || defined(__DJGPP__)
-+#if defined(__MINGW32__)
-+#define SEP L'/'
-+#define ALTSEP L'\\'
-+#else
- #define SEP L'\\'
- #define ALTSEP L'/'
-+#endif
- #define MAXPATHLEN 256
- #define DELIM L';'
- #define DELIMSTR ";"
-diff -urN a/Lib/ntpath.py b/Lib/ntpath.py
---- a/Lib/ntpath.py	2014-10-11 14:21:53.975252900 +0100
-+++ b/Lib/ntpath.py	2014-10-11 14:21:56.588402400 +0100
+diff -urN Python-3.4.3.orig/Include/pythonrun.h Python-3.4.3/Include/pythonrun.h
+--- Python-3.4.3.orig/Include/pythonrun.h	2015-03-09 19:25:39.911000000 +0000
++++ Python-3.4.3/Include/pythonrun.h	2015-03-09 20:48:19.093996600 +0000
+@@ -22,6 +22,9 @@
+ } PyCompilerFlags;
+ #endif
+ 
++PyAPI_FUNC(void) Py_NormalizeSepsW(wchar_t *);
++PyAPI_FUNC(void) Py_NormalizeSepsA(char *);
++
+ PyAPI_FUNC(void) Py_SetProgramName(wchar_t *);
+ PyAPI_FUNC(wchar_t *) Py_GetProgramName(void);
+ 
+diff -urN Python-3.4.3.orig/Lib/ntpath.py Python-3.4.3/Lib/ntpath.py
+--- Python-3.4.3.orig/Lib/ntpath.py	2015-03-09 19:26:05.869000000 +0000
++++ Python-3.4.3/Lib/ntpath.py	2015-03-09 17:57:36.932182800 +0000
 @@ -24,9 +24,13 @@
  curdir = '.'
  pardir = '..'
@@ -62,10 +58,48 @@ diff -urN a/Lib/ntpath.py b/Lib/ntpath.py
  
  def _get_dot(path):
      if isinstance(path, bytes):
-diff -urN a/Python/pythonrun.c b/Python/pythonrun.c
---- a/Python/pythonrun.c	2014-10-11 14:21:53.853245900 +0100
-+++ b/Python/pythonrun.c	2014-10-11 14:21:56.591402500 +0100
-@@ -871,17 +871,34 @@
+diff -urN Python-3.4.3.orig/Modules/posixmodule.c Python-3.4.3/Modules/posixmodule.c
+--- Python-3.4.3.orig/Modules/posixmodule.c	2015-03-09 19:25:39.179000000 +0000
++++ Python-3.4.3/Modules/posixmodule.c	2015-03-09 20:56:03.480148100 +0000
+@@ -3474,6 +3474,7 @@
+                 PyMem_RawFree(wbuf2);
+             return PyErr_SetFromWindowsErr(0);
+         }
++        Py_NormalizeSepsW(wbuf2);
+         resobj = PyUnicode_FromWideChar(wbuf2, len);
+         if (wbuf2 != wbuf)
+             PyMem_RawFree(wbuf2);
+@@ -3955,7 +3956,10 @@
+             result = GetFullPathNameW(wpath, result, woutbufp, &wtemp);
+         }
+         if (result)
++        {
++            Py_NormalizeSepsW(woutbufp);
+             v = PyUnicode_FromWideChar(woutbufp, wcslen(woutbufp));
++        }
+         else
+             v = win32_error_object("GetFullPathNameW", po);
+         if (woutbufp != woutbuf)
+@@ -3976,6 +3980,7 @@
+         win32_error("GetFullPathName", path);
+         return NULL;
+     }
++    Py_NormalizeSepsA(outbuf);
+     if (PyUnicode_Check(PyTuple_GetItem(args, 0))) {
+         return PyUnicode_Decode(outbuf, strlen(outbuf),
+                                 Py_FileSystemDefaultEncoding, NULL);
+@@ -4039,6 +4044,7 @@
+     if(!CloseHandle(hFile))
+         return win32_error_object("CloseHandle", po);
+ 
++    Py_NormalizeSepsW(target_path);
+     target_path[result_length] = 0;
+     result = PyUnicode_FromWideChar(target_path, result_length);
+     PyMem_Free(target_path);
+diff -urN Python-3.4.3.orig/Python/pythonrun.c Python-3.4.3/Python/pythonrun.c
+--- Python-3.4.3.orig/Python/pythonrun.c	2015-03-09 19:26:05.877000000 +0000
++++ Python-3.4.3/Python/pythonrun.c	2015-03-09 20:57:32.059005100 +0000
+@@ -870,17 +870,118 @@
      PyInterpreterState_Delete(interp);
  }
  
@@ -77,7 +111,105 @@ diff -urN a/Python/pythonrun.c b/Python/pythonrun.c
  #else
 -static wchar_t *progname = L"python3";
 +static wchar_t progname[PATH_MAX+1] = L"python3";
++#endif
++
++static wchar_t
++Py_GetSepW(wchar_t *name)
++{
++    char* msystem = NULL;
++    static wchar_t sep = L'\0';
++#ifdef _WIN32
++    /* https://msdn.microsoft.com/en-gb/library/windows/desktop/aa365247%28v=vs.85%29.aspx
++     * The "\\?\" prefix .. indicate that the path should be passed to the system with minimal
++     * modification, which means that you cannot use forward slashes to represent path separators
++     */
++    if (memcmp(name, L"\\\\?\\", sizeof(L"\\\\?\\") - sizeof(wchar_t)) == 0)
++    {
++        return L'\\';
++    }
++#endif
++    if (sep != L'\0')
++        return sep;
++#if defined(__MINGW32__)
++    msystem = Py_GETENV("MSYSTEM");
++#endif
++    if (msystem != NULL)
++        sep = L'/';
++    else
++        sep = L'\\';
++    return sep;
++}
++
++static wchar_t
++Py_GetAltSepW(wchar_t *name)
++{
++    char sep = Py_GetSepW(name);
++    if (sep == L'/')
++        return L'\\';
++    return L'/';
++}
++
++static char
++Py_GetSepA(char *name)
++{
++    char* msystem = NULL;
++    static char sep = '\0';
++#ifdef _WIN32
++    /* https://msdn.microsoft.com/en-gb/library/windows/desktop/aa365247%28v=vs.85%29.aspx
++     * The "\\?\" prefix .. indicate that the path should be passed to the system with minimal
++     * modification, which means that you cannot use forward slashes to represent path separators
++     */
++    if (memcmp(name, "\\\\?\\", sizeof("\\\\?\\") - sizeof(char)) == 0)
++    {
++        return '\\';
++    }
++#endif
++    if (sep != '\0')
++        return sep;
++#if defined(__MINGW32__)
++    msystem = Py_GETENV("MSYSTEM");
  #endif
++    if (msystem != NULL)
++        sep = '/';
++    else
++        sep = '\\';
++    return sep;
++}
++
++static wchar_t
++Py_GetAltSepA(char *name)
++{
++    char sep = Py_GetSepA(name);
++    if (sep == '/')
++        return '\\';
++    return '/';
++}
++
++void
++Py_NormalizeSepsW(wchar_t *name)
++{
++    wchar_t sep = Py_GetSepW(name);
++    wchar_t altsep = Py_GetAltSepW(name);
++    wchar_t* seps;
++    seps = wcschr(name, altsep);
++    while(seps) {
++        *seps = sep;
++        seps = wcschr(seps, altsep);
++    }
++}
++
++void
++Py_NormalizeSepsA(char *name)
++{
++    char sep = Py_GetSepA(name);
++    char altsep = Py_GetAltSepA(name);
++    char* seps;
++    seps = strchr(name, altsep);
++    while(seps) {
++        *seps = sep;
++        seps = strchr(seps, altsep);
++    }
++}
  
  void
  Py_SetProgramName(wchar_t *pn)
@@ -86,21 +218,7 @@ diff -urN a/Python/pythonrun.c b/Python/pythonrun.c
 -        progname = pn;
 +        wcsncpy(progname, pn, PATH_MAX);
 +    pn = &progname[0];
-+#ifdef __MINGW32__
-+  {
-+    char* msystem;
-+    wchar_t altsep, sep;
-+    wchar_t* seps;
-+    msystem = Py_GETENV("MSYSTEM");
-+    altsep  = msystem ? L'\\' : L'/';
-+    sep     = msystem ? L'/'  : L'\\';
-+    seps    = wcschr(pn, altsep);
-+    while(seps) {
-+        *seps = sep;
-+        seps = wcschr(seps, altsep);
-+    }
-+  }
-+#endif
++    Py_NormalizeSepsW(pn);
  }
  
  wchar_t *
