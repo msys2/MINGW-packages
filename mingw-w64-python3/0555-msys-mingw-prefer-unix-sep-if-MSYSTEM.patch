@@ -1,0 +1,371 @@
+diff -urN Python-3.4.3.orig/Include/pythonrun.h Python-3.4.3/Include/pythonrun.h
+--- Python-3.4.3.orig/Include/pythonrun.h	2015-03-17 14:11:48.550537200 +0000
++++ Python-3.4.3/Include/pythonrun.h	2015-03-17 14:11:49.728537200 +0000
+@@ -22,6 +22,12 @@
+ } PyCompilerFlags;
+ #endif
+ 
++PyAPI_FUNC(wchar_t) Py_GetSepW(wchar_t *);
++PyAPI_FUNC(char) Py_GetSepA(char *);
++
++PyAPI_FUNC(void) Py_NormalizeSepsW(wchar_t *);
++PyAPI_FUNC(void) Py_NormalizeSepsA(char *);
++
+ PyAPI_FUNC(void) Py_SetProgramName(wchar_t *);
+ PyAPI_FUNC(wchar_t *) Py_GetProgramName(void);
+ 
+diff -urN Python-3.4.3.orig/Lib/ntpath.py Python-3.4.3/Lib/ntpath.py
+--- Python-3.4.3.orig/Lib/ntpath.py	2015-03-17 14:11:42.000537200 +0000
++++ Python-3.4.3/Lib/ntpath.py	2015-03-17 14:11:49.731537200 +0000
+@@ -24,9 +24,13 @@
+ curdir = '.'
+ pardir = '..'
+ extsep = '.'
+-sep = '\\'
++if sys.platform == "win32" and "MSYSTEM" in os.environ:
++    sep = '/'
++    altsep = '\\'
++else:
++    sep = '\\'
++    altsep = '/'
+ pathsep = ';'
+-altsep = '/'
+ defpath = '.;C:\\bin'
+ if 'ce' in sys.builtin_module_names:
+     defpath = '\\Windows'
+@@ -40,21 +44,21 @@
+ 
+ def _get_sep(path):
+     if isinstance(path, bytes):
+-        return b'\\'
++        return str.encode(sep)
+     else:
+-        return '\\'
++        return sep
+ 
+ def _get_altsep(path):
+     if isinstance(path, bytes):
+-        return b'/'
++        return str.encode(altsep)
+     else:
+-        return '/'
++        return altsep
+ 
+ def _get_bothseps(path):
+     if isinstance(path, bytes):
+-        return b'\\/'
++        return str.encode(sep+altsep)
+     else:
+-        return '\\/'
++        return sep+altsep
+ 
+ def _get_dot(path):
+     if isinstance(path, bytes):
+diff -urN Python-3.4.3.orig/Modules/getpath.c Python-3.4.3/Modules/getpath.c
+--- Python-3.4.3.orig/Modules/getpath.c	2015-03-17 14:11:48.335537200 +0000
++++ Python-3.4.3/Modules/getpath.c	2015-03-17 15:08:01.585542500 +0000
+@@ -135,7 +135,7 @@
+ reduce(wchar_t *dir)
+ {
+     size_t i = wcslen(dir);
+-    while (i > 0 && dir[i] != SEP)
++    while (i > 0 && dir[i] != Py_GetSepW(dir))
+         --i;
+     dir[i] = '\0';
+ }
+@@ -207,12 +207,12 @@
+ joinpath(wchar_t *buffer, wchar_t *stuff)
+ {
+     size_t n, k;
+-    if (stuff[0] == SEP)
++    if (stuff[0] == Py_GetSepW(buffer))
+         n = 0;
+     else {
+         n = wcslen(buffer);
+-        if (n > 0 && buffer[n-1] != SEP && n < MAXPATHLEN)
+-            buffer[n++] = SEP;
++        if (n > 0 && buffer[n-1] != Py_GetSepW(buffer) && n < MAXPATHLEN)
++            buffer[n++] = Py_GetSepW(buffer);
+     }
+     if (n > MAXPATHLEN)
+         Py_FatalError("buffer overflow in getpath.c's joinpath()");
+@@ -228,7 +228,7 @@
+ static void
+ copy_absolute(wchar_t *path, wchar_t *p, size_t pathlen)
+ {
+-    if (p[0] == SEP)
++    if (p[0] == Py_GetSepW(p) || (p[0] != 0 && p[1] == L':'))
+         wcscpy(path, p);
+     else {
+         if (!_Py_wgetcwd(path, pathlen)) {
+@@ -236,7 +236,7 @@
+             wcscpy(path, p);
+             return;
+         }
+-        if (p[0] == '.' && p[1] == SEP)
++        if (p[0] == '.' && p[1] == Py_GetSepW(path))
+             p += 2;
+         joinpath(path, p);
+     }
+@@ -248,7 +248,7 @@
+ {
+     wchar_t buffer[MAXPATHLEN+1];
+ 
+-    if (path[0] == SEP)
++    if (path[0] == Py_GetSepW(path))
+         return;
+     copy_absolute(buffer, path, MAXPATHLEN+1);
+     wcscpy(path, buffer);
+@@ -461,7 +461,7 @@
+     extern wchar_t *Py_GetProgramName(void);
+ 
+     static wchar_t delimiter[2] = {DELIM, '\0'};
+-    static wchar_t separator[2] = {SEP, '\0'};
++    wchar_t separator[2] = {Py_GetSepW(NULL), '\0'};
+     char *_rtpypath = Py_GETENV("PYTHONPATH"); /* XXX use wide version on Windows */
+     wchar_t *rtpypath = NULL;
+     wchar_t *home = Py_GetPythonHome();
+@@ -490,11 +490,12 @@
+ #endif
+     wchar_t *_pythonpath, *_prefix, *_exec_prefix;
+     wchar_t *lib_python;
++    const char * lib_python_VERSION = (Py_GetSepA(NULL) == '/') ? "lib/python" VERSION : "lib\\python" VERSION;
+ 
+     _pythonpath = _Py_char2wchar(PYTHONPATH, NULL);
+     _prefix = _Py_char2wchar(PREFIX, NULL);
+     _exec_prefix = _Py_char2wchar(EXEC_PREFIX, NULL);
+-    lib_python = _Py_char2wchar("lib/python" VERSION, NULL);
++    lib_python = _Py_char2wchar(lib_python_VERSION, NULL);
+ 
+     if (!_pythonpath || !_prefix || !_exec_prefix || !lib_python) {
+         Py_FatalError(
+@@ -512,7 +513,7 @@
+      * other way to find a directory to start the search from.  If
+      * $PATH isn't exported, you lose.
+      */
+-    if (wcschr(prog, SEP))
++    if (wcschr(prog, Py_GetSepW(prog)))
+         wcsncpy(progpath, prog, MAXPATHLEN);
+ #ifdef __APPLE__
+      /* On Mac OS X, if a script uses an interpreter of the form
+@@ -561,7 +562,7 @@
+     else
+         progpath[0] = '\0';
+     PyMem_RawFree(path_buffer);
+-    if (progpath[0] != SEP && progpath[0] != '\0')
++    if (progpath[0] != separator[0] && progpath[0] != '\0' && progpath[1] != L':' )
+         absolutize(progpath);
+     wcsncpy(argv0_path, progpath, MAXPATHLEN);
+     argv0_path[MAXPATHLEN] = '\0';
+@@ -719,7 +720,7 @@
+     while (1) {
+         wchar_t *delim = wcschr(defpath, DELIM);
+ 
+-        if (defpath[0] != SEP)
++        if (defpath[0] != separator[0] && defpath[0] != '\0' && defpath[1] != L':')
+             /* Paths are relative to prefix */
+             bufsz += prefixsz;
+ 
+@@ -760,7 +761,7 @@
+     while (1) {
+         wchar_t *delim = wcschr(defpath, DELIM);
+ 
+-        if (defpath[0] != SEP) {
++        if (defpath[0] != separator[0] && defpath[0] != '\0' && defpath[1] != L':') {
+             wcscat(buf, prefix);
+             wcscat(buf, separator);
+         }
+diff -urN Python-3.4.3.orig/Modules/posixmodule.c Python-3.4.3/Modules/posixmodule.c
+--- Python-3.4.3.orig/Modules/posixmodule.c	2015-03-17 14:11:48.299537200 +0000
++++ Python-3.4.3/Modules/posixmodule.c	2015-03-17 14:11:49.742537200 +0000
+@@ -3474,6 +3474,7 @@
+                 PyMem_RawFree(wbuf2);
+             return PyErr_SetFromWindowsErr(0);
+         }
++        Py_NormalizeSepsW(wbuf2);
+         resobj = PyUnicode_FromWideChar(wbuf2, len);
+         if (wbuf2 != wbuf)
+             PyMem_RawFree(wbuf2);
+@@ -3955,7 +3956,10 @@
+             result = GetFullPathNameW(wpath, result, woutbufp, &wtemp);
+         }
+         if (result)
++        {
++            Py_NormalizeSepsW(woutbufp);
+             v = PyUnicode_FromWideChar(woutbufp, wcslen(woutbufp));
++        }
+         else
+             v = win32_error_object("GetFullPathNameW", po);
+         if (woutbufp != woutbuf)
+@@ -3976,6 +3980,7 @@
+         win32_error("GetFullPathName", path);
+         return NULL;
+     }
++    Py_NormalizeSepsA(outbuf);
+     if (PyUnicode_Check(PyTuple_GetItem(args, 0))) {
+         return PyUnicode_Decode(outbuf, strlen(outbuf),
+                                 Py_FileSystemDefaultEncoding, NULL);
+@@ -4039,6 +4044,7 @@
+     if(!CloseHandle(hFile))
+         return win32_error_object("CloseHandle", po);
+ 
++    Py_NormalizeSepsW(target_path);
+     target_path[result_length] = 0;
+     result = PyUnicode_FromWideChar(target_path, result_length);
+     PyMem_Free(target_path);
+diff -urN Python-3.4.3.orig/Python/pythonrun.c Python-3.4.3/Python/pythonrun.c
+--- Python-3.4.3.orig/Python/pythonrun.c	2015-03-17 14:11:49.077537200 +0000
++++ Python-3.4.3/Python/pythonrun.c	2015-03-17 14:11:49.746537200 +0000
+@@ -871,17 +871,124 @@
+     PyInterpreterState_Delete(interp);
+ }
+ 
+-#ifdef MS_WINDOWS
+-static wchar_t *progname = L"python";
++
++#if defined(MS_WINDOWS) && !defined(__MINGW32__)
++static wchar_t progname[PATH_MAX+1] = L"python";
+ #else
+-static wchar_t *progname = L"python3";
++static wchar_t progname[PATH_MAX+1] = L"python3";
++#endif
++
++wchar_t
++Py_GetSepW(wchar_t *name)
++{
++    char* msystem = NULL;
++    static wchar_t sep = L'\0';
++#ifdef _WIN32
++    /* https://msdn.microsoft.com/en-gb/library/windows/desktop/aa365247%28v=vs.85%29.aspx
++     * The "\\?\" prefix .. indicate that the path should be passed to the system with minimal
++     * modification, which means that you cannot use forward slashes to represent path separators
++     */
++    if (name != NULL && memcmp(name, L"\\\\?\\", sizeof(L"\\\\?\\") - sizeof(wchar_t)) == 0)
++    {
++        return L'\\';
++    }
++#endif
++    if (sep != L'\0')
++        return sep;
++#if defined(__MINGW32__)
++    msystem = Py_GETENV("MSYSTEM");
++#endif
++    if (msystem != NULL)
++        sep = L'/';
++    else
++        sep = L'\\';
++    return sep;
++}
++
++static wchar_t
++Py_GetAltSepW(wchar_t *name)
++{
++    char sep = Py_GetSepW(name);
++    if (sep == L'/')
++        return L'\\';
++    return L'/';
++}
++
++char
++Py_GetSepA(char *name)
++{
++    char* msystem = NULL;
++    static char sep = '\0';
++#ifdef _WIN32
++    /* https://msdn.microsoft.com/en-gb/library/windows/desktop/aa365247%28v=vs.85%29.aspx
++     * The "\\?\" prefix .. indicate that the path should be passed to the system with minimal
++     * modification, which means that you cannot use forward slashes to represent path separators
++     */
++    if (name != NULL && memcmp(name, "\\\\?\\", sizeof("\\\\?\\") - sizeof(char)) == 0)
++    {
++        return '\\';
++    }
++#endif
++    if (sep != '\0')
++        return sep;
++#if defined(__MINGW32__)
++    msystem = Py_GETENV("MSYSTEM");
+ #endif
++    if (msystem != NULL)
++        sep = '/';
++    else
++        sep = '\\';
++    return sep;
++}
++
++static wchar_t
++Py_GetAltSepA(char *name)
++{
++    char sep = Py_GetSepA(name);
++    if (sep == '/')
++        return '\\';
++    return '/';
++}
++
++void
++Py_NormalizeSepsW(wchar_t *name)
++{
++    wchar_t sep = Py_GetSepW(name);
++    wchar_t altsep = Py_GetAltSepW(name);
++    wchar_t* seps;
++    if (wcslen(name) > 1 && name[1] == L':') {
++        name[0] = towupper(name[0]);
++    }
++    seps = wcschr(name, altsep);
++    while(seps) {
++        *seps = sep;
++        seps = wcschr(seps, altsep);
++    }
++}
++
++void
++Py_NormalizeSepsA(char *name)
++{
++    char sep = Py_GetSepA(name);
++    char altsep = Py_GetAltSepA(name);
++    char* seps;
++    if (strlen(name) > 1 && name[1] == ':') {
++        name[0] = toupper(name[0]);
++    }
++    seps = strchr(name, altsep);
++    while(seps) {
++        *seps = sep;
++        seps = strchr(seps, altsep);
++    }
++}
+ 
+ void
+ Py_SetProgramName(wchar_t *pn)
+ {
+     if (pn && *pn)
+-        progname = pn;
++        wcsncpy(progname, pn, PATH_MAX);
++    pn = &progname[0];
++    Py_NormalizeSepsW(pn);
+ }
+ 
+ wchar_t *
+diff -urN Python-3.4.3.orig/Python/sysmodule.c Python-3.4.3/Python/sysmodule.c
+--- Python-3.4.3.orig/Python/sysmodule.c	2015-03-17 14:11:49.071537200 +0000
++++ Python-3.4.3/Python/sysmodule.c	2015-03-17 14:11:49.750537200 +0000
+@@ -1983,7 +1983,7 @@
+             argv0 = fullpath;
+         }
+ #endif
+-        p = wcsrchr(argv0, SEP);
++        p = wcsrchr(argv0, Py_GetSepW(argv0));
+     }
+     if (p != NULL) {
+         n = p + 1 - argv0;
+diff -urN Python-3.4.3.orig/Python/traceback.c Python-3.4.3/Python/traceback.c
+--- Python-3.4.3.orig/Python/traceback.c	2015-03-17 14:11:49.085537200 +0000
++++ Python-3.4.3/Python/traceback.c	2015-03-17 14:11:49.753537200 +0000
+@@ -199,7 +199,7 @@
+     filepath = PyBytes_AS_STRING(filebytes);
+ 
+     /* Search tail of filename in sys.path before giving up */
+-    tail = strrchr(filepath, SEP);
++    tail = strrchr(filepath, Py_GetSepW(filepath));
+     if (tail == NULL)
+         tail = filepath;
+     else
