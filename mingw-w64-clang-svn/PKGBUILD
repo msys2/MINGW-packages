@@ -5,10 +5,12 @@ _realname=clang
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}-svn"
          "${MINGW_PACKAGE_PREFIX}-${_realname}-analyzer-svn"
          "${MINGW_PACKAGE_PREFIX}-${_realname}-tools-extra-svn"
-         "${MINGW_PACKAGE_PREFIX}-llvm-svn"
          #"${MINGW_PACKAGE_PREFIX}-compiler-rt-svn"
-         )
-pkgver=56101.57b4d93
+         "${MINGW_PACKAGE_PREFIX}-lld-svn"
+         "${MINGW_PACKAGE_PREFIX}-llvm-svn")
+
+#pkgname="${MINGW_PACKAGE_PREFIX}-llvm-toolchain-svn"
+pkgver=56263.fbb819f
 pkgrel=1
 pkgdesc="LC language family frontend for LLVM (mingw-w64)"
 arch=('any')
@@ -20,24 +22,22 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-gcc"
              "python2" "tar" "subversion" "git")
 depends=("${MINGW_PACKAGE_PREFIX}-gcc")
 options=('staticlibs' 'strip')
-source=(#"llvm"::"svn+http://llvm.org/svn/llvm-project/llvm/trunk"
-        #"clang"::"svn+http://llvm.org/svn/llvm-project/cfe/trunk"
-        #"rt"::"svn+http://llvm.org/svn/llvm-project/compiler-rt/trunk"
-        #"testsuite"::"svn+http://llvm.org/svn/llvm-project/test-suite/trunk"
-        "llvm"::"git+http://llvm.org/git/llvm.git"
+source=("llvm"::"git+http://llvm.org/git/llvm.git"
+        "lld"::"git+http://llvm.org/git/lld.git"
         "clang"::"git+http://llvm.org/git/clang.git"
         "clang-tools-extra"::"git+http://llvm.org/git/clang-tools-extra.git"
-        "rt"::"git+http://llvm.org/git/compiler-rt.git"
-        "testsuite"::"git+http://llvm.org/git/test-suite.git"
+        #"rt"::"git+http://llvm.org/git/compiler-rt.git"
+        #"testsuite"::"git+http://llvm.org/git/test-suite.git"
         #"libcxx"::"git+http://llvm.org/git/libcxx.git"
         0001-Add-Clang-MinGW-w64-driver.patch
-        )
+        0002-Fixup-all-windows-ARM-targets.patch)
+
 md5sums=('SKIP'
          'SKIP'
          'SKIP'
          'SKIP'
-         'SKIP'
-         '479f4582fdcb3063aadbcbcfd6c3fc18')
+         'c410d98df8f3436c905b1685c0c8defd'
+         '3a43f737b79f8d14e11bf1edfc1b85a2')
 
 pkgver_internal() {
   if [ ! -d "$1" ]; then
@@ -64,50 +64,110 @@ prepare() {
     cmake/modules/Makefile
 
   cd "${srcdir}"/clang
-  git am "${srcdir}"/0001-Add-Clang-MinGW-w64-driver-patch.patch
+  git am "${srcdir}"/0001-Add-Clang-MinGW-w64-driver.patch
+  git am "${srcdir}"/0002-Fixup-all-windows-ARM-targets.patch
 
   cd "${srcdir}"
+  mv lld               llvm/tools/lld
   mv clang             llvm/tools/clang
   mv clang-tools-extra llvm/tools/clang/tools/extra
-  mv rt                llvm/projects/compiler-rt
-  mv testsuite         llvm/projects/test-suite
+# mv rt                llvm/projects/compiler-rt
+# mv testsuite         llvm/projects/test-suite
 # mv libcxx            llvm/projects/libcxx
 }
 
 build() {
-  [ -d "${srcdir}"/build-${CARCH} ] && rm -rf "${srcdir}"/build-${CARCH}
-  mkdir -p "${srcdir}"/build-${CARCH}
-  cd "${srcdir}"/build-${CARCH}
-  echo 'ac_cv_have_decl_strerror_s=${ac_cv_have_decl_strerror_s=no}' > config.cache
+  [[ -d ${srcdir}/build-${CARCH} ]] && rm -rf ${srcdir}/build-${CARCH}
+  mkdir -p ${srcdir}/build-${CARCH} && cd ${srcdir}/build-${CARCH}
 
   # Include location of libffi headers in CPPFLAGS
-  CPPFLAGS+=" $(pkg-config --cflags libffi)"
+  #CPPFLAGS+=" $(pkg-config --cflags libffi)"
+  FFI_INCLUDE_DIR="$(pkg-config --cflags libffi)"
+  FFI_INCLUDE_DIR=$(echo $FFI_INCLUDE_DIR | sed 's|-I||g')
 
-  ../llvm/configure \
-    -C \
-    --prefix=${MINGW_PREFIX} \
-    --build=${MINGW_CHOST} \
-    --host=${MINGW_CHOST} \
-    --with-sysroot=${MINGW_PREFIX} \
-    --enable-targets=arm,cpp,x86,x86_64 \
-    --enable-optimized \
-    --disable-assertions \
-    --disable-pthreads \
-    --with-python=/usr/bin/python2 \
-    --enable-libffi \
-    --enable-docs
+  # "Ninja" cant install each component seperately
+  # https://github.com/martine/ninja/issues/932
+  # "MSYS Makefiles"
+  # msys python2 cannot be used with mingw cmake because of path conversions
 
-  make VERBOSE=1
-  make -C ../llvm/docs -f Makefile.sphinx man
-  make -C ../llvm/docs -f Makefile.sphinx html
-  make -C ../llvm/tools/clang/docs -f Makefile.sphinx html
+
+  PATH=${MINGW_PREFIX}/bin \
+  ${MINGW_PREFIX}/bin/cmake.exe \
+    -G"MinGW Makefiles" \
+    -DCMAKE_C_COMPILER="${MINGW_PREFIX}/bin/gcc.exe" \
+    -DCMAKE_CXX_COMPILER="${MINGW_PREFIX}/bin/g++.exe" \
+    -DFFI_INCLUDE_DIR="${FFI_INCLUDE_DIR}" \
+    -DCMAKE_C_FLAGS="${CFLAGS}" \
+    -DCMAKE_CXX_FLAGS="${CXXFLAGS} ${CPPFLAGS}" \
+    -DCMAKE_INSTALL_PREFIX:PATH=${pkgdir}${MINGW_PREFIX} \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLLVM_TARGETS_TO_BUILD="ARM;CppBackend;X86" \
+    -DLLVM_ENABLE_ASSERTIONS=OFF \
+    -DLLVM_ENABLE_THREADS=0 \
+    -DPYTHON_EXECUTABLE=${MINGW_PREFIX}/bin/python2.exe \
+    -DLLVM_ENABLE_FFI=ON \
+    -DLLVM_ENABLE_SPHINX=ON \
+    ../llvm
+
+#  ../llvm/configure \
+#    -C \
+#    --prefix=${MINGW_PREFIX} \
+#    --build=${MINGW_CHOST} \
+#    --host=${MINGW_CHOST} \
+#    --with-sysroot=${MINGW_PREFIX} \
+#    --enable-targets=arm,cpp,x86,x86_64 \
+#    --enable-optimized \
+#    --disable-assertions \
+#    --disable-pthreads \
+#    --with-python=/usr/bin/python2 \
+#    --enable-libffi \
+#    --enable-docs
+
+  #ninja
+  mingw32-make
+  #make -C ../llvm/docs -f Makefile.sphinx man
+  #make -C ../llvm/docs -f Makefile.sphinx html
+  #make -C ../llvm/tools/clang/docs -f Makefile.sphinx html
 }
 
-check() {
-  cd "${srcdir}"/build-${CARCH}
-  # Remove || true once testcase doesn't cause failures.
-  make check || true
+#check() {
+#  cd "${srcdir}"/build-${CARCH}
+#  # Remove || true once testcase doesn't cause failures.
+#  make check || true
+#}
+
+#Suite package
+
+package_llvm-toolchain(){
+  pkgdesc="Low Level Virtual Machine Suite"
+  provides=("${MINGW_PACKAGE_PREFIX}-llvm"
+            "${MINGW_PACKAGE_PREFIX}-lld"
+            "${MINGW_PACKAGE_PREFIX}-clang"
+            "${MINGW_PACKAGE_PREFIX}-clang-tools-extra"
+            "${MINGW_PACKAGE_PREFIX}-clang-analyzer")
+
+  conflicts=("${MINGW_PACKAGE_PREFIX}-llvm"
+             "${MINGW_PACKAGE_PREFIX}-lld"
+             "${MINGW_PACKAGE_PREFIX}-clang"
+             "${MINGW_PACKAGE_PREFIX}-clang-tools-extra"
+             "${MINGW_PACKAGE_PREFIX}-clang-analyzer")
+  pkgver=$(pkgver_internal "${srcdir}"/llvm)
+
+  cd build-${CARCH}
+  DESTDIR="$pkgdir" ninja install
+  mv ${pkgdir}/msys64${MINGW_PREFIX} ${pkgdir}
+  rm -rf ${pkgdir}/msys64
 }
+
+package_mingw-w64-i686-llvm-toolchain-svn(){
+  package_llvm-toolchain
+}
+
+package_mingw-w64-x86_64-llvm-toolchain-svn(){
+  package_llvm-toolchain
+}
+
+# Seperate Packages
 
 package_clang(){
   pkgdesc="C language family frontend for LLVM"
@@ -122,9 +182,14 @@ package_clang(){
   mv build-${CARCH}/tools/clang/tools/extra clang-tools-extra-${CARCH}
 
   cd build-${CARCH}/tools/clang
-  make -j1 DESTDIR="$pkgdir" install
+  #ninja clang install
+  mingw32-make -j1 DESTDIR="$pkgdir" install
+
+  mv ${pkgdir}/msys64${MINGW_PREFIX} ${pkgdir}
+  rm -rf ${pkgdir}/msys64
+
   # Fix mis-named clang doc folder (is llvm, should be clang)
-  mv "${pkgdir}"${MINGW_PREFIX}/share/doc/llvm "${pkgdir}"${MINGW_PREFIX}/share/doc/clang
+  #mv "${pkgdir}"${MINGW_PREFIX}/share/doc/llvm "${pkgdir}"${MINGW_PREFIX}/share/doc/clang
 
   # .. Unmove
   cd "${srcdir}"
@@ -132,9 +197,9 @@ package_clang(){
   mv clang-tools-extra-${CARCH}             build-${CARCH}/tools/clang/tools/extra
 
   # Install html docs
-  install -d "${pkgdir}"${MINGW_PREFIX}/share/doc/clang/html
-  cp -rf "${srcdir}"/llvm/tools/clang/docs/_build/html/* "${pkgdir}"${MINGW_PREFIX}/share/doc/clang/html/
-  rm -r "${pkgdir}"${MINGW_PREFIX}/share/doc/clang/html/_sources
+  #install -d "${pkgdir}"${MINGW_PREFIX}/share/doc/clang/html
+  #cp -rf "${srcdir}"/llvm/tools/clang/docs/_build/html/* "${pkgdir}"${MINGW_PREFIX}/share/doc/clang/html/
+  #rm -r "${pkgdir}"${MINGW_PREFIX}/share/doc/clang/html/_sources
 }
 
 package_clang-tools-extra(){
@@ -146,16 +211,33 @@ package_clang-tools-extra(){
   pkgver=$(pkgver_internal "${srcdir}"/llvm/tools/clang/tools/extra)
 
   cd "${srcdir}"/build-${CARCH}/tools/clang/tools/extra
-  make -j1 DESTDIR="$pkgdir" install
+  mingw32-make -j1 DESTDIR="$pkgdir" install
+
+  mv ${pkgdir}/msys64${MINGW_PREFIX} ${pkgdir}
+  rm -rf ${pkgdir}/msys64
 }
 
 # package_compiler-rt(){
 #   pkgver=$(pkgver_internal "${srcdir}"/compiler-rt)
 # }
 
+package_lld(){
+  pkgdesc="Linker tools for LLVM"
+  depends=("${MINGW_PACKAGE_PREFIX}-llvm-svn")
+  provides=("${MINGW_PACKAGE_PREFIX}-lld")
+  conflicts=("${MINGW_PACKAGE_PREFIX}-lld")
+  pkgver=$(pkgver_internal "${srcdir}"/llvm/tools/lld)
+ 
+  cd build-${CARCH}/tools/lld
+  mingw32-make -j1 DESTDIR="$pkgdir" install
+
+  mv ${pkgdir}/msys64${MINGW_PREFIX} ${pkgdir}
+  rm -rf ${pkgdir}/msys64
+}
+
 package_llvm(){
   pkgdesc="Low Level Virtual Machine"
-  depends=("${MINGW_PACKAGE_PREFIX}-gcc") # "${MINGW_PACKAGE_PREFIX}-compiler-rt"
+  #depends=("${MINGW_PACKAGE_PREFIX}-gcc") # "${MINGW_PACKAGE_PREFIX}-compiler-rt"
   provides=("${MINGW_PACKAGE_PREFIX}-llvm")
   conflicts=("${MINGW_PACKAGE_PREFIX}-llvm")
   install=llvm-${CARCH}.install
@@ -166,27 +248,36 @@ package_llvm(){
   mv llvm/tools/clang           clang
   mv build-${CARCH}/tools/clang clang-${CARCH}
 
+  mv llvm/tools/lld             lld
+  mv build-${CARCH}/tools/lld   lld-${CARCH}
+
   cd build-${CARCH}
-  make -j1 DESTDIR="$pkgdir" install
+  mingw32-make -j1 DESTDIR="$pkgdir" install
+
+  mv ${pkgdir}/msys64${MINGW_PREFIX} ${pkgdir}
+  rm -rf ${pkgdir}/msys64
 
   # .. Unmove
   cd "${srcdir}"
   mv clang                      llvm/tools/clang
   mv clang-${CARCH}             build-${CARCH}/tools/clang
 
+  mv lld                        llvm/tools/lld
+  mv lld-${CARCH}               build-${CARCH}/tools/lld
+
   # Install man pages
-  install -d "${pkgdir}"${MINGW_PREFIX}/share/man/man1
-  cp "${srcdir}"/llvm/docs/_build/man/*.1 "${pkgdir}"${MINGW_PREFIX}/share/man/man1/
+  #install -d "${pkgdir}"${MINGW_PREFIX}/share/man/man1
+  #cp "${srcdir}"/llvm/docs/_build/man/*.1 "${pkgdir}"${MINGW_PREFIX}/share/man/man1/
 
   # Install html docs
-  install -d "${pkgdir}"${MINGW_PREFIX}/share/doc/llvm/html
-  cp -rf "${srcdir}"/llvm/docs/_build/html/* "${pkgdir}"${MINGW_PREFIX}/share/doc/llvm/html/
-  rm -r "${pkgdir}"${MINGW_PREFIX}/share/doc/llvm/html/_sources
+  #install -d "${pkgdir}"${MINGW_PREFIX}/share/doc/llvm/html
+  #cp -rf "${srcdir}"/llvm/docs/_build/html/* "${pkgdir}"${MINGW_PREFIX}/share/doc/llvm/html/
+  #rm -r "${pkgdir}"${MINGW_PREFIX}/share/doc/llvm/html/_sources
 
   # Install CMake stuff
   install -d "${pkgdir}"${MINGW_PREFIX}/share/llvm/cmake/{modules,platforms}
-  install -Dm644 "${srcdir}"/llvm/cmake/modules/*.cmake "${pkgdir}"${MINGW_PREFIX}/share/llvm/cmake/modules/
-  install -Dm644 "${srcdir}"/llvm/cmake/platforms/*.cmake "${pkgdir}"${MINGW_PREFIX}/share/llvm/cmake/platforms/
+  install -Dm644 "${srcdir}"/llvm/cmake/modules/*.cmake "${pkgdir}${MINGW_PREFIX}/share/llvm/cmake/modules/"
+  install -Dm644 "${srcdir}"/llvm/cmake/platforms/*.cmake "${pkgdir}${MINGW_PREFIX}/share/llvm/cmake/platforms/"
 }
 
 package_clang-analyzer() {
@@ -207,7 +298,7 @@ package_clang-analyzer() {
 
   # scan-build looks for clang within the same directory
   install -d "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/scan-build/
-  ln -s "${srcdir}"/build-${CARCH}/Release/bin/clang.exe "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/scan-build/
+  ln -s "${srcdir}"/build-${CARCH}/bin/clang.exe "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/scan-build/
 
   # Relocate man page
   install -d "${pkgdir}"${MINGW_PREFIX}/share/man/man1
@@ -243,6 +334,10 @@ package_mingw-w64-i686-clang-tools-extra-svn(){
 #   package_compiler-rt
 # }
 
+package_mingw-w64-i686-lld-svn(){
+  package_lld
+}
+
 package_mingw-w64-i686-llvm-svn(){
   package_llvm
 }
@@ -262,6 +357,10 @@ package_mingw-w64-x86_64-clang-tools-extra-svn(){
 # package_mingw-w64-x86_64-compiler-rt-svn(){
 #   package_compiler-rt
 # }
+
+package_mingw-w64-x86_64-lld-svn(){
+  package_lld
+}
 
 package_mingw-w64-x86_64-llvm-svn(){
   package_llvm
