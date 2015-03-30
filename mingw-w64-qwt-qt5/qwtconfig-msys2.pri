@@ -27,7 +27,7 @@ QWT_INSTALL_LIBS      = $${QWT_INSTALL_PREFIX}/lib
 # Designer plugin
 ######################################################################
 
-QWT_INSTALL_PLUGINS   = $${QWT_INSTALL_PREFIX}/plugins/designer
+QWT_INSTALL_PLUGINS   = $${QWT_INSTALL_PREFIX}/share/qt5/plugins/designer
 
 ######################################################################
 # Features
@@ -41,7 +41,7 @@ QWT_INSTALL_PLUGINS   = $${QWT_INSTALL_PREFIX}/plugins/designer
 # with every Qt upgrade. 
 ######################################################################
 
-QWT_INSTALL_FEATURES  = $${QWT_INSTALL_PREFIX}/mkspecs/features
+QWT_INSTALL_FEATURES  = $${QWT_INSTALL_PREFIX}/share/qt5/mkspecs/features
 
 ######################################################################
 # Build the static/shared libraries.
