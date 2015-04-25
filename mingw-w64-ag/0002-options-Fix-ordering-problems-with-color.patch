@@ -1,4 +1,4 @@
-From 8a9ac7f208f38fb89eb5032ddc68055e6ab98f99 Mon Sep 17 00:00:00 2001
+From b369239d9a1eb01f1baa2582e170ea8b24b3036f Mon Sep 17 00:00:00 2001
 From: Ray Donnelly <mingw.android@gmail.com>
 Date: Mon, 23 Feb 2015 22:12:15 +0000
 Subject: [PATCH 2/5] options: Fix ordering problems with --color
@@ -19,12 +19,12 @@ Moved around the logic of setting opts.color so that:
 4. Default color to TRUE if MSYSCON env. var = mintty.exe
 ---
  configure.ac  |   2 +-
- src/options.c | 137 +++++++++++++++++++++++++++++++++++-----------------------
- src/options.h |  10 +++++
- 3 files changed, 95 insertions(+), 54 deletions(-)
+ src/options.c | 148 ++++++++++++++++++++++++++++++++++++----------------------
+ src/options.h |  10 ++++
+ 3 files changed, 102 insertions(+), 58 deletions(-)
 
 diff --git a/configure.ac b/configure.ac
-index 7116788..e29d1c4 100644
+index 06dfbd1..5674193 100644
 --- a/configure.ac
 +++ b/configure.ac
 @@ -24,7 +24,7 @@ AX_PTHREAD(
@@ -37,25 +37,29 @@ index 7116788..e29d1c4 100644
  
  case $host in
 diff --git a/src/options.c b/src/options.c
-index 462894b..e2a93b2 100644
+index a000f15..1f65c08 100644
 --- a/src/options.c
 +++ b/src/options.c
-@@ -113,9 +113,12 @@ void init_options(void) {
+@@ -137,8 +137,16 @@ void print_version(void) {
+ void init_options(void) {
      memset(&opts, 0, sizeof(opts));
      opts.casing = CASE_DEFAULT;
- #ifdef _WIN32
--    opts.color = (getenv("ANSICON") || getenv("CMDER_ROOT")) ? TRUE : FALSE;
-+    const char* env_MSYSCON = getenv("MSYSCON");
-+    opts.color =  ((getenv("ANSICON") || getenv("CMDER_ROOT")
-+                 || (env_MSYSCON && !strcmp(env_MSYSCON, "mintty.exe"))))
-+                  ? COLOR_DEFAULT_TRUE : COLOR_DEFAULT_FALSE;
- #else
 -    opts.color = TRUE;
+-    opts.color_win_ansi = FALSE;
 +    opts.color = COLOR_DEFAULT_TRUE;
- #endif
++#ifdef _WIN32
++    const char* env_MSYSCON = getenv("MSYSCON");
++    opts.color_win_ansi =  ((getenv("ANSICON") || getenv("CMDER_ROOT")
++                          || (env_MSYSCON && !strcmp(env_MSYSCON, "mintty.exe"))))
++                           ? COLOR_DEFAULT_TRUE : COLOR_DEFAULT_FALSE;
++#else
++    opts.color_win_ansi = COLOR_DEFAULT_FALSE;
++#endif
++
      opts.max_matches_per_file = 0;
      opts.max_search_depth = DEFAULT_MAX_SEARCH_DEPTH;
-@@ -199,7 +202,7 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
+     opts.path_sep = '\n';
+@@ -221,11 +229,11 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
          { "before", optional_argument, NULL, 'B' },
          { "break", no_argument, &opts.print_break, 1 },
          { "case-sensitive", no_argument, NULL, 's' },
@@ -64,7 +68,12 @@ index 462894b..e2a93b2 100644
          { "color-line-number", required_argument, NULL, 0 },
          { "color-match", required_argument, NULL, 0 },
          { "color-path", required_argument, NULL, 0 },
-@@ -233,7 +236,7 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
+-        { "color-win-ansi", no_argument, &opts.color_win_ansi, TRUE },
++        { "color-win-ansi", no_argument, &opts.color_win_ansi, COLOR_EXPLICIT_TRUE },
+         { "column", no_argument, &opts.column, 1 },
+         { "context", optional_argument, NULL, 'C' },
+         { "count", no_argument, NULL, 'c' },
+@@ -256,7 +264,7 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
          { "no-recurse", no_argument, NULL, 'n' },
          { "noaffinity", no_argument, &opts.use_thread_affinity, 0 },
          { "nobreak", no_argument, &opts.print_break, 0 },
@@ -73,7 +82,7 @@ index 462894b..e2a93b2 100644
          { "nofilename", no_argument, NULL, 0 },
          { "nofollow", no_argument, &opts.follow_symlinks, 0 },
          { "nogroup", no_argument, &group, 0 },
-@@ -295,22 +298,6 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
+@@ -318,22 +326,6 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
          }
      }
  
@@ -96,7 +105,7 @@ index 462894b..e2a93b2 100644
      int pcre_opts = 0;
      while ((ch = getopt_long(argc, argv, "A:aB:C:cDG:g:FfHhiLlm:nop:QRrSsvVtuUwz0", longopts, &opt_index)) != -1) {
          switch (ch) {
-@@ -612,44 +599,11 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
+@@ -635,42 +627,6 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
          opts.after = opts.context;
      }
  
@@ -106,7 +115,7 @@ index 462894b..e2a93b2 100644
 -        group = 1;
 -        opts.search_stream = 0;
 -    }
- 
+-
 -    if (opts.vimgrep) {
 -        opts.color = 0;
 -        opts.print_break = 0;
@@ -114,23 +123,20 @@ index 462894b..e2a93b2 100644
 -        opts.search_stream = 0;
 -        opts.print_path = PATH_PRINT_NOTHING;
 -    }
- 
+-
 -    if (opts.parallel) {
 -        opts.search_stream = 0;
 -    }
- 
--    if (opts.print_path != PATH_PRINT_DEFAULT || opts.print_break == 0) {
--        goto skip_group;
+-
+-    if (!(opts.print_path != PATH_PRINT_DEFAULT || opts.print_break == 0)) {
+-        if (group) {
+-            opts.print_break = 1;
+-        } else {
+-            opts.print_path = PATH_PRINT_DEFAULT_EACH_LINE;
+-            opts.print_break = 0;
+-        }
 -    }
- 
--    if (group) {
--        opts.print_break = 1;
--    } else {
--        opts.print_path = PATH_PRINT_DEFAULT_EACH_LINE;
--        opts.print_break = 0;
--    }
- 
--skip_group:
+-
 -    if (opts.search_stream) {
 -        opts.print_break = 0;
 -        opts.print_path = PATH_PRINT_NOTHING;
@@ -138,14 +144,14 @@ index 462894b..e2a93b2 100644
 -            opts.print_line_numbers = 0;
 -        }
 -    }
- 
+-
      if (accepts_query && argc > 0) {
          // use the provided query
-@@ -703,4 +657,81 @@ skip_group:
-     }
+         opts.query = ag_strdup(argv[0]);
+@@ -724,6 +680,84 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
      (*paths)[i] = NULL;
      (*base_paths)[i] = NULL;
-+
+ 
 +    /* If we're not outputting to a terminal. change output to:
 +        * turn off colors
 +        * print filenames on every line
@@ -176,7 +182,6 @@ index 462894b..e2a93b2 100644
 +        }
 +    }
 +
-+
 +    if (opts.ackmate) {
 +        opts.color = COLOR_EMULATION_FALSE;
 +        opts.print_break = 1;
@@ -192,29 +197,19 @@ index 462894b..e2a93b2 100644
 +        opts.print_path = PATH_PRINT_NOTHING;
 +    }
 +
-+    if (opts.color == COLOR_DEFAULT_FALSE || opts.color == COLOR_EXPLICIT_FALSE ||
-+        opts.color == COLOR_EMULATION_FALSE) {
-+        opts.color = COLOR_FALSE;
-+    } else {
-+        opts.color = COLOR_TRUE;
-+    }
-+
 +    if (opts.parallel) {
 +        opts.search_stream = 0;
 +    }
 +
-+    if (opts.print_path != PATH_PRINT_DEFAULT || opts.print_break == 0) {
-+        goto skip_group;
++    if (!(opts.print_path != PATH_PRINT_DEFAULT || opts.print_break == 0)) {
++        if (group) {
++            opts.print_break = 1;
++        } else {
++            opts.print_path = PATH_PRINT_DEFAULT_EACH_LINE;
++            opts.print_break = 0;
++        }
 +    }
 +
-+    if (group) {
-+        opts.print_break = 1;
-+    } else {
-+        opts.print_path = PATH_PRINT_DEFAULT_EACH_LINE;
-+        opts.print_break = 0;
-+    }
-+
-+skip_group:
 +    if (opts.search_stream) {
 +        opts.print_break = 0;
 +        opts.print_path = PATH_PRINT_NOTHING;
@@ -222,9 +217,24 @@ index 462894b..e2a93b2 100644
 +            opts.print_line_numbers = 0;
 +        }
 +    }
- }
++
++    if (opts.color == COLOR_DEFAULT_FALSE || opts.color == COLOR_EXPLICIT_FALSE ||
++        opts.color == COLOR_EMULATION_FALSE) {
++        opts.color = COLOR_FALSE;
++    } else {
++        opts.color = COLOR_TRUE;
++    }
++    if (opts.color_win_ansi == COLOR_DEFAULT_FALSE) {
++        opts.color_win_ansi = COLOR_FALSE;
++    } else {
++        opts.color_win_ansi = COLOR_TRUE;
++    }
++
+ #ifdef _WIN32
+     windows_use_ansi(opts.color_win_ansi);
+ #endif
 diff --git a/src/options.h b/src/options.h
-index c7d419f..758f6a0 100644
+index 7d7aca1..4bbd4e2 100644
 --- a/src/options.h
 +++ b/src/options.h
 @@ -26,6 +26,16 @@ enum path_print_behavior {
@@ -245,5 +255,5 @@ index c7d419f..758f6a0 100644
      int ackmate;
      pcre *ackmate_dir_filter;
 -- 
-2.3.0
+2.3.5
 
