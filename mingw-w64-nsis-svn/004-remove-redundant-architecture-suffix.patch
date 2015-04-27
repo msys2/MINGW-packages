@@ -1,0 +1,131 @@
+diff -aurN 003/SConstruct 004/SConstruct
+--- 003/SConstruct	2015-07-30 17:44:13.810819400 -0300
++++ 004/SConstruct	2015-07-30 17:52:11.671153600 -0300
+@@ -517,10 +517,8 @@
+ def GetArcSuffix(env, unicode = None):
+ 	if unicode is None:
+ 		unicode = 'UNICODE' in env['CPPDEFINES']
+-	suff = '-unicode'
+-	if not unicode:
+-		suff = '-ansi'
+-	return GetArcCPU(env) + suff
++	# We do not use GetArcCPU here because this is constant in the MSYS2 package
++	return 'unicode' if unicode else 'ansi'
+ 
+ ######################################################################
+ #######  Distribution                                              ###
+diff -aurN 003/Source/build.cpp 004/Source/build.cpp
+--- 003/Source/build.cpp	2015-07-30 17:44:13.467068100 -0300
++++ 004/Source/build.cpp	2015-07-30 17:52:11.671153600 -0300
+@@ -3538,7 +3538,7 @@
+ 
+   tstring searchPath = definedlist.find(_T("NSISDIR"));
+   searchPath += PLATFORM_PATH_SEPARATOR_STR _T("Plugins") PLATFORM_PATH_SEPARATOR_STR;
+-  searchPath += get_target_suffix();
++  searchPath += get_target_suffix(false);
+ 
+   SCRIPT_MSG(_T("Processing default plugins: \"%") NPRIs PLATFORM_PATH_SEPARATOR_STR _T("*.dll\"\n"), searchPath.c_str());
+   if (!m_pPlugins->Initialize(searchPath.c_str(), !!display_script))
+@@ -3825,22 +3825,33 @@
+ 
+ CEXEBuild::TARGETTYPE CEXEBuild::get_target_type(const TCHAR*s) const
+ {
++  tstring str = s;
++#if defined(__GNUC__)
++  if (s && !_tcsstr(s, _TEXT("-")))
++#if defined(__x86_64__) || defined(__LP64__)
++    str = _TEXT("amd64-") + str;
++#else
++    str = _TEXT("x86-") + str;
++#endif
++#endif
++    
+   for(int i = CEXEBuild::TARGETFIRST; i < CEXEBuild::TARGETCOUNT; ++i)
+   {
+     CEXEBuild::TARGETTYPE tt = (CEXEBuild::TARGETTYPE) i;
+-    if (!_tcsicmp(get_target_suffix(tt, _T("")),s) && *s) return tt;
++    if (!_tcsicmp(get_target_suffix(tt, true, _T("")),str.c_str()) && *s) return tt;
++    if (!_tcsicmp(get_target_suffix(tt, false, _T("")),str.c_str()) && *s) return tt;
+   }
+   return TARGET_UNKNOWN;
+ }
+ 
+-const TCHAR* CEXEBuild::get_target_suffix(CEXEBuild::TARGETTYPE tt, const TCHAR*defval) const
++const TCHAR* CEXEBuild::get_target_suffix(CEXEBuild::TARGETTYPE tt, const bool include_arch, const TCHAR*defval) const
+ {
+   switch(tt)
+   {
+-  case TARGET_X86ANSI   :return _T("x86-ansi");
+-  case TARGET_X86UNICODE:return _T("x86-unicode");
++  case TARGET_X86ANSI   :return include_arch? _T("x86-ansi") : _T("ansi");
++  case TARGET_X86UNICODE:return include_arch? _T("x86-unicode") : _T("unicode");
+ #if !defined(_WIN32) || defined(_WIN64) // BUGBUG: Need a better define for this
+-  case TARGET_AMD64     :return _T("amd64-unicode");
++  case TARGET_AMD64     :return include_arch? _T("amd64-unicode") : _T("unicode");
+ #endif
+   default:return defval;
+   }
+@@ -3848,7 +3859,7 @@
+ 
+ int CEXEBuild::load_stub()
+ {
+-  return update_exehead(stub_filename+_T("-")+get_target_suffix(), &m_exehead_original_size);
++  return update_exehead(stub_filename+_T("-")+get_target_suffix(false), &m_exehead_original_size);
+ }
+ 
+ int CEXEBuild::update_exehead(const tstring& file, size_t *size/*=NULL*/) {
+diff -aurN 003/Source/build.h 004/Source/build.h
+--- 003/Source/build.h	2015-07-30 17:44:13.513942100 -0300
++++ 004/Source/build.h	2015-07-30 17:52:11.686779200 -0300
+@@ -127,8 +127,8 @@
+     } TARGETTYPE;
+     TARGETTYPE m_target_type;
+     TARGETTYPE get_target_type(const TCHAR*s) const;
+-    const TCHAR* get_target_suffix(CEXEBuild::TARGETTYPE tt, const TCHAR*defval = _T("?")) const;
+-    const TCHAR* get_target_suffix() const {return get_target_suffix(m_target_type);}
++    const TCHAR* get_target_suffix(CEXEBuild::TARGETTYPE tt, const bool include_arch, const TCHAR*defval = _T("?")) const;
++    const TCHAR* get_target_suffix(const bool include_arch) const {return get_target_suffix(m_target_type, include_arch);}
+     bool is_target_64bit() const { return TARGET_AMD64 == m_target_type; }
+ 
+     void set_default_output_filename(const tstring& filename);
+diff -aurN 003/Source/makenssi.cpp 004/Source/makenssi.cpp
+--- 003/Source/makenssi.cpp	2015-07-30 17:44:13.685817700 -0300
++++ 004/Source/makenssi.cpp	2015-07-30 17:52:11.686779200 -0300
+@@ -643,7 +643,7 @@
+     _ftprintf(g_output,_T("\nProcessed "));
+     if (files_processed) _ftprintf(g_output,_T("%d file%") NPRIs _T(", "),files_processed,files_processed==1?_T(""):_T("s"));
+     if (cmds_processed) _ftprintf(g_output,_T("%d command line command%") NPRIs _T(", "),cmds_processed,cmds_processed==1?_T(""):_T("s"));
+-    _ftprintf(g_output,_T("writing output (%") NPRIs _T("):\n"),build.get_target_suffix());
++    _ftprintf(g_output,_T("writing output (%") NPRIs _T("):\n"),build.get_target_suffix(true));
+     fflush(g_output);
+   }
+   
+diff -aurN 003/Source/script.cpp 004/Source/script.cpp
+--- 003/Source/script.cpp	2015-07-30 17:44:30.482726600 -0300
++++ 004/Source/script.cpp	2015-07-30 17:52:11.702403200 -0300
+@@ -4780,7 +4780,7 @@
+             {
+               pluginfullpath = definedlist.find(_T("NSISDIR"));
+               pluginfullpath += tstring(PLATFORM_PATH_SEPARATOR_STR) + _T("Plugins");
+-              pluginfullpath += tstring(PLATFORM_PATH_SEPARATOR_STR) + get_target_suffix();
++              pluginfullpath += tstring(PLATFORM_PATH_SEPARATOR_STR) + get_target_suffix(false);
+               pluginfullpath += tstring(PLATFORM_PATH_SEPARATOR_STR) + t;
+             }
+             t = (TCHAR*) pluginfullpath.c_str();
+@@ -6104,10 +6104,15 @@
+           es += _T(": Target parameter must be one of: /");
+           for(int comma = 0, i = CEXEBuild::TARGETFIRST; i < CEXEBuild::TARGETCOUNT; ++i)
+           {
+-            const TCHAR *ts = get_target_suffix((CEXEBuild::TARGETTYPE) i, 0);
++            // TODO: test this
++            const TCHAR *ts = get_target_suffix((CEXEBuild::TARGETTYPE) i, true, 0);
++            const TCHAR *ts2 = get_target_suffix((CEXEBuild::TARGETTYPE) i, false, 0);
+             if (!ts) continue;
+             if (comma++) es += _T(", /");
+             es += ts;
++            if (!ts2) continue;
++            es += _T(", /");
++            es += ts2;
+           }
+           ERROR_MSG(_T("Error: %") NPRIs _T("\n"), es.c_str());
+           return PS_ERROR;
