@@ -1,0 +1,122 @@
+Back-port upstream patch to avoid assuming quite so much about what libjpeg
+will return.  Needed because libjpeg-turbo with the jpeg8 API broke the
+expectations of the previous coding.
+
+
+diff -Naur tiff-4.0.3.orig/test/raw_decode.c tiff-4.0.3/test/raw_decode.c
+--- tiff-4.0.3.orig/test/raw_decode.c	2012-07-06 13:05:16.000000000 -0400
++++ tiff-4.0.3/test/raw_decode.c	2012-12-19 13:04:37.609738276 -0500
+@@ -71,33 +71,54 @@
+ 	return 1;
+ }
+ 
+-static int check_rgb_pixel( int pixel, int red, int green, int blue, unsigned char *buffer ) {
++static int check_rgb_pixel( int pixel,
++			    int min_red, int max_red,
++			    int min_green, int max_green,
++			    int min_blue, int max_blue,
++			    unsigned char *buffer ) {
+ 	unsigned char *rgb = buffer + 3 * pixel;
+ 	
+-	if( rgb[0] == red && rgb[1] == green && rgb[2] == blue ) {
++	if( rgb[0] >= min_red && rgb[0] <= max_red &&
++	    rgb[1] >= min_green && rgb[1] <= max_green &&
++	    rgb[2] >= min_blue && rgb[2] <= max_blue ) {
+ 		return 0;
+ 	}
+ 
+ 	fprintf( stderr, "Pixel %d did not match expected results.\n", pixel );
+-	fprintf( stderr, "Expect: %3d %3d %3d\n", red, green, blue );
+-	fprintf( stderr, "   Got: %3d %3d %3d\n", rgb[0], rgb[1], rgb[2] );
++	fprintf( stderr, "Got R=%d (expected %d..%d), G=%d (expected %d..%d), B=%d (expected %d..%d)\n",
++		 rgb[0], min_red, max_red,
++		 rgb[1], min_green, max_green,
++		 rgb[2], min_blue, max_blue );
+ 	return 1;
+ }
+ 
+-static int check_rgba_pixel( int pixel, int red, int green, int blue, int alpha, uint32 *buffer ) {
++static int check_rgba_pixel( int pixel,
++			     int min_red, int max_red,
++			     int min_green, int max_green,
++			     int min_blue, int max_blue,
++			     int min_alpha, int max_alpha,
++			     uint32 *buffer ) {
+ 	/* RGBA images are upside down - adjust for normal ordering */
+ 	int adjusted_pixel = pixel % 128 + (127 - (pixel/128)) * 128;
+ 	uint32 rgba = buffer[adjusted_pixel];
+ 
+-	if( TIFFGetR(rgba) == (uint32) red && TIFFGetG(rgba) == (uint32) green &&
+-	    TIFFGetB(rgba) == (uint32) blue && TIFFGetA(rgba) == (uint32) alpha ) {
++	if( TIFFGetR(rgba) >= (uint32) min_red &&
++	    TIFFGetR(rgba) <= (uint32) max_red &&
++	    TIFFGetG(rgba) >= (uint32) min_green &&
++	    TIFFGetG(rgba) <= (uint32) max_green &&
++	    TIFFGetB(rgba) >= (uint32) min_blue &&
++	    TIFFGetB(rgba) <= (uint32) max_blue &&
++	    TIFFGetA(rgba) >= (uint32) min_alpha &&
++	    TIFFGetA(rgba) <= (uint32) max_alpha ) {
+ 		return 0;
+ 	}
+ 
+ 	fprintf( stderr, "Pixel %d did not match expected results.\n", pixel );
+-	fprintf( stderr, "Expect: %3d %3d %3d %3d\n", red, green, blue, alpha );
+-	fprintf( stderr, "   Got: %3d %3d %3d %3d\n",
+-		 TIFFGetR(rgba), TIFFGetG(rgba), TIFFGetB(rgba), TIFFGetA(rgba) );
++	fprintf( stderr, "Got R=%d (expected %d..%d), G=%d (expected %d..%d), B=%d (expected %d..%d), A=%d (expected %d..%d)\n",
++		 TIFFGetR(rgba), min_red, max_red,
++		 TIFFGetG(rgba), min_green, max_green,
++		 TIFFGetB(rgba), min_blue, max_blue,
++		 TIFFGetA(rgba), min_alpha, max_alpha );
+ 	return 1;
+ }
+ 
+@@ -191,15 +212,17 @@
+ 		return 1;
+ 	}
+ 
+-#if JPEG_LIB_VERSION >= 70
+-	pixel_status |= check_rgb_pixel( 0, 18, 0, 41, buffer );
+-	pixel_status |= check_rgb_pixel( 64, 0, 0, 0, buffer );
+-	pixel_status |= check_rgb_pixel( 512, 5, 34, 196, buffer );
+-#else
+-	pixel_status |= check_rgb_pixel( 0, 15, 0, 18, buffer );
+-	pixel_status |= check_rgb_pixel( 64, 0, 0, 2, buffer );
+-	pixel_status |= check_rgb_pixel( 512, 6, 36, 182, buffer );
+-#endif
++	/*
++	 * JPEG decoding is inherently inexact, so we can't test for exact
++	 * pixel values.  (Well, if we knew exactly which libjpeg version
++	 * we were using, and with what settings, we could expect specific
++	 * values ... but it's not worth the trouble to keep track of.)
++	 * Hence, use ranges of expected values.  The ranges may need to be
++	 * widened over time as more versions of libjpeg appear.
++	 */
++	pixel_status |= check_rgb_pixel( 0, 15, 18, 0, 0, 18, 41, buffer );
++	pixel_status |= check_rgb_pixel( 64, 0, 0, 0, 0, 0, 2, buffer );
++	pixel_status |= check_rgb_pixel( 512, 5, 6, 34, 36, 182, 196, buffer );
+ 
+ 	free( buffer );
+ 
+@@ -224,15 +247,12 @@
+ 	 * accomplish it from the YCbCr subsampled buffer ourselves in which
+ 	 * case the results may be subtly different but similar.
+ 	 */
+-#if JPEG_LIB_VERSION >= 70
+-	pixel_status |= check_rgba_pixel( 0, 18, 0, 41, 255, rgba_buffer );
+-	pixel_status |= check_rgba_pixel( 64, 0, 0, 0, 255, rgba_buffer );
+-	pixel_status |= check_rgba_pixel( 512, 5, 34, 196, 255, rgba_buffer );
+-#else
+-	pixel_status |= check_rgba_pixel( 0, 15, 0, 18, 255, rgba_buffer );
+-	pixel_status |= check_rgba_pixel( 64, 0, 0, 2, 255, rgba_buffer );
+-	pixel_status |= check_rgba_pixel( 512, 6, 36, 182, 255, rgba_buffer );
+-#endif
++	pixel_status |= check_rgba_pixel( 0, 15, 18, 0, 0, 18, 41, 255, 255,
++					  rgba_buffer );
++	pixel_status |= check_rgba_pixel( 64, 0, 0, 0, 0, 0, 2, 255, 255,
++					  rgba_buffer );
++	pixel_status |= check_rgba_pixel( 512, 5, 6, 34, 36, 182, 196, 255, 255,
++					  rgba_buffer );
+ 
+ 	free( rgba_buffer );
+ 	TIFFClose(tif);
