@@ -49,7 +49,7 @@ if exist "%~dp0../../mingw64/bin/%~n0_x64.exe" (
     "%~dp0../../mingw64/bin/%~n0_x64.exe" %*
     exit /b 0
 ) else (
-    echo Cannot find "%~dp0../../mingw64/bin/%~n0_x84.exe" >&2
+    echo Cannot find "%~dp0../../mingw64/bin/%~n0_x64.exe" >&2
     exit /b 1
 )
 
