@@ -9,7 +9,7 @@
 
 QWT_VER_MAJ      = 6
 QWT_VER_MIN      = 1
-QWT_VER_PAT      = 0
+QWT_VER_PAT      = 2
 QWT_VERSION      = $${QWT_VER_MAJ}.$${QWT_VER_MIN}.$${QWT_VER_PAT}
 
 ######################################################################
@@ -27,7 +27,7 @@ QWT_INSTALL_LIBS      = $${QWT_INSTALL_PREFIX}/lib
 # Designer plugin
 ######################################################################
 
-QWT_INSTALL_PLUGINS   = $${QWT_INSTALL_PREFIX}/plugins/designer
+QWT_INSTALL_PLUGINS   = $${QWT_INSTALL_PREFIX}/share/qt4/plugins/designer
 
 ######################################################################
 # Features
@@ -41,7 +41,7 @@ QWT_INSTALL_PLUGINS   = $${QWT_INSTALL_PREFIX}/plugins/designer
 # with every Qt upgrade. 
 ######################################################################
 
-QWT_INSTALL_FEATURES  = $${QWT_INSTALL_PREFIX}/mkspecs/features
+QWT_INSTALL_FEATURES  = $${QWT_INSTALL_PREFIX}/share/qt4/mkspecs/features
 
 ######################################################################
 # Build the static/shared libraries.
