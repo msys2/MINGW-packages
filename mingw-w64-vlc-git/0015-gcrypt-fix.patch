@@ -1,0 +1,400 @@
+---
+ configure.ac                              |  29 +++++----
+ include/vlc_gcrypt.h                      | 103 ------------------------------
+ include/vlc_threads.h                     |   1 -
+ modules/access/dcp/dcpdecrypt.cpp         |   3 -
+ modules/access/dcp/dcpparser.h            |   1 -
+ modules/access/rtp/rtp.c                  |   2 -
+ modules/access_output/livehttp.c          |   3 -
+ modules/demux/hls/playlist/HLSSegment.cpp |   4 --
+ modules/stream_out/raop.c                 |   4 +-
+ modules/stream_out/rtp.c                  |   2 -
+ modules/video_filter/remoteosd.c          |   3 -
+ po/POTFILES.in                            |   1 -
+ src/Makefile.am                           |   1 -
+ src/misc/threads.c                        |   1 -
+ src/misc/update.c                         |   2 -
+ 15 files changed, 16 insertions(+), 144 deletions(-)
+ delete mode 100644 include/vlc_gcrypt.h
+
+diff --git a/configure.ac b/configure.ac
+index 0d1437b..92eb979 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -3966,22 +3966,23 @@ dnl libgcrypt
+ dnl
+ AC_ARG_ENABLE(libgcrypt,
+   [  --disable-libgcrypt     gcrypt support (default enabled)])
++# require libgcrypt >= 1.6.0
+ AS_IF([test "${enable_libgcrypt}" != "no"], [
+-  AC_CHECK_DECL([GCRYCTL_SET_THREAD_CBS], [
+-    libgcrypt-config --version >/dev/null || \
+-        AC_MSG_ERROR([gcrypt.h present but libgcrypt-config could not be found])
+-    AC_CHECK_LIB(gcrypt, gcry_control, [
+-      have_libgcrypt="yes"
+-      AC_DEFINE([HAVE_GCRYPT], 1, [Defined if having gcrypt])
+-      GCRYPT_CFLAGS="`libgcrypt-config --cflags`"
+-      GCRYPT_LIBS="`libgcrypt-config --libs`"
+-    ], [
+-      AC_MSG_ERROR([libgcrypt not found. Install libgcrypt or pass --disable-libgcrypt.])
+-    ], [`libgcrypt-config --libs`])
++  AC_TRY_COMPILE([
++#include <gcrypt.h>
++#if GCRYPT_VERSION_NUMBER < 0x010600
++#error
++#endif],
++  [], [
++    have_libgcrypt="yes"
++    AC_DEFINE([HAVE_GCRYPT], 1, [Defined if having gcrypt])
++    GCRYPT_CFLAGS="`libgcrypt-config --cflags`"
++    GCRYPT_LIBS="`libgcrypt-config --libs`"
+   ], [
+-    AC_MSG_ERROR([libgcrypt version 1.1.94 or higher not found. Install libgcrypt or pass --disable-libgcrypt.])
+-  ], [#include <gcrypt.h>]
+-  )
++    AS_IF([test "${enable_libgcrypt}" == "yes"], [
++      AC_MSG_ERROR([libgcrypt version 1.6.0 or higher not found. Install libgcrypt or pass --disable-libgcrypt.])
++    ])
++  ])
+ ])
+ 
+ AC_SUBST(GCRYPT_CFLAGS)
+diff --git a/include/vlc_gcrypt.h b/include/vlc_gcrypt.h
+deleted file mode 100644
+index 89bdab8..0000000
+--- a/include/vlc_gcrypt.h
++++ /dev/null
+@@ -1,103 +0,0 @@
+-/*****************************************************************************
+- * vlc_gcrypt.h: VLC thread support for gcrypt
+- *****************************************************************************
+- * Copyright (C) 2004-2010 Rémi Denis-Courmont
+- *
+- * This program is free software; you can redistribute it and/or modify it
+- * under the terms of the GNU Lesser General Public License as published by
+- * the Free Software Foundation; either version 2.1 of the License, or
+- * (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+- * GNU Lesser General Public License for more details.
+- *
+- * You should have received a copy of the GNU Lesser General Public License
+- * along with this program; if not, write to the Free Software Foundation,
+- * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
+- *****************************************************************************/
+-
+-/**
+- * \file
+- * This file implements gcrypt support functions in vlc
+- */
+-
+-#include <errno.h>
+-
+-#ifdef LIBVLC_USE_PTHREAD
+-/**
+- * If possible, use gcrypt-provided thread implementation. This is so that
+- * other non-VLC components (inside the process) can also use gcrypt safely.
+- */
+-GCRY_THREAD_OPTION_PTHREAD_IMPL;
+-# define gcry_threads_vlc gcry_threads_pthread
+-#else
+-
+-/**
+- * gcrypt thread option VLC implementation
+- */
+-
+-static int gcry_vlc_mutex_init( void **p_sys )
+-{
+-    vlc_mutex_t *p_lock = (vlc_mutex_t *)malloc( sizeof( vlc_mutex_t ) );
+-    if( p_lock == NULL)
+-        return ENOMEM;
+-
+-    vlc_mutex_init( p_lock );
+-    *p_sys = p_lock;
+-    return VLC_SUCCESS;
+-}
+-
+-static int gcry_vlc_mutex_destroy( void **p_sys )
+-{
+-    vlc_mutex_t *p_lock = (vlc_mutex_t *)*p_sys;
+-    vlc_mutex_destroy( p_lock );
+-    free( p_lock );
+-    return VLC_SUCCESS;
+-}
+-
+-static int gcry_vlc_mutex_lock( void **p_sys )
+-{
+-    vlc_mutex_lock( (vlc_mutex_t *)*p_sys );
+-    return VLC_SUCCESS;
+-}
+-
+-static int gcry_vlc_mutex_unlock( void **lock )
+-{
+-    vlc_mutex_unlock( (vlc_mutex_t *)*lock );
+-    return VLC_SUCCESS;
+-}
+-
+-static const struct gcry_thread_cbs gcry_threads_vlc =
+-{
+-    GCRY_THREAD_OPTION_USER,
+-    NULL,
+-    gcry_vlc_mutex_init,
+-    gcry_vlc_mutex_destroy,
+-    gcry_vlc_mutex_lock,
+-    gcry_vlc_mutex_unlock,
+-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+-};
+-#endif
+-
+-/**
+- * Initializes gcrypt with proper locking.
+- */
+-static inline void vlc_gcrypt_init (void)
+-{
+-    /* This would need a process-wide static mutex with all libraries linking
+-     * to a given instance of libgcrypt. We cannot do this as we have different
+-     * plugins linking with gcrypt, and some underlying libraries may use it
+-     * behind our back. Only way is to always link gcrypt statically (ouch!) or
+-     * have upstream gcrypt provide one shared object per threading system. */
+-    static bool done = false;
+-
+-    vlc_global_lock (VLC_GCRYPT_MUTEX);
+-    if (!done)
+-    {
+-        gcry_control (GCRYCTL_SET_THREAD_CBS, &gcry_threads_vlc);
+-        done = true;
+-    }
+-    vlc_global_unlock (VLC_GCRYPT_MUTEX);
+-}
+diff --git a/include/vlc_threads.h b/include/vlc_threads.h
+index 38bc3a7..c093a6a 100644
+--- a/include/vlc_threads.h
++++ b/include/vlc_threads.h
+@@ -471,7 +471,6 @@ class vlc_mutex_locker
+ enum
+ {
+    VLC_AVCODEC_MUTEX = 0,
+-   VLC_GCRYPT_MUTEX,
+    VLC_XLIB_MUTEX,
+    VLC_MOSAIC_MUTEX,
+    VLC_HIGHLIGHT_MUTEX,
+diff --git a/modules/access/dcp/dcpdecrypt.cpp b/modules/access/dcp/dcpdecrypt.cpp
+index bc51dd0..f2d4941 100644
+--- a/modules/access/dcp/dcpdecrypt.cpp
++++ b/modules/access/dcp/dcpdecrypt.cpp
+@@ -271,9 +271,6 @@ int AESKey::decryptRSA( string s_cipher_text_b64 )
+         goto end;
+     }
+ 
+-    /* initialize libgcrypt */
+-    vlc_gcrypt_init ();
+-
+     /* create S-expression for ciphertext */
+     if( ( err = gcry_mpi_scan( &cipher_text_mpi, GCRYMPI_FMT_USG, ps_cipher_text, 256, NULL ) ) )
+     {
+diff --git a/modules/access/dcp/dcpparser.h b/modules/access/dcp/dcpparser.h
+index 5789d21..5da39d7 100644
+--- a/modules/access/dcp/dcpparser.h
++++ b/modules/access/dcp/dcpparser.h
+@@ -45,7 +45,6 @@
+ 
+ /* gcrypt headers */
+ #include <gcrypt.h>
+-#include <vlc_gcrypt.h>
+ 
+ #include <iostream>
+ #include <string>
+diff --git a/modules/access/rtp/rtp.c b/modules/access/rtp/rtp.c
+index 455c0e8..dd22208 100644
+--- a/modules/access/rtp/rtp.c
++++ b/modules/access/rtp/rtp.c
+@@ -38,7 +38,6 @@
+ #ifdef HAVE_SRTP
+ # include <srtp.h>
+ # include <gcrypt.h>
+-# include <vlc_gcrypt.h>
+ #endif
+ 
+ #define RTCP_PORT_TEXT N_("RTCP (local) port")
+@@ -279,7 +278,6 @@ static int Open (vlc_object_t *obj)
+     char *key = var_CreateGetNonEmptyString (demux, "srtp-key");
+     if (key)
+     {
+-        vlc_gcrypt_init ();
+         p_sys->srtp = srtp_create (SRTP_ENCR_AES_CM, SRTP_AUTH_HMAC_SHA1, 10,
+                                    SRTP_PRF_AES_CM, SRTP_RCC_MODE1);
+         if (p_sys->srtp == NULL)
+diff --git a/modules/access_output/livehttp.c b/modules/access_output/livehttp.c
+index 0167d3b..d29edc2 100644
+--- a/modules/access_output/livehttp.c
++++ b/modules/access_output/livehttp.c
+@@ -45,7 +45,6 @@
+ #include <vlc_charset.h>
+ 
+ #include <gcrypt.h>
+-#include <vlc_gcrypt.h>
+ 
+ #include <vlc_rand.h>
+ 
+@@ -328,8 +327,6 @@ static int CryptSetup( sout_access_out_t *p_access, char *key_file )
+         return VLC_EGENERIC;
+     }
+ 
+-    vlc_gcrypt_init();
+-
+     /*Setup encryption cipher*/
+     gcry_error_t err = gcry_cipher_open( &p_sys->aes_ctx, GCRY_CIPHER_AES,
+                                          GCRY_CIPHER_MODE_CBC, 0 );
+diff --git a/modules/demux/hls/playlist/HLSSegment.cpp b/modules/demux/hls/playlist/HLSSegment.cpp
+index 3dda79c..28214a8 100644
+--- a/modules/demux/hls/playlist/HLSSegment.cpp
++++ b/modules/demux/hls/playlist/HLSSegment.cpp
+@@ -21,9 +21,6 @@
+ 
+ #include <vlc_common.h>
+ #include <vlc_block.h>
+-#ifdef HAVE_GCRYPT
+- #include <vlc_gcrypt.h>
+-#endif
+ 
+ using namespace hls::playlist;
+ 
+@@ -59,7 +56,6 @@ void HLSSegment::onChunkDownload(block_t **pp_block, Chunk *chunk, BaseRepresent
+         /* first bytes */
+         if(!ctx && chunk->getBytesRead() == p_block->i_buffer)
+         {
+-            vlc_gcrypt_init();
+             if (encryption.iv.size() != 16)
+             {
+                 encryption.iv.clear();
+diff --git a/modules/stream_out/raop.c b/modules/stream_out/raop.c
+index 014cb36..9f72b0b 100644
+--- a/modules/stream_out/raop.c
++++ b/modules/stream_out/raop.c
+@@ -29,6 +29,7 @@
+ #endif
+ 
+ #include <assert.h>
++#include <errno.h>
+ 
+ #include <gcrypt.h>
+ 
+@@ -40,7 +41,6 @@
+ #include <vlc_strings.h>
+ #include <vlc_charset.h>
+ #include <vlc_fs.h>
+-#include <vlc_gcrypt.h>
+ #include <vlc_es.h>
+ #include <vlc_http.h>
+ #include <vlc_memory.h>
+@@ -1377,8 +1377,6 @@ static int Open( vlc_object_t *p_this )
+     uint32_t i_session_id;
+     uint64_t i_client_instance;
+ 
+-    vlc_gcrypt_init();
+-
+     config_ChainParse( p_stream, SOUT_CFG_PREFIX, ppsz_sout_options,
+                        p_stream->p_cfg );
+ 
+diff --git a/modules/stream_out/rtp.c b/modules/stream_out/rtp.c
+index 7a03ba0..01188e5 100644
+--- a/modules/stream_out/rtp.c
++++ b/modules/stream_out/rtp.c
+@@ -44,7 +44,6 @@
+ #ifdef HAVE_SRTP
+ # include <srtp.h>
+ # include <gcrypt.h>
+-# include <vlc_gcrypt.h>
+ #endif
+ 
+ #include "rtp.h"
+@@ -1028,7 +1027,6 @@ static sout_stream_id_sys_t *Add( sout_stream_t *p_stream,
+     char *key = var_GetNonEmptyString (p_stream, SOUT_CFG_PREFIX"key");
+     if (key)
+     {
+-        vlc_gcrypt_init ();
+         id->srtp = srtp_create (SRTP_ENCR_AES_CM, SRTP_AUTH_HMAC_SHA1, 10,
+                                    SRTP_PRF_AES_CM, SRTP_RCC_MODE1);
+         if (id->srtp == NULL)
+diff --git a/modules/video_filter/remoteosd.c b/modules/video_filter/remoteosd.c
+index f53bba1..f657d70 100644
+--- a/modules/video_filter/remoteosd.c
++++ b/modules/video_filter/remoteosd.c
+@@ -58,7 +58,6 @@
+ 
+ #include <vlc_network.h>               /* net_*, htonl */
+ #include <gcrypt.h>                    /* to encrypt password */
+-#include <vlc_gcrypt.h>
+ 
+ #include "remoteosd_rfbproto.h" /* type definitions of the RFB protocol for VNC */
+ 
+@@ -310,8 +309,6 @@ static int CreateFilter ( vlc_object_t *p_this )
+     es_format_Init( &p_filter->fmt_out, SPU_ES, VLC_CODEC_SPU );
+     p_filter->fmt_out.i_priority = ES_PRIORITY_SELECTABLE_MIN;
+ 
+-    vlc_gcrypt_init();
+-
+     /* create the vnc worker thread */
+     if( vlc_clone( &p_sys->worker_thread,
+                    vnc_worker_thread, p_filter, VLC_THREAD_PRIORITY_LOW ) )
+diff --git a/po/POTFILES.in b/po/POTFILES.in
+index 3df64ef..014c605 100644
+--- a/po/POTFILES.in
++++ b/po/POTFILES.in
+@@ -21,7 +21,6 @@ include/vlc_es_out.h
+ include/vlc_events.h
+ include/vlc_filter.h
+ include/vlc_fixups.h
+-include/vlc_gcrypt.h
+ include/vlc_httpd.h
+ include/vlc_image.h
+ include/vlc_input.h
+diff --git a/src/Makefile.am b/src/Makefile.am
+index e608e4d..cc69344 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -48,7 +48,6 @@ pluginsinclude_HEADERS = \
+ 	../include/vlc_filter.h \
+ 	../include/vlc_fourcc.h \
+ 	../include/vlc_fs.h \
+-	../include/vlc_gcrypt.h \
+ 	../include/vlc_opengl.h \
+ 	../include/vlc_http.h \
+ 	../include/vlc_httpd.h \
+diff --git a/src/misc/threads.c b/src/misc/threads.c
+index 01e1d97..d805f0d 100644
+--- a/src/misc/threads.c
++++ b/src/misc/threads.c
+@@ -36,7 +36,6 @@ void vlc_global_mutex (unsigned n, bool acquire)
+         VLC_STATIC_MUTEX,
+         VLC_STATIC_MUTEX,
+         VLC_STATIC_MUTEX,
+-        VLC_STATIC_MUTEX,
+     };
+     static_assert (VLC_MAX_MUTEX == (sizeof (locks) / sizeof (locks[0])),
+                    "Wrong number of global mutexes");
+diff --git a/src/misc/update.c b/src/misc/update.c
+index 9c8f979..4ab3440 100644
+--- a/src/misc/update.c
++++ b/src/misc/update.c
+@@ -51,7 +51,6 @@
+ #include <vlc_interface.h>
+ 
+ #include <gcrypt.h>
+-#include <vlc_gcrypt.h>
+ #ifdef _WIN32
+ #include <shellapi.h>
+ #endif
+@@ -118,7 +117,6 @@ update_t *update_New( vlc_object_t *p_this )
+     p_update->p_check = NULL;
+ 
+     p_update->p_pkey = NULL;
+-    vlc_gcrypt_init();
+ 
+     return p_update;
+ }
+-- 
+2.1.4
+
