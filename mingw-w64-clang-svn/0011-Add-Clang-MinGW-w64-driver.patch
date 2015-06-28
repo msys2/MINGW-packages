@@ -1,7 +1,7 @@
-From 417410c4e0881f98f806c8cdda7999d31295ae47 Mon Sep 17 00:00:00 2001
+From af60fa000be6cb20d00074521fb545432a04586b Mon Sep 17 00:00:00 2001
 From: Martell Malone <martellmalone@gmail.com>
 Date: Tue, 24 Mar 2015 15:02:53 +0000
-Subject: [PATCH 1/2] Add Clang MinGW-w64 driver
+Subject: [PATCH] Add Clang MinGW-w64 driver
 
 This adds the MinGW-w64 driver to clang with the
 new triplets compnerd introduced to clang. Based
@@ -11,23 +11,15 @@ Update:
 
 March 2015: removed seh code as clang detects itself as of commit b27216c
             updated to head
----
- include/clang/Driver/Options.td   |   5 +
- lib/Driver/CMakeLists.txt         |   1 +
- lib/Driver/Driver.cpp             |   7 +-
- lib/Driver/MinGWToolChain.cpp     | 191 +++++++++++++++++++++++++++++++++++
- lib/Driver/ToolChains.h           |  29 ++++++
- lib/Driver/Tools.cpp              | 204 ++++++++++++++++++++++++++++++++++++++
- lib/Driver/Tools.h                |  33 ++++++
- lib/Frontend/InitHeaderSearch.cpp |  62 ++----------
- 8 files changed, 470 insertions(+), 62 deletions(-)
- create mode 100644 lib/Driver/MinGWToolChain.cpp
+
+June 2015: updated to head to prepare for 3.7 release
+           may need to remove pic code for x64 because it it detected in the base class now on head
 
 diff --git a/include/clang/Driver/Options.td b/include/clang/Driver/Options.td
-index 4e1afbe..4d0bf35 100644
+index 4eb5647..beecc5d 100644
 --- a/include/clang/Driver/Options.td
 +++ b/include/clang/Driver/Options.td
-@@ -1134,6 +1134,11 @@ def march_EQ : Joined<["-"], "march=">, Group<m_Group>;
+@@ -1153,6 +1153,11 @@ def march_EQ : Joined<["-"], "march=">, Group<m_Group>;
  def masm_EQ : Joined<["-"], "masm=">, Group<m_Group>, Flags<[DriverOption]>;
  def mcmodel_EQ : Joined<["-"], "mcmodel=">, Group<m_Group>;
  def mconstant_cfstrings : Flag<["-"], "mconstant-cfstrings">, Group<clang_ignored_m_Group>;
@@ -52,10 +44,10 @@ index 412840b..8d88f96 100644
    SanitizerArgs.cpp
    Tool.cpp
 diff --git a/lib/Driver/Driver.cpp b/lib/Driver/Driver.cpp
-index 07a5e42..8b3a846 100644
+index 5451132..54df2f8 100644
 --- a/lib/Driver/Driver.cpp
 +++ b/lib/Driver/Driver.cpp
-@@ -2079,12 +2079,7 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
+@@ -2053,12 +2053,7 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
            TC = new toolchains::Generic_GCC(*this, Target, Args);
          break;
        case llvm::Triple::GNU:
@@ -154,11 +146,11 @@ index 0000000..3b6901c
 +  switch (AC) {
 +  case Action::PreprocessJobClass:
 +    if (!Preprocess)
-+      Preprocess.reset(new tools::gcc::Preprocess(*this));
++      Preprocess.reset(new tools::gcc::Preprocessor(*this));
 +    return Preprocess.get();
 +  case Action::CompileJobClass:
 +    if (!Compile)
-+      Compile.reset(new tools::gcc::Compile(*this));
++      Compile.reset(new tools::gcc::Compiler(*this));
 +    return Compile.get();
 +  default:
 +    return ToolChain::getTool(AC);
@@ -267,11 +259,11 @@ index 0000000..3b6901c
 +#endif
 +}
 diff --git a/lib/Driver/ToolChains.h b/lib/Driver/ToolChains.h
-index d1b681f..af3ad72 100644
+index 4f50af0..dc32f6e 100644
 --- a/lib/Driver/ToolChains.h
 +++ b/lib/Driver/ToolChains.h
-@@ -549,6 +549,35 @@ protected:
- 
+@@ -525,6 +525,35 @@ protected:
+   Tool *buildLinker() const override;
  };
  
 +class LLVM_LIBRARY_VISIBILITY MinGW : public ToolChain {
@@ -299,18 +291,18 @@ index d1b681f..af3ad72 100644
 +
 +private:
 +  std::string GCCVersion;
-+  mutable std::unique_ptr<tools::gcc::Preprocess> Preprocess;
-+  mutable std::unique_ptr<tools::gcc::Compile> Compile;
++  mutable std::unique_ptr<tools::gcc::Preprocessor> Preprocess;
++  mutable std::unique_ptr<tools::gcc::Compiler> Compile;
 +};
 +
- 
  class LLVM_LIBRARY_VISIBILITY OpenBSD : public Generic_ELF {
  public:
+   OpenBSD(const Driver &D, const llvm::Triple &Triple,
 diff --git a/lib/Driver/Tools.cpp b/lib/Driver/Tools.cpp
-index 7b661a7..35aea3b 100644
+index 1b990cf..605e935 100644
 --- a/lib/Driver/Tools.cpp
 +++ b/lib/Driver/Tools.cpp
-@@ -8607,6 +8607,210 @@ std::unique_ptr<Command> visualstudio::Compile::GetCommand(
+@@ -8774,6 +8774,211 @@ std::unique_ptr<Command> visualstudio::Compiler::GetCommand(
                                      CmdArgs);
  }
  
@@ -518,14 +510,15 @@ index 7b661a7..35aea3b 100644
 +          Args.MakeArgString(TC.GetProgramPath("ld"));
 +  C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs));
 +}
- 
++
  /// XCore Tools
  // We pass assemble and link construction to the xcc tool.
+ 
 diff --git a/lib/Driver/Tools.h b/lib/Driver/Tools.h
-index e8edaeb..43fd064 100644
+index d57df1c..fdfcb2d 100644
 --- a/lib/Driver/Tools.h
 +++ b/lib/Driver/Tools.h
-@@ -659,6 +659,39 @@ namespace visualstudio {
+@@ -672,6 +672,39 @@ public:
    };
  } // end namespace visualstudio
  
@@ -566,7 +559,7 @@ index e8edaeb..43fd064 100644
    StringRef getARMFloatABI(const Driver &D, const llvm::opt::ArgList &Args,
                           const llvm::Triple &Triple);
 diff --git a/lib/Frontend/InitHeaderSearch.cpp b/lib/Frontend/InitHeaderSearch.cpp
-index 2bd999e..b01b546 100644
+index bf8470e..ab81a54 100644
 --- a/lib/Frontend/InitHeaderSearch.cpp
 +++ b/lib/Frontend/InitHeaderSearch.cpp
 @@ -82,11 +82,6 @@ public:
@@ -687,5 +680,5 @@ index 2bd999e..b01b546 100644
      if (llvm::sys::fs::exists("/usr/lib/gcc47"))
        AddPath("/usr/include/c++/4.7", CXXSystem, false);
 -- 
-2.3.5
+2.4.5
 
