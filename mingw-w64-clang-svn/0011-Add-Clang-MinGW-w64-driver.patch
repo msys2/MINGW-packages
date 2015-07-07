@@ -1,4 +1,4 @@
-From 7aae4813ddf6277ddf7ed35650d480a2926dfef4 Mon Sep 17 00:00:00 2001
+From 7294b887148ee9a45cab5d1596dbc79a1813904b Mon Sep 17 00:00:00 2001
 From: Martell Malone <martellmalone@gmail.com>
 Date: Thu, 2 Jul 2015 09:24:03 +0100
 Subject: [PATCH] Add Clang MinGW-w64 driver
@@ -16,8 +16,90 @@ index 9855c7d..cc13db1 100644
  def p : Flag<["-"], "p">;
  def pie : Flag<["-"], "pie">;
  def read__only__relocs : Separate<["-"], "read_only_relocs">;
+diff --git a/lib/Driver/MinGWToolChain.cpp b/lib/Driver/MinGWToolChain.cpp
+index 86b3681..f153602 100644
+--- a/lib/Driver/MinGWToolChain.cpp
++++ b/lib/Driver/MinGWToolChain.cpp
+@@ -9,6 +9,7 @@
+ 
+ #include "ToolChains.h"
+ #include "clang/Driver/Driver.h"
++#include "clang/Driver/DriverDiagnostic.h"
+ #include "clang/Driver/Options.h"
+ #include "llvm/Option/ArgList.h"
+ #include "llvm/Support/FileSystem.h"
+@@ -128,21 +129,40 @@ void MinGW::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
+       DriverArgs.hasArg(options::OPT_nostdincxx))
+     return;
+ 
+-  // C++ includes may be found in several locations depending on distribution.
+-  // mingw-w64 mingw-builds: $sysroot/i686-w64-mingw32/include/c++.
+-  // mingw-w64 msys2:        $sysroot/include/c++/4.9.2
+-  // mingw.org:              GccLibDir/include/c++
+-  llvm::SmallVector<llvm::SmallString<1024>, 3> CppIncludeBases;
+-  CppIncludeBases.emplace_back(Base);
+-  llvm::sys::path::append(CppIncludeBases[0], Arch, "include", "c++");
+-  CppIncludeBases.emplace_back(Base);
+-  llvm::sys::path::append(CppIncludeBases[1], "include", "c++", Ver);
+-  CppIncludeBases.emplace_back(GccLibDir);
+-  llvm::sys::path::append(CppIncludeBases[2], "include", "c++");
+-  for (auto &CppIncludeBase : CppIncludeBases) {
+-    CppIncludeBase += llvm::sys::path::get_separator();
+-    addSystemInclude(DriverArgs, CC1Args, CppIncludeBase);
+-    addSystemInclude(DriverArgs, CC1Args, CppIncludeBase + Arch);
+-    addSystemInclude(DriverArgs, CC1Args, CppIncludeBase + "backward");
++  switch (GetCXXStdlibType(DriverArgs)) {
++  case ToolChain::CST_Libcxx:
++    addSystemInclude(DriverArgs, CC1Args, Base + "include" + "c++" + "v1");
++    break;
++
++  case ToolChain::CST_Libstdcxx:
++    // C++ includes may be found in several locations depending on distribution.
++    // mingw-w64 mingw-builds: $sysroot/i686-w64-mingw32/include/c++.
++    // mingw-w64 msys2:        $sysroot/include/c++/4.9.2
++    // mingw.org:              GccLibDir/include/c++
++    llvm::SmallVector<llvm::SmallString<1024>, 3> CppIncludeBases;
++    CppIncludeBases.emplace_back(Base);
++    llvm::sys::path::append(CppIncludeBases[0], Arch, "include", "c++");
++    CppIncludeBases.emplace_back(Base);
++    llvm::sys::path::append(CppIncludeBases[1], "include", "c++", Ver);
++    CppIncludeBases.emplace_back(GccLibDir);
++    llvm::sys::path::append(CppIncludeBases[2], "include", "c++");
++    for (auto &CppIncludeBase : CppIncludeBases) {
++      CppIncludeBase += llvm::sys::path::get_separator();
++      addSystemInclude(DriverArgs, CC1Args, CppIncludeBase);
++      addSystemInclude(DriverArgs, CC1Args, CppIncludeBase + Arch);
++      addSystemInclude(DriverArgs, CC1Args, CppIncludeBase + "backward");
++    }
++    break;
+   }
+ }
++
++ToolChain::CXXStdlibType MinGW::GetCXXStdlibType(const ArgList &Args) const{
++  StringRef Value = Args.getLastArgValue(options::OPT_stdlib_EQ, "libc++");
++  if (Value == "libc++")
++    return ToolChain::CST_Libcxx;
++  if (Value == "libstdc++")
++    return ToolChain::CST_Libstdcxx;
++  getDriver().Diag(diag::err_drv_invalid_stdlib_name)
++    << Value;
++  return ToolChain::CST_Libcxx;
++}
+diff --git a/lib/Driver/ToolChains.h b/lib/Driver/ToolChains.h
+index 05066ee..60e72da 100644
+--- a/lib/Driver/ToolChains.h
++++ b/lib/Driver/ToolChains.h
+@@ -543,6 +543,8 @@ public:
+   void AddClangCXXStdlibIncludeArgs(
+       const llvm::opt::ArgList &DriverArgs,
+       llvm::opt::ArgStringList &CC1Args) const override;
++  CXXStdlibType GetCXXStdlibType(
++      const llvm::opt::ArgList &Args) const override;
+ 
+ protected:
+   Tool *getTool(Action::ActionClass AC) const override;
 diff --git a/lib/Driver/Tools.cpp b/lib/Driver/Tools.cpp
-index 058fdf5..d5478b1 100644
+index 058fdf5..53e6f20 100644
 --- a/lib/Driver/Tools.cpp
 +++ b/lib/Driver/Tools.cpp
 @@ -2239,8 +2239,7 @@ static void CollectArgsForIntegratedAssembler(Compilation &C,
@@ -45,7 +127,7 @@ index 058fdf5..d5478b1 100644
  
    SmallString<128> Path = getCompilerRTLibDir(TC);
    llvm::sys::path::append(Path, Prefix + Twine("clang_rt.") + Component + "-" +
-@@ -8826,19 +8827,24 @@ void MinGW::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
+@@ -8826,19 +8827,29 @@ void MinGW::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
                     SplitDebugName(Args, Inputs[0]));
  }
  
@@ -65,8 +147,13 @@ index 058fdf5..d5478b1 100644
 -    CmdArgs.push_back("-lgcc");
 -    CmdArgs.push_back("-lgcc_eh");
 +  StringRef Runtime = Args.getLastArgValue(options::OPT_rtlib_EQ, "compiler-rt");
-+  if (Runtime.equals_lower("compiler-rt"))
++  if (Runtime.equals_lower("compiler-rt")) {
 +    CmdArgs.push_back(Args.MakeArgString(getCompilerRT(TC, "builtins")));
++    if (getToolChain().GetCXXStdlibType(Args) == ToolChain::CST_Libstdcxx)
++      if (TC.getDriver().CCCIsCXX())
++        CmdArgs.push_back("-lgcc_eh");
++  }
++
 +  if (Runtime.equals_lower("libgcc")) {
 +    if (Args.hasArg(options::OPT_shared) ||
 +        Args.hasArg(options::OPT_shared_libgcc) ||
@@ -80,7 +167,7 @@ index 058fdf5..d5478b1 100644
    }
    CmdArgs.push_back("-lmoldname");
    CmdArgs.push_back("-lmingwex");
-@@ -8864,6 +8870,12 @@ void MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
+@@ -8864,6 +8875,12 @@ void MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
    // handled somewhere else.
    Args.ClaimAllArgs(options::OPT_w);
  
@@ -93,7 +180,7 @@ index 058fdf5..d5478b1 100644
    if (!D.SysRoot.empty())
      CmdArgs.push_back(Args.MakeArgString("--sysroot=" + D.SysRoot));
  
-@@ -8875,6 +8887,8 @@ void MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
+@@ -8875,6 +8892,8 @@ void MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
      CmdArgs.push_back("i386pe");
    if (TC.getArch() == llvm::Triple::x86_64)
      CmdArgs.push_back("i386pep");
@@ -102,7 +189,7 @@ index 058fdf5..d5478b1 100644
  
    if (Args.hasArg(options::OPT_mwindows)) {
      CmdArgs.push_back("--subsystem");
-@@ -8964,12 +8978,13 @@ void MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
+@@ -8964,12 +8983,13 @@ void MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
        if (Args.hasArg(options::OPT_fopenmp))
          CmdArgs.push_back("-lgomp");
  
@@ -118,7 +205,7 @@ index 058fdf5..d5478b1 100644
          CmdArgs.push_back("-lpthread");
  
        // add system libraries
-@@ -8985,7 +9000,8 @@ void MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
+@@ -8985,7 +9005,8 @@ void MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
        if (Args.hasArg(options::OPT_static))
          CmdArgs.push_back("--end-group");
        else
@@ -128,7 +215,7 @@ index 058fdf5..d5478b1 100644
      }
  
      if (!Args.hasArg(options::OPT_nostartfiles)) {
-@@ -8995,7 +9011,7 @@ void MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
+@@ -8995,7 +9016,7 @@ void MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
        CmdArgs.push_back(Args.MakeArgString(TC.GetFilePath("crtend.o")));
      }
    }
