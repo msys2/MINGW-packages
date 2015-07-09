@@ -1,4 +1,4 @@
-From 7294b887148ee9a45cab5d1596dbc79a1813904b Mon Sep 17 00:00:00 2001
+From 864b59b45d091d8fd31142bf016e640f10fd2fb7 Mon Sep 17 00:00:00 2001
 From: Martell Malone <martellmalone@gmail.com>
 Date: Thu, 2 Jul 2015 09:24:03 +0100
 Subject: [PATCH] Add Clang MinGW-w64 driver
@@ -17,7 +17,7 @@ index 9855c7d..cc13db1 100644
  def pie : Flag<["-"], "pie">;
  def read__only__relocs : Separate<["-"], "read_only_relocs">;
 diff --git a/lib/Driver/MinGWToolChain.cpp b/lib/Driver/MinGWToolChain.cpp
-index 86b3681..f153602 100644
+index 86b3681..6ff1172 100644
 --- a/lib/Driver/MinGWToolChain.cpp
 +++ b/lib/Driver/MinGWToolChain.cpp
 @@ -9,6 +9,7 @@
@@ -28,7 +28,29 @@ index 86b3681..f153602 100644
  #include "clang/Driver/Options.h"
  #include "llvm/Option/ArgList.h"
  #include "llvm/Support/FileSystem.h"
-@@ -128,21 +129,40 @@ void MinGW::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
+@@ -113,13 +114,16 @@ void MinGW::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
+   if (DriverArgs.hasArg(options::OPT_nostdlibinc))
+     return;
+ 
+-  llvm::SmallString<1024> IncludeDir(GccLibDir);
+-  llvm::sys::path::append(IncludeDir, "include");
+-  addSystemInclude(DriverArgs, CC1Args, IncludeDir.c_str());
+-  IncludeDir += "-fixed";
+-  addSystemInclude(DriverArgs, CC1Args, IncludeDir.c_str());
+   addSystemInclude(DriverArgs, CC1Args, Base + Arch + "include");
+   addSystemInclude(DriverArgs, CC1Args, Base + "include");
++
++  if (GetRuntimeLibType(DriverArgs) == ToolChain::RLT_Libgcc) {
++    llvm::SmallString<1024> IncludeDir(GccLibDir);
++    llvm::sys::path::append(IncludeDir, "include");
++    addSystemInclude(DriverArgs, CC1Args, IncludeDir.c_str());
++    IncludeDir += "-fixed";
++    addSystemInclude(DriverArgs, CC1Args, IncludeDir.c_str());
++  }
+ }
+ 
+ void MinGW::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
+@@ -128,21 +132,71 @@ void MinGW::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
        DriverArgs.hasArg(options::OPT_nostdincxx))
      return;
  
@@ -50,7 +72,9 @@ index 86b3681..f153602 100644
 -    addSystemInclude(DriverArgs, CC1Args, CppIncludeBase + "backward");
 +  switch (GetCXXStdlibType(DriverArgs)) {
 +  case ToolChain::CST_Libcxx:
-+    addSystemInclude(DriverArgs, CC1Args, Base + "include" + "c++" + "v1");
++    addSystemInclude(DriverArgs, CC1Args, Base        + "include" +
++                     llvm::sys::path::get_separator() + "c++"     +
++                     llvm::sys::path::get_separator() + "v1");
 +    break;
 +
 +  case ToolChain::CST_Libstdcxx:
@@ -72,34 +96,68 @@ index 86b3681..f153602 100644
 +      addSystemInclude(DriverArgs, CC1Args, CppIncludeBase + "backward");
 +    }
 +    break;
-   }
- }
++  }
++}
++
++void MinGW::AddCXXStdlibLibArgs(const llvm::opt::ArgList &DriverArgs,
++                                llvm::opt::ArgStringList &CmdArgs) const {
++  switch (GetCXXStdlibType(DriverArgs)) {
++  case ToolChain::CST_Libcxx:
++    CmdArgs.push_back("-lc++");
++    CmdArgs.push_back("-lc++abi");
++    break;
++
++  case ToolChain::CST_Libstdcxx:
++    CmdArgs.push_back("-lstdc++");
++    break;
++  }
++}
++
++ToolChain::RuntimeLibType MinGW::GetRuntimeLibType(const ArgList &Args) const{
++  if (Arg *A = Args.getLastArg(options::OPT_rtlib_EQ)) {
++    StringRef Value = A->getValue();
++    if (Value == "compiler-rt")
++      return ToolChain::RLT_CompilerRT;
++    if (Value == "libgcc")
++      return ToolChain::RLT_Libgcc;
++    getDriver().Diag(diag::err_drv_invalid_rtlib_name)
++      << A->getAsString(Args);
++  }
++  return ToolChain::RLT_CompilerRT;
++}
 +
 +ToolChain::CXXStdlibType MinGW::GetCXXStdlibType(const ArgList &Args) const{
-+  StringRef Value = Args.getLastArgValue(options::OPT_stdlib_EQ, "libc++");
-+  if (Value == "libc++")
-+    return ToolChain::CST_Libcxx;
-+  if (Value == "libstdc++")
-+    return ToolChain::CST_Libstdcxx;
-+  getDriver().Diag(diag::err_drv_invalid_stdlib_name)
-+    << Value;
++  if (Arg *A = Args.getLastArg(options::OPT_stdlib_EQ)) {
++    StringRef Value = A->getValue();
++    if (Value == "libc++")
++      return ToolChain::CST_Libcxx;
++    if (Value == "libstdc++")
++      return ToolChain::CST_Libstdcxx;
++    getDriver().Diag(diag::err_drv_invalid_stdlib_name)
++      << A->getAsString(Args);
+   }
 +  return ToolChain::CST_Libcxx;
-+}
+ }
 diff --git a/lib/Driver/ToolChains.h b/lib/Driver/ToolChains.h
-index 05066ee..60e72da 100644
+index 05066ee..1c570ca 100644
 --- a/lib/Driver/ToolChains.h
 +++ b/lib/Driver/ToolChains.h
-@@ -543,6 +543,8 @@ public:
+@@ -543,6 +543,13 @@ public:
    void AddClangCXXStdlibIncludeArgs(
        const llvm::opt::ArgList &DriverArgs,
        llvm::opt::ArgStringList &CC1Args) const override;
++  void AddCXXStdlibLibArgs(const llvm::opt::ArgList &Args,
++                           llvm::opt::ArgStringList &CmdArgs) const override;
++
 +  CXXStdlibType GetCXXStdlibType(
++      const llvm::opt::ArgList &Args) const override;
++  RuntimeLibType GetRuntimeLibType(
 +      const llvm::opt::ArgList &Args) const override;
  
  protected:
    Tool *getTool(Action::ActionClass AC) const override;
 diff --git a/lib/Driver/Tools.cpp b/lib/Driver/Tools.cpp
-index 058fdf5..53e6f20 100644
+index 058fdf5..74f5103 100644
 --- a/lib/Driver/Tools.cpp
 +++ b/lib/Driver/Tools.cpp
 @@ -2239,8 +2239,7 @@ static void CollectArgsForIntegratedAssembler(Compilation &C,
@@ -127,7 +185,7 @@ index 058fdf5..53e6f20 100644
  
    SmallString<128> Path = getCompilerRTLibDir(TC);
    llvm::sys::path::append(Path, Prefix + Twine("clang_rt.") + Component + "-" +
-@@ -8826,19 +8827,29 @@ void MinGW::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
+@@ -8826,20 +8827,30 @@ void MinGW::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
                     SplitDebugName(Args, Inputs[0]));
  }
  
@@ -146,15 +204,13 @@ index 058fdf5..53e6f20 100644
 -  } else {
 -    CmdArgs.push_back("-lgcc");
 -    CmdArgs.push_back("-lgcc_eh");
-+  StringRef Runtime = Args.getLastArgValue(options::OPT_rtlib_EQ, "compiler-rt");
-+  if (Runtime.equals_lower("compiler-rt")) {
-+    CmdArgs.push_back(Args.MakeArgString(getCompilerRT(TC, "builtins")));
-+    if (getToolChain().GetCXXStdlibType(Args) == ToolChain::CST_Libstdcxx)
-+      if (TC.getDriver().CCCIsCXX())
-+        CmdArgs.push_back("-lgcc_eh");
-+  }
 +
-+  if (Runtime.equals_lower("libgcc")) {
++  switch (TC.GetRuntimeLibType(Args)) {
++  case ToolChain::RLT_CompilerRT:
++    CmdArgs.push_back(Args.MakeArgString(getCompilerRT(TC, "builtins")));
++    break;
++
++  case ToolChain::RLT_Libgcc:
 +    if (Args.hasArg(options::OPT_shared) ||
 +        Args.hasArg(options::OPT_shared_libgcc) ||
 +        !Args.hasArg(options::OPT_static_libgcc)) {
@@ -164,9 +220,12 @@ index 058fdf5..53e6f20 100644
 +      CmdArgs.push_back("-lgcc");
 +      CmdArgs.push_back("-lgcc_eh");
 +    }
++    break;
    }
++
    CmdArgs.push_back("-lmoldname");
    CmdArgs.push_back("-lmingwex");
+   CmdArgs.push_back("-lmsvcrt");
 @@ -8864,6 +8875,12 @@ void MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
    // handled somewhere else.
    Args.ClaimAllArgs(options::OPT_w);
