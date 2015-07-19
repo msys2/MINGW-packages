@@ -63,9 +63,9 @@
 #_make="make.exe"
 _make="mingw32-make.exe"
 #_python="/usr/bin/python2.7.exe"
-#_python="${MINGW_PREFIX}/bin/python2.7.exe"
+_python="${MINGW_PREFIX}/bin/python2.7.exe"
 #_python="/c/Python27/python.exe"
-_python="/e/WinProgF/Python27/python.exe"
+#_python="/e/WinProgF/Python27/python.exe"
 path_conv_for_make() {
   if [ "${_make}" = "mingw32-make.exe" ]; then
     echo $(cygpath -m "${1}")
@@ -87,11 +87,14 @@ makedepends=('unzip'
              'zip'
              "${MINGW_PACKAGE_PREFIX}-yasm")
 source=("http://ftp.mozilla.org/pub/mozilla.org/${_realname}/releases/${pkgver}/source/${_realname}-${pkgver}.source.tar.bz2"
+        "http://ftp.mozilla.org/pub/mozilla.org/mozilla/libraries/win32/moztools-static.zip"
+        manifest
         "0001-Allow-MSYS2-shell.patch"
         "0002-Allow-MSYS2-make.patch"
         "0003-Use-PYTHON-env-var.patch"
         "0004-Allow-MSYS2-python.patch"
         "0005-Allow-mingw-w64-python.patch"
+        "0006-Fix-pointer-casting.patch"
         "debugging.patch"
         "mozconfig.x86_64"
         "mozconfig.i686"
@@ -99,11 +102,14 @@ source=("http://ftp.mozilla.org/pub/mozilla.org/${_realname}/releases/${pkgver}/
         "config.guess")
 noextract=("${_realname}-${pkgver}.source.tar.bz2")
 sha1sums=('32785daee7ddb9da8d7509ef095258fc58fe838e'
+          '6c018e4ac903180f5f65492241502842dc1c035a'
+          'c4e841bf724a1ff907592c8a11ba9683568acfd5'
           '1c0810fbfd6f336eec81e236c89c6c9ca0e79290'
           'c269337da604ab047de5dea088dbbe8f547dfbea'
           '2fd8904f036d2515e314b3d7510d8358add298d2'
           'c06e3e351cb3d29148e0d477ad50b70973baf8be'
-          '1158054796bf8f26bf0d9ee97d5afbb533c5e39a'
+          '4883d29fefd5c25d4892091bf6a45572f3d7aca4'
+          '61de9dea3b9136303c7371b8980e5b293c4b46c8'
           'c2a0ed20a82d212bb4aa84cb2f294be3ba0bb859'
           'f437cc5a819788b63d8d9202290f516a85e9f6a2'
           'f6da0857f310788c4a23d158bf03a93ab11230b7'
@@ -114,13 +120,17 @@ prepare() {
   [ -d "${srcdir}"/${_realname}-${pkgver} ] && rm -rf ${_realname}-${pkgver}
   tar -xf "${srcdir}"/${_realname}-${pkgver}.source.tar.bz2 || true
   if [ -d "${srcdir}"/mozilla-beta ]; then
-    mv "${srcdir}"/mozilla-beta "${srcdir}"/${_realname}-${pkgver}
+    _archivedir="mozilla-beta"
   elif [ -d "${srcdir}"/mozilla-release ]; then
-    mv "${srcdir}"/mozilla-release "${srcdir}"/${_realname}-${pkgver}
+    _archivedir="mozilla-release"
   else
     echo "Can't find sources!"
     exit 1
   fi
+  # Getting a lot of "mv: cannot move .. Permission denied", try a bit of sleeping. Yuck.
+  sleep 1
+  mv "${srcdir}"/"${_archivedir}" "${srcdir}"/${_realname}-${pkgver} || (sleep 1 && mv "${srcdir}"/"${_archivedir}" "${srcdir}"/${_realname}-${pkgver})
+
   cd "${srcdir}"/${_realname}-${pkgver}
   # Mostly this patch is about msys2-python and mingw-w64-python not
   # working with virtualenv. Really it needs splitting into two, one
@@ -136,11 +146,15 @@ prepare() {
     patch -p1 -i "${srcdir}"/0004-Allow-MSYS2-python.patch
   fi
   patch -p1 -i "${srcdir}"/0005-Allow-mingw-w64-python.patch
+  patch -p1 -i "${srcdir}"/0006-Fix-pointer-casting.patch
   patch -p1 -i "${srcdir}"/debugging.patch
 
   find . -name config.sub -exec cp "${srcdir}"/config.sub {} \;
   find . -name config.guess -exec cp "${srcdir}"/config.guess {} \;
-  (autoconf-2.13 && cd js/src && autoconf-2.13)
+  autoconf-2.13 && cd js/src && autoconf-2.13
+
+  cp ${srcdir}/moztools/bin/nsinstall.exe .
+  cp ${srcdir}/manifest nsinstall.exe.manifest
 }
 
 build() {
@@ -153,13 +167,18 @@ build() {
   [ -d ${_builddir} ] && rm -rf "${_builddir}"
   mkdir ${_builddir}
   cp "${srcdir}"/mozconfig.${CARCH} ${_builddir}/.mozconfig
-  export PYTHON="${_python}"
+  export PYTHON=$(path_conv_for_make "${_python}")
+  echo $PYTHON
   export MOZCONFIG=${PWD}/${_builddir}/.mozconfig
   # See: https://bugzilla.mozilla.org/show_bug.cgi?id=950332
   echo "mk_add_options MOZ_OBJDIR=$(path_conv_for_make ${PWD}/${_builddir})" >> ${_builddir}/.mozconfig
-  export MIDL=${MINGW_PREFIX}/bin/widl.exe
+  export MIDL="${MINGW_PREFIX}/bin/widl.exe -I ${MINGW_PREFIX}/${CARCH}-w64-mingw32/include"
   export MOZ_TOOLS=${MINGW_PREFIX}
+  export MAKEFLAGS=-j1
 
+  # .. make a shell script so we can easily recreate the build environment while
+  # developing this PKGBUILD.
+  set
   set |awk '
             BEGIN { _p = 1; }
             $0~/^[^ ]+ \(\)/ { _p = 0; }
@@ -168,9 +187,16 @@ build() {
             ' |sed -r -e '/^BASH_(ARGC|ARGV|LINENO|SOURCE|VERSINFO)=/d;
                           /^(UID|EUID)=/d;
                           /^(FUNCNAME|GROUPS|PPID|SHELLOPTS|BASHOPTS)=/d;' > ./env-${CARCH}.sh
+  echo "export PYTHON MOZCONFIG MIDL MOZ_TOOLS CPPFLAGS CFLAGS CXXFLAGS MAKEFLAGS" >> ./env-${CARCH}.sh
 
-  "${_make}" -f client.mk configure
-  "${_make}" -f client.mk build
+  "${_make}" -f $PWD/client.mk configure
+  # We need nsinstall.exe
+#  pushd "${_builddir}"/config
+#    # cd src/firefox-39.0/ ; source env-x86_64.sh ; cd obj-x86_64-w64-mingw32/config/; "${_make}" -f $PWD/../../client.mk build
+#    "${_make}" -f $PWD/../../client.mk build NSINSTALL=${srcdir}/moztools/bin/nsinstall.exe
+#    "${_make}" -f $PWD/../../client.mk install NSINSTALL=${srcdir}/moztools/bin/nsinstall.exe
+#  popd
+  "${_make}" -f $PWD/client.mk build NSINSTALL=${srcdir}/moztools/bin/nsinstall.exe
 }
 
 check() {
