@@ -57,6 +57,8 @@ List of packages that currently fail to build
 
 - openshadinglanguage
 
+- perl (still not building for 32-bit) : ..\perl.h:3551:38: error: static assertion failed: "sizeof(PADOP) <= sizeof(SVOP)"
+
 - plplot
 
 - qrupdate
