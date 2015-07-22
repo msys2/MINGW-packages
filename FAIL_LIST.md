@@ -1,84 +1,92 @@
 List of packages that currently fail to build
 =============================================
 
-*collada-dom-svn
+- blender
 
-*cocos2dx-git
+- cegui (waiting for 0.8.5 release)
 
-*coq
+- collada-dom-svn
 
-*crypto++
+- cocos2dx-git
 
-*freerdp-git
+- coq
 
-*glsl-optimizer
+- crypto++
 
-*gnu-cobol-svn
+- freerdp-git
 
-*gplugin (with introspection)
+- glsl-optimizer
 
-*gprbuild-gpl
+- gnu-cobol-svn
 
-*gst-python
+- gprbuild-gpl
 
-*gtkada
+- gst-python
 
-*hlsl2glsl
+- gtkada
 
-*innoextract
+- hlsl2glsl
 
-*itk
+- innoextract
 
-*kicad-git
+- itk
 
-*ldns
+- kicad-git
 
-*libimobiledevice
+- ldns
 
-*libodfgen
+- libimobiledevice
 
-*librescl
+- libodfgen
 
-*librocket-git
+- librescl
 
-*libsecret
+- librocket-git
 
-*nim
+- libsecret
 
-*nimble
+-nim
 
-*ocaml-lablgtk
+- nimble
 
-*octave-hg
+- ocaml-lablgtk
 
-*openscenegraph
+- octave-hg
 
-*openocd-git
+- ogre3d
 
-*openshadinglanguage
+- openscenegraph
 
-*perl
+- openocd-git
 
-*plplot
+- openshadinglanguage
 
-*qrupdate
+- perl
 
-*python-binwalk
+- plplot
 
-*python-h5py
+- qrupdate
 
-*quassel
+- pidgin-hg
 
-*tclvfs
+- pitivi-git
 
-*tclx
+- python-binwalk
 
-*tkimg
+- python-h5py
 
-*tktable
+- quassel
 
-*winsparkle-git
+- tclvfs
 
-*xmlada-gpl
+- tclx
 
-*xmlstrartlet
+- tkimg
+
+- tktable
+
+- winsparkle-git
+
+- xmlada-gpl
+
+- xmlstrartlet
