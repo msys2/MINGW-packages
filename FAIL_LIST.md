@@ -15,8 +15,6 @@ List of packages that currently fail to build
 
 - freerdp-git
 
-- glsl-optimizer
-
 - gnu-cobol-svn
 
 - gprbuild-gpl
