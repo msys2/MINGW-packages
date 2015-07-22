@@ -29,8 +29,6 @@ List of packages that currently fail to build
 
 - itk
 
-- kicad-git
-
 - ldns
 
 - libimobiledevice
