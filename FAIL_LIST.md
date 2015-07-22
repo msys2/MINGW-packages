@@ -5,7 +5,7 @@ List of packages that currently fail to build
 
 - cegui (waiting for 0.8.5 release)
 
-- collada-dom-svn
+- collada-dom-svn (can't investigate SourceForge svn is down)
 
 - cocos2dx-git
 
@@ -29,8 +29,6 @@ List of packages that currently fail to build
 
 - ldns
 
-- libimobiledevice
-
 - libodfgen
 
 - librescl
@@ -53,7 +51,7 @@ List of packages that currently fail to build
 
 - openocd-git
 
-- openshadinglanguage
+- openshadinglanguage (Needs a legacy LLVM < 3.6 package due to JIT changes)
 
 - perl (still not building for 32-bit) : ..\perl.h:3551:38: error: static assertion failed: "sizeof(PADOP) <= sizeof(SVOP)"
 
