@@ -63,8 +63,6 @@ List of packages that currently fail to build
 
 - qrupdate
 
-- pidgin-hg
-
 - pitivi-git
 
 - python-binwalk
