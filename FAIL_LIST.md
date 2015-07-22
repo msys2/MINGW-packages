@@ -43,7 +43,7 @@ List of packages that currently fail to build
 
 - libsecret
 
--nim
+- nim
 
 - nimble
 
@@ -74,6 +74,8 @@ List of packages that currently fail to build
 - python-h5py
 
 - quassel
+
+- stxxl-git (OpenMP issue)
 
 - tclvfs
 
