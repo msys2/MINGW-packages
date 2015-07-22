@@ -57,8 +57,6 @@ List of packages that currently fail to build
 
 - openshadinglanguage
 
-- perl
-
 - plplot
 
 - qrupdate
