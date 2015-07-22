@@ -23,8 +23,6 @@ List of packages that currently fail to build
 
 - gtkada
 
-- hlsl2glsl
-
 - innoextract
 
 - itk
