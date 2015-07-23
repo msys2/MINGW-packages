@@ -67,8 +67,6 @@ List of packages that currently fail to build
 
 - quassel
 
-- stxxl-git (OpenMP issue)
-
 - tclvfs
 
 - tclx
