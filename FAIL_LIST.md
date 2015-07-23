@@ -5,8 +5,6 @@ List of packages that currently fail to build
 
 - cegui (waiting for 0.8.5 release)
 
-- collada-dom-svn (can't investigate SourceForge svn is down)
-
 - cocos2dx-git
 
 - coq
@@ -14,8 +12,6 @@ List of packages that currently fail to build
 - crypto++
 
 - freerdp-git
-
-- gnu-cobol-svn
 
 - gprbuild-gpl
 
@@ -56,8 +52,6 @@ List of packages that currently fail to build
 - perl (still not building for 32-bit) : ..\perl.h:3551:38: error: static assertion failed: "sizeof(PADOP) <= sizeof(SVOP)"
 
 - plplot
-
-- qrupdate
 
 - pitivi-git
 
