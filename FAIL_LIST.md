@@ -53,8 +53,6 @@ List of packages that currently fail to build
 
 - python-h5py
 
-- quassel
-
 - tclvfs
 
 - tclx
