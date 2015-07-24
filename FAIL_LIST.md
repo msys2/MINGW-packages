@@ -9,13 +9,9 @@ List of packages that currently fail to build
 
 - coq
 
-- crypto++
-
 - freerdp-git
 
 - gprbuild-gpl
-
-- gst-python
 
 - gtkada
 
