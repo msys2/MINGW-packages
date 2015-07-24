@@ -7,7 +7,7 @@ List of packages that currently fail to build
 
 - cocos2dx-git
 
-- coq
+- coq (OCAML issue)
 
 - freerdp-git
 
@@ -26,8 +26,6 @@ List of packages that currently fail to build
 - librescl
 
 - librocket-git
-
-- libsecret
 
 - nim
 
