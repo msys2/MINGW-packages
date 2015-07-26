@@ -5,6 +5,8 @@ List of packages that currently fail to build
 
 - cegui (waiting for 0.8.5 release)
 
+- cling - need maintainer to it
+
 - cocos2dx-git
 
 - coq (OCAML issue)
