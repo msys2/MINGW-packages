@@ -6,6 +6,14 @@ SHARED_LIB=$(LIBNAME)-$(SONAME_MAJOR).dll
 STATIC_LIB=$(LIBNAME).a
 IMPORT_LIB=$(LIBNAME).dll.a
 
+ifndef CC
+  CC=gcc
+endif
+
+ifndef AR
+  AR=ar
+endif
+
 ifndef PREFIX
   PREFIX=/usr/local
 endif
@@ -30,12 +38,12 @@ SRCS=mongoose.c
 OBJS=mongoose.o
 INCLUDE=.
 
-all: $(SHARED_LIB) $(STATIC_LIB)
+all: $(STATIC_LIB) $(SHARED_LIB)
 
 $(SHARED_LIB): $(OBJS)
 	$(CC) $(OBJS) $(LDFLAGS) -o $(SHARED_LIB)
 
-$(STATIC_LIB):
+$(STATIC_LIB): $(OBJS)
 	$(AR) rcs $(STATIC_LIB) $(OBJS)
 
 $(OBJS): $(SRCS)
