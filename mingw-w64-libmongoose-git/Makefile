@@ -22,9 +22,9 @@ ifndef DOCDIR
   DOCDIR=$(PREFIX)/share/$(LIBNAME)/doc
 endif
 
-CPPFLAGS+=-DNS_ENABLE_SSL #-DNS_ENABLE_IPV6
+CPPFLAGS+= #-DNS_ENABLE_SSL -DNS_ENABLE_IPV6
 CFLAGS+=-c -Wall
-LDFLAGS+=-shared -Wl,--out-implib,$(IMPORT_LIB) -lws2_32 -lssl
+LDFLAGS+=-shared -Wl,--out-implib,$(IMPORT_LIB) -lws2_32 #-lssl
 
 SRCS=mongoose.c
 OBJS=mongoose.o
