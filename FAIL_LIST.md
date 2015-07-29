@@ -66,5 +66,3 @@ List of packages that currently fail to build
 - winsparkle-git
 
 - xmlada-gpl
-
-- xmlstrartlet
