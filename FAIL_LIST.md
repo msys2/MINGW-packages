@@ -61,8 +61,6 @@ List of packages that currently fail to build
 
 - tkimg
 
-- tktable
-
 - winsparkle-git
 
 - xmlada-gpl
