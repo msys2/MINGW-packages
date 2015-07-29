@@ -39,8 +39,6 @@ List of packages that currently fail to build
 
 - ogre3d
 
-- openscenegraph
-
 - openocd-git
 
 - openshadinglanguage (Needs a legacy LLVM < 3.6 package due to JIT changes)
