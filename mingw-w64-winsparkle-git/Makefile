@@ -5,17 +5,17 @@
 all: static dll
 
 objects:
-	gcc -c -mthreads -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE appcast.cpp          -I../include
-	gcc -c -mthreads -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE appcontroller.cpp    -I../include
-	gcc -c -mthreads -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE dll_api.cpp          -I../include
-	gcc -c -mthreads -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE dllmain.cpp          -I../include
-	gcc -c -mthreads -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE download.cpp         -I../include
-	gcc -c -mthreads -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE error.cpp            -I../include
-	gcc -c -mthreads -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE settings.cpp         -I../include
-	gcc -c -mthreads -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE threads.cpp          -I../include
-	gcc -c -mthreads -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE updatechecker.cpp    -I../include
-	gcc -c -mthreads -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE ui.cpp               -I../include $(shell wx-config --cflags)
-	gcc -c -mthreads -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE updatedownloader.cpp -I../include $(shell wx-config --cflags)
+	gcc -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE appcast.cpp          -I../include
+	gcc -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE appcontroller.cpp    -I../include
+	gcc -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE dll_api.cpp          -I../include
+	gcc -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE dllmain.cpp          -I../include
+	gcc -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE download.cpp         -I../include
+	gcc -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE error.cpp            -I../include
+	gcc -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE settings.cpp         -I../include
+	gcc -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE threads.cpp          -I../include
+	gcc -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE updatechecker.cpp    -I../include
+	gcc -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE ui.cpp               -I../include $(shell wx-config --cflags)
+	gcc -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE updatedownloader.cpp -I../include $(shell wx-config --cflags)
 
 static: objects
 	ar rcs libwinsparkle.a *.o
