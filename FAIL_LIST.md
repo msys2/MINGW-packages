@@ -57,6 +57,4 @@ List of packages that currently fail to build
 
 - tclx
 
-- winsparkle-git
-
 - xmlada-gpl
