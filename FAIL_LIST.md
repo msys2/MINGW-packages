@@ -23,8 +23,6 @@ List of packages that currently fail to build
 
 - ldns
 
-- libodfgen
-
 - librescl
 
 - librocket-git
