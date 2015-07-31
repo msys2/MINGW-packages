@@ -55,6 +55,4 @@ List of packages that currently fail to build
 
 - tclvfs
 
-- tclx
-
 - xmlada-gpl
