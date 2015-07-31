@@ -39,8 +39,6 @@ List of packages that currently fail to build
 
 - ogre3d
 
-- openocd-git
-
 - openshadinglanguage (Needs a legacy LLVM < 3.6 package due to JIT changes)
 
 - perl (still not building for 32-bit) : ..\perl.h:3551:38: error: static assertion failed: "sizeof(PADOP) <= sizeof(SVOP)"
