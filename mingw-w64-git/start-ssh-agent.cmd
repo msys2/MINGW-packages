@@ -10,10 +10,10 @@
 
 @REM Start the ssh-agent if needed by git
 @FOR %%i IN ("git.exe") DO @SET GIT=%%~$PATH:i
-@IF EXIST "%GIT%" (
+@IF EXIST "%GIT%" @(
     @REM Get the ssh-agent executable
     @FOR %%i IN ("ssh-agent.exe") DO @SET SSH_AGENT=%%~$PATH:i
-    @IF NOT EXIST "%SSH_AGENT%" (
+    @IF NOT EXIST "%SSH_AGENT%" @(
         @FOR %%s IN ("%GIT%") DO @SET GIT_DIR=%%~dps
         @FOR %%s IN ("!GIT_DIR!") DO @SET GIT_DIR=!GIT_DIR:~0,-1!
         @FOR %%s IN ("!GIT_DIR!") DO @SET GIT_ROOT=%%~dps
@@ -27,38 +27,38 @@
     @FOR /D %%s in ("!BIN_DIR!\ssh-add.exe") DO @SET SSH_ADD=%%~s
     @IF NOT EXIST "!SSH_ADD!" @GOTO ssh-agent-done
     @REM Check if the agent is running
-    @FOR /f "tokens=1-2" %%a IN ('tasklist /fi "imagename eq ssh-agent.exe"') DO (
+    @FOR /f "tokens=1-2" %%a IN ('tasklist /fi "imagename eq ssh-agent.exe"') DO @(
         @ECHO %%b | @FINDSTR /r /c:"[0-9][0-9]*" > NUL
         @IF "!ERRORLEVEL!" == "0" @SET SSH_AGENT_PID=%%b
     )
     @REM Connect up the current ssh-agent
-    @IF [!SSH_AGENT_PID!] == [] (
+    @IF [!SSH_AGENT_PID!] == []  @(
         @ECHO Removing old ssh-agent sockets
         @FOR /d %%d IN (%TEMP%\ssh-??????*) DO @RMDIR /s /q %%d
-    ) ELSE (
+    ) ELSE  @(
         @ECHO Found ssh-agent at !SSH_AGENT_PID!
-        @FOR /d %%d IN (%TEMP%\ssh-??????*) DO (
-            @FOR %%f IN (%%d\agent.*) DO (
+        @FOR /d %%d IN (%TEMP%\ssh-??????*) DO @(
+            @FOR %%f IN (%%d\agent.*) DO @(
                 @SET SSH_AUTH_SOCK=%%f
                 @SET SSH_AUTH_SOCK=!SSH_AUTH_SOCK:%TEMP%=/tmp!
                 @SET SSH_AUTH_SOCK=!SSH_AUTH_SOCK:\=/!
             )
         )
-        @IF NOT [!SSH_AUTH_SOCK!] == [] (
+        @IF NOT [!SSH_AUTH_SOCK!] == [] @(
             @ECHO Found ssh-agent socket at !SSH_AUTH_SOCK!
         ) ELSE (
             @ECHO Failed to find ssh-agent socket
-            SET SSH_AGENT_PID=
+            @SET SSH_AGENT_PID=
         )
     )
     @REM See if we have the key
     @SET "HOME=%USERPROFILE%"
     @"!SSH_ADD!" -l 1>NUL 2>NUL
     @SET result=!ERRORLEVEL!
-    @IF NOT !result! == 0 (
-        @IF !result! == 2 (
+    @IF NOT !result! == 0 @(
+        @IF !result! == 2 @(
             @ECHO | @SET /p=Starting ssh-agent:
-            @FOR /f "tokens=1-2 delims==;" %%a IN ('"!SSH_AGENT!"') DO (
+            @FOR /f "tokens=1-2 delims==;" %%a IN ('"!SSH_AGENT!"') DO @(
                 @IF NOT [%%b] == [] @SET %%a=%%b
             )
             @ECHO. done
@@ -75,6 +75,6 @@
           & @SET "SSH_AGENT_PID=%SSH_AGENT_PID%"
 
 @ECHO %cmdcmdline% | @FINDSTR /l "\"\"" >NUL
-@IF NOT ERRORLEVEL 1 (
+@IF NOT ERRORLEVEL 1 @(
     @CALL cmd %*
 )
