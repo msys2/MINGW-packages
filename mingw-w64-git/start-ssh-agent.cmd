@@ -29,7 +29,13 @@
     @REM Check if the agent is running
     @FOR /f "tokens=1-2" %%a IN ('tasklist /fi "imagename eq ssh-agent.exe"') DO @(
         @ECHO %%b | @FINDSTR /r /c:"[0-9][0-9]*" > NUL
-        @IF "!ERRORLEVEL!" == "0" @SET SSH_AGENT_PID=%%b
+        @IF "!ERRORLEVEL!" == "0" @(
+            @SET SSH_AGENT_PID=%%b
+        ) else @(
+            @REM Unset in the case a user kills the agent while a session is open
+            @REM needed to remove the old files and prevent a false message
+            @SET SSH_AGENT_PID=
+        )
     )
     @REM Connect up the current ssh-agent
     @IF [!SSH_AGENT_PID!] == []  @(
