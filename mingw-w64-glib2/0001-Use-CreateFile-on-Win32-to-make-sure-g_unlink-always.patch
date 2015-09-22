@@ -1,28 +1,7 @@
-From 7f4f4354540440c0a8a37beaccbec8bc7fc15ec7 Mon Sep 17 00:00:00 2001
-From: Erik van Pienbroek <epienbro@fedoraproject.org>
-Date: Mon, 27 Aug 2012 23:28:54 +0200
-Subject: [PATCH] Use CreateFile on Win32 to make sure g_unlink always works
-
-The functions g_open(), g_creat() and g_fopen() defer to _wopen(),
-_wcreat() and _wfopen() respectively. This is very similar to
-the corresponding arrangement for Linux. However, those Windows
-functions do not support renaming a file whilst it's open. As a
-result, g_rename() behaves differently on the Windows platform
-compared to its Linux behaviour, where files can be renamed even
-while there are file handles still open. Resolved this by using
-the Win32 API function CreateFile() instead of _wopen(), _wcreat()
-and _wfopen()
-
-Patch initially created by John Emmas
----
- glib/gstdio.c | 259 ++++++++++++++++++++++++++++++++++++++++++++++++++++------
- 1 file changed, 233 insertions(+), 26 deletions(-)
-
-diff --git a/glib/gstdio.c b/glib/gstdio.c
-index 6d763e1..c1d072f 100644
---- a/glib/gstdio.c
-+++ b/glib/gstdio.c
-@@ -191,6 +191,11 @@ g_open (const gchar *filename,
+diff -Naur glib-2.46.0-orig/glib/gstdio.c glib-2.46.0/glib/gstdio.c
+--- glib-2.46.0-orig/glib/gstdio.c	2015-02-26 15:57:09.000000000 +0300
++++ glib-2.46.0/glib/gstdio.c	2015-09-22 09:08:58.032066100 +0300
+@@ -192,6 +192,11 @@
  	int          mode)
  {
  #ifdef G_OS_WIN32
@@ -34,7 +13,7 @@ index 6d763e1..c1d072f 100644
    wchar_t *wfilename = g_utf8_to_utf16 (filename, -1, NULL, NULL, NULL);
    int retval;
    int save_errno;
-@@ -201,12 +206,114 @@ g_open (const gchar *filename,
+@@ -202,12 +207,114 @@
        return -1;
      }
  
@@ -152,7 +131,7 @@ index 6d763e1..c1d072f 100644
    return retval;
  #else
    int fd;
-@@ -248,6 +355,8 @@ g_creat (const gchar *filename,
+@@ -254,6 +361,8 @@
  	 int          mode)
  {
  #ifdef G_OS_WIN32
@@ -161,7 +140,7 @@ index 6d763e1..c1d072f 100644
    wchar_t *wfilename = g_utf8_to_utf16 (filename, -1, NULL, NULL, NULL);
    int retval;
    int save_errno;
-@@ -258,12 +367,41 @@ g_creat (const gchar *filename,
+@@ -264,12 +373,41 @@
        return -1;
      }
  
@@ -172,8 +151,7 @@ index 6d763e1..c1d072f 100644
 +    if (! (mode & _S_IWRITE))
 +      dwFlagsAndAttributes  = FILE_ATTRIBUTE_READONLY; /* Sets file to 'read only' after the file gets closed */
 +  }
- 
--  g_free (wfilename);
++
 +  hFile = CreateFileW(wfilename, (GENERIC_READ | GENERIC_WRITE), (FILE_SHARE_READ | FILE_SHARE_DELETE),
 +                                  NULL, CREATE_ALWAYS, dwFlagsAndAttributes, NULL);
 +
@@ -200,13 +178,14 @@ index 6d763e1..c1d072f 100644
 +    retval = _open_osfhandle((long)hFile, _O_RDWR);
  
 +  save_errno = errno;
-+  g_free (wfilename);
+   g_free (wfilename);
+-
    errno = save_errno;
 +
    return retval;
  #else
    return creat (filename, mode);
-@@ -699,33 +837,102 @@ g_fopen (const gchar *filename,
+@@ -702,33 +840,102 @@
  	 const gchar *mode)
  {
  #ifdef G_OS_WIN32
@@ -216,6 +195,25 @@ index 6d763e1..c1d072f 100644
 -  int save_errno;
 -
 -  if (wfilename == NULL)
+-    {
+-      errno = EINVAL;
+-      return NULL;
+-    }
+-
+-  wmode = g_utf8_to_utf16 (mode, -1, NULL, NULL, NULL);
+-
+-  if (wmode == NULL)
+-    {
+-      g_free (wfilename);
+-      errno = EINVAL;
+-      return NULL;
+-    }
+-
+-  retval = _wfopen (wfilename, wmode);
+-  save_errno = errno;
+-
+-  g_free (wfilename);
+-  g_free (wmode);
 +  int   hFile;
 +  int   flags  = 0;
 +  gchar priv_mode[4];
@@ -241,9 +239,7 @@ index 6d763e1..c1d072f 100644
 +    if (('c' == priv_mode[2]) || ('n' == priv_mode[2]))
 +      priv_mode[2] = '\0';
 +    else
-     {
--      errno = EINVAL;
--      return NULL;
++    {
 +      if (0 == strcmp(priv_mode, "a+b"))
 +        flags = _O_RDWR | _O_CREAT | _O_APPEND | _O_BINARY;
 +      else if (0 == strcmp(priv_mode, "a+t"))
@@ -261,21 +257,14 @@ index 6d763e1..c1d072f 100644
 +        errno = EINVAL;
 +        goto out;
 +      }
-     }
--
--  wmode = g_utf8_to_utf16 (mode, -1, NULL, NULL, NULL);
--
--  if (wmode == NULL)
++    }
 +  }
 +  if (2 == strlen(priv_mode))
 +  {
 +    if (('c' == priv_mode[1]) || ('n' == priv_mode[1]))
 +      priv_mode[1] = '\0';
 +    else
-     {
--      g_free (wfilename);
--      errno = EINVAL;
--      return NULL;
++    {
 +      if (0 == strcmp(priv_mode, "a+"))
 +        flags = _O_RDWR | _O_CREAT | _O_APPEND;
 +      else if (0 == strcmp(priv_mode, "ab"))
@@ -295,7 +284,7 @@ index 6d763e1..c1d072f 100644
 +        errno = EINVAL;
 +        goto out;
 +      }
-     }
++    }
 +  }
 +  if (1 == strlen(priv_mode))
 +  {
@@ -311,13 +300,9 @@ index 6d763e1..c1d072f 100644
 +      goto out;
 +    }
 +  }
- 
--  retval = _wfopen (wfilename, wmode);
--  save_errno = errno;
++
 +  hFile = g_open (filename, flags, (_S_IREAD | _S_IWRITE));
- 
--  g_free (wfilename);
--  g_free (wmode);
++
 +  if (INVALID_HANDLE_VALUE == (HANDLE)hFile)
 +    /* 'errno' will have already been set by 'g_open()' */
 +    retval = NULL;
@@ -329,5 +314,3 @@ index 6d763e1..c1d072f 100644
    return retval;
  #else
    return fopen (filename, mode);
--- 
-1.7.11.4
