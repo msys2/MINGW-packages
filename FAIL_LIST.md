@@ -21,8 +21,6 @@ List of packages that currently fail to build
 
 - ldns
 
-- librescl
-
 - librocket-git
 
 - nim
