@@ -1,0 +1,343 @@
+--- a/drivers/wingcc.c	2015-04-12 03:08:04.000000000 -0700
++++ b/drivers/wingcc.c	2015-08-06 00:47:00.057728900 -0700
+@@ -31,10 +31,6 @@
+ #include <winnt.h>
+ #define _T( a )    __TEXT( a )
+ #endif
+-#ifdef _WIN64
+-#define GWL_USERDATA    GWLP_USERDATA
+-#define GCL_HCURSOR     GCLP_HCURSOR
+-#endif
+ 
+ #include "plplotP.h"
+ #include "drivers.h"
+@@ -84,7 +80,7 @@
+     PLINT        PRNT_width;
+     PLINT        PRNT_height;
+ 
+-    PLGraphicsIn gin;
++//    PLGraphicsIn gin;
+ 
+     char         FT_smooth_text;
+ //
+@@ -125,14 +121,15 @@
+ 
+ void plD_dispatch_init_wingcc( PLDispatchTable *pdt );
+ 
+-void plD_init_wingcc( PLStream * );
+-void plD_line_wingcc( PLStream *, short, short, short, short );
+-void plD_polyline_wingcc( PLStream *, short *, short *, PLINT );
+-void plD_eop_wingcc( PLStream * );
+-void plD_bop_wingcc( PLStream * );
+-void plD_tidy_wingcc( PLStream * );
+-void plD_state_wingcc( PLStream *, PLINT );
+-void plD_esc_wingcc( PLStream *, PLINT, void * );
++static void plD_init_wingcc( PLStream * );
++static void plD_line_wingcc( PLStream *, short, short, short, short );
++static void plD_polyline_wingcc( PLStream *, short *, short *, PLINT );
++static void plD_eop_wingcc( PLStream * );
++static void plD_bop_wingcc( PLStream * );
++static void plD_tidy_wingcc( PLStream * );
++static void plD_wait_wingcc( PLStream * );
++static void plD_state_wingcc( PLStream *, PLINT );
++static void plD_esc_wingcc( PLStream *, PLINT, void * );
+ 
+ #ifdef PL_HAVE_FREETYPE
+ 
+@@ -196,17 +193,17 @@
+ 
+ #define CrossHairCursor()    do {                                   \
+         dev->cursor = LoadCursor( NULL, IDC_CROSS );                \
+-        SetClassLong( dev->hwnd, GCL_HCURSOR, (long) dev->cursor ); \
++        SetClassLongPtr( dev->hwnd, GCLP_HCURSOR, (LONG_PTR) dev->cursor ); \
+         SetCursor( dev->cursor ); } while ( 0 )
+ 
+ #define NormalCursor()       do {                                          \
+         dev->cursor = LoadCursor( NULL, IDC_ARROW );                       \
+-        SetClassLongPtr( dev->hwnd, GCL_HCURSOR, (LONG_PTR) dev->cursor ); \
++        SetClassLongPtr( dev->hwnd, GCLP_HCURSOR, (LONG_PTR) dev->cursor ); \
+         SetCursor( dev->cursor ); } while ( 0 )
+ 
+ #define BusyCursor()         do {                                          \
+         dev->cursor = LoadCursor( NULL, IDC_WAIT );                        \
+-        SetClassLongPtr( dev->hwnd, GCL_HCURSOR, (LONG_PTR) dev->cursor ); \
++        SetClassLongPtr( dev->hwnd, GCLP_HCURSOR, (LONG_PTR) dev->cursor ); \
+         SetCursor( dev->cursor ); } while ( 0 )
+ 
+ #define PopupPrint       0x08A1
+@@ -230,6 +227,7 @@
+     pdt->pl_tidy     = (plD_tidy_fp) plD_tidy_wingcc;
+     pdt->pl_state    = (plD_state_fp) plD_state_wingcc;
+     pdt->pl_esc      = (plD_esc_fp) plD_esc_wingcc;
++    pdt->pl_wait     = (plD_wait_fp) plD_wait_wingcc;
+ }
+ 
+ static TCHAR* szWndClass = _T( "PlplotWin" );
+@@ -262,11 +260,8 @@
+     }
+     else
+     {
+-#ifndef _WIN64
+-#undef GetWindowLongPtr
+-#define GetWindowLongPtr    GetWindowLong
+-#endif
+-        pls = (PLStream *) GetWindowLongPtr( hwnd, GWL_USERDATA ); // Try to get the address to pls for this window
++
++        pls = (PLStream *) GetWindowLongPtr( hwnd, GWLP_USERDATA ); // Try to get the address to pls for this window
+         if ( pls )                                                 // If we got it, then we will initialise this windows plplot private data area
+         {
+             dev = (wingcc_Dev *) pls->dev;
+@@ -408,7 +403,7 @@
+ // Initialize device (terminal).
+ //--------------------------------------------------------------------------
+ 
+-void
++static void
+ plD_init_wingcc( PLStream *pls )
+ {
+     wingcc_Dev *dev;
+@@ -433,7 +428,6 @@
+         { "text",   DRV_INT, &freetype,    "Use driver text (FreeType)"            },
+         { "smooth", DRV_INT, &smooth_text, "Turn text smoothing on (1) or off (0)" },
+         { "save",   DRV_INT, &save_reg,    "Save defaults to registary"            },
+-
+ #endif
+         { NULL,     DRV_INT, NULL,         NULL                                    }
+     };
+@@ -591,11 +585,8 @@
+ // process this window
+ //
+ 
+-#ifdef _WIN64
+-    SetWindowLongPtr( dev->hwnd, GWL_USERDATA, (LONG_PTR) pls );
+-#else
+-    SetWindowLong( dev->hwnd, GWL_USERDATA, (LONG) pls );
+-#endif
++
++    SetWindowLongPtr( dev->hwnd, GWLP_USERDATA, (LONG_PTR) pls );
+ 
+     dev->SCRN_hdc = dev->hdc = GetDC( dev->hwnd );
+ 
+@@ -630,7 +621,7 @@
+     // sort of thing).
+     //
+     ShowWindow( dev->hwnd, SW_SHOWDEFAULT );
+-    SetForegroundWindow( dev->hwnd );
++    BringWindowToTop( dev->hwnd );
+ 
+     //
+     // Set up the DPI etc...
+@@ -693,7 +684,7 @@
+ // Draw a line in the current color from (x1,y1) to (x2,y2).
+ //--------------------------------------------------------------------------
+ 
+-void
++static void
+ plD_line_wingcc( PLStream *pls, short x1a, short y1a, short x2a, short y2a )
+ {
+     wingcc_Dev *dev = (wingcc_Dev *) pls->dev;
+@@ -725,7 +716,7 @@
+ // Draw a polyline in the current color.
+ //--------------------------------------------------------------------------
+ 
+-void
++static void
+ plD_polyline_wingcc( PLStream *pls, short *xa, short *ya, PLINT npts )
+ {
+     wingcc_Dev *dev = (wingcc_Dev *) pls->dev;
+@@ -824,7 +815,7 @@
+ 
+ 
+ 
+-void
++static void
+ plD_eop_wingcc( PLStream *pls )
+ {
+     wingcc_Dev *dev = (wingcc_Dev *) pls->dev;
+@@ -835,73 +826,14 @@
+ 
+     NormalCursor();
+ 
+-    if ( !pls->nopause )
+-    {
+-        dev->waiting = 1;
+-        while ( GetMessage( &dev->msg, NULL, 0, 0 ) )
+-        {
+-            TranslateMessage( &dev->msg );
+-            switch ( (int) dev->msg.message )
+-            {
+-            case WM_CONTEXTMENU:
+-            case WM_RBUTTONDOWN:
+-                TrackPopupMenu( dev->PopupMenu, TPM_CENTERALIGN | TPM_RIGHTBUTTON, LOWORD( dev->msg.lParam ),
+-                    HIWORD( dev->msg.lParam ), 0, dev->hwnd, NULL );
+-                break;
+-
+-            case WM_CHAR:
+-                if ( ( (TCHAR) ( dev->msg.wParam ) == 32 ) ||
+-                     ( (TCHAR) ( dev->msg.wParam ) == 13 ) )
+-                {
+-                    dev->waiting = 0;
+-                }
+-                else if ( ( (TCHAR) ( dev->msg.wParam ) == 27 ) ||
+-                          ( (TCHAR) ( dev->msg.wParam ) == 'q' ) ||
+-                          ( (TCHAR) ( dev->msg.wParam ) == 'Q' ) )
+-                {
+-                    dev->waiting = 0;
+-                    PostQuitMessage( 0 );
+-                }
+-                break;
+-
+-            case WM_LBUTTONDBLCLK:
+-                Debug( "WM_LBUTTONDBLCLK\t" );
+-                dev->waiting = 0;
+-                break;
+-
+-            case WM_COMMAND:
+-                switch ( LOWORD( dev->msg.wParam ) )
+-                {
+-                case PopupPrint:
+-                    Debug( "PopupPrint" );
+-                    PrintPage( pls );
+-                    break;
+-                case PopupNextPage:
+-                    Debug( "PopupNextPage" );
+-                    dev->waiting = 0;
+-                    break;
+-                case PopupQuit:
+-                    Debug( "PopupQuit" );
+-                    dev->waiting = 0;
+-                    PostQuitMessage( 0 );
+-                    break;
+-                }
+-                break;
++    if ( !pls->nopause ) plD_wait_wingcc( pls);
+ 
+-            default:
+-                DispatchMessage( &dev->msg );
+-                break;
+-            }
+-            if ( dev->waiting == 0 )
+-                break;
+-        }
+-    }
+ }
+ 
+ //--------------------------------------------------------------------------
+ //  Beginning of the new page
+ //--------------------------------------------------------------------------
+-void
++static void
+ plD_bop_wingcc( PLStream *pls )
+ {
+     wingcc_Dev *dev = (wingcc_Dev *) pls->dev;
+@@ -922,7 +854,7 @@
+     plD_state_wingcc( pls, PLSTATE_COLOR0 );
+ }
+ 
+-void
++static void
+ plD_tidy_wingcc( PLStream *pls )
+ {
+     wingcc_Dev *dev = NULL;
+@@ -952,21 +884,84 @@
+             ReleaseDC( dev->hwnd, dev->hdc );
+         if ( dev->bitmap != NULL )
+             DeleteObject( dev->bitmap );
+-
++	if(IsWindow(dev->hwnd)) DestroyWindow(dev->hwnd);
+         free_mem( pls->dev );
+     }
+ }
+ 
++static void
++plD_wait_wingcc( PLStream * pls )
++{
++    wingcc_Dev *dev = (wingcc_Dev *) pls->dev;
++
++    Debug( "Wait for user input\n" );
++
++    dev->waiting = 1;
++    while ( dev->waiting == 1 && GetMessage( &dev->msg, NULL, 0, 0 ) )
++    {
++        TranslateMessage( &dev->msg );
++        switch ( (int) dev->msg.message )
++        {
++        case WM_RBUTTONDOWN:
++        case WM_CONTEXTMENU:
++            TrackPopupMenu( dev->PopupMenu, TPM_CENTERALIGN | TPM_RIGHTBUTTON, LOWORD( dev->msg.lParam ),
++                HIWORD( dev->msg.lParam ), 0, dev->hwnd, NULL );
++            break;
++
++        case WM_CHAR:
++            if ( ( (TCHAR) ( dev->msg.wParam ) == 32 ) ||
++                 ( (TCHAR) ( dev->msg.wParam ) == 13 ) )
++            {
++                dev->waiting = 0;
++            }
++            else if ( ( (TCHAR) ( dev->msg.wParam ) == 27 ) ||
++                      ( (TCHAR) ( dev->msg.wParam ) == 'q' ) ||
++                      ( (TCHAR) ( dev->msg.wParam ) == 'Q' ) )
++            {
++                dev->waiting = 0;
++                PostQuitMessage( 0 );
++            }
++            break;
++
++        case WM_LBUTTONDBLCLK:
++            Debug( "WM_LBUTTONDBLCLK\t" );
++            dev->waiting = 0;
++            break;
++
++        case WM_COMMAND:
++            switch ( LOWORD( dev->msg.wParam ) )
++            {
++            case PopupPrint:
++                Debug( "PopupPrint" );
++                PrintPage( pls );
++                break;
++            case PopupNextPage:
++                Debug( "PopupNextPage" );
++                dev->waiting = 0;
++                break;
++            case PopupQuit:
++                Debug( "PopupQuit" );
++                dev->waiting = 0;
++                PostQuitMessage( 0 );
++                break;
++            }
++            break;
+ 
++        default:
++            DispatchMessage( &dev->msg );
++            break;
++        }
++    }
++}
+ 
+ 
+ //--------------------------------------------------------------------------
+-// plD_state_png()
++// plD_state_wingcc()
+ //
+ // Handle change in PLStream state (color, pen width, fill attribute, etc).
+ //--------------------------------------------------------------------------
+ 
+-void
++static void
+ plD_state_wingcc( PLStream *pls, PLINT op )
+ {
+     wingcc_Dev *dev = (wingcc_Dev *) pls->dev;
+@@ -1061,11 +1056,11 @@
+ // Handle PLplot escapes
+ //--------------------------------------------------------------------------
+ 
+-void
++static void
+ plD_esc_wingcc( PLStream *pls, PLINT op, void *ptr )
+ {
+     wingcc_Dev   *dev = (wingcc_Dev *) pls->dev;
+-    PLGraphicsIn *gin = &( dev->gin );
++//    PLGraphicsIn *gin = &( dev->gin );
+ 
+ 
+     switch ( op )
