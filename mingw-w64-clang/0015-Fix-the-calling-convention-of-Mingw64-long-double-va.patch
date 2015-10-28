@@ -1,0 +1,175 @@
+From f6a5ffd2cec68e89ddfb67b3c078c6c86a516a76 Mon Sep 17 00:00:00 2001
+From: Reid Kleckner <rnk@google.com>
+Date: Wed, 28 Oct 2015 22:29:52 +0000
+Subject: [PATCH] Fix the calling convention of Mingw64 long double values
+
+GCC uses the x87DoubleExtended model for long doubles, and passes them
+indirectly by address through function calls.
+
+Also replace the existing mingw-long-double assembly emitting test with
+an IR-level test.
+
+git-svn-id: https://llvm.org/svn/llvm-project/cfe/trunk@251567 91177308-0d34-0410-b5e6-96231b3b80d8
+---
+ lib/Basic/Targets.cpp            |  8 ++++++-
+ lib/CodeGen/TargetInfo.cpp       | 33 ++++++++++++++++++----------
+ test/CodeGen/mingw-long-double.c | 47 ++++++++++++++++++++++++++++++++--------
+ 3 files changed, 67 insertions(+), 21 deletions(-)
+
+diff --git a/lib/Basic/Targets.cpp b/lib/Basic/Targets.cpp
+index 0094ce8..a0c379a 100644
+--- a/lib/Basic/Targets.cpp
++++ b/lib/Basic/Targets.cpp
+@@ -4009,7 +4009,13 @@ public:
+ class MinGWX86_64TargetInfo : public WindowsX86_64TargetInfo {
+ public:
+   MinGWX86_64TargetInfo(const llvm::Triple &Triple)
+-      : WindowsX86_64TargetInfo(Triple) {}
++      : WindowsX86_64TargetInfo(Triple) {
++    // Mingw64 rounds long double size and alignment up to 16 bytes, but sticks
++    // with x86 FP ops. Weird.
++    LongDoubleWidth = LongDoubleAlign = 128;
++    LongDoubleFormat = &llvm::APFloat::x87DoubleExtended;
++  }
++
+   void getTargetDefines(const LangOptions &Opts,
+                         MacroBuilder &Builder) const override {
+     WindowsX86_64TargetInfo::getTargetDefines(Opts, Builder);
+diff --git a/lib/CodeGen/TargetInfo.cpp b/lib/CodeGen/TargetInfo.cpp
+index 149baaa..282c103 100644
+--- a/lib/CodeGen/TargetInfo.cpp
++++ b/lib/CodeGen/TargetInfo.cpp
+@@ -1772,12 +1772,10 @@ public:
+ 
+ /// WinX86_64ABIInfo - The Windows X86_64 ABI information.
+ class WinX86_64ABIInfo : public ABIInfo {
+-
+-  ABIArgInfo classify(QualType Ty, unsigned &FreeSSERegs,
+-                      bool IsReturnType) const;
+-
+ public:
+-  WinX86_64ABIInfo(CodeGen::CodeGenTypes &CGT) : ABIInfo(CGT) {}
++  WinX86_64ABIInfo(CodeGen::CodeGenTypes &CGT)
++      : ABIInfo(CGT),
++        IsMingw64(getTarget().getTriple().isWindowsGNUEnvironment()) {}
+ 
+   void computeInfo(CGFunctionInfo &FI) const override;
+ 
+@@ -1794,6 +1792,12 @@ public:
+     // FIXME: Assumes vectorcall is in use.
+     return isX86VectorCallAggregateSmallEnough(NumMembers);
+   }
++
++private:
++  ABIArgInfo classify(QualType Ty, unsigned &FreeSSERegs,
++                      bool IsReturnType) const;
++
++  bool IsMingw64;
+ };
+ 
+ class X86_64TargetCodeGenInfo : public TargetCodeGenInfo {
+@@ -3317,7 +3321,7 @@ ABIArgInfo WinX86_64ABIInfo::classify(QualType Ty, unsigned &FreeSSERegs,
+ 
+   TypeInfo Info = getContext().getTypeInfo(Ty);
+   uint64_t Width = Info.Width;
+-  unsigned Align = getContext().toCharUnitsFromBits(Info.Align).getQuantity();
++  CharUnits Align = getContext().toCharUnitsFromBits(Info.Align);
+ 
+   const RecordType *RT = Ty->getAs<RecordType>();
+   if (RT) {
+@@ -3330,9 +3334,9 @@ ABIArgInfo WinX86_64ABIInfo::classify(QualType Ty, unsigned &FreeSSERegs,
+       return getNaturalAlignIndirect(Ty, /*ByVal=*/false);
+ 
+     // FIXME: mingw-w64-gcc emits 128-bit struct as i128
+-    if (Width == 128 && getTarget().getTriple().isWindowsGNUEnvironment())
+-      return ABIArgInfo::getDirect(llvm::IntegerType::get(getVMContext(),
+-                                                          Width));
++    if (Width == 128 && IsMingw64)
++      return ABIArgInfo::getDirect(
++          llvm::IntegerType::get(getVMContext(), Width));
+   }
+ 
+   // vectorcall adds the concept of a homogenous vector aggregate, similar to
+@@ -3346,8 +3350,7 @@ ABIArgInfo WinX86_64ABIInfo::classify(QualType Ty, unsigned &FreeSSERegs,
+         return ABIArgInfo::getDirect();
+       return ABIArgInfo::getExpand();
+     }
+-    return ABIArgInfo::getIndirect(CharUnits::fromQuantity(Align),
+-                                   /*ByVal=*/false);
++    return ABIArgInfo::getIndirect(Align, /*ByVal=*/false);
+   }
+ 
+ 
+@@ -3375,6 +3378,14 @@ ABIArgInfo WinX86_64ABIInfo::classify(QualType Ty, unsigned &FreeSSERegs,
+   if (BT && BT->getKind() == BuiltinType::Bool)
+     return ABIArgInfo::getExtend();
+ 
++  // Mingw64 GCC uses the old 80 bit extended precision floating point unit. It
++  // passes them indirectly through memory.
++  if (IsMingw64 && BT && BT->getKind() == BuiltinType::LongDouble) {
++    const llvm::fltSemantics *LDF = &getTarget().getLongDoubleFormat();
++    if (LDF == &llvm::APFloat::x87DoubleExtended)
++      return ABIArgInfo::getIndirect(Align, /*ByVal=*/false);
++  }
++
+   return ABIArgInfo::getDirect();
+ }
+ 
+diff --git a/test/CodeGen/mingw-long-double.c b/test/CodeGen/mingw-long-double.c
+index a29662c..1c7c31f 100644
+--- a/test/CodeGen/mingw-long-double.c
++++ b/test/CodeGen/mingw-long-double.c
+@@ -1,12 +1,41 @@
+-// REQUIRES: x86-registered-target
+-// RUN: %clang_cc1 -triple i686-pc-windows-gnu -S %s  -o - | FileCheck %s -check-prefix=CHECK_I686
+-// CHECK_I686: _lda,12
+-// CHECK_I686: _lds,16
+-// RUN: %clang_cc1 -triple x86_64-pc-windows-gnu -S %s  -o - | FileCheck %s -check-prefix=CHECK_X86_64
+-// CHECK_X86_64: lda,16
+-// CHECK_X86_64: lds,32
+-long double lda;
++// RUN: %clang_cc1 -triple i686-windows-gnu -emit-llvm -o - %s \
++// RUN:    | FileCheck %s --check-prefix=GNU32
++// RUN: %clang_cc1 -triple x86_64-windows-gnu -emit-llvm -o - %s \
++// RUN:    | FileCheck %s --check-prefix=GNU64
++// RUN: %clang_cc1 -triple x86_64-windows-msvc -emit-llvm -o - %s \
++// RUN:    | FileCheck %s --check-prefix=MSC64
++
+ struct {
+   char c;
+   long double ldb;
+-} lds;
++} agggregate_LD = {};
++// GNU32: %struct.anon = type { i8, x86_fp80 }
++// GNU32: @agggregate_LD = global %struct.anon zeroinitializer, align 4
++// GNU64: %struct.anon = type { i8, x86_fp80 }
++// GNU64: @agggregate_LD = global %struct.anon zeroinitializer, align 16
++// MSC64: %struct.anon = type { i8, double }
++// MSC64: @agggregate_LD = global %struct.anon zeroinitializer, align 8
++
++long double dataLD = 1.0L;
++// GNU32: @dataLD = global x86_fp80 0xK3FFF8000000000000000, align 4
++// GNU64: @dataLD = global x86_fp80 0xK3FFF8000000000000000, align 16
++// MSC64: @dataLD = global double 1.000000e+00, align 8
++
++long double _Complex dataLDC = {1.0L, 1.0L};
++// GNU32: @dataLDC = global { x86_fp80, x86_fp80 } { x86_fp80 0xK3FFF8000000000000000, x86_fp80 0xK3FFF8000000000000000 }, align 4
++// GNU64: @dataLDC = global { x86_fp80, x86_fp80 } { x86_fp80 0xK3FFF8000000000000000, x86_fp80 0xK3FFF8000000000000000 }, align 16
++// MSC64: @dataLDC = global { double, double } { double 1.000000e+00, double 1.000000e+00 }, align 8
++
++long double TestLD(long double x) {
++  return x * x;
++}
++// GNU32: define x86_fp80 @TestLD(x86_fp80 %x)
++// GNU64: define void @TestLD(x86_fp80* noalias sret %agg.result, x86_fp80*)
++// MSC64: define double @TestLD(double %x)
++
++long double _Complex TestLDC(long double _Complex x) {
++  return x * x;
++}
++// GNU32: define void @TestLDC({ x86_fp80, x86_fp80 }* noalias sret %agg.result, { x86_fp80, x86_fp80 }* byval align 4 %x)
++// GNU64: define void @TestLDC({ x86_fp80, x86_fp80 }* noalias sret %agg.result, { x86_fp80, x86_fp80 }* %x)
++// MSC64: define void @TestLDC({ double, double }* noalias sret %agg.result, { double, double }* %x)
+-- 
+2.5.0
+
