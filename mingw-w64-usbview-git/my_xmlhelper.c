@@ -44,5 +44,4 @@ EXTERN_C HRESULT XmlAddUsbDevice(PSTR devName, PUSBDEVICEINFO deviceInfo)
 
 EXTERN_C VOID XmlNotifyEndOfNodeList(PVOID pContext)
 {
-    return 0;
 }
