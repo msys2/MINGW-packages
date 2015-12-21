@@ -15,12 +15,12 @@ pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}-svn"
          "${MINGW_PACKAGE_PREFIX}-${_realname}-analyzer-svn"
          "${MINGW_PACKAGE_PREFIX}-${_realname}-tools-extra-svn"
          "${MINGW_PACKAGE_PREFIX}-compiler-rt-svn"
-         "${MINGW_PACKAGE_PREFIX}-libc++abi-svn"
-         "${MINGW_PACKAGE_PREFIX}-libc++-svn"
+         #"${MINGW_PACKAGE_PREFIX}-libc++abi-svn"
+         #"${MINGW_PACKAGE_PREFIX}-libc++-svn"
          "${MINGW_PACKAGE_PREFIX}-lld-svn"
          "${MINGW_PACKAGE_PREFIX}-llvm-svn"
         )
-pkgver=58129.eda30f1
+pkgver=60373.b4292ac
 pkgrel=1
 pkgdesc="C language family frontend for LLVM (mingw-w64)"
 arch=('any')
@@ -29,9 +29,13 @@ license=("custom:University of Illinois/NCSA Open Source License")
 makedepends=("${MINGW_PACKAGE_PREFIX}-gcc"
              "${MINGW_PACKAGE_PREFIX}-pkg-config"
              "${MINGW_PACKAGE_PREFIX}-python3-sphinx"
-             "python2" "tar" "subversion" "git")
+             "python2"
+             "tar"
+             "subversion"
+             "git"
+             "cmake")
 depends=("${MINGW_PACKAGE_PREFIX}-gcc")
-options=('staticlibs' 'strip')
+options=('staticlibs') # 'debug' '!strip')
 source=("llvm"::"git+http://llvm.org/git/llvm.git"
         "lld"::"git+http://llvm.org/git/lld.git"
         "clang"::"git+http://llvm.org/git/clang.git"
@@ -41,7 +45,6 @@ source=("llvm"::"git+http://llvm.org/git/llvm.git"
         "libcxxabi"::"git+http://llvm.org/git/libcxxabi.git"
         "libcxx"::"git+http://llvm.org/git/libcxx.git"
         0001-Fix-GetHostTriple-for-mingw-w64-in-msys.patch
-        0011-Set-the-x86-arch-name-to-i686-for-mingw-w64.patch
         0041-libcxx-add-support-for-mingw-w64.patch)
 
 # Some patch notes :)
@@ -60,7 +63,6 @@ md5sums=('SKIP'
          'SKIP'
          'SKIP'
          'a384d4607d9dcdfdcac6912ac413ec58'
-         'e6ce086a33256043af99a5690b251be8'
          '6b0b769d999dc884e59d388c5a7f3866')
 
 pkgver_internal() {
@@ -89,9 +91,6 @@ prepare() {
   sed -i '/@LLVM_CONFIG_CMAKE_DIR@/s:$(PROJ_cmake):$(PROJ_prefix)/share/llvm/cmake:' \
     cmake/modules/Makefile
 
-  cd "${srcdir}"/clang
-  git am "${srcdir}"/0011-Set-the-x86-arch-name-to-i686-for-mingw-w64.patch
-
   #cd "${srcdir}"/compiler-rt
 
   cd "${srcdir}"/lld
@@ -99,32 +98,50 @@ prepare() {
 
   cd "${srcdir}"/libcxx
   git am "${srcdir}"/0041-libcxx-add-support-for-mingw-w64.patch
+  
+  cd "${srcdir}"/clang
 
-  cd "${srcdir}"
-  mv lld               llvm/tools/lld
-  mv clang             llvm/tools/clang
-  mv clang-tools-extra llvm/tools/clang/tools/extra
-  mv compiler-rt       llvm/projects/compiler-rt
-  mv libcxxabi         llvm/projects/libcxxabi
-  mv libcxx            llvm/projects/libcxx
-# mv testsuite         llvm/projects/test-suite
+  cd "${srcdir}"/llvm
 
+  # At the present, clang must reside inside the LLVM source code tree to build
+  # See http://llvm.org/bugs/show_bug.cgi?id=4840
+  mv "$srcdir/clang" tools/clang
+  mv "$srcdir/clang-tools-extra" tools/clang/tools/extra
+  mv "$srcdir/lld" tools/lld
+# mv "$srcdir/lldb" tools/lldb
+  mv "$srcdir/compiler-rt" projects/compiler-rt
+  mv "$srcdir/libcxxabi" projects/libcxxabi
+  mv "$srcdir/libcxx" projects/libcxx
+# mv "$srcdir/testsuite" projects/test-suite
+  mkdir build-${CARCH}
 }
 
 build() {
-  mkdir -p ${srcdir}/build-${CARCH} && cd ${srcdir}/build-${CARCH}
+  cd "$srcdir"
+
+  [[ -d build-${CARCH} ]] && rm -rf build-${CARCH}
+  mkdir build-${CARCH} && cd build-${CARCH}
+
+  local -a extra_config
+
+  if check_option "debug" "y"; then
+    extra_config+=(-DCMAKE_BUILD_TYPE=Debug)
+  else
+    extra_config+=(-DCMAKE_BUILD_TYPE=Release)
+  fi
 
   # Include location of libffi headers in CPPFLAGS
-  #CPPFLAGS+=" $(pkg-config --cflags libffi)"
   FFI_INCLUDE_DIR="$(pkg-config --cflags libffi)"
   FFI_INCLUDE_DIR=$(echo $FFI_INCLUDE_DIR | sed 's|-I||g')
 
   # "Ninja" cant install each component seperately
   # https://github.com/martine/ninja/issues/932
 
+  PATH=${MINGW_PREFIX}/bin:/usr/bin \
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake.exe \
     -G"MSYS Makefiles" \
+    -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib \
     -DCMAKE_MAKE_PROGRAM="/usr/bin/make.exe" \
     -DCMAKE_C_COMPILER="${MINGW_PREFIX}/bin/gcc.exe" \
     -DCMAKE_CXX_COMPILER="${MINGW_PREFIX}/bin/g++.exe" \
@@ -132,19 +149,25 @@ build() {
     -DCMAKE_C_FLAGS="${CFLAGS}" \
     -DCMAKE_CXX_FLAGS="${CXXFLAGS} ${CPPFLAGS}" \
     -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
-    -DCMAKE_BUILD_TYPE=Release \
     -DLLVM_TARGETS_TO_BUILD="ARM;CppBackend;X86" \
     -DLLVM_ENABLE_ASSERTIONS=OFF \
-    -DLLVM_ENABLE_THREADS=0 \
+    -DLLVM_ENABLE_THREADS=1 \
     -DPYTHON_EXECUTABLE=${MINGW_PREFIX}/bin/python2.exe \
     -DLLVM_ENABLE_FFI=ON \
     -DLLVM_ENABLE_SPHINX=ON \
     -DCMAKE_CXX_FLAGS="-D_GNU_SOURCE -D_LIBCPP_HAS_NO_CONSTEXPR" \
     -DLIBCXX_ENABLE_SHARED=OFF \
     -DLIBCXXABI_ENABLE_SHARED=OFF \
+    "${extra_config[@]}" \
+    --debug-output --trace \
     ../llvm
 
   make
+
+  # Disable automatic installation of components that go into subpackages
+  sed -i '/\(clang\|lld\|lldb\)\/cmake_install.cmake/d' tools/cmake_install.cmake
+  sed -i '/extra\/cmake_install.cmake/d' tools/clang/tools/cmake_install.cmake
+  sed -i '/compiler-rt\/cmake_install.cmake/d' projects/cmake_install.cmake
 }
 
 #check() {
@@ -153,138 +176,110 @@ build() {
 #  make check || true
 #}
 
-package_clang(){
-  pkgdesc="C language family frontend for LLVM (mingw-w64)"
-  depends=("${MINGW_PACKAGE_PREFIX}-llvm-svn")
-  provides=("${MINGW_PACKAGE_PREFIX}-clang")
-  conflicts=("${MINGW_PACKAGE_PREFIX}-clang")
-  pkgver=$(pkgver_internal "${srcdir}"/llvm/tools/clang)
+package_llvm-svn() {
+  pkgdesc="Low Level Virtual Machine (mingw-w64)"
+  #depends=("${MINGW_PACKAGE_PREFIX}-gcc") # "compiler-rt"
+  provides=("${MINGW_PACKAGE_PREFIX}-llvm")
+  conflicts=("${MINGW_PACKAGE_PREFIX}-llvm")
 
-  # Move ..
-  cd "${srcdir}"
-  mv llvm/tools/clang/tools/extra           clang-tools-extra
-  mv build-${CARCH}/tools/clang/tools/extra clang-tools-extra-${CARCH}
+  pkgver=$(pkgver_internal "${srcdir}"/llvm)
 
-  cd build-${CARCH}/tools/clang
-  make -j1 DESTDIR="$pkgdir" rebuild_cache install
+  cd "${srcdir}"/llvm
 
-  # .. Unmove
-  cd "${srcdir}"
-  mv clang-tools-extra                      llvm/tools/clang/tools/extra
-  mv clang-tools-extra-${CARCH}             build-${CARCH}/tools/clang/tools/extra
+  make -C ../build-${CARCH} DESTDIR="$pkgdir" install
+
+  install -Dm644 LICENSE.TXT "$pkgdir${MINGW_PREFIX}/share/licenses/llvm/LICENSE"
+
+  # Install CMake stuff
+  install -d "${pkgdir}"${MINGW_PREFIX}/share/llvm/cmake/{modules,platforms}
+  install -Dm644 "${srcdir}"/llvm/cmake/modules/*.cmake "${pkgdir}"${MINGW_PREFIX}/share/llvm/cmake/modules/
+  install -Dm644 "${srcdir}"/llvm/cmake/platforms/*.cmake "${pkgdir}"${MINGW_PREFIX}/share/llvm/cmake/platforms/
 }
 
-package_clang-tools-extra(){
-  pkgdesc="Extra tools built using Clang's tooling APIs (mingw-w64)"
-  url="http://clang.llvm.org/"
-  depends=("${MINGW_PACKAGE_PREFIX}-clang-svn")
-  provides=("${MINGW_PACKAGE_PREFIX}-clang-tools-extra")
-  conflicts=("${MINGW_PACKAGE_PREFIX}-clang-tools-extra")
-  pkgver=$(pkgver_internal "${srcdir}"/llvm/tools/clang/tools/extra)
-
-  cd "${srcdir}"/build-${CARCH}/tools/clang/tools/extra
-  make -j1 DESTDIR="$pkgdir" rebuild_cache install
-}
-
-package_compiler-rt(){
+ package_compiler-rt-svn() {
   pkgdesc="Runtime libraries for Clang and LLVM (mingw-w64)"
   url="http://compiler-rt.llvm.org/"
   depends=("${MINGW_PACKAGE_PREFIX}-llvm-svn")
   provides=("${MINGW_PACKAGE_PREFIX}-compiler-rt")
+
   conflicts=("${MINGW_PACKAGE_PREFIX}-compiler-rt")
   pkgver=$(pkgver_internal "${srcdir}"/llvm/projects/compiler-rt)
 
-  cd "${srcdir}"/build-${CARCH}/projects/compiler-rt
-  make -j1 DESTDIR="$pkgdir" rebuild_cache install
-}
+  cd "$srcdir/llvm"
+  make -C ../build-${CARCH}/projects/compiler-rt DESTDIR="$pkgdir" install
+ }
 
-package_libcxxabi(){
+package_libcxxabi() {
   pkgdesc="C++ Standard Library Support (mingw-w64)"
+  url="http://libcxxabi.llvm.org/"
   provides=("${MINGW_PACKAGE_PREFIX}-libc++abi")
   conflicts=("${MINGW_PACKAGE_PREFIX}-libc++abi")
   pkgver=$(pkgver_internal "${srcdir}"/llvm/projects/libcxxabi)
 
-  cd "${srcdir}"/build-${CARCH}/projects/libcxxabi
-  make -j1 DESTDIR="$pkgdir" rebuild_cache install
+  cd "$srcdir/llvm"  
+  make -C ../build-${CARCH}/projects/libcxxabi -j1 DESTDIR="$pkgdir" install
 }
 
-package_libcxx(){
+package_libcxx() {
   pkgdesc="C++ Standard Library (mingw-w64)"
+  url="http://libcxx.llvm.org/"
   provides=("${MINGW_PACKAGE_PREFIX}-libc++")
   conflicts=("${MINGW_PACKAGE_PREFIX}-libc++")
   pkgver=$(pkgver_internal "${srcdir}"/llvm/projects/libcxx)
 
-  cd "${srcdir}"/build-${CARCH}/projects/libcxx
-  make -j1 DESTDIR="$pkgdir" rebuild_cache install
+  cd "$srcdir/llvm"
+   make -C ../build-${CARCH}/projects/libcxx -j1 DESTDIR="$pkgdir" install
 }
 
-package_lld(){
+package_lldb-svn() {
+  pkgdesc="Next generation, high-performance debugger (mingw-w64)"
+  url="http://lldb.llvm.org/"
+  depends=('libedit' 'libxml2' 'python2')
+
+  cd "$srcdir/llvm-$pkgver.src"
+
+  make -C ../build-${CARCH}/tools/lldb DESTDIR="$pkgdir" install
+
+  # Compile Python scripts
+  python2 -m compileall "$pkgdir${MINGW_PREFIX}/lib/python2.7/site-packages/lldb"
+  python2 -O -m compileall "$pkgdir${MINGW_PREFIX}/lib/python2.7/site-packages/lldb"
+
+  install -Dm644 tools/lldb/LICENSE.TXT "$pkgdir${MINGW_PREFIX}/share/licenses/$pkgname/LICENSE"
+}
+
+
+package_lld-svn() {
   pkgdesc="Linker tools for LLVM (mingw-w64)"
+  url="http://lld.llvm.org/"
   depends=("${MINGW_PACKAGE_PREFIX}-llvm-svn")
   provides=("${MINGW_PACKAGE_PREFIX}-lld")
   conflicts=("${MINGW_PACKAGE_PREFIX}-lld")
   pkgver=$(pkgver_internal "${srcdir}"/llvm/tools/lld)
 
-  cd "${srcdir}"/build-${CARCH}/tools/lld
-  make -j1 DESTDIR="$pkgdir" rebuild_cache install
+  cd "${srcdir}/llvm"
+  make -C ../build-${CARCH}/tools/lld -j1 DESTDIR="$pkgdir" install
 }
 
-package_llvm(){
-  pkgdesc="Low Level Virtual Machine (mingw-w64)"
-  #depends=("${MINGW_PACKAGE_PREFIX}-gcc") # "${MINGW_PACKAGE_PREFIX}-compiler-rt"
-  provides=("${MINGW_PACKAGE_PREFIX}-llvm")
-  conflicts=("${MINGW_PACKAGE_PREFIX}-llvm")
-  install=llvm-${CARCH}.install
-  pkgver=$(pkgver_internal "${srcdir}"/llvm)
+package_clang() {
+  pkgdesc="C language family frontend for LLVM (mingw-w64)"
+  url="http://clang.llvm.org/"
+  depends=("${MINGW_PACKAGE_PREFIX}-llvm-svn")
+  provides=("${MINGW_PACKAGE_PREFIX}-clang")
+  conflicts=("${MINGW_PACKAGE_PREFIX}-clang")
+  pkgver=$(pkgver_internal "${srcdir}"/llvm/tools/clang)
 
-  # Move ..
-  cd "${srcdir}"
-  mv llvm/tools/clang           clang
-  mv build-${CARCH}/tools/clang clang-${CARCH}
-
-  mv llvm/tools/lld             lld
-  mv build-${CARCH}/tools/lld   lld-${CARCH}
-
-  mv llvm/projects/compiler-rt             compiler-rt
-  mv build-${CARCH}/projects/compiler-rt   compiler-rt-${CARCH}
-
-  mv llvm/projects/libcxxabi               libcxxabi
-  mv build-${CARCH}/projects/libcxxabi     libcxxabi-${CARCH}
-
-  mv llvm/projects/libcxx                  libcxx
-  mv build-${CARCH}/projects/libcxx        libcxx-${CARCH}
-
-  cd build-${CARCH}
-  make -j1 DESTDIR="$pkgdir" install
-
-  # .. Unmove
-  cd "${srcdir}"
-  mv clang                      llvm/tools/clang
-  mv clang-${CARCH}             build-${CARCH}/tools/clang
-
-  mv lld                        llvm/tools/lld
-  mv lld-${CARCH}               build-${CARCH}/tools/lld
-
-  mv compiler-rt                llvm/projects/compiler-rt
-  mv compiler-rt-${CARCH}       build-${CARCH}/projects/compiler-rt
-
-  mv libcxxabi                  llvm/projects/libcxxabi
-  mv libcxxabi-${CARCH}         build-${CARCH}/projects/libcxxabi
-
-  mv libcxx                     llvm/projects/libcxx
-  mv libcxx-${CARCH}            build-${CARCH}/projects/libcxx
-
-  # Install CMake stuff
-  install -d "${pkgdir}"${MINGW_PREFIX}/share/llvm/cmake/{modules,platforms}
-  install -Dm644 "${srcdir}"/llvm/cmake/modules/*.cmake "${pkgdir}${MINGW_PREFIX}/share/llvm/cmake/modules/"
-  install -Dm644 "${srcdir}"/llvm/cmake/platforms/*.cmake "${pkgdir}${MINGW_PREFIX}/share/llvm/cmake/platforms/"
-  install -Dm644 "${srcdir}/build-${CARCH}"/share/llvm/cmake/LLVMConfig.cmake "${pkgdir}"${MINGW_PREFIX}/share/llvm/cmake/LLVMConfig.cmake
+  cd "$srcdir/llvm"
+  make -C ../build-${CARCH}/tools/clang DESTDIR="$pkgdir" install
 }
 
-package_clang-analyzer() {
+package_clang-svn() {
+  package_clang
+}
+
+package_clang-analyzer-svn() {
   pkgdesc="A source code analysis framework (mingw-w64)"
   url="http://clang-analyzer.llvm.org/"
-  depends=("${MINGW_PACKAGE_PREFIX}-clang-svn" "${MINGW_PACKAGE_PREFIX}-python2")
+  depends=("${MINGW_PACKAGE_PREFIX}-clang-svn" "python2")
   provides=("${MINGW_PACKAGE_PREFIX}-clang-analyzer")
   conflicts=("${MINGW_PACKAGE_PREFIX}-clang-analyzer")
   pkgver=$(pkgver_internal "${srcdir}"/llvm/tools/clang)
@@ -294,16 +289,12 @@ package_clang-analyzer() {
   install -d "${pkgdir}"${MINGW_PREFIX}/{bin,lib/clang-analyzer}
   for _tool in scan-{build,view}; do
     cp -r tools/$_tool "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/
-    ln -s "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/$_tool/$_tool "${pkgdir}"${MINGW_PREFIX}/bin/
+    cp "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/$_tool/bin/$_tool "${pkgdir}"${MINGW_PREFIX}/bin/
   done
-
-  # scan-build looks for clang within the same directory
-  install -d "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/scan-build/
-  ln -s "${srcdir}"/build-${CARCH}/bin/clang.exe "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/scan-build/
 
   # Relocate man page
   install -d "${pkgdir}"${MINGW_PREFIX}/share/man/man1
-  mv "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/scan-build/scan-build.1 \
+  mv "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer/scan-build/man/scan-build.1 \
      "${pkgdir}"${MINGW_PREFIX}/share/man/man1/
 
   # Use Python 2
@@ -319,66 +310,80 @@ package_clang-analyzer() {
   install -Dm644 LICENSE.TXT "${pkgdir}"${MINGW_PREFIX}/share/licenses/clang-analyzer/LICENSE
 }
 
+package_clang-tools-extra-svn() {
+  pkgdesc="Extra tools built using Clang's tooling APIs (mingw-w64)"
+  url="http://clang.llvm.org/"
+  depends=("${MINGW_PACKAGE_PREFIX}-clang-svn")
+  provides=("${MINGW_PACKAGE_PREFIX}-clang-tools-extra")
+  conflicts=("${MINGW_PACKAGE_PREFIX}-clang-tools-extra")
+  pkgver=$(pkgver_internal "${srcdir}"/llvm/tools/clang/tools/extra)
+
+  cd "$srcdir"/llvm
+  make -C ../build-${CARCH}/tools/clang/tools/extra -j1 DESTDIR="$pkgdir" install
+}
+
 package_mingw-w64-i686-clang-svn(){
-  package_clang
+  package_clang-svn
 }
 
 package_mingw-w64-i686-clang-analyzer-svn(){
-  package_clang-analyzer
+  package_clang-analyzer-svn
 }
 
 package_mingw-w64-i686-clang-tools-extra-svn(){
-  package_clang-tools-extra
+  package_clang-tools-extra-svn
 }
 
 package_mingw-w64-i686-compiler-rt-svn(){
-  package_compiler-rt
+  package_compiler-rt-svn
 }
 
 package_mingw-w64-i686-libc++abi-svn(){
-  package_libcxxabi
+  package_libcxxabi-svn
 }
 
 package_mingw-w64-i686-libc++-svn(){
-  package_libcxx
+  package_libcxx-svn
 }
 
 package_mingw-w64-i686-lld-svn(){
-  package_lld
+  package_lld-svn
 }
 
 package_mingw-w64-i686-llvm-svn(){
-  package_llvm
+  package_llvm-svn
 }
 
 package_mingw-w64-x86_64-clang-svn(){
-  package_clang
+  package_clang-svn
 }
 
 package_mingw-w64-x86_64-clang-analyzer-svn(){
-  package_clang-analyzer
+  package_clang-analyzer-svn
 }
 
 package_mingw-w64-x86_64-clang-tools-extra-svn(){
-  package_clang-tools-extra
+  package_clang-tools-extra-svn
 }
 
 package_mingw-w64-x86_64-compiler-rt-svn(){
-  package_compiler-rt
+  package_compiler-rt-svn
 }
 
 package_mingw-w64-x86_64-libc++abi-svn(){
-  package_libcxxabi
+  package_libcxxabi-svn
 }
 
 package_mingw-w64-x86_64-libc++-svn(){
-  package_libcxx
+  package_libcxx-svn
 }
 
 package_mingw-w64-x86_64-lld-svn(){
-  package_lld
+  package_lld-svn
 }
 
 package_mingw-w64-x86_64-llvm-svn(){
-  package_llvm
+  package_llvm-svn
 }
+
+# vim:set ts=2 sw=2 et:
