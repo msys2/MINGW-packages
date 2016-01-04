@@ -1,0 +1,81 @@
+From 14d62ae679aa7b2fa5981741e217f0c31c2cd647 Mon Sep 17 00:00:00 2001
+From: Yaron Keren <yaron.keren@gmail.com>
+Date: Sun, 9 Aug 2015 00:24:07 +0000
+Subject: [PATCH] Teach mingw toolchain driver to properly emit static or
+ dynamic linking of ligcc. Implemented in MinGW::Linker::AddLibGCC since
+ AddLibgcc is a logic puzzle even before adding one more boolean. A first step
+ towards simplification of AddLibgcc would be to factor out the Android
+ AddLibgcc code into its own routine.
+
+git-svn-id: https://llvm.org/svn/llvm-project/cfe/trunk@244407 91177308-0d34-0410-b5e6-96231b3b80d8
+---
+ lib/Driver/Tools.cpp       | 20 ++++++++++++++++++--
+ test/Driver/mingw-libgcc.c | 25 +++++++++++++++++++++++++
+ 2 files changed, 43 insertions(+), 2 deletions(-)
+ create mode 100644 test/Driver/mingw-libgcc.c
+
+diff --git a/lib/Driver/Tools.cpp b/lib/Driver/Tools.cpp
+index f23765b..b82b5f0 100644
+--- a/lib/Driver/Tools.cpp
++++ b/lib/Driver/Tools.cpp
+@@ -9083,8 +9083,24 @@ void MinGW::Linker::AddLibGCC(const ArgList &Args,
+     CmdArgs.push_back("-lmingwthrd");
+   CmdArgs.push_back("-lmingw32");
+ 
+-  // Add libgcc or compiler-rt.
+-  AddRunTimeLibs(getToolChain(), getToolChain().getDriver(), CmdArgs, Args);
++  // Make use of compiler-rt if --rtlib option is used
++  ToolChain::RuntimeLibType RLT = getToolChain().GetRuntimeLibType(Args);
++  if (RLT == ToolChain::RLT_Libgcc) {
++    bool Static = Args.hasArg(options::OPT_static_libgcc) ||
++                  Args.hasArg(options::OPT_static);
++    bool Shared = Args.hasArg(options::OPT_shared);
++    bool CXX = getToolChain().getDriver().CCCIsCXX();
++
++    if (Static || (!CXX && !Shared)) {
++      CmdArgs.push_back("-lgcc");
++      CmdArgs.push_back("-lgcc_eh");
++    } else {
++      CmdArgs.push_back("-lgcc_s");
++      CmdArgs.push_back("-lgcc");
++    }
++  } else {
++    AddRunTimeLibs(getToolChain(), getToolChain().getDriver(), CmdArgs, Args);
++  }
+ 
+   CmdArgs.push_back("-lmoldname");
+   CmdArgs.push_back("-lmingwex");
+diff --git a/test/Driver/mingw-libgcc.c b/test/Driver/mingw-libgcc.c
+new file mode 100644
+index 0000000..c427eba
+--- /dev/null
++++ b/test/Driver/mingw-libgcc.c
+@@ -0,0 +1,25 @@
++// Test if mingw toolchain driver emits static linking (-lgcc -lgcc_eh) or dynamic linking (-lgcc_s -lgcc).
++// Verified with gcc version 5.1.0 (i686-posix-dwarf-rev0, Built by MinGW-W64 project).
++
++// gcc, static
++// RUN: %clang -v -target i686-pc-windows-gnu -### %s 2>&1 | FileCheck -check-prefix=CHECK_STATIC %s
++// RUN: %clang -static -v -target i686-pc-windows-gnu -### %s 2>&1 | FileCheck -check-prefix=CHECK_STATIC %s
++// RUN: %clang -static-libgcc -v -target i686-pc-windows-gnu -### %s 2>&1 | FileCheck -check-prefix=CHECK_STATIC %s
++// RUN: %clang -static -shared -v -target i686-pc-windows-gnu -### %s 2>&1 | FileCheck -check-prefix=CHECK_STATIC %s
++// RUN: %clang -static-libgcc -shared -v -target i686-pc-windows-gnu -### %s 2>&1 | FileCheck -check-prefix=CHECK_STATIC %s
++
++// gcc, dynamic
++// RUN: %clang -shared -v -target i686-pc-windows-gnu -### %s 2>&1 | FileCheck -check-prefix=CHECK_DYNAMIC %s
++
++// g++, static
++// RUN: %clang -static --driver-mode=g++ -v -target i686-pc-windows-gnu -### %s 2>&1 | FileCheck -check-prefix=CHECK_STATIC %s
++// RUN: %clang -static-libgcc --driver-mode=g++ -v -target i686-pc-windows-gnu -### %s 2>&1 | FileCheck -check-prefix=CHECK_STATIC %s
++// RUN: %clang -static -shared --driver-mode=g++ -v -target i686-pc-windows-gnu -### %s 2>&1 | FileCheck -check-prefix=CHECK_STATIC %s
++// RUN: %clang -static-libgcc -shared --driver-mode=g++ -v -target i686-pc-windows-gnu -### %s 2>&1 | FileCheck -check-prefix=CHECK_STATIC %s
++
++// g++, dynamic
++// RUN: %clang --driver-mode=g++ -v -target i686-pc-windows-gnu -### %s 2>&1 | FileCheck -check-prefix=CHECK_DYNAMIC %s
++// RUN: %clang -shared --driver-mode=g++ -v -target i686-pc-windows-gnu -### %s 2>&1 | FileCheck -check-prefix=CHECK_DYNAMIC %s
++
++// CHECK_STATIC: "-lgcc" "-lgcc_eh"
++// CHECK_DYNAMIC: "-lgcc_s" "-lgcc"
+-- 
+2.5.2
+

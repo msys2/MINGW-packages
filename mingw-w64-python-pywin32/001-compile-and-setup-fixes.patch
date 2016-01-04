@@ -1,0 +1,691 @@
+diff -aur 000/setup.py 001/setup.py
+--- 000/setup.py	2015-04-09 21:00:48.725278100 -0300
++++ 001/setup.py	2015-04-09 21:02:02.350399800 -0300
+@@ -224,7 +224,7 @@
+ # languishing and will probably never be fixed for Python 2.6...
+ if sys.version_info > (2,6):
+     from distutils.spawn import spawn
+-    from distutils.msvc9compiler import MSVCCompiler
++    from distutils.msvccompiler import MSVCCompiler
+     MSVCCompiler._orig_spawn = MSVCCompiler.spawn
+     MSVCCompiler._orig_link = MSVCCompiler.link
+ 
+@@ -293,7 +293,7 @@
+     MSVCCompiler.link = monkeypatched_link
+ 
+ 
+-sdk_dir = find_platform_sdk_dir()
++sdk_dir = find_platform_sdk_dir() or ''
+ 
+ class WinExt (Extension):
+     # Base class for all win32 extensions, with some predefined
+@@ -304,7 +304,7 @@
+                   include_dirs=[],
+                   define_macros=None,
+                   undef_macros=None,
+-                  library_dirs=[],
++                  library_dirs=['build/lib.mingw-2.7/pywin32_system32'],
+                   libraries="",
+                   runtime_library_dirs=None,
+                   extra_objects=None,
+@@ -340,6 +340,9 @@
+         # Some of our swigged files behave differently in distutils vs
+         # MSVC based builds.  Always define DISTUTILS_BUILD so they can tell.
+         define_macros = define_macros or []
++        define_macros.append(("_WIN32_WINNT", 0x0600))
++        define_macros.append(("UNICODE", None))
++        define_macros.append(("_UNICODE", None))
+         define_macros.append(("DISTUTILS_BUILD", None))
+         define_macros.append(("_CRT_SECURE_NO_WARNINGS", None))
+         self.pch_header = pch_header
+@@ -691,7 +694,7 @@
+ 
+     def finalize_options(self):
+         build_ext.finalize_options(self)
+-        self.windows_h_version = None
++        self.windows_h_version = 0x0600
+         # The pywintypes library is created in the build_temp
+         # directory, so we need to add this to library_dirs
+         self.library_dirs.append(self.build_temp)
+@@ -865,7 +868,8 @@
+                     log.debug("Looked for %s in %s", lib, look_dirs)
+                     return "No library '%s'" % lib
+                 self.found_libraries[lib.lower()] = found
+-            patched_libs.append(os.path.splitext(os.path.basename(found))[0])
++            lib_name = re.sub(r'^lib(.*)\.a', r'\1', os.path.basename(found))
++            patched_libs.append(os.path.splitext(lib_name)[0])
+ 
+         if ext.platforms and self.plat_name not in ext.platforms:
+             return "Only available on platforms %s" % (ext.platforms,)
+@@ -975,6 +979,9 @@
+             if not self.compiler.initialized:
+                 self.compiler.initialize()
+ 
++        if self.mingw32:
++            self.compiler.shared_lib_extension = '.dll'
++
+         if sdk_dir:
+             self._fixup_sdk_dirs()
+ 
+@@ -1226,7 +1233,7 @@
+             # XXX This has to be changed for mingw32
+             # Get the .lib files we need.  This is limited to pywintypes,
+             # pythoncom and win32ui - but the first 2 have special names
+-            extra = self.debug and "_d.lib" or ".lib"
++            extra = self.debug and "_d.def" or ".def"
+             if ext.name in ("pywintypes", "pythoncom"):
+                 # The import libraries are created as PyWinTypes23.lib, but
+                 # are expected to be pywintypes.lib.
+@@ -1595,7 +1602,7 @@
+             win32/src/win32crypt/PyCRYPTPROV.cpp
+             win32/src/win32crypt/PyCTL_CONTEXT.cpp
+             """),
+-        ("win32file", "", None, 0x0500, """
++        ("win32file", "ws2_32 mswsock", None, 0x0500, """
+               win32/src/win32file.i
+               win32/src/win32file_comm.cpp
+               """),
+@@ -1652,7 +1659,7 @@
+         sources = info[4].split()
+     extra_compile_args = []
+     ext = WinExt_win32(name, 
+-                 libraries=lib_names,
++                 libraries=(lib_names + ' pywintypes27'),
+                  extra_compile_args = extra_compile_args,
+                  windows_h_version = windows_h_ver,
+                  sources = sources,
+@@ -1665,7 +1672,7 @@
+             sources = """
+                 win32\\src\\win32evtlog_messages.mc win32\\src\\win32evtlog.i
+                 """.split(),
+-                libraries="advapi32 oleaut32",
++                libraries="advapi32 oleaut32 pywintypes27",
+                 delay_load_libraries="wevtapi",
+                 windows_h_version=0x0600
+         ),
+@@ -1701,7 +1708,7 @@
+     # winxptheme
+     WinExt_win32("_winxptheme",
+            sources = ["win32/src/_winxptheme.i"],
+-           libraries="gdi32 user32 comdlg32 comctl32 shell32 Uxtheme",
++           libraries="gdi32 user32 comdlg32 comctl32 shell32 Uxtheme pywintypes27",
+            windows_h_version=0x0500,
+         ),
+ ]
+diff -aur 000/win32/src/odbc.cpp 001/win32/src/odbc.cpp
+--- 000/win32/src/odbc.cpp	2015-04-09 21:00:49.053401800 -0300
++++ 001/win32/src/odbc.cpp	2015-04-09 21:02:02.366025800 -0300
+@@ -13,6 +13,7 @@
+ #include <math.h>
+ #include <limits.h>
+ #include <string.h>
++#include <algorithm>
+ 
+ #include "PyWinTypes.h"
+ #include "PyWinObjects.h"
+@@ -105,8 +106,8 @@
+ }
+ 
+ static void cursorDealloc(PyObject *self);
+-PyMethodDef cursorMethods[];
+-PyMemberDef cursorMembers[];
++extern PyMethodDef cursorMethods[8];
++extern PyMemberDef cursorMembers[3];
+ 
+ static PyTypeObject Cursor_Type =
+ {
+@@ -152,8 +153,8 @@
+ 
+ 
+ static void connectionDealloc(PyObject *self);
+-PyMethodDef connectionMethods[];
+-PyMemberDef connectionMembers[];
++extern PyMethodDef connectionMethods[6];
++extern PyMemberDef connectionMembers[2];
+ static PyTypeObject Connection_Type =
+ {
+ 	PYWIN_OBJECT_HEAD
+@@ -458,7 +459,7 @@
+ }
+ 
+ /* @object connection|An object representing an ODBC connection */
+-static struct PyMethodDef connectionMethods[] = {
++struct PyMethodDef connectionMethods[] = {
+ 	{ "setautocommit", odbcSetAutoCommit, 1 }, /* @pymeth setautocommit|Sets the autocommit mode. */
+ 	{ "commit", odbcCommit, 1 } , /* @pymeth commit|Commits a transaction. */
+ 	{ "rollback", odbcRollback, 1 } , /* @pymeth rollback|Rollsback a transaction. */
+@@ -467,7 +468,7 @@
+ 	{0,     0}
+ };
+ 
+-static PyMemberDef connectionMembers[] = {
++PyMemberDef connectionMembers[] = {
+ 	{"error", T_OBJECT, offsetof(connectionObject, connectionError), READONLY},
+ 	{NULL}
+ };
+@@ -1192,21 +1193,21 @@
+     case SQL_DATE:
+     case SQL_TIMESTAMP:
+     case SQL_BIT:
+-      return(max(collen, (int)_tcslen(colname)));
++      return(std::max(collen, (int)_tcslen(colname)));
+     case SQL_SMALLINT:
+     case SQL_INTEGER:
+     case SQL_TINYINT:
+-      return(max(collen+1, (int)_tcslen(colname)));
++      return(std::max(collen+1, (int)_tcslen(colname)));
+     case SQL_DECIMAL:
+     case SQL_NUMERIC:
+-      return(max(collen+2, (int)_tcslen(colname)));
++      return(std::max(collen+2, (int)_tcslen(colname)));
+     case SQL_REAL:
+     case SQL_FLOAT:
+     case SQL_DOUBLE:
+-      return(max(20, (int)_tcslen(colname)));
++      return(std::max(20, (int)_tcslen(colname)));
+     case SQL_BINARY:
+     case SQL_VARBINARY:
+-      return(max(2*collen, (int)_tcslen(colname)));
++      return(std::max(2*collen, (int)_tcslen(colname)));
+     case SQL_LONGVARBINARY:
+     case SQL_LONGVARCHAR:
+     default:
+@@ -1797,7 +1798,7 @@
+ }
+ 
+ /* @object cursor|An object representing an ODBC cursor. */
+-static PyMethodDef cursorMethods[] = {
++PyMethodDef cursorMethods[] = {
+   { "close", odbcCurClose, 1} , /* @pymeth close|Closes the cursor */
+   { "execute", odbcCurExec, 1} , /* @pymeth execute|Execute some SQL */
+   { "fetchone", odbcCurFetchOne, 1} , /* @pymeth fetchone|Fetch one row of data */
+@@ -1808,7 +1809,7 @@
+   {0,     0}
+ };
+ 
+-static PyMemberDef cursorMembers[] = {
++PyMemberDef cursorMembers[] = {
+ 	{"description", T_OBJECT, offsetof(cursorObject, description), READONLY},
+ 	{"error", T_OBJECT, offsetof(cursorObject, cursorError), READONLY},
+ 	{NULL}
+diff -aur 000/win32/src/PerfMon/perfmondata.cpp 001/win32/src/PerfMon/perfmondata.cpp
+--- 000/win32/src/PerfMon/perfmondata.cpp	2015-04-09 21:00:48.772153700 -0300
++++ 001/win32/src/PerfMon/perfmondata.cpp	2015-04-09 21:02:02.366025800 -0300
+@@ -89,9 +89,9 @@
+ //      these are used to insure that the data collection functions
+ //      accessed by Perflib will have the correct calling format.
+ //
+-PM_OPEN_PROC   OpenPerformanceData;
+-PM_COLLECT_PROC    CollectPerformanceData;
+-PM_CLOSE_PROC  ClosePerformanceData;
++extern "C" PM_OPEN_PROC   OpenPerformanceData;
++extern "C" PM_COLLECT_PROC    CollectPerformanceData;
++extern "C" PM_CLOSE_PROC  ClosePerformanceData;
+ 
+ TCHAR szFullModulePath[MAX_PATH];
+ TCHAR szModuleName[MAX_PATH]; // will point into the buffer above.
+@@ -445,7 +445,7 @@
+ --*/
+ {
+     HKEY hAppKey;
+-    TCHAR LogLevelKeyName[] = _T("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Perflib");
++    TCHAR LogLevelKeyName[] = _T("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Perflib");
+ 
+     TCHAR LogLevelValueName[] = _T("EventLogLevel");
+ 	LONG lStatus;
+diff -aur 000/win32/src/PySECURITY_DESCRIPTOR.cpp 001/win32/src/PySECURITY_DESCRIPTOR.cpp
+--- 000/win32/src/PySECURITY_DESCRIPTOR.cpp	2015-04-09 21:00:48.819029400 -0300
++++ 001/win32/src/PySECURITY_DESCRIPTOR.cpp	2015-04-09 21:01:55.881645000 -0300
+@@ -5,6 +5,7 @@
+ #include "PyWinObjects.h"
+ #include "PySecurityObjects.h"
+ #include "structmember.h"
++#include <algorithm>
+ 
+ #ifndef NO_PYWINTYPES_SECURITY
+ BOOL (WINAPI *setsecuritydescriptorcontrol)(PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR_CONTROL, SECURITY_DESCRIPTOR_CONTROL)=NULL;
+@@ -786,7 +787,7 @@
+ {
+ 	ob_type = &PySECURITY_DESCRIPTORType;
+ 	_Py_NewReference(this);
+-	cb = max(cb, SECURITY_DESCRIPTOR_MIN_LENGTH);
++	cb = std::max((long long unsigned int)cb, SECURITY_DESCRIPTOR_MIN_LENGTH);
+ 	PSECURITY_DESCRIPTOR psd = malloc(cb);
+ 	this->m_psd=NULL;
+ 	if (::InitializeSecurityDescriptor(psd, SECURITY_DESCRIPTOR_REVISION))
+diff -aur 000/win32/src/PySecurityObjects.h 001/win32/src/PySecurityObjects.h
+--- 000/win32/src/PySecurityObjects.h	2015-04-09 21:00:48.850278300 -0300
++++ 001/win32/src/PySecurityObjects.h	2015-04-09 21:01:55.881645000 -0300
+@@ -121,7 +121,7 @@
+ 	static PyObject *GetSubAuthorityCount(PyObject *self, PyObject *args);
+ 	static PyObject *GetSubAuthority(PyObject *self, PyObject *args);
+ 	static PyObject *GetSidIdentifierAuthority(PyObject *self, PyObject *args);
+-	static struct PyMethodDef PySID::methods[];
++	static struct PyMethodDef methods[];
+ 
+ protected:
+ 	PSID m_psid;
+@@ -159,7 +159,7 @@
+ 	/* Python support */
+ 	int compare(PyObject *ob);
+ 	static void deallocFunc(PyObject *ob);
+-	static struct PyMethodDef PyACL::methods[];
++	static struct PyMethodDef methods[];
+ 
+ 	static PyObject *Initialize(PyObject *self, PyObject *args);
+ 	static PyObject *IsValid(PyObject *self, PyObject *args);
+diff -aur 000/win32/src/PyWinObjects.h 001/win32/src/PyWinObjects.h
+--- 000/win32/src/PyWinObjects.h	2015-04-09 21:00:48.881528000 -0300
++++ 001/win32/src/PyWinObjects.h	2015-04-09 21:01:55.881645000 -0300
+@@ -52,7 +52,7 @@
+ 	PyObject *str();
+ 	PyObject *repr();
+ 	int compare(PyObject *ob);
+-	PyObject *PyTime::richcompare(PyObject *other, int op);
++	PyObject *richcompare(PyObject *other, int op);
+ 
+ 	int print(FILE *fp, int flags);
+ 	Py_hash_t hash(void);
+diff -aur 000/win32/src/PyWinTypes.h 001/win32/src/PyWinTypes.h
+--- 000/win32/src/PyWinTypes.h	2015-04-09 21:00:48.944027900 -0300
++++ 001/win32/src/PyWinTypes.h	2015-04-09 21:02:02.381651500 -0300
+@@ -796,7 +796,7 @@
+ 
+ // A helper for simple exception handling.
+ // try/__try
+-#ifdef MAINWIN
++#if defined(__MINGW32__) || defined(MAINWIN)
+ #define PYWINTYPES_TRY try
+ #else
+ #define PYWINTYPES_TRY __try
+diff -aur 000/win32/src/PyWinTypesmodule.cpp 001/win32/src/PyWinTypesmodule.cpp
+--- 000/win32/src/PyWinTypesmodule.cpp	2015-04-09 21:00:48.990903200 -0300
++++ 001/win32/src/PyWinTypesmodule.cpp	2015-04-09 21:01:55.897264900 -0300
+@@ -1139,7 +1139,7 @@
+ }
+ 
+ // Function to format a python traceback into a character string.
+-#define GPEM_ERROR(what) {errorMsg = "<Error getting traceback - " ## what ## ">";goto done;}
++#define GPEM_ERROR(what) {errorMsg = "<Error getting traceback - " what ">";goto done;}
+ char *GetPythonTraceback(PyObject *exc_type, PyObject *exc_value, PyObject *exc_tb)
+ {
+ 	// Sleep (30000); // Time enough to attach the debugger (barely)
+diff -aur 000/win32/src/win32crypt/PyCRYPTPROV.cpp 001/win32/src/win32crypt/PyCRYPTPROV.cpp
+--- 000/win32/src/win32crypt/PyCRYPTPROV.cpp	2015-04-09 21:00:49.100277500 -0300
++++ 001/win32/src/win32crypt/PyCRYPTPROV.cpp	2015-04-09 21:02:02.381651500 -0300
+@@ -1,4 +1,5 @@
+ // @doc
++#include <algorithm>
+ #include "win32crypt.h"
+ 
+ // @object PyCRYPTPROV|Handle to a cryptographic provider, created using <om cryptoapi.CryptAcquireContext>
+@@ -351,7 +352,7 @@
+ 	//initialize buffer with char string if passed if
+ 	ZeroMemory(pbBuffer, dwLen+1);
+ 	if (seeddata != NULL)
+-		memcpy(pbBuffer, seeddata, min(dwLen,seedlen));
++		memcpy(pbBuffer, seeddata, std::min(dwLen,seedlen));
+ 	if (CryptGenRandom(hcryptprov, dwLen, pbBuffer))
+ 		ret=PyString_FromStringAndSize((char *)pbBuffer, dwLen);
+ 	else
+diff -aur 000/win32/src/win32crypt/win32cryptmodule.cpp 001/win32/src/win32crypt/win32cryptmodule.cpp
+--- 000/win32/src/win32crypt/win32cryptmodule.cpp	2015-04-09 21:00:49.194027800 -0300
++++ 001/win32/src/win32crypt/win32cryptmodule.cpp	2015-04-09 21:02:02.397275800 -0300
+@@ -596,44 +596,37 @@
+ 		pvPara=(void *)&cssrp;
+ 		}
+ 	else{
+-		switch((ULONG_PTR)StoreProvider){
+-			case CERT_STORE_PROV_PHYSICAL:
+-			case CERT_STORE_PROV_FILENAME:
+-			case CERT_STORE_PROV_SYSTEM:
+-			case CERT_STORE_PROV_SYSTEM_REGISTRY:
+-			case CERT_STORE_PROV_LDAP:{
+-				if (!PyWinObject_AsWCHAR(obpvPara, (WCHAR **)&pvPara))
+-					return NULL;
+-				free_wchar=TRUE;
+-				break;
+-				}
+-			case CERT_STORE_PROV_REG:{
+-				if (!PyWinObject_AsHKEY(obpvPara, (HKEY *)&pvPara))
+-					return NULL;
+-				break;
+-				}
+-			case CERT_STORE_PROV_FILE:{
+-				if (!PyWinObject_AsHANDLE(obpvPara, (HANDLE *)&pvPara))
+-					return NULL;
+-				break;
+-				}
+-			case CERT_STORE_PROV_SERIALIZED:
+-			case CERT_STORE_PROV_PKCS7:{
+-				if (!PyWinObject_AsReadBuffer(obpvPara, (void **)&crypt_data_blob.pbData, &crypt_data_blob.cbData))
+-					return NULL;
+-				pvPara=(void *)&crypt_data_blob;
+-				break;
+-				}
+-			case CERT_STORE_PROV_MEMORY:{
+-				// pvPara is not used, warn if something passed in
+-				if (obpvPara != Py_None)
+-					PyErr_Warn(PyExc_RuntimeWarning, "Para ignored for CERT_STORE_PROV_MEMORY");
+-				break;
+-				}
+-			default:{
+-				PyErr_SetString(PyExc_NotImplementedError,"Specified store provider type not supported");
++		if (StoreProvider == CERT_STORE_PROV_PHYSICAL ||
++			StoreProvider == CERT_STORE_PROV_FILENAME ||
++			StoreProvider == CERT_STORE_PROV_SYSTEM ||
++			StoreProvider == CERT_STORE_PROV_SYSTEM_REGISTRY ||
++			StoreProvider == CERT_STORE_PROV_LDAP){
++			if (!PyWinObject_AsWCHAR(obpvPara, (WCHAR **)&pvPara))
+ 				return NULL;
+-				}
++			free_wchar=TRUE;
++			}
++		else if (StoreProvider == CERT_STORE_PROV_REG){
++			if (!PyWinObject_AsHKEY(obpvPara, (HKEY *)&pvPara))
++				return NULL;
++			}
++		else if (StoreProvider == CERT_STORE_PROV_FILE){
++			if (!PyWinObject_AsHANDLE(obpvPara, (HANDLE *)&pvPara))
++				return NULL;
++			}
++		else if (StoreProvider == CERT_STORE_PROV_SERIALIZED ||
++				 StoreProvider == CERT_STORE_PROV_PKCS7){
++			if (!PyWinObject_AsReadBuffer(obpvPara, (void **)&crypt_data_blob.pbData, &crypt_data_blob.cbData))
++				return NULL;
++			pvPara=(void *)&crypt_data_blob;
++			}
++		else if (StoreProvider == CERT_STORE_PROV_MEMORY){
++			// pvPara is not used, warn if something passed in
++			if (obpvPara != Py_None)
++				PyErr_Warn(PyExc_RuntimeWarning, "Para ignored for CERT_STORE_PROV_MEMORY");
++			}
++		else{
++			PyErr_SetString(PyExc_NotImplementedError,"Specified store provider type not supported");
++			return NULL;
+ 			}
+ 		}
+ 
+diff -aur 000/win32/src/win32evtlog.i 001/win32/src/win32evtlog.i
+--- 000/win32/src/win32evtlog.i	2015-04-09 21:00:49.256528100 -0300
++++ 001/win32/src/win32evtlog.i	2015-04-09 21:02:02.397275800 -0300
+@@ -997,6 +997,14 @@
+ }
+ PyCFunction pfnPyEvtUpdateBookmark = (PyCFunction) PyEvtUpdateBookmark;
+ 
++#ifndef EVT_VARIANT_TYPE_ARRAY
++#define EVT_VARIANT_TYPE_ARRAY 128
++#endif
++
++#ifndef EVT_VARIANT_TYPE_MASK
++#define EVT_VARIANT_TYPE_MASK 0x7F
++#endif
++
+ PyObject *PyWinObject_FromEVT_VARIANT(PEVT_VARIANT val)
+ {
+ 	if (val->Type & EVT_VARIANT_TYPE_ARRAY){
+diff -aur 000/win32/src/win32file.i 001/win32/src/win32file.i
+--- 000/win32/src/win32file.i	2015-04-09 21:00:49.459654600 -0300
++++ 001/win32/src/win32file.i	2015-04-09 21:02:02.412900800 -0300
+@@ -1404,11 +1404,11 @@
+ 	// the filename is exactly 1 byte!  Not clear the best way to
+ 	// check this, but this works for now - is it at least the size of
+ 	// the *head* of the struct.
+-	if (nbytes < sizeof DWORD*3+2)
++	if (nbytes < sizeof(DWORD)*3+2)
+ 		return ret;
+ 	DWORD nbytes_read = 0;
+ 	while (1) {
+-		PyObject *fname = PyWinObject_FromOLECHAR(p->FileName, p->FileNameLength/sizeof WCHAR);
++		PyObject *fname = PyWinObject_FromOLECHAR(p->FileName, p->FileNameLength/sizeof(WCHAR));
+ 		if (!fname) {
+ 			Py_DECREF(ret);
+ 			return NULL;
+diff -aur 000/win32/src/win32file_comm.cpp 001/win32/src/win32file_comm.cpp
+--- 000/win32/src/win32file_comm.cpp	2015-04-09 21:00:49.490903600 -0300
++++ 001/win32/src/win32file_comm.cpp	2015-04-09 21:02:02.412900800 -0300
+@@ -175,7 +175,7 @@
+ 
+ #define GET_BITFIELD_ENTRY(bitfield_name) \
+ 	else if (strcmp(name, #bitfield_name)==0) { \
+-		return PyInt_FromLong(pydcb->m_DCB.##bitfield_name); \
++		return PyInt_FromLong(pydcb->m_DCB.bitfield_name); \
+ 	} \
+ 
+ PyObject *PyDCB::getattro(PyObject *self, PyObject *obname)
+@@ -210,7 +210,7 @@
+ 			PyErr_Format(PyExc_TypeError, szNeedIntAttr, #bitfield_name); \
+ 			return -1; \
+ 		} \
+-		pydcb->m_DCB.##bitfield_name = PyInt_AsLong(v); \
++		pydcb->m_DCB.bitfield_name = PyInt_AsLong(v); \
+ 		return 0; \
+ 	} \
+ 
+@@ -369,7 +369,7 @@
+ #undef GET_BITFIELD_ENTRY
+ #define GET_BITFIELD_ENTRY(bitfield_name) \
+ 	else if (strcmp(name, #bitfield_name)==0) { \
+-		return PyInt_FromLong(pyCOMSTAT->m_COMSTAT.##bitfield_name); \
++		return PyInt_FromLong(pyCOMSTAT->m_COMSTAT.bitfield_name); \
+ 	} \
+ 
+ PyObject *PyCOMSTAT::getattro(PyObject *self, PyObject *obname)
+@@ -398,7 +398,7 @@
+ 			PyErr_Format(PyExc_TypeError, szNeedIntAttr, #bitfield_name); \
+ 			return -1; \
+ 		} \
+-		pyCOMSTAT->m_COMSTAT.##bitfield_name = PyInt_AsLong(v); \
++		pyCOMSTAT->m_COMSTAT.bitfield_name = PyInt_AsLong(v); \
+ 		return 0; \
+ 	} \
+ 
+diff -aur 000/win32/src/win32inet.i 001/win32/src/win32inet.i
+--- 000/win32/src/win32inet.i	2015-04-09 21:00:49.569028200 -0300
++++ 001/win32/src/win32inet.i	2015-04-09 21:02:02.428526500 -0300
+@@ -4,9 +4,26 @@
+ %{
+ // #define UNICODE
+ // #define _UNICODE
++#include <algorithm>
+ #include "Windows.h"
+ #include "WinInet.h"
+ #undef BOOLAPI // wininet.h defines this!
++
++#ifndef INTERNET_OPTION_CODEPAGE_PATH
++#define INTERNET_OPTION_CODEPAGE_PATH 100
++#endif
++
++#ifndef INTERNET_OPTION_CODEPAGE_EXTRA
++#define INTERNET_OPTION_CODEPAGE_EXTRA 101
++#endif
++
++#ifndef INTERNET_OPTION_IDN
++#define INTERNET_OPTION_IDN 102
++#endif
++
++#ifndef INTERNET_OPTION_HTTP_DECODING
++#define INTERNET_OPTION_HTTP_DECODING 65
++#endif
+ %}
+ 
+ %include "typemaps.i"
+@@ -1835,7 +1852,7 @@
+ 			}
+ 		}
+ 	if (bsuccess && GroupName)
+-		_tcsncpy(GroupInfo->szGroupName, GroupName, min(namelen, GROUPNAME_MAX_LENGTH));
++		_tcsncpy(GroupInfo->szGroupName, GroupName, std::min<DWORD>(namelen, GROUPNAME_MAX_LENGTH));
+ 	Py_DECREF(dummy_tuple);
+ 	PyWinObject_FreeTCHAR(GroupName);
+ 	if (OwnerStorage)
+diff -aur 000/win32/src/win32net/win32net.h 001/win32/src/win32net/win32net.h
+--- 000/win32/src/win32net/win32net.h	2015-04-09 21:00:49.600278800 -0300
++++ 001/win32/src/win32net/win32net.h	2015-04-09 21:02:02.428526500 -0300
+@@ -62,15 +62,15 @@
+ 
+ #if WINVER >= 0x0500
+ typedef NET_API_STATUS (NET_API_FUNCTION *NetValidateNamefunc)(LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, NETSETUP_NAME_TYPE);
+-extern NetValidateNamefunc pfnNetValidateName;
++extern "C" NetValidateNamefunc pfnNetValidateName;
+ 
+ typedef NET_API_STATUS (NET_API_FUNCTION *NetGetJoinInformationfunc)(LPCWSTR, LPWSTR *, PNETSETUP_JOIN_STATUS);
+-extern NetGetJoinInformationfunc pfnNetGetJoinInformation;
++extern "C" NetGetJoinInformationfunc pfnNetGetJoinInformation;
+ 
+ typedef NET_API_STATUS (NET_API_FUNCTION *NetValidatePasswordPolicyfunc)(LPCWSTR, LPVOID, NET_VALIDATE_PASSWORD_TYPE, LPVOID, LPVOID *);
+-extern NetValidatePasswordPolicyfunc pfnNetValidatePasswordPolicy;
++extern "C" NetValidatePasswordPolicyfunc pfnNetValidatePasswordPolicy;
+ 
+ typedef NET_API_STATUS (NET_API_FUNCTION *NetValidatePasswordPolicyFreefunc)(LPVOID *);
+-extern NetValidatePasswordPolicyFreefunc pfnNetValidatePasswordPolicyFree;
++extern "C" NetValidatePasswordPolicyFreefunc pfnNetValidatePasswordPolicyFree;
+ 
+ #endif // WINVER
+diff -aur 000/win32/src/win32pdhmodule.cpp 001/win32/src/win32pdhmodule.cpp
+--- 000/win32/src/win32pdhmodule.cpp	2015-04-09 21:00:49.662779100 -0300
++++ 001/win32/src/win32pdhmodule.cpp	2015-04-09 21:02:02.444150800 -0300
+@@ -11,6 +11,7 @@
+ 
+ ******************************************************************/
+ 
++#include <algorithm>
+ #include "PyWinTypes.h"
+ #include "pdh.h"
+ #include "pdhmsg.h"
+@@ -1016,7 +1017,7 @@
+ #define SET_BOOL(r, i) { \
+ 	if (i<seqLen){ \
+ 		PyObject *subItem = PyTuple_GET_ITEM(flags_tuple, i); \
+-		myCfg.cfg.##r = PyObject_IsTrue(subItem); \
++		myCfg.cfg.r = PyObject_IsTrue(subItem); \
+ 	} \
+ }
+ 
+@@ -1082,7 +1083,7 @@
+ 	// Initialize the return buffer if starting path is passed in. (bInitializePath will also be set)
+ 	if (!PyWinObject_AsTCHAR(obInitialPath, &InitialPath, TRUE, &cchInitialPath))
+ 		return NULL;	// Last exit without cleanup
+-	myCfg.cfg.cchReturnPathLength = max(cchInitialPath+1, 1024);
++	myCfg.cfg.cchReturnPathLength = std::max<DWORD>(cchInitialPath+1, 1024);
+ 	myCfg.cfg.szReturnPathBuffer = (TCHAR *)malloc(myCfg.cfg.cchReturnPathLength * sizeof(TCHAR));
+ 	if (myCfg.cfg.szReturnPathBuffer == NULL){
+ 		PyErr_NoMemory();
+diff -aur 000/win32/src/win32popen.cpp 001/win32/src/win32popen.cpp
+--- 000/win32/src/win32popen.cpp	2015-04-09 21:00:49.709655500 -0300
++++ 001/win32/src/win32popen.cpp	2015-04-09 21:02:02.444150800 -0300
+@@ -166,19 +166,27 @@
+ {
+ 	PROCESS_INFORMATION piProcInfo;
+ 	STARTUPINFO siStartInfo;
+-	char *s1,*s2, *s3=" /c ";
++	LPTSTR s1, s2, s3 = TEXT(" /c ");
+ 	DWORD i;
+ 	size_t x;
+ 
+-	if (i = GetEnvironmentVariable("COMSPEC",NULL,0))
++	if (i = GetEnvironmentVariable(TEXT("COMSPEC"),NULL,0))
+     {
+-		s1 = (char *)_alloca(i);
+-		if (!(x = GetEnvironmentVariable("COMSPEC", s1, i)))
++		s1 = (LPTSTR)_alloca(i);
++		if (!(x = GetEnvironmentVariable(TEXT("COMSPEC"), s1, i)))
+ 			return FALSE;
+-		x = i + strlen(s3) + strlen(cmdstring) + 1;
+-		s2 = (char *)_alloca(x);
++#ifdef UNICODE
++		size_t cmdlen = strlen(cmdstring);
++		WCHAR _cmdstring[cmdlen + 1];
++		if (!MultiByteToWideChar(CP_OEMCP, 0, cmdstring, -1, _cmdstring, cmdlen + 1))
++			return FALSE;
++#else
++		char *_cmdstring = cmdstring;
++#endif
++		x = (i + _tcslen(s3) + _tcslen(_cmdstring) + 1) * sizeof(TCHAR);
++		s2 = (LPTSTR)_alloca(x);
+ 		ZeroMemory(s2, x);
+-		sprintf(s2, "%s%s%s", s1, s3, cmdstring);
++		_stprintf(s2, TEXT("%s%s%s"), s1, s3, _cmdstring);
+     }
+ 	// Could be an else here to try cmd.exe / command.com in the path
+ 	// Now we'll just error out..
+diff -aur 000/win32/src/win32rasmodule.cpp 001/win32/src/win32rasmodule.cpp
+--- 000/win32/src/win32rasmodule.cpp	2015-04-09 21:00:49.756528400 -0300
++++ 001/win32/src/win32rasmodule.cpp	2015-04-09 21:02:02.459777500 -0300
+@@ -463,7 +463,7 @@
+ 	if (obCallback==Py_None) {
+ 		pNotification = NULL;
+ 	} else if (PyCallable_Check(obCallback)) {
+-		pNotification = PyRasDialFunc1;
++		pNotification = (LPVOID)PyRasDialFunc1;
+ 		notType = 1;
+ 	} else if (PyInt_Check(obCallback)) {
+ 		if (!PyWinLong_AsVoidPtr(obCallback, &pNotification))
+diff -aur 000/win32/src/win32security.i 001/win32/src/win32security.i
+--- 000/win32/src/win32security.i	2015-04-09 21:00:49.912778600 -0300
++++ 001/win32/src/win32security.i	2015-04-09 21:02:02.459777500 -0300
+@@ -3563,9 +3563,9 @@
+ 		return FALSE;
+ 		}
+ 	static const BOOL none_ok = TRUE; // NULL seems OK anywhere
+-	if (!PyWinObject_AsWCHAR(obUser, &pAuthData->User, none_ok, &pAuthData->UserLength) || \
+-	    !PyWinObject_AsWCHAR(obDomain, &pAuthData->Domain, none_ok, &pAuthData->DomainLength) || \
+-		!PyWinObject_AsWCHAR(obPW, &pAuthData->Password, none_ok, &pAuthData->PasswordLength)) {
++	if (!PyWinObject_AsWCHAR(obUser, (WCHAR**)&pAuthData->User, none_ok, &pAuthData->UserLength) || \
++	    !PyWinObject_AsWCHAR(obDomain, (WCHAR**)&pAuthData->Domain, none_ok, &pAuthData->DomainLength) || \
++		!PyWinObject_AsWCHAR(obPW, (WCHAR**)&pAuthData->Password, none_ok, &pAuthData->PasswordLength)) {
+ 		PyErr_Clear();
+ 		PyErr_SetString(PyExc_TypeError, err_msg);
+ 		return FALSE;
+@@ -3579,11 +3579,11 @@
+ 	if (!pAuthData)
+ 		return;
+ 	if (pAuthData->User)
+-		PyWinObject_FreeWCHAR(pAuthData->User);
++		PyWinObject_FreeWCHAR((WCHAR*)pAuthData->User);
+ 	if (pAuthData->Domain)
+-		PyWinObject_FreeWCHAR(pAuthData->Domain);
++		PyWinObject_FreeWCHAR((WCHAR*)pAuthData->Domain);
+ 	if (pAuthData->Password)
+-		PyWinObject_FreeWCHAR(pAuthData->Password);
++		PyWinObject_FreeWCHAR((WCHAR*)pAuthData->Password);
+ }
+ 
+ %}
+diff -aur 000/win32/src/win32service.i 001/win32/src/win32service.i
+--- 000/win32/src/win32service.i	2015-04-09 21:00:49.990904900 -0300
++++ 001/win32/src/win32service.i	2015-04-09 21:02:02.475400700 -0300
+@@ -57,6 +57,13 @@
+ 		if (fp!=NULL)
+ 			fpEnumServicesStatusEx=(EnumServicesStatusExfunc)fp;
+ 		}
++#ifndef SERVICE_CONTROL_PRESHUTDOWN
++#define SERVICE_CONTROL_PRESHUTDOWN 0x0000000F
++#endif
++
++#ifndef SERVICE_ACCEPT_PRESHUTDOWN
++#define SERVICE_ACCEPT_PRESHUTDOWN 0x00000100
++#endif
+ %}
+ 
+ %{
+diff -aur 000/win32/src/win32trace.cpp 001/win32/src/win32trace.cpp
+--- 000/win32/src/win32trace.cpp	2015-04-09 21:00:50.022154900 -0300
++++ 001/win32/src/win32trace.cpp	2015-04-09 21:02:02.475400700 -0300
+@@ -30,6 +30,7 @@
+ 
+ */
+ 
++#include <algorithm>
+ #include "PyWinTypes.h"
+ #include "PyWinObjects.h"
+ 
+@@ -341,7 +342,7 @@
+     Py_BEGIN_ALLOW_THREADS
+     const char *data_this = data;
+     while (len) {
+-        unsigned len_this = min(len, BUFFER_SIZE/2);
++        unsigned len_this = std::min<unsigned long>(len, BUFFER_SIZE/2);
+         BOOL ok = GetMyMutex();
+         if (ok) {
+             // must use types with identical size on win32 and win64

@@ -2,15 +2,17 @@
 
 _realname=ca-certificates
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=20140325
-pkgrel=3
-pkgdesc='Common CA certificates'
+pkgver=20150426
+pkgrel=2
+pkgdesc='Common CA certificates (mingw-w64)'
 arch=('any')
 url='http://packages.qa.debian.org/c/ca-certificates.html'
 license=('MPL' 'GPL')
 install="ca-certificates-${CARCH}.install"
 source=("http://ftp.debian.org/debian/pool/main/c/${_realname}/${_realname}_${pkgver}.tar.xz"
+        'StartSSL.sub.class1.server.ca.pem'::'http://www.startssl.com/certs/sub.class1.server.ca.pem'
         'certdata2pem-redhat.patch'
+        'diff-from-upstream-2.3.patch'
         'trust-fixes'
         'update-ca-trust'
         'update-ca-trust.8')
@@ -19,25 +21,28 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-openssl"
              "${MINGW_PACKAGE_PREFIX}-p11-kit"
              "${MINGW_PACKAGE_PREFIX}-python2"
              'asciidoc' 'python2' 'libxslt' 'sed' 'grep')
-md5sums=('0436aba482091da310bd762e1deca8b4'
+md5sums=('717455f13fb31fd014a11a468ea3895d'
+         'ecd5a4cdf352cf31859cf57dd5f110b7'
          '2c8500579308a100425f4ddb0d61a9ea'
+         'a4ebdb731affc54e6be17717d9fea1f0'
          'ecfa72ad51c9a1c4488a3474b8def35b'
          'b9e6692146cda711e3b7d2974502e446'
          'b00295801f7b39694ad16869e846c227')
 
 prepare() {
-  cd ${srcdir}/${_realname}
+  cd ${srcdir}/${_realname}-${pkgver}
   cp ${srcdir}/trust-fixes mozilla/
   cp ${srcdir}/update-ca-trust sbin/
   cp ${srcdir}/update-ca-trust.8 sbin/
   patch -p1 -i ${srcdir}/certdata2pem-redhat.patch
+  patch -p0 -i ${srcdir}/diff-from-upstream-2.3.patch
   sed "s|/usr/bin/python|${MINGW_PREFIX}/bin/python2|g" -i mozilla/certdata2pem.py
 }
 
 build() {
-  cd ${srcdir}/${_realname}/mozilla
+  cd ${srcdir}/${_realname}-${pkgver}/mozilla
   ${MINGW_PREFIX}/bin/python2 certdata2pem.py
-  
+
   (
     cat <<EOF
 # This is a bundle of X.509 certificates of public Certificate
@@ -51,7 +56,7 @@ build() {
 EOF
     grep -w NSS_BUILTINS_LIBRARY_VERSION nssckbi.h | awk '{print "# " $2 " " $3}';
     echo '#';
-  ) > ${srcdir}/${_realname}/ca-bundle.trust.crt
+  ) > ${srcdir}/${_realname}-${pkgver}/ca-bundle.trust.crt
 
   # Make sure repeat runs don't accumulate duplicate certs.
   if [ -f ${srcdir}/${pkgname}/ca-bundle.neutral-trust.crt ]; then
@@ -64,52 +69,59 @@ EOF
   > info.trust
   > info.notrust
 
+  # Add custom certificate
+  echo '# alias="StartCom Class 1 Primary Intermediate Server CA"' > StartSSL.sub.class1.server.ca.crt
+  echo '# trust=CKA_TRUST_CODE_SIGNING CKA_TRUST_EMAIL_PROTECTION CKA_TRUST_SERVER_AUTH' >> StartSSL.sub.class1.server.ca.crt
+  echo '# distrust=' >> StartSSL.sub.class1.server.ca.crt
+  echo '# openssl-trust=codeSigning emailProtection serverAuth' >> StartSSL.sub.class1.server.ca.crt
+  cat "${srcdir}/StartSSL.sub.class1.server.ca.pem" >> StartSSL.sub.class1.server.ca.crt
+
   local f=
   for f in *.crt
   do
-    echo "processing $f"
-    tbits=`sed -n '/^# openssl-trust/{s/^.*=//;p;}' $f`
-    distbits=`sed -n '/^# openssl-distrust/{s/^.*=//;p;}' $f`
-    alias=`sed -n '/^# alias=/{s/^.*=//;p;q;}' $f | sed "s/'//g" | sed 's/"//g'`
+    echo "processing ${f}"
+    tbits=`sed -n '/^# openssl-trust/{s/^.*=//;p;}' ${f}`
+    distbits=`sed -n '/^# openssl-distrust/{s/^.*=//;p;}' ${f}`
+    alias=`sed -n '/^# alias=/{s/^.*=//;p;q;}' ${f} | sed "s/'//g" | sed 's/"//g'`
     targs=""
 
-    if [ -n "$tbits" ]
+    if [ -n "${tbits}" ]
     then
-      for t in $tbits
+      for t in ${tbits}
       do
-        targs="${targs} -addtrust $t"
+        targs="${targs} -addtrust ${t}"
       done
     fi
-    if [ -n "$distbits" ]
+    if [ -n "${distbits}" ]
     then
-      for t in $distbits
+      for t in ${distbits}
       do
-        targs="${targs} -addreject $t"
+        targs="${targs} -addreject ${t}"
       done
     fi
-    if [ -n "$targs" ]
+    if [ -n "${targs}" ]
     then
-      echo "trust flags $targs for $f" >> info.trust
-      ${MINGW_PREFIX}/bin/openssl x509 -text -in "$f" -trustout $targs -setalias "$alias" >> ${srcdir}/${_realname}/ca-bundle.trust.crt
+      echo "trust flags $targs for ${f}" >> info.trust
+      ${MINGW_PREFIX}/bin/openssl x509 -text -in "${f}" -trustout ${targs} -setalias "${alias}" >> ${srcdir}/${_realname}-${pkgver}/ca-bundle.trust.crt
     else
-      echo "no trust flags for $f" >> tee -a info.notrust
-      ${MINGW_PREFIX}/bin/openssl x509 -text -in "$f" -setalias "$alias" >> ${srcdir}/${_realname}/ca-bundle.neutral-trust.crt
+      echo "no trust flags for ${f}" >> tee -a info.notrust
+      ${MINGW_PREFIX}/bin/openssl x509 -text -in "${f}" -setalias "${alias}" >> ${srcdir}/${_realname}-${pkgver}/ca-bundle.neutral-trust.crt
     fi
   done
   for p in *.p11-kit
   do
-    cat $p >> ${srcdir}/${_realname}/ca-bundle.supplement.p11-kit
+    cat ${p} >> ${srcdir}/${_realname}-${pkgver}/ca-bundle.supplement.p11-kit
   done
-  cat trust-fixes >> ${srcdir}/${_realname}/ca-bundle.supplement.p11-kit
+  cat trust-fixes >> ${srcdir}/${_realname}-${pkgver}/ca-bundle.supplement.p11-kit
 }
 
 package() {
-  cd ${srcdir}/${_realname}
+  cd ${srcdir}/${_realname}-${pkgver}
 
   mkdir -p ${pkgdir}${MINGW_PREFIX}/{bin,lib,share}
   mkdir -p ${pkgdir}${MINGW_PREFIX}/etc
   mkdir -p ${pkgdir}${MINGW_PREFIX}/share/man/man8
-  
+
   sed -e "s|@PREFIX@|${MINGW_PREFIX}|g" -i sbin/update-ca-trust
   cp -f sbin/update-ca-trust ${pkgdir}${MINGW_PREFIX}/bin/
   cp -f sbin/update-ca-trust.8 ${pkgdir}${MINGW_PREFIX}/share/man/man8/
@@ -121,7 +133,7 @@ package() {
   mkdir -p ${pkgdir}${MINGW_PREFIX}/share/pki/ca-trust-source
   for file in ca-bundle.{trust.crt,neutral-trust.crt,supplement.p11-kit}
   do
-    cp -f $file ${pkgdir}${MINGW_PREFIX}/share/pki/ca-trust-source
+    cp -f ${file} ${pkgdir}${MINGW_PREFIX}/share/pki/ca-trust-source
   done
 
   # touch all files overwritten by update-ca-trust for easy cleanup

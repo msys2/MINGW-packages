@@ -1,0 +1,502 @@
+From 4ae708fdabd2cfc8882cf03d07ab0d5bf22e4964 Mon Sep 17 00:00:00 2001
+From: Martell Malone <martellmalone@gmail.com>
+Date: Thu, 2 Jul 2015 05:35:51 +0100
+Subject: [PATCH] GNU: add support for linking PECOFF
+
+
+diff --git a/include/lld/Driver/Driver.h b/include/lld/Driver/Driver.h
+index 160826c..8a276e4 100644
+--- a/include/lld/Driver/Driver.h
++++ b/include/lld/Driver/Driver.h
+@@ -67,14 +67,43 @@ class GnuLdDriver : public Driver {
+ public:
+   /// Parses command line arguments same as gnu/binutils ld and performs link.
+   /// Returns true iff an error occurred.
+-  static bool linkELF(llvm::ArrayRef<const char *> args,
++  static bool linkGNU(llvm::ArrayRef<const char *> args,
+                       raw_ostream &diag = llvm::errs());
+ 
+   /// Uses gnu/binutils style ld command line options to fill in options struct.
++  /// Parses command line arguments same as gnu/binutils ld and performs link on ELF.
++  /// Returns true iff an error occurred.
++  static bool linkELF(llvm::opt::InputArgList &args,
++                      llvm::Triple &triple,
++                      llvm::Triple &baseTriple,
++                      raw_ostream &diag = llvm::errs());
++
++  /// Parses command line arguments same as gnu/binutils ld and performs link on PECOFF.
++  /// Returns true iff an error occurred.
++  static bool linkPECOFF(llvm::opt::InputArgList &args,
++                         llvm::Triple &triple,
++                         raw_ostream &diag = llvm::errs());
++
++  /// Uses gnu/binutils style ld command line options to fill in options struct for ELF.
+   /// Returns true iff there was an error.
+-  static bool parse(llvm::ArrayRef<const char *> args,
+-                    std::unique_ptr<ELFLinkingContext> &context,
+-                    raw_ostream &diag = llvm::errs());
++  static bool parseELF(llvm::opt::InputArgList &args,
++                       llvm::Triple &triple,
++                       llvm::Triple &baseTriple,
++                       std::unique_ptr<ELFLinkingContext> &context,
++                       raw_ostream &diag = llvm::errs());
++
++  /// Uses gnu/binutils style ld command line options to fill in options struct for PECOFF.
++  /// Returns true iff there was an error.
++  static bool parsePECOFF(llvm::opt::InputArgList &args,
++                          llvm::Triple &triple,
++                          PECOFFLinkingContext &ctx,
++                          raw_ostream &diag = llvm::errs(),
++                          bool isDirective = false);
++
++  // Same as parse(), but restricted to the context of directives.
++  static bool parseDirectives(int argc, const char *argv[],
++                              PECOFFLinkingContext &info,
++                              raw_ostream &diag = llvm::errs());
+ 
+   /// Parses a given memory buffer as a linker script and evaluate that.
+   /// Public function for testing.
+diff --git a/lib/Driver/GnuLdDriver.cpp b/lib/Driver/GnuLdDriver.cpp
+index fbdc12d..21abb62 100644
+--- a/lib/Driver/GnuLdDriver.cpp
++++ b/lib/Driver/GnuLdDriver.cpp
+@@ -15,6 +15,7 @@
+ 
+ #include "lld/Driver/Driver.h"
+ #include "lld/ReaderWriter/ELFLinkingContext.h"
++#include "lld/ReaderWriter/PECOFFLinkingContext.h"
+ #include "lld/ReaderWriter/LinkerScript.h"
+ #include "llvm/ADT/ArrayRef.h"
+ #include "llvm/ADT/Optional.h"
+@@ -134,12 +135,61 @@ static bool parseMaxPageSize(StringRef opt, uint64_t &val) {
+   return true;
+ }
+ 
+-bool GnuLdDriver::linkELF(llvm::ArrayRef<const char *> args,
++bool GnuLdDriver::linkGNU(llvm::ArrayRef<const char *> args,
+                           raw_ostream &diag) {
+   BumpPtrAllocator alloc;
+   args = maybeExpandResponseFiles(args, alloc);
++
++  // Parse command line options using GnuLdOptions.td
++  GnuLdOptTable table;
++  unsigned missingIndex;
++  unsigned missingCount;
++
++  llvm::opt::InputArgList parsedArgs =
++      table.ParseArgs(args.slice(1), missingIndex, missingCount);
++  if (missingCount) {
++    diag << "error: missing arg value for '"
++         << parsedArgs.getArgString(missingIndex) << "' expected "
++         << missingCount << " argument(s).\n";
++    return false;
++  }
++
++  // Handle --help
++  if (parsedArgs.hasArg(OPT_help)) {
++    table.PrintHelp(llvm::outs(), args[0], "LLVM Linker", false);
++    return true;
++  }
++
++  // Use -target or use default target triple to instantiate LinkingContext
++  llvm::Triple baseTriple;
++  if (auto *arg = parsedArgs.getLastArg(OPT_target)) {
++    baseTriple = llvm::Triple(arg->getValue());
++  } else {
++    baseTriple = getDefaultTarget(args[0]);
++  }
++  llvm::Triple triple(baseTriple);
++
++  if (!applyEmulation(triple, parsedArgs, diag))
++    return false;
++
++  if (triple.getOS() == llvm::Triple::Win32) {
++    if(!linkPECOFF(parsedArgs, triple, diag))
++      return false;
++  } else {
++    if(!linkELF(parsedArgs, triple, baseTriple, diag))
++      return false;
++  }
++
++  return true;
++}
++
++bool GnuLdDriver::linkELF(llvm::opt::InputArgList &args,
++                          llvm::Triple &triple,
++                          llvm::Triple &baseTriple,
++                          raw_ostream &diag) {
++
+   std::unique_ptr<ELFLinkingContext> options;
+-  if (!parse(args, options, diag))
++  if (!parseELF(args, triple, baseTriple, options, diag))
+     return false;
+   if (!options)
+     return true;
+@@ -154,8 +204,65 @@ bool GnuLdDriver::linkELF(llvm::ArrayRef<const char *> args,
+   return linked;
+ }
+ 
++bool GnuLdDriver::linkPECOFF(llvm::opt::InputArgList &args,
++                             llvm::Triple &triple,
++                             raw_ostream &diag) {
++
++  PECOFFLinkingContext ctx;
++  ctx.setParseDirectives(parseDirectives);
++  ctx.registry().addSupportCOFFObjects(ctx);
++  ctx.registry().addSupportCOFFImportLibraries(ctx);
++  ctx.registry().addSupportArchives(ctx.logInputFiles());
++  ctx.registry().addSupportYamlFiles();
++
++  if (!parsePECOFF(args, triple, ctx, diag))
++    return false;
++
++  bool linked = link(ctx, diag);
++  return linked;
++}
++
++bool GnuLdDriver::parseDirectives(int argc, const char *argv[],
++                                  PECOFFLinkingContext &info,
++                                  raw_ostream &diag) {
++
++  llvm::ArrayRef<const char *> args(argv, argc);
++  GnuLdOptTable table;
++  unsigned missingIndex;
++  unsigned missingCount;
++
++  llvm::opt::InputArgList parsedArgs =
++      table.ParseArgs(args.slice(1), missingIndex, missingCount);
++  if (missingCount) {
++    diag << "error: missing arg value for '"
++         << parsedArgs.getArgString(missingIndex) << "' expected "
++         << missingCount << " argument(s).\n";
++    return false;
++  }
++
++  // Use -target or use default target triple to instantiate LinkingContext
++  llvm::Triple baseTriple;
++  if (auto *arg = parsedArgs.getLastArg(OPT_target)) {
++    baseTriple = llvm::Triple(arg->getValue());
++  } else {
++    baseTriple = getDefaultTarget(argv[0]);
++  }
++  llvm::Triple triple(baseTriple);
++
++  return parsePECOFF(parsedArgs, triple, info, diag, true);
++}
++
+ static llvm::Optional<llvm::Triple::ArchType>
+ getArchType(const llvm::Triple &triple, StringRef value) {
++
++  //the base arch can be wrong for windows so just check the PE target
++  if (value == "i386pe")
++    return llvm::Triple::x86;
++  if (value == "i386pep")
++    return llvm::Triple::x86_64;
++  if (value == "thumb2pe")
++    return llvm::Triple::arm;
++
+   switch (triple.getArch()) {
+   case llvm::Triple::x86:
+   case llvm::Triple::x86_64:
+@@ -184,6 +291,29 @@ getArchType(const llvm::Triple &triple, StringRef value) {
+   }
+ }
+ 
++static llvm::COFF::MachineTypes
++getCOFFType(const llvm::Triple &triple) {
++  switch (triple.getArch()) {
++  case llvm::Triple::x86:
++    return llvm::COFF::IMAGE_FILE_MACHINE_I386;
++  case llvm::Triple::x86_64:
++    return llvm::COFF::IMAGE_FILE_MACHINE_AMD64;
++  case llvm::Triple::arm:
++  case llvm::Triple::thumb:
++      return llvm::COFF::IMAGE_FILE_MACHINE_ARMNT;
++  default:
++    return llvm::COFF::IMAGE_FILE_MACHINE_UNKNOWN;
++  }
++}
++
++static llvm::COFF::WindowsSubsystem
++getSubsystem(StringRef value) {
++  return llvm::StringSwitch<llvm::COFF::WindowsSubsystem>(value.lower())
++      .Case("windows", llvm::COFF::IMAGE_SUBSYSTEM_WINDOWS_GUI)
++      .Case("console", llvm::COFF::IMAGE_SUBSYSTEM_WINDOWS_CUI)
++      .Default(llvm::COFF::IMAGE_SUBSYSTEM_UNKNOWN);
++}
++
+ static bool isLinkerScript(StringRef path, raw_ostream &diag) {
+   llvm::sys::fs::file_magic magic = llvm::sys::fs::file_magic::unknown;
+   if (std::error_code ec = llvm::sys::fs::identify_magic(path, magic)) {
+@@ -195,7 +325,24 @@ static bool isLinkerScript(StringRef path, raw_ostream &diag) {
+ }
+ 
+ static ErrorOr<StringRef>
+-findFile(ELFLinkingContext &ctx, StringRef path, bool dashL) {
++findFileELF(ELFLinkingContext &ctx, StringRef path, bool dashL) {
++  // If the path was referred to by using a -l argument, let's search
++  // for the file in the search path.
++  if (dashL) {
++    ErrorOr<StringRef> pathOrErr = ctx.searchLibrary(path);
++    if (std::error_code ec = pathOrErr.getError())
++      return make_dynamic_error_code(
++          Twine("Unable to find library -l") + path + ": " + ec.message());
++    path = pathOrErr.get();
++  }
++  if (!llvm::sys::fs::exists(path))
++    return make_dynamic_error_code(
++        Twine("lld: cannot find file ") + path);
++  return path;
++}
++
++static ErrorOr<StringRef>
++findFilePECOFF(PECOFFLinkingContext &ctx, StringRef path, bool dashL = true) {
+   // If the path was referred to by using a -l argument, let's search
+   // for the file in the search path.
+   if (dashL) {
+@@ -219,6 +366,17 @@ static bool isPathUnderSysroot(StringRef sysroot, StringRef path) {
+   return !path.empty();
+ }
+ 
++// Returns true if the given file node has already been added to the input
++// graph.
++static bool hasLibrary(PECOFFLinkingContext &ctx, File *file) {
++  StringRef path = file->path();
++  for (std::unique_ptr<Node> &p : ctx.getNodes())
++    if (auto *f = dyn_cast<FileNode>(p.get()))
++      if (f->getFile()->path() == path)
++        return true;
++  return false;
++}
++
+ static std::error_code
+ addFilesFromLinkerScript(ELFLinkingContext &ctx, StringRef scriptPath,
+                          const std::vector<script::Path> &inputPaths,
+@@ -339,40 +497,11 @@ getBool(const llvm::opt::InputArgList &parsedArgs,
+   return llvm::None;
+ }
+ 
+-bool GnuLdDriver::parse(llvm::ArrayRef<const char *> args,
+-                        std::unique_ptr<ELFLinkingContext> &context,
+-                        raw_ostream &diag) {
+-  // Parse command line options using GnuLdOptions.td
+-  GnuLdOptTable table;
+-  unsigned missingIndex;
+-  unsigned missingCount;
+-
+-  llvm::opt::InputArgList parsedArgs =
+-      table.ParseArgs(args.slice(1), missingIndex, missingCount);
+-  if (missingCount) {
+-    diag << "error: missing arg value for '"
+-         << parsedArgs.getArgString(missingIndex) << "' expected "
+-         << missingCount << " argument(s).\n";
+-    return false;
+-  }
+-
+-  // Handle --help
+-  if (parsedArgs.hasArg(OPT_help)) {
+-    table.PrintHelp(llvm::outs(), args[0], "LLVM Linker", false);
+-    return true;
+-  }
+-
+-  // Use -target or use default target triple to instantiate LinkingContext
+-  llvm::Triple baseTriple;
+-  if (auto *arg = parsedArgs.getLastArg(OPT_target)) {
+-    baseTriple = llvm::Triple(arg->getValue());
+-  } else {
+-    baseTriple = getDefaultTarget(args[0]);
+-  }
+-  llvm::Triple triple(baseTriple);
+-
+-  if (!applyEmulation(triple, parsedArgs, diag))
+-    return false;
++bool GnuLdDriver::parseELF(llvm::opt::InputArgList &parsedArgs,
++                           llvm::Triple &triple,
++                           llvm::Triple &baseTriple,
++                           std::unique_ptr<ELFLinkingContext> &context,
++                           raw_ostream &diag) {
+ 
+   std::unique_ptr<ELFLinkingContext> ctx(createELFLinkingContext(triple));
+ 
+@@ -673,7 +802,7 @@ bool GnuLdDriver::parse(llvm::ArrayRef<const char *> args,
+       bool dashL = (arg->getOption().getID() == OPT_l);
+       StringRef path = arg->getValue();
+ 
+-      ErrorOr<StringRef> pathOrErr = findFile(*ctx, path, dashL);
++      ErrorOr<StringRef> pathOrErr = findFileELF(*ctx, path, dashL);
+       if (std::error_code ec = pathOrErr.getError()) {
+         auto file = llvm::make_unique<ErrorFile>(path, ec);
+         auto node = llvm::make_unique<FileNode>(std::move(file));
+@@ -747,6 +876,133 @@ bool GnuLdDriver::parse(llvm::ArrayRef<const char *> args,
+   return true;
+ }
+ 
++bool GnuLdDriver::parsePECOFF(llvm::opt::InputArgList &args,
++                              llvm::Triple &triple,
++                              PECOFFLinkingContext &ctx,
++                              raw_ostream &diag,
++                              bool isReadingDirectiveSection) {
++
++  // Parse may be called from multiple threads simultaneously to parse .drectve
++  // sections. This function is not thread-safe because it mutates the context
++  // object. So acquire the lock.
++  std::lock_guard<std::recursive_mutex> lock(ctx.getMutex());
++
++  // The list of input files.
++  std::vector<std::unique_ptr<File>> files;
++  std::vector<std::unique_ptr<File>> libraries;
++
++  llvm::COFF::MachineTypes type = getCOFFType(triple);
++  if (type == llvm::COFF::IMAGE_FILE_MACHINE_UNKNOWN) {
++    diag << "error: unknown machine type\n";
++    return false;
++  }
++
++  ctx.setMachineType(type);
++
++  if (args.hasArg(OPT_t))
++    ctx.setLogInputFiles(true);
++
++  //mingw-w64 never uses wide versions of mainCRTStartup
++  if(type == llvm::COFF::IMAGE_FILE_MACHINE_I386)
++    ctx.setEntrySymbolName(ctx.allocate("_mainCRTStartup"));
++  else
++    ctx.setEntrySymbolName(ctx.allocate("mainCRTStartup"));
++
++  if (auto *arg = args.getLastArg(OPT_output))
++      ctx.setOutputPath(arg->getValue());
++
++  if (auto *arg = args.getLastArg(OPT_subsystem))
++      ctx.setSubsystem(getSubsystem(arg->getValue()));
++
++  if (args.hasArg(OPT_dll)) {
++    ctx.setIsDll(true);
++    // Default base address of a DLL is 0x10000000.
++    //if (!args.hasArg(OPT_base))
++      //ctx.setBaseAddress(0x10000000);
++  }
++
++  for (auto *arg : args.filtered(OPT_L))
++    ctx.appendInputSearchPath(ctx.allocate(arg->getValue()));
++
++  // Process files
++  for (auto arg : args) {
++    switch (arg->getOption().getID()) {
++    case OPT_INPUT:
++    case OPT_l:
++    case OPT_T: {
++      bool dashL = (arg->getOption().getID() == OPT_l);
++      StringRef path = arg->getValue();
++      ErrorOr<StringRef> pathOrErr = findFilePECOFF(ctx, path, dashL);
++      StringRef realpath = pathOrErr.get();
++      std::vector<std::unique_ptr<File>> curr;
++
++      if(!pathOrErr){
++        diag << "Cannot find " << path << "\n";
++        return false;
++      }
++
++      if(dashL) {
++        curr = loadFile(ctx, realpath, false);
++        for (std::unique_ptr<File> &lib : curr) {
++          if (ctx.logInputFiles())
++            diag << "lib: " << lib->path() << "\n";
++          libraries.push_back(std::move(lib));
++        }
++      } else {
++        curr = loadFile(ctx, realpath, false);
++        for (std::unique_ptr<File> &file : curr) {
++          if (ctx.logInputFiles())
++            diag << "input: " << file->path() << "\n";
++          files.push_back(std::move(file));
++        }
++      }
++      break;
++    }
++    }
++  }
++
++  for (std::unique_ptr<File> &file : files) {
++    if (isReadingDirectiveSection) {
++      File *f = file.get();
++      ctx.getTaskGroup().spawn([f] { f->parse(); });
++    }
++    ctx.getNodes().push_back(llvm::make_unique<FileNode>(std::move(file)));
++  }
++
++  // Add the library group to the linking context.
++  if (!isReadingDirectiveSection) {
++  // Add a group-end marker.
++    ctx.getNodes().push_back(llvm::make_unique<GroupEnd>(0));
++  }
++
++  // Add the library files to the library group.
++  for (std::unique_ptr<File> &file : libraries) {
++    if (!hasLibrary(ctx, file.get())) {
++      if (isReadingDirectiveSection) {
++        File *f = file.get();
++        ctx.getTaskGroup().spawn([f] { f->parse(); });
++      }
++      ctx.addLibraryFile(llvm::make_unique<FileNode>(std::move(file)));
++    }
++  }
++
++  if (ctx.getNodes().empty()) {
++    diag << "No input files\n";
++    return false;
++  }
++
++  // Set default output file name if the output file was not specified.
++  if (ctx.outputPath().empty())
++    ctx.setOutputPath("a.exe");
++
++  if (!ctx.validate(diag)) {
++    diag << "error: invalid linking context\n";
++    return false;
++  }
++
++  return true;
++}
++
+ /// Get the default target triple based on either the program name
+ /// (e.g. "x86-ibm-linux-lld") or the primary target llvm was configured for.
+ llvm::Triple GnuLdDriver::getDefaultTarget(const char *progName) {
+diff --git a/lib/Driver/GnuLdOptions.td b/lib/Driver/GnuLdOptions.td
+index b3c3d90..7aa8547 100644
+--- a/lib/Driver/GnuLdOptions.td
++++ b/lib/Driver/GnuLdOptions.td
+@@ -354,6 +354,18 @@ def pcrel_eh_reloc : Flag<["-", "--"], "pcrel-eh-reloc">,
+      HelpText<"Interpret R_MIPS_EH as R_MIPS_PC32">;
+ 
+ //===----------------------------------------------------------------------===//
++/// Windows Target Specific Options
++//===----------------------------------------------------------------------===//
++def grp_windows_targetopts : OptionGroup<"WINDOWS SPECIFIC OPTIONS">,
++    Group<grp_targetopts>;
++def subsystem : Separate<["--"], "subsystem">, MetaVarName<"<subsystem>">,
++    HelpText<"Select target subsystem">,
++    Group<grp_windows_targetopts>;
++def dll : Separate<["-", "--"], "dll">,
++    HelpText<"Create dynamic link library">,
++    Group<grp_windows_targetopts>;
++
++//===----------------------------------------------------------------------===//
+ /// Ignored options
+ //===----------------------------------------------------------------------===//
+ def grp_ignored: OptionGroup<"ignored">,
+diff --git a/lib/Driver/UniversalDriver.cpp b/lib/Driver/UniversalDriver.cpp
+index c09addf..8ce45ea 100644
+--- a/lib/Driver/UniversalDriver.cpp
++++ b/lib/Driver/UniversalDriver.cpp
+@@ -201,7 +201,7 @@ bool UniversalDriver::link(llvm::MutableArrayRef<const char *> args,
+   // Switch to appropriate driver.
+   switch (flavor) {
+   case Flavor::gnu_ld:
+-    return GnuLdDriver::linkELF(args, diagnostics);
++    return GnuLdDriver::linkGNU(args, diagnostics);
+   case Flavor::darwin_ld:
+     return DarwinLdDriver::linkMachO(args, diagnostics);
+   case Flavor::win_link:
+-- 
+2.4.5
+

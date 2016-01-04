@@ -1,0 +1,174 @@
+From 5bf3465977c82514375d3be4ad33d68acfd18e2c Mon Sep 17 00:00:00 2001
+From: Ray Donnelly <mingw.android@gmail.com>
+Date: Mon, 3 Aug 2015 22:00:16 +0100
+Subject: [PATCH 2/3] Implement Qt5 static plugin support
+
+Enabled via a new target property "AUTOSTATICPLUGINS".
+
+At CMake execution time, a C++ file is created to link the
+static plugins. For this to work, patches for Qt5-static
+from [1] are necessary [2], [3] and [4]
+
+[1] https://github.com/Alexpux/MINGW-packages/tree/master/mingw-w64-qt5-static
+[2] 0038-qt-5.4.0-Make-it-possible-to-use-static-builds-of-Qt-with-CMa.patch
+[3] 0039-qt-5.4.0-Generate-separated-libraries-in-prl-files-for-CMake.patch
+[4] 0041-qt-5.4.0-static-cmake-also-link-plugins-and-plugin-deps.patch
+
+.. and also some more minor ones that aren't strictly related to Qt5 static
+CMake but are necessary for this to work on MinGW-w64 (0040- for example).
+---
+ Source/cmGlobalGenerator.cxx  |  3 +-
+ Source/cmQtAutoGenerators.cxx | 67 +++++++++++++++++++++++++++++++++++++++++--
+ Source/cmTarget.cxx           |  2 ++
+ 3 files changed, 68 insertions(+), 4 deletions(-)
+
+diff --git a/Source/cmGlobalGenerator.cxx b/Source/cmGlobalGenerator.cxx
+index b437942..66a32ef 100644
+--- a/Source/cmGlobalGenerator.cxx
++++ b/Source/cmGlobalGenerator.cxx
+@@ -1460,7 +1460,8 @@ void cmGlobalGenerator::CreateQtAutoGeneratorsTargets(AutogensType &autogens)
+         {
+         if((target.GetPropertyAsBool("AUTOMOC")
+               || target.GetPropertyAsBool("AUTOUIC")
+-              || target.GetPropertyAsBool("AUTORCC"))
++              || target.GetPropertyAsBool("AUTORCC")
++              || target.GetPropertyAsBool("AUTOSTATICPLUGINS"))
+             && !target.IsImported())
+           {
+           cmQtAutoGenerators autogen;
+diff --git a/Source/cmQtAutoGenerators.cxx b/Source/cmQtAutoGenerators.cxx
+index 1322dea..b399cc0 100644
+--- a/Source/cmQtAutoGenerators.cxx
++++ b/Source/cmQtAutoGenerators.cxx
+@@ -35,6 +35,7 @@
+ #include <unistd.h>
+ #endif
+ 
++#include <cmGeneratedFileStream.h>
+ #include "cmQtAutoGenerators.h"
+ 
+ 
+@@ -155,7 +156,7 @@ cmQtAutoGenerators::cmQtAutoGenerators()
+ static std::string getAutogenTargetName(cmTarget const* target)
+ {
+   std::string autogenTargetName = target->GetName();
+-  autogenTargetName += "_automoc";
++  autogenTargetName += "_autogen";
+   return autogenTargetName;
+ }
+ 
+@@ -315,6 +316,7 @@ bool cmQtAutoGenerators::InitializeAutogenTarget(cmLocalGenerator* lg,
+ 
+     target->AddSource(mocCppFile);
+     }
++
+   // create a custom target for running generators at buildtime:
+   std::string autogenTargetName = getAutogenTargetName(target);
+ 
+@@ -352,7 +354,13 @@ bool cmQtAutoGenerators::InitializeAutogenTarget(cmLocalGenerator* lg,
+     {
+     toolNames.push_back("rcc");
+     }
+-
++  /* AUTOSTATICPLUGINS .cpp files are created at cmake execution time,
++   * and not at build time, so in that case it is possible to get here
++   * with no toolNames. */
++  if (!toolNames.size())
++    {
++    return true;
++    }
+   std::string tools = toolNames[0];
+   toolNames.erase(toolNames.begin());
+   while (toolNames.size() > 1)
+@@ -563,7 +571,9 @@ void cmQtAutoGenerators::SetupAutoGenerateTarget(cmTarget const* target)
+ 
+   if (target->GetPropertyAsBool("AUTOMOC")
+       || target->GetPropertyAsBool("AUTOUIC")
+-      || target->GetPropertyAsBool("AUTORCC"))
++      || target->GetPropertyAsBool("AUTORCC")
++      || (    target->GetPropertyAsBool("AUTOSTATICPLUGINS")
++           && target->GetType() == cmTarget::EXECUTABLE))
+     {
+     this->SetupSourceFiles(target);
+     }
+@@ -738,6 +748,57 @@ void cmQtAutoGenerators::SetupSourceFiles(cmTarget const* target)
+     {
+     const_cast<cmTarget*>(target)->AddSource(*fileIt);
+     }
++
++  /* in qt5-static/lib/cmake/Qt5Core/Qt5CoreConfig.cmake, macro(_populate_Core_plugin_properties ..), we'd have:
++   * set_property(TARGET PROPERTY AUTOSTATICPLUGINS True) // Not currently need as defaults to "ON"
++   * set_property(TARGET Qt5::Core APPEND PROPERTY STATIC_PLUGINS ${Plugin})
++   */
++  if (target->GetPropertyAsBool("AUTOSTATICPLUGINS"))
++    {
++    std::vector<cmTarget const*> libTargets = target->GetLinkImplementationClosure("");
++    std::vector<cmTarget const*>::const_iterator li;
++    std::vector<std::string> staticPlugins;
++    for (li = libTargets.begin(); li != libTargets.end(); ++li)
++      {
++      cmTarget const* tgt = *li;
++      const char *staticPluginsProp = tgt->GetProperty("STATIC_PLUGINS");
++      if (staticPluginsProp)
++        {
++        std::vector<std::string> staticPluginsTgt = cmSystemTools::tokenize(staticPluginsProp, ";");
++        for (std::vector<std::string>::const_iterator spti = staticPluginsTgt.begin(); spti != staticPluginsTgt.end(); ++spti)
++          {
++          if (std::find(staticPlugins.begin(), staticPlugins.end(), *spti) == staticPlugins.end())
++            {
++            staticPlugins.push_back(*spti);
++            }
++          }
++        }
++      }
++
++    if (staticPlugins.size())
++      {
++      std::string static_plugins_output_dir = target->GetSupportDirectory();
++      cmSystemTools::MakeDirectory(static_plugins_output_dir.c_str());
++      std::string static_plugins_output_file = static_plugins_output_dir;
++      static_plugins_output_file += "/" + target->GetName() + "_plugin_import.cpp";
++      cmGeneratedFileStream
++        staticPluginsFileStream(static_plugins_output_file.c_str());
++      if(staticPluginsFileStream)
++        {
++        staticPluginsFileStream << "// This file is autogenerated by cmake. It imports static plugin classes for" << std::endl;
++        staticPluginsFileStream << "// static plugins specified using QTPLUGIN and QT_PLUGIN_CLASS.<plugin> variables." << std::endl;
++        staticPluginsFileStream << "#include <QtPlugin>" << std::endl;
++        for (std::vector<std::string>::const_iterator spti = staticPlugins.begin(); spti != staticPlugins.end(); ++spti)
++          {
++          staticPluginsFileStream << "Q_IMPORT_PLUGIN(" << *spti << ")" << std::endl;
++          }
++        staticPluginsFileStream.Close();
++        makefile->AppendProperty("ADDITIONAL_MAKE_CLEAN_FILES",
++                                static_plugins_output_file.c_str(), false);
++        const_cast<cmTarget*>(target)->AddSource(static_plugins_output_file);
++        }
++      }
++    }
+ }
+ 
+ void cmQtAutoGenerators::SetupAutoMocTarget(cmTarget const* target,
+diff --git a/Source/cmTarget.cxx b/Source/cmTarget.cxx
+index cf33791..04c3907 100644
+--- a/Source/cmTarget.cxx
++++ b/Source/cmTarget.cxx
+@@ -328,6 +328,7 @@ void cmTarget::SetMakefile(cmMakefile* mf)
+     this->SetPropertyDefault("AUTOMOC", 0);
+     this->SetPropertyDefault("AUTOUIC", 0);
+     this->SetPropertyDefault("AUTORCC", 0);
++    this->SetPropertyDefault("AUTOSTATICPLUGINS", 0);
+     this->SetPropertyDefault("AUTOMOC_MOC_OPTIONS", 0);
+     this->SetPropertyDefault("AUTOUIC_OPTIONS", 0);
+     this->SetPropertyDefault("AUTORCC_OPTIONS", 0);
+@@ -1681,6 +1682,7 @@ static bool whiteListedInterfaceProperty(const std::string& prop)
+     builtIns.insert("IMPORTED");
+     builtIns.insert("NAME");
+     builtIns.insert("TYPE");
++    builtIns.insert("STATIC_PLUGINS");
+     }
+ 
+   if (builtIns.count(prop))
+-- 
+2.5.0
+
