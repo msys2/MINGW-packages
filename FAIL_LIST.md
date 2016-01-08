@@ -17,13 +17,9 @@ List of packages that currently fail to build
 
 - gtkada
 
-- innoextract
-
 - itk
 
 - ldns
-
-- librescl
 
 - librocket-git
 
