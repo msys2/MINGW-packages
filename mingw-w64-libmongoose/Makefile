@@ -56,7 +56,7 @@ install: $(SHARED_LIB)
 	install -Dm644 mongoose.h $(DESTDIR)$(PREFIX)/include/mongoose.h
 	install -dm755 $(DESTDIR)$(DOCDIR)
 	cp -a examples $(DESTDIR)$(DOCDIR)
-	
+
 test:
 	$(MAKE) -C test/
 clean:
