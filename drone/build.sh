@@ -8,7 +8,7 @@ git config --global user.name "MSYS2 Build Bot"
 # fetch first changed file, assume at most one package touched per commit
 TOUCHED=`git show -m --pretty="format:" --name-only | grep . | head -1`
 PKGDIR=`dirname $TOUCHED`
-if [ "$PKGDIR" = "." || "$PKGDIR" = "drone" ]
+if [ "$PKGDIR" = "." ] || [ "$PKGDIR" = "drone" ]
 then
     echo Nothing to test
 else
