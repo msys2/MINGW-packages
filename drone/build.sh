@@ -5,13 +5,12 @@ set -e
 git config --global user.email "ci@msys2.org"
 git config --global user.name "MSYS2 Build Bot"
 
-# fetch first changed file, assume at most one package touched per commit
-TOUCHED=`git show -m --pretty="format:" --name-only | grep . | head -1`
-PKGDIR=`dirname $TOUCHED`
-if [ "$PKGDIR" = "." ] || [ "$PKGDIR" = "drone" ]
+# fetch first changed PKGBUILD file, assume at most one package touched per commit
+# if you want to have your changes tested by ci then bump the pkgrel in PKGBUILD
+TOUCHED=`git show -m --pretty="format:" --name-only | grep PKGBUILD | head -1`
+if [ "$TOUCHED" ]
 then
-    echo Nothing to test
-else
+    PKGDIR=`dirname $TOUCHED`
     pushd $PKGDIR > /dev/null
     if [ "$RUNTEST" = "true" ]
     then
@@ -20,4 +19,6 @@ else
         makepkg-mingw -f -s --noconfirm --skippgpcheck --nocheck
     fi
     popd > /dev/null
+else
+    echo Nothing to test
 fi
