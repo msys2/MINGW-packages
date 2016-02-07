@@ -2,6 +2,7 @@
 
 # AppVeyor and Drone Continuous Integration for MSYS2
 # Author: Renato Silva <br.renatosilva@gmail.com>
+# Author: Qian Hong <fracting@gmail.com>
 
 # Functions
 success() { echo "Build success: ${@}"; exit 0; }
@@ -9,7 +10,7 @@ failure() { echo "Build failure: ${@}"; exit 1; }
 
 # Prepare
 git config --global user.email 'ci@msys2.org'
-git config --global user.name 'MSYS2 Contiinous Integration'
+git config --global user.name 'MSYS2 Continuous Integration'
 
 # Recipes
 cd "$(dirname "$0")"
