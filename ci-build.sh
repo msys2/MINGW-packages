@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# AppVeyor Continuous Integration for MSYS2
+# AppVeyor and Drone Continuous Integration for MSYS2
 # Author: Renato Silva <br.renatosilva@gmail.com>
 
 # Functions
@@ -9,7 +9,7 @@ failure() { echo "Build failure: ${@}"; exit 1; }
 
 # Prepare
 git config --global user.email 'ci@msys2.org'
-git config --global user.name 'MSYS2 AppVeyor CI'
+git config --global user.name 'MSYS2 Contiinous Integration'
 
 # Recipes
 cd "$(dirname "$0")"
@@ -23,6 +23,7 @@ test -z "${recipes}" && success 'no changes in package recipes'
 # Build
 for recipe in "${recipes[@]}"; do
     cd "$(dirname ${recipe})"
-    makepkg-mingw --syncdeps --noconfirm --skippgpcheck || failure "could not build ${recipe}"
+    echo "Build start: $(dirname ${recipe})"
+    makepkg-mingw --syncdeps --noconfirm --skippgpcheck --nocheck --noprogressbar || failure "could not build ${recipe}"
     cd - > /dev/null
 done
