@@ -21,6 +21,10 @@ done
 test -n "${files}"   || failure 'could not detect changed files'
 test -z "${recipes}" && success 'no changes in package recipes'
 
+# Refresh
+# ignore cache, force refresh database
+pacman --sync --refresh --refresh --sysupgrade --noconfirm --noprogressbar 
+
 # Build
 for recipe in "${recipes[@]}"; do
     cd "$(dirname ${recipe})"
