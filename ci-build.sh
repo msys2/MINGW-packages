@@ -21,8 +21,7 @@ done
 test -n "${files}"   || failure 'Could not detect changed files.'
 test -z "${recipes}" && success 'No changes in package recipes.'
 echo
-echo "Going to build changed recipes:"
-IFS="\n" echo "${recipes[@]}"
+echo "Going to build changed recipes: ${recipes[@]}"
 echo
 
 # Refresh
