@@ -12,29 +12,32 @@ failure() { echo "Build failure: ${@}"; exit 1; }
 git config --global user.email 'ci@msys2.org'
 git config --global user.name 'MSYS2 Continuous Integration'
 
-# Recipes
+# Detect
 cd "$(dirname "$0")"
 files=($(git show --pretty=format: --name-only $(git log -1 --pretty=format:%P | cut -d' ' -f1)..HEAD | sort -u))
 for file in "${files[@]}"; do
-    [[ "${file}" = */PKGBUILD ]] && recipes+=("${file}")
+    [[ "${file}" = */PKGBUILD ]] && recipes+=("${file%/PKGBUILD}")
 done
-test -n "${files}"   || failure 'could not detect changed files'
-test -z "${recipes}" && success 'no changes in package recipes'
+test -n "${files}"   || failure 'Could not detect changed files.'
+test -z "${recipes}" && success 'No changes in package recipes.'
+echo
+echo "Going to build changed recipes:"
+IFS="\n" echo "${recipes[@]}"
+echo
 
 # Refresh
 # ignore cache, force refresh database
-pacman --sync --refresh --refresh --sysupgrade --noconfirm --noprogressbar 
+pacman --sync --refresh --refresh --sysupgrade --noconfirm --noprogressbar
 
 # Build
 for recipe in "${recipes[@]}"; do
-    cd "$(dirname ${recipe})"
+    cd "${recipe}"
     echo
-    echo "Build start: $(dirname ${recipe})"
-    makepkg-mingw --syncdeps --noconfirm --skippgpcheck --nocheck --noprogressbar || failure "could not build ${recipe}"
+    echo "Build recipe: ${recipe}"
+    echo
+    makepkg-mingw --syncdeps --noconfirm --skippgpcheck --nocheck --noprogressbar || failure "Could not build ${recipe}."
     cd - > /dev/null
 done
 
 # Install
-echo
-echo "Install packages:" */*.pkg.tar.xz
-pacman -U --noconfirm */*.pkg.tar.xz
+pacman --upgrade --noconfirm */*.pkg.tar.xz
