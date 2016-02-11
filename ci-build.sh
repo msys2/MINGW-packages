@@ -14,7 +14,7 @@ git config --global user.name 'MSYS2 Continuous Integration'
 
 # Recipes
 cd "$(dirname "$0")"
-files=($(git show -m --pretty=format: --name-only))
+files=($(git show --pretty=format: --name-only $(git log -1 --pretty=format:%P | cut -d' ' -f1)..HEAD))
 for file in "${files[@]}"; do
     [[ "${file}" = */PKGBUILD ]] && recipes+=("${file}")
 done
