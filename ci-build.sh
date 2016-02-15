@@ -44,6 +44,8 @@ for recipe in "${recipes[@]}"; do
     cd - > /dev/null
 done
 
+gitrevert
+
 # Install
 for recipe in "${recipes[@]}"; do
     yes | pacman --upgrade "${recipe}"/*.pkg.tar.xz || failure "Could not install built packages for ${recipe}."
