@@ -9,6 +9,10 @@ success() { echo "Build success: ${@}"; exit 0; }
 failure() { echo "Build failure: ${@}"; exit 1; }
 
 # Prepare
+gitmail="$(git config --global user.email)"
+gitname="$(git config --global user.name)"
+gitrevert() { git config --global user.email "${gitmail}"; git config --global user.name "${gitname}" }
+trap gitrevert EXIT
 git config --global user.email 'ci@msys2.org'
 git config --global user.name 'MSYS2 Continuous Integration'
 
