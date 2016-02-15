@@ -45,4 +45,8 @@ for recipe in "${recipes[@]}"; do
 done
 
 # Install
-pacman --upgrade --noconfirm */*.pkg.tar.xz
+for recipe in "${recipes[@]}"; do
+    yes | pacman --upgrade "${recipe}"/*.pkg.tar.xz || failure "Could not install built packages for ${recipe}."
+done
+
+success "Done."
