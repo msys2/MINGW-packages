@@ -5,50 +5,40 @@
 # Author: Qian Hong <fracting@gmail.com>
 
 # Functions
-success() { echo "Build success: ${@}"; exit 0; }
-failure() { echo "Build failure: ${@}"; exit 1; }
+if [[ -t 1 ]]; then
+    normal='\e[0m'
+    cyan='\e[1;36m'
+    green='\e[1;32m'
+    red='\e[1;31m'
+fi
+status()  { echo -e "\n${cyan}[MSYS2 CI]${normal} ${@}\n"; }
+success() { echo -e "\n${green}[MSYS2 CI] SUCCESS:${normal} ${@}.\n"; exit 0; }
+failure() { echo -e "\n${red}[MSYS2 CI] FAILURE:${normal} ${@}.\n"; exit 1; }
+gitconf() { test -n "$(git config ${1})" && return 0; git config --global "${1}" "${2}"; }
+execute() { status "${package:+$package: }${1}"; ${@:2} || failure "${package}: ${1} failed"; }
 
 # Prepare
-gitmail="$(git config --global user.email)"
-gitname="$(git config --global user.name)"
-gitrevert() { git config --global user.email "${gitmail}"; git config --global user.name "${gitname}"; }
-trap gitrevert EXIT
-git config --global user.email 'ci@msys2.org'
-git config --global user.name 'MSYS2 Continuous Integration'
+# TODO: implement update-core --noconfirm and move update process to outside this script
+execute 'Upgrading the system' pacman --sync --refresh --refresh --sysupgrade --noconfirm --noprogressbar
+gitconf user.name  'MSYS2 Continuous Integration' || failure 'Could not configure Git for makepkg'
+gitconf user.email 'ci@msys2.org'                 || failure 'Could not configure Git for makepkg'
 
 # Detect
 cd "$(dirname "$0")"
-files=($(git show --pretty=format: --name-only $(git log -1 --pretty=format:%P | cut -d' ' -f1)..HEAD | sort -u))
-for file in "${files[@]}"; do
-    [[ "${file}" = */PKGBUILD ]] && recipes+=("${file%/PKGBUILD}")
-done
-test -n "${files}"   || failure 'Could not detect changed files.'
-test -z "${recipes}" && success 'No changes in package recipes.'
-echo
-echo "Going to build changed recipes: ${recipes[@]}"
-echo
+commit_range="$(git log -1 --pretty=format:%P | cut -d' ' -f1)..HEAD"
+files=($(git show --pretty=format: --name-only ${commit_range} | sort -u))
+for file in "${files[@]}"; do [[ "${file}" = */PKGBUILD ]] && packages+=("${file%/PKGBUILD}"); done
+test -n "${files}"    || failure 'Could not detect changed files'
+test -z "${packages}" && success 'No changes in package recipes'
 
-# Refresh
-# ignore cache, force refresh database
-pacman --sync --refresh --refresh --sysupgrade --noconfirm --noprogressbar
-
-# Build
-for recipe in "${recipes[@]}"; do
-    cd "${recipe}"
-    echo
-    echo "Build recipe: ${recipe}"
-    echo
-    makepkg-mingw --syncdeps --noconfirm --noprogressbar --skippgpcheck --noprepare --nobuild || failure "Could not install deps for ${recipe}."
-    echo
-    makepkg-mingw --noextract --skippgpcheck --nocheck || failure "Could not build ${recipe}."
+# Build and install
+status 'Building changed packages:'
+for package in "${packages[@]}"; do printf "\t${package}\n"; done
+for package in "${packages[@]}"; do
+    cd "${package}"
+    execute     'Installing dependencies' makepkg-mingw --skippgpcheck --noconfirm --noprogressbar --syncdeps --noprepare --nobuild
+    execute     'Building'                makepkg-mingw --skippgpcheck --noextract --nocheck
+    yes|execute 'Installing'              pacman --upgrade *.pkg.tar.xz
     cd - > /dev/null
 done
-
-gitrevert
-
-# Install
-for recipe in "${recipes[@]}"; do
-    yes | pacman --upgrade "${recipe}"/*.pkg.tar.xz || failure "Could not install built packages for ${recipe}."
-done
-
-success "Done."
+success 'All packages built and installed successfully'
