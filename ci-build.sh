@@ -15,7 +15,7 @@ status()  { echo -e "\n${cyan}[MSYS2 CI]${normal} ${@}\n"; }
 success() { echo -e "\n${green}[MSYS2 CI] SUCCESS:${normal} ${@}.\n"; exit 0; }
 failure() { echo -e "\n${red}[MSYS2 CI] FAILURE:${normal} ${@}.\n"; exit 1; }
 gitconf() { test -n "$(git config ${1})" && return 0; git config --global "${1}" "${2}"; }
-execute() { status "${package:+$package: }${1}"; ${@:2} || failure "${package}: ${1} failed"; }
+execute() { status "${package:+$package: }${1}"; ${@:2} || failure "${package:+$package: }${1} failed"; }
 
 # Detect
 cd "$(dirname "$0")"
