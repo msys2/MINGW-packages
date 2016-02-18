@@ -15,13 +15,7 @@ status()  { echo -e "\n${cyan}[MSYS2 CI]${normal} ${@}\n"; }
 success() { echo -e "\n${green}[MSYS2 CI] SUCCESS:${normal} ${@}.\n"; exit 0; }
 failure() { echo -e "\n${red}[MSYS2 CI] FAILURE:${normal} ${@}.\n"; exit 1; }
 gitconf() { test -n "$(git config ${1})" && return 0; git config --global "${1}" "${2}"; }
-execute() { status "${package:+$package: }${1}"; ${@:2} || failure "${package}: ${1} failed"; }
-
-# Prepare
-# TODO: implement update-core --noconfirm and move update process to outside this script
-execute 'Upgrading the system' pacman --sync --refresh --refresh --sysupgrade --noconfirm --noprogressbar
-gitconf user.name  'MSYS2 Continuous Integration' || failure 'Could not configure Git for makepkg'
-gitconf user.email 'ci@msys2.org'                 || failure 'Could not configure Git for makepkg'
+execute() { status "${package:+$package: }${1}"; ${@:2} || failure "${package:+$package: }${1} failed"; }
 
 # Detect
 cd "$(dirname "$0")"
@@ -30,6 +24,11 @@ files=($(git show --pretty=format: --name-only ${commit_range} | sort -u))
 for file in "${files[@]}"; do [[ "${file}" = */PKGBUILD ]] && packages+=("${file%/PKGBUILD}"); done
 test -n "${files}"    || failure 'Could not detect changed files'
 test -z "${packages}" && success 'No changes in package recipes'
+
+# Prepare
+execute 'Upgrading the system' pacman --sync --refresh --refresh --sysupgrade --noconfirm --noprogressbar
+gitconf user.name  'MSYS2 Continuous Integration' || failure 'Could not configure Git for makepkg'
+gitconf user.email 'ci@msys2.org'                 || failure 'Could not configure Git for makepkg'
 
 # Build and install
 status 'Building changed packages:'
