@@ -20,7 +20,8 @@ list_changes()  { local since_master; while IFS= read -r line; do test -n "${lin
 cd "$(dirname "$0")"
 git_config user.email 'ci@msys2.org'
 git_config user.name  'MSYS2 Continuous Integration'
-git remote add -f upstream 'https://github.com/Alexpux/MINGW-packages'
+git remote add upstream 'https://github.com/Alexpux/MINGW-packages'
+git fetch --quiet upstream
 
 # Detect
 files=($(list_changes --pretty=format: --name-only))
