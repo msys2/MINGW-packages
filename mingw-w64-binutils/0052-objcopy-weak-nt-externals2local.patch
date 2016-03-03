@@ -1,0 +1,97 @@
+diff --git a/bfd/coffcode.h b/bfd/coffcode.h
+index 2499885..fc61dee 100644
+--- a/bfd/coffcode.h
++++ b/bfd/coffcode.h
+@@ -4202,6 +4202,7 @@ coff_write_object_contents (bfd * abfd)
+     {
+       int firstundef;
+ 
++      coff_nt_weak_to_local(abfd);
+       if (!coff_renumber_symbols (abfd, &firstundef))
+ 	return FALSE;
+       coff_mangle_symbols (abfd);
+diff --git a/bfd/coffgen.c b/bfd/coffgen.c
+index 9257f73..dd05823 100644
+--- a/bfd/coffgen.c
++++ b/bfd/coffgen.c
+@@ -788,6 +788,49 @@ coff_renumber_symbols (bfd *bfd_ptr, int *first_undef)
+   return TRUE;
+ }
+ 
++/* Transform weak externals to local symbols if requested (e.g. objcopy). */
++void coff_nt_weak_to_local(bfd *abfd)
++{
++  unsigned int symbol_count = bfd_get_symcount (abfd);
++  asymbol **symbol_ptr_ptr = abfd->outsymbols;
++  unsigned int symbol_index;
++
++  for (symbol_index = 0; symbol_index < symbol_count; symbol_index++)
++    {
++      asymbol *symbol = symbol_ptr_ptr[symbol_index];
++      coff_symbol_type *coff_symbol_ptr;
++      combined_entry_type *native;
++      struct internal_syment *sym;
++
++      coff_symbol_ptr = coff_symbol_from (symbol);
++      if (!coff_symbol_ptr)
++        continue;
++
++      native = coff_symbol_ptr->native;
++      if (!native)
++        continue;
++
++      sym = &native->u.syment;
++
++      if ((symbol->flags & BSF_LOCAL) && sym->n_sclass == C_NT_WEAK
++	  && sym->n_numaux == 1) {
++        union internal_auxent *aux = &native[1].u.auxent;
++	struct internal_syment *wsym = &aux->x_sym.x_tagndx.p->u.syment;
++
++	if (!wsym) {
++	  symbol->flags &= BSF_LOCAL;
++	  continue;
++	}
++
++	symbol->flags &= ~BSF_WEAK;
++	symbol->value = wsym->n_value;
++	symbol->section = coff_section_from_bfd_index (abfd, wsym->n_scnum);
++	symbol->section->output_section = symbol->section;
++	sym->n_numaux = 0;
++      }
++    }
++}
++
+ /* Run thorough the symbol table again, and fix it so that all
+    pointers to entries are changed to the entries' index in the output
+    symbol table.  */
+diff --git a/bfd/libcoff.h b/bfd/libcoff.h
+index 124e603..3ccf4d6 100644
+--- a/bfd/libcoff.h
++++ b/bfd/libcoff.h
+@@ -309,6 +309,8 @@ extern long coff_canonicalize_symtab
+   (bfd *, asymbol **);
+ extern int coff_count_linenumbers
+   (bfd *);
++extern void coff_nt_weak_to_local
++  (bfd *);
+ extern bfd_boolean coff_renumber_symbols
+   (bfd *, int *);
+ extern void coff_mangle_symbols
+diff --git a/binutils/objcopy.c b/binutils/objcopy.c
+index 2cd55fd..94b7702 100644
+--- a/binutils/objcopy.c
++++ b/binutils/objcopy.c
+@@ -1372,7 +1372,10 @@ filter_symbols (bfd *abfd, bfd *obfd, asymbol **osyms,
+ 	      sym->flags |= BSF_WEAK;
+ 	    }
+ 
+-	  if (!undefined
++	  /* We want to check even undefined weak symbols in the case of PE,
++	   * since weak externals are classified as undefined. */
++	  if ((!undefined || (bfd_get_flavour (abfd) == bfd_target_coff_flavour &&
++			      CONST_STRNEQ ((abfd)->xvec->name, "pe")))
+ 	      && (flags & (BSF_GLOBAL | BSF_WEAK))
+ 	      && (is_specified_symbol (name, localize_specific_htab)
+ 		  || (htab_elements (keepglobal_specific_htab) != 0
+-- 
+2.1.0
