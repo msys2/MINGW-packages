@@ -3,21 +3,23 @@
 # Contributor: Alexey Pavlov <alexpux@gmail.com>
 
 _realname=breakpad
-pkgbase=mingw-w64-${_realname}-svn
-pkgname=(${MINGW_PACKAGE_PREFIX}-${_realname}-svn)
+pkgbase=mingw-w64-${_realname}-git
+pkgname=(${MINGW_PACKAGE_PREFIX}-${_realname}-git)
 provides=(${MINGW_PACKAGE_PREFIX}-${_realname})
 conflicts=(${MINGW_PACKAGE_PREFIX}-${_realname})
-pkgver=r1471
+replaces=(${MINGW_PACKAGE_PREFIX}-${_realname}-svn)
+pkgver=r1449.f3d28e9
 pkgrel=1
 url='https://code.google.com/p/google-breakpad'
 pkgdesc='An open-source multi-platform crash reporting system (mingw-w64)'
 license=('BSD')
 arch=('any')
 depends=(${MINGW_PACKAGE_PREFIX}-gcc-libs)
-makedepends=(${MINGW_PACKAGE_PREFIX}-curl rsync subversion git gyp)
-source=(${_realname}.svn::"svn+http://google-breakpad.googlecode.com/svn/trunk#revision=1471"
-        0003-Build-minidump_upload-sym_upload-for-all-targets.patch
-        0004-Remove-local-copy-of-curl-headers.patch
+makedepends=(${MINGW_PACKAGE_PREFIX}-curl rsync git gyp)
+source=(${_realname}.git::"git+https://chromium.googlesource.com/breakpad/breakpad"
+        0002-Remove-local-copy-of-curl-headers.patch
+        0003-Link-minidump_upload-and-sym_upload-with-curl.patch
+        0004-Build-minidump_upload-sym_upload-for-all-targets.patch
         0005-Add-support-for-DWARF-in-PECOFF-as-used-by-Cygwin-an.patch
         0006-Fix-building-minidump-processor-for-MinGW.patch
         0007-Build-PECOFF-DWARF-dump_syms-for-MinGW.patch
@@ -27,42 +29,33 @@ source=(${_realname}.svn::"svn+http://google-breakpad.googlecode.com/svn/trunk#r
         0011-Default-debug_file-to-the-code_file-basename.patch
         0012-Fix-building-windows-client-unit-tests-with-gcc.patch
         0013-Add-symsrv_convert.patch
-        0014-Build-MinGW-client-library-using-gyp-generated-Makef.patch
         0015-Use-a-default-debug-id-of-all-zeros-when-no-CV-recor.patch
-        0016-Increase-RA-scanning-to-60-words.patch
-        0017-Use-__USE_MINGW_ANSI_STDIO-for-MinGW-build.patch
-        0018-Provide-a-working-strtok_r-for-MinGW.patch
-        0019-Add-a-README.md-with-notes-on-what-is-left-to-do.patch
-        0020-Support-for-multiple-upload-files-in-Breakpad.patch
-        0021-Fallback-to-synthesizing-a-debug-id-from-version-and.patch
-        0022-Fix-typo-in-the-name-of-the-info-entry-containing-up.patch
-        0023-Fix-a-missing-r-in-crash_generation_app.patch
-        0024-Disable-timeout-waiting-for-crash-reporting-server.patch
-        0026-Fixes-for-sign-compare-warnings-due-to-signedness-of.patch
-        0027-google-breakpad-0.1.svn.1413-libtool.patch
-        0028-pecoff-fix-assign-const.patch
-        gyp-regenerate-no-circular-check.patch
+        0016-Use-__USE_MINGW_ANSI_STDIO-for-MinGW-build.patch
+        0017-Provide-a-working-strtok_r-for-MinGW.patch
+        0018-Add-a-README.md.patch
+        0019-Fallback-to-synthesizing-a-debug-id-from-version-and.patch
+        0020-Fix-typo-in-the-name-of-the-info-entry-containing-up.patch
+        0021-Fix-a-missing-r-in-crash_generation_app.patch
         Makefile
         README.sample)
 
 pkgver() {
-    cd "${srcdir}/${_realname}.svn"
-    printf "r%s" "$(svnversion | tr -d 'A-z')"
+    cd "${srcdir}/${_realname}.git"
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
 }
 
 prepare() {
     msg2 "Creating patched-source directory"
     [[ -d "${srcdir}/${_realname}.patched" ]] && rm -rf "${srcdir}/${_realname}.patched"
     mkdir -p "${srcdir}/${_realname}.patched"
-    cp -r "${srcdir}/${_realname}.svn"/* "${srcdir}/${_realname}.patched"
+    cp -r "${srcdir}/${_realname}.git"/* "${srcdir}/${_realname}.patched"
 
     # Apply patches
     cd "${srcdir}/${_realname}.patched"
-    for patch in "${srcdir}"/0*.patch; do
+    for patch in "${srcdir}"/*.patch; do
         msg2 "Applying ${patch} ..."
         patch -p1 -i "${patch}"
     done
-    patch -p2 -i "${srcdir}/gyp-regenerate-no-circular-check.patch"
 
     msg2 "Running autoreconf"
     autoreconf -sif
@@ -78,12 +71,18 @@ build() {
       --build=${MINGW_CHOST} \
       --host=${MINGW_CHOST}
 
-    make CXXFLAGS="-Wno-error=reorder -DUNICODE -D_UNICODE -g" AR=${MINGW_PREFIX}/bin/ar RC=${MINGW_PREFIX}/bin/windres
+    # use the autotooled makefile to build the minidump processor library and tools
+    make CXXFLAGS="-DUNICODE -D_UNICODE -g" AR=${MINGW_PREFIX}/bin/ar RC=${MINGW_PREFIX}/bin/windres
+
+    # use gyp to generate a Makefile to build the Windows client library
+    cd "${srcdir}/${_realname}.build.${CARCH}/src/"
+    gyp --no-circular-check --depth=. -f make client/windows/breakpad_client.gyp
+    make CXXFLAGS="-DUNICODE -D_UNICODE -D_POSIX_C_SOURCE -g" AR=${MINGW_PREFIX}/bin/ar RC=${MINGW_PREFIX}/bin/windres out/Debug/crash_generation_app out/Debug/obj.target/client/windows/sender/libcrash_report_sender.a
 }
 
 package() {
     cd "${srcdir}/${_realname}.build.${CARCH}"
-    make CXXFLAGS="-Wno-error=reorder -DUNICODE -D_UNICODE -g" AR=${MINGW_PREFIX}/bin/ar RC=${MINGW_PREFIX}/bin/windres DESTDIR="${pkgdir}" install
+    make CXXFLAGS="-DUNICODE -D_UNICODE -g" AR=${MINGW_PREFIX}/bin/ar RC=${MINGW_PREFIX}/bin/windres DESTDIR="${pkgdir}" install
 
     # Install headers
     mkdir -p "${pkgdir}${MINGW_PREFIX}/include/breakpad"
@@ -161,31 +160,24 @@ EOF
 }
 
 sha256sums=('SKIP'
-            '37c5761db8940286b29d702ac6909d3e968cffda06c8d8381da3b7868c8a5083'
-            '7fcadddfd522d3deb96f7841dc625dcafff355d9c4c8d1d31bd415d6fd0fbc62'
-            '8d1625d0caa7800933d62df906cdd91e98dae66ac8bd5e806a672fdb5b26a3e8'
-            '271a27514e3e6d4ba6698b4ebb2cdafa32c8a61009adf1d48916c800880f4ff6'
-            '1d0ac9faac4940ce30663009dcf7509e2ff29f92285856d286301e41ee4681d4'
-            '0ce4126f31b7ba96ca477c08d2be9441e73ebd69dc870c796bd861f408f4f1e1'
-            '94e27eebec67251e838b4ac9392227174bb90ddf52eb6874db5da6ebe36aa00f'
-            '7e5e48803e30709123a6a7cebf1b80463de927d68ff8333da3f39ef2c2b6d6a0'
-            'd9a77efc0c20ec0df9f5f82b906c6c9532a835c924b5f136b76b08e886ff7ac1'
-            '3c1494240cc19711519414d99b6e1295c2083598765b9c6933706e3cd6480aea'
-            '67649a1bd5e6831a4dbb6278cbd5ae65c90b58ede5fd0a2e32463598e9e58b8b'
-            '9c2439c90b04493b7627b11ff5312039a823c1d353ae31ab6ea78f2018db239f'
-            '15823f6f55d001f6131b34f7c226b6f7102a0b7bcd952f833015f0def16785e3'
-            'd2157859f277e3d661516cb749fc46217ada572f4dd03eb4f9c735d094c37470'
-            '6090b0abd6e0c86572fdf5d83e2f3c8e6562b9214785d3adb62b6efa106ced8a'
-            'd4083617fea7c34035486b0092ca5dce6a8f0502022c369d5e8aaa68651694ee'
-            '7888061f05eaa075d22085b5ae9e0d5af6293fff5aa4f70f0701e913e40a82ba'
-            '4145d9f6743d26b411a851519fe8430ccf717d75405462c2a84a8b3d8ccfecc6'
-            'c6358db6cd50cdb6660b1897562dfc13bbce9f042b3c9801bc56032aacaef0be'
-            'ac812a4d0d41455b5d0e5a3f22db110226c2cfbb815c1f54861f417c1d2d0a58'
-            'c027f523edd94b60912dd7442e89ac0e7302e0a4619a97d93da33fb91361aa29'
-            '727abceb4977ac04e1db97c157c8e28c165282aa810590649631de5c2f708856'
-            '0f323f917786fb32ccf9bb6aba719b923c59a2a7e785d1e663f731bec9a3ac66'
-            '6c349e47bb41b4ae2f2ad04ce0cf2138361b9ed507db7255db388638974e8693'
-            '61350dff3a1e1503fcd8d731b50d7fa663ab69eaecfaa1cd51170c7ed3a1a750'
-            '318bf4ab1778d2f192c55ef9e23fc5424c6f64c171051b18c0a40276af7e503a'
+            'fdd337a70d54d69a794437f65be45fc4508e245996ea488c9f8a7a548081dd68'
+            '999f7a2711ee43b77f9bc8636d6712292f98ed94b0ddd167ffa7e2afad57f4e6'
+            'd42bb4c116857f5ca74fc91046b85af1d20224dac18e4659ce656ab7c56f5cbe'
+            'e69ea849238a3d50f7b3037b49f08439d238c2e8711c66d97dbd914cc4ac55b0'
+            '4d0b1c7087261bfb654d850aab13cc010bd855a2da532d7bfdce22ee2ffb498d'
+            '28b4ab82261ce7ddc4df8541a507ae99c3cdd7d5a208ec08190f48f229cd4d26'
+            '8d2a60d0d07b2675fdacacbfba06777749065602af09a83060489133f3aee75c'
+            '1fc58a707f63f6d64f3d04c0f955aa2e8d85fe51d6bc5492dbaa856653934ac3'
+            '28c3e5d8215d304f3768854b4f89ef73e638ff8f66bc3f838dd3c8b946b36cf1'
+            '1c5682b80fc46ac831da9a0ebcfd55b6c7e575651d9a7b2e2ace461c79969870'
+            '1df575e4a47bd62788e6f650f4fe15f792de92cbfe80fbdae9401498f6c9e329'
+            '1e9b0a9becaa79b66912eb1d337648a12ecb40a2d247868c44cde33422a8456d'
+            '424dcabca421f11efce1725b11a00abce751fe3bedaee57ee8cd65f214d55eb8'
+            '5dc92b9897b502dde272680353808df485494bd63c37003857368eb260e272d1'
+            '2e8e9f42cc525fdaa25a39411c42ea8b5ced144353f8fc28a6e7560df1af52f0'
+            'd5167e24ee51e6f855007c084f4db15ca8ea9fb2e132748195e8a67afc34c5da'
+            '21253d6cb12f7060fca0fa3886a74b07cd3de9972cf3f97063720583d94fc1dc'
+            'a85df24fbed73e925b79214335006106e37867aa9c34586ccdb426bd356c709a'
+            '45dcd600f10af451d58d9f95999a235637c7fba18a46e5878c4d0e8e9d0e4cb3'
             'b1a4025d888bcd1d752b3b6c93d6e6ae353eae050197b1ae2c54f9b90bfb1292'
             '0b1421202edef83db517a310824ee1f7680e0a80229f5a63aa60cc2ef6b93b19')
