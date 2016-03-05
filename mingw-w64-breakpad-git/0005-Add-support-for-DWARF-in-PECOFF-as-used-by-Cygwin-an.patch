@@ -1,7 +1,7 @@
-From cac6e48f7c280b1c269136568168ffcad2cf304d Mon Sep 17 00:00:00 2001
-From: Jon TURNEY <jon.turney@dronecode.org.uk>
+From bb1af8e64afa9692cf3ed62532757be370cfeec1 Mon Sep 17 00:00:00 2001
+From: Jon Turney <jon.turney@dronecode.org.uk>
 Date: Tue, 4 Feb 2014 00:57:13 +0000
-Subject: [PATCH 05/24] Add support for DWARF in PECOFF as used by Cygwin and
+Subject: [PATCH 05/23] Add support for DWARF in PECOFF as used by Cygwin and
  MinGW
 
 For cygwin and mingw targets, build a dump_syms tool which can read DWARF
@@ -22,7 +22,18 @@ Don't include arpa/inet.h on MinGW
 v3:
 Use AM_CPPFLAGS for NO_STABS_SUPPORT
 
-Signed-off-by: Jon TURNEY <jon.turney@dronecode.org.uk>
+v4:
+Fixes for -Werror=sign-compare errors arising due to signedness of size_t
+Update use of Module::Extern() for change in r1415
+Fix EOT fallback to match reality rather than PE/COFF spec.
+
+v5:
+Add needed include of winsock.h for htons etc.
+
+v6:
+Update for char -> uint8_t changes in commit bc44efdc
+
+Signed-off-by: Jon Turney <jon.turney@dronecode.org.uk>
 ---
  Makefile.am                                    |  29 +
  configure.ac                                   |   5 +
@@ -32,10 +43,10 @@ Signed-off-by: Jon TURNEY <jon.turney@dronecode.org.uk>
  src/common/pecoff/pecoff.h                     | 262 +++++++++
  src/common/pecoff/pecoff_file_id.cc            |  83 +++
  src/common/pecoff/pecoff_file_id.h             |  52 ++
- src/common/pecoff/pecoffutils.cc               | 490 +++++++++++++++++
+ src/common/pecoff/pecoffutils.cc               | 494 +++++++++++++++++
  src/common/pecoff/pecoffutils.h                | 167 ++++++
  src/tools/windows/dump_syms_dwarf/dump_syms.cc |  88 +++
- 11 files changed, 2052 insertions(+)
+ 11 files changed, 2056 insertions(+)
  create mode 100644 src/common/pecoff/dump_symbols-inl.h
  create mode 100644 src/common/pecoff/dump_symbols.cc
  create mode 100644 src/common/pecoff/dump_symbols.h
@@ -47,7 +58,7 @@ Signed-off-by: Jon TURNEY <jon.turney@dronecode.org.uk>
  create mode 100644 src/tools/windows/dump_syms_dwarf/dump_syms.cc
 
 diff --git a/Makefile.am b/Makefile.am
-index 6246c9c..c802304 100644
+index def5be7..60d2164 100644
 --- a/Makefile.am
 +++ b/Makefile.am
 @@ -61,6 +61,11 @@ AM_CFLAGS += -fPIC
@@ -62,7 +73,7 @@ index 6246c9c..c802304 100644
  # Specify include paths for ac macros
  ACLOCAL_AMFLAGS = -I m4
  
-@@ -321,6 +326,12 @@ bin_PROGRAMS += \
+@@ -361,6 +366,12 @@ endif
  endif
  endif LINUX_HOST
  
@@ -75,7 +86,7 @@ index 6246c9c..c802304 100644
  
  ## Tests
  if !DISABLE_PROCESSOR
-@@ -613,6 +624,24 @@ src_tools_linux_md2core_minidump_2_core_unittest_LDADD = \
+@@ -705,6 +716,24 @@ src_tools_linux_md2core_minidump_2_core_unittest_LDADD = \
  
  endif LINUX_HOST
  
@@ -101,10 +112,10 @@ index 6246c9c..c802304 100644
  src_processor_address_map_unittest_SOURCES = \
  	src/processor/address_map_unittest.cc
 diff --git a/configure.ac b/configure.ac
-index 8c02f51..aeccf19 100644
+index 23195b7..dc4d9bf 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -80,8 +80,13 @@ case $host in
+@@ -84,8 +84,13 @@ case $host in
    *-*-linux* | *-android* )
      LINUX_HOST=true
      ;;
@@ -120,7 +131,7 @@ index 8c02f51..aeccf19 100644
  case $host in
 diff --git a/src/common/pecoff/dump_symbols-inl.h b/src/common/pecoff/dump_symbols-inl.h
 new file mode 100644
-index 0000000..6ec2059
+index 0000000..7fed966
 --- /dev/null
 +++ b/src/common/pecoff/dump_symbols-inl.h
 @@ -0,0 +1,706 @@
@@ -299,7 +310,7 @@ index 0000000..6ec2059
 +  void StartCompilationUnit(const string& compilation_dir) {
 +    compilation_dir_ = compilation_dir;
 +  }
-+  void ReadProgram(const char *program, uint64 length,
++  void ReadProgram(const uint8_t *program, uint64 length,
 +                   Module *module, std::vector<Module::Line> *lines) {
 +    DwarfLineToModule handler(module, compilation_dir_, lines);
 +    dwarf2reader::LineInfo parser(program, length, byte_reader_, &handler);
@@ -332,7 +343,7 @@ index 0000000..6ec2059
 +  for (int i = 0; i < num_sections; ++i) {
 +    const Shdr section = ObjectFileReader::FindSectionByIndex(header, i);
 +    string name = ObjectFileReader::GetSectionName(header, section);
-+    const char* contents = reinterpret_cast<const char *>(ObjectFileReader::GetSectionPointer(header, section));
++    const uint8_t* contents = reinterpret_cast<const uint8_t *>(ObjectFileReader::GetSectionPointer(header, section));
 +    file_context.AddSectionToSectionMap(name, contents,
 +                                        ObjectFileReader::GetSectionSize(header, section));
 +  }
@@ -342,7 +353,7 @@ index 0000000..6ec2059
 +  dwarf2reader::SectionMap::const_iterator debug_info_entry =
 +      file_context.section_map().find(".debug_info");
 +  assert(debug_info_entry != file_context.section_map().end());
-+  const std::pair<const char*, uint64>& debug_info_section =
++  const std::pair<const uint8_t*, uint64>& debug_info_section =
 +      debug_info_entry->second;
 +  // This should never have been called if the file doesn't have a
 +  // .debug_info section.
@@ -409,7 +420,7 @@ index 0000000..6ec2059
 +      dwarf2reader::ENDIANNESS_BIG : dwarf2reader::ENDIANNESS_LITTLE;
 +
 +  // Find the call frame information and its size.
-+  const char* cfi = reinterpret_cast<const char *>(ObjectFileReader::GetSectionPointer(header, section));
++  const uint8_t* cfi = reinterpret_cast<const uint8_t *>(ObjectFileReader::GetSectionPointer(header, section));
 +  size_t cfi_size = ObjectFileReader::GetSectionSize(header, section);
 +
 +  // Plug together the parser, handler, and their entourages.
@@ -1429,10 +1440,10 @@ index 0000000..fd2ea10
 +#endif  // COMMON_PECOFF_PECOFF_FILE_ID_H__
 diff --git a/src/common/pecoff/pecoffutils.cc b/src/common/pecoff/pecoffutils.cc
 new file mode 100644
-index 0000000..158270d
+index 0000000..f097cc6
 --- /dev/null
 +++ b/src/common/pecoff/pecoffutils.cc
-@@ -0,0 +1,490 @@
+@@ -0,0 +1,494 @@
 +// Copyright (c) 2014 Google Inc.
 +// All rights reserved.
 +//
@@ -1473,6 +1484,8 @@ index 0000000..158270d
 +
 +#ifndef _WIN32
 +#include <arpa/inet.h>
++#else
++#include <winsock.h>
 +#endif
 +
 +namespace google_breakpad {
@@ -1685,14 +1698,17 @@ index 0000000..158270d
 +        continue;
 +      const char* export_name = reinterpret_cast<const char*>(ConvertRVAToPointer(obj_base, export_name_rva));
 +
-+      // find the corresponding export address table entry
-+      uint16_t export_ordinal = eot[i];
++      // get the corresponding ordinal
++      // (the PE/COFF specification seems to claim that EOT entries are not
++      // biased by ordinalbase, but that doesn't seem to match reality...)
++      uint16_t export_ordinal = eot[i] + export_table->mOrdinalBase;
 +      if ((export_ordinal < export_table->mOrdinalBase) ||
 +          (export_ordinal >= (export_table->mOrdinalBase + export_table->mAddressTableEntries))) {
 +        fprintf(stderr, "exported ordinal %d out of range for EAT!\n", export_ordinal);
 +        continue;
 +      }
 +
++      // find the corresponding export address table entry
 +      uint32_t eat_index = export_ordinal - export_table->mOrdinalBase;
 +      uint32_t export_rva = eat[eat_index];
 +
@@ -1702,9 +1718,8 @@ index 0000000..158270d
 +          (export_rva < (data_directory_export_entry->mVirtualAddress + data_directory_export_entry->mSize)))
 +        continue;
 +
-+      Module::Extern* ext = new Module::Extern;
++      Module::Extern* ext = new Module::Extern(export_rva + GetLoadingAddress(obj_base));
 +      ext->name = export_name;
-+      ext->address = export_rva + GetLoadingAddress(obj_base);
 +      module->AddExtern(ext);
 +    }
 +
@@ -1747,7 +1762,7 @@ index 0000000..158270d
 +  // dashes removed.
 +  char identifier_str[40];
 +  int buffer_idx = 0;
-+  for (int idx = 0; idx < kMDGUIDSize; ++idx) {
++  for (unsigned int idx = 0; idx < kMDGUIDSize; ++idx) {
 +    int hi = (identifier_swapped[idx] >> 4) & 0x0F;
 +    int lo = (identifier_swapped[idx]) & 0x0F;
 +
@@ -1790,7 +1805,7 @@ index 0000000..158270d
 +  }
 +
 +  // search the debug directory for a codeview entry
-+  for (int i = 0; i < debug_directory_size/sizeof(PeDebugDirectory); i++) {
++  for (unsigned int i = 0; i < debug_directory_size/sizeof(PeDebugDirectory); i++) {
 +    if (debug_directory[i].mType == IMAGE_DEBUG_TYPE_CODEVIEW) {
 +      // interpret the codeview record to get build-id
 +      const CvInfoPbd70* codeview_record = reinterpret_cast<const CvInfoPbd70*>
@@ -1881,7 +1896,7 @@ index 0000000..158270d
 +template<class PeCoffClassTraits>
 +const PeDataDirectory*
 +PeCoffObjectFileReader<PeCoffClassTraits>::GetDataDirectoryEntry(
-+    ObjectFileBase obj_base, int entry) {
++    ObjectFileBase obj_base, unsigned int entry) {
 +  const PeOptionalHeader* peOptionalHeader = GetOptionalHeader(obj_base);
 +
 +  // the data directory immediately follows the optional header
@@ -1925,7 +1940,7 @@ index 0000000..158270d
 +}
 diff --git a/src/common/pecoff/pecoffutils.h b/src/common/pecoff/pecoffutils.h
 new file mode 100644
-index 0000000..5553d9f
+index 0000000..3e2d7b3
 --- /dev/null
 +++ b/src/common/pecoff/pecoffutils.h
 @@ -0,0 +1,167 @@
@@ -2086,7 +2101,7 @@ index 0000000..5553d9f
 +  static const PeSectionHeader* GetSectionTable(ObjectFileBase obj_base);
 +  static const char* GetStringTable(ObjectFileBase obj_base);
 +  static const PeDataDirectory* GetDataDirectoryEntry(ObjectFileBase obj_base,
-+                                                      int entry);
++                                                      unsigned int entry);
 +  static const uint8_t* ConvertRVAToPointer(ObjectFileBase obj_base, Offset rva);
 +};
 +
@@ -2191,5 +2206,5 @@ index 0000000..2d7f70a
 +  return 0;
 +}
 -- 
-2.1.1
+2.7.0
 
