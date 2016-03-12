@@ -8,4 +8,5 @@
 #define ANGLE_TRANSLATOR_IMPLEMENTATION
 #endif
 
+#include "../compiler/translator/ShaderVars.cpp"
 #include "../compiler/translator/ShaderLang.cpp"
