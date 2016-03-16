@@ -51,6 +51,46 @@ _list_changes() {
     _as_list "${list_name}" "${filter}" "${strip}" "$(git log "${git_options[@]}" HEAD^.. | sort -u)"
 }
 
+# Get package information
+_package_info() {
+    local package="${1}"
+    local properties=("${@:2}")
+    for property in "${properties[@]}"; do
+        local -n nameref_property="${property}"
+        nameref_property=($(
+            MINGW_PACKAGE_PREFIX='mingw-w64' source "${package}/PKGBUILD"
+            declare -n nameref_property="${property}"
+            echo "${nameref_property[@]}"))
+    done
+}
+
+# Package provides another
+_package_provides() {
+    local package="${1}"
+    local another="${2}"
+    local pkgname provides
+    _package_info "${package}" pkgname provides
+    for pkg_name in "${pkgname[@]}";  do [[ "${pkg_name}" = "${another}" ]] && return 0; done
+    for provided in "${provides[@]}"; do [[ "${provided}" = "${another}" ]] && return 0; done
+    return 1
+}
+
+# Add package to build after required dependencies
+_build_add() {
+    local package="${1}"
+    local depends makedepends
+    for sorted_package in "${sorted_packages[@]}"; do
+        [[ "${sorted_package}" = "${package}" ]] && return 0
+    done
+    _package_info "${package}" depends makedepends
+    for dependency in "${depends[@]}" "${makedepends[@]}"; do
+        for unsorted_package in "${packages[@]}"; do
+            _package_provides "${unsorted_package}" "${dependency}" && _build_add "${unsorted_package}"
+        done
+    done
+    sorted_packages+=("${package}")
+}
+
 # Git configuration
 git_config() {
     local name="${1}"
@@ -68,6 +108,15 @@ execute(){
     message "${status}"
     ${command[@]} || failure "${status} failed"
     cd - > /dev/null
+}
+
+# Sort packages by dependency
+define_build_order() {
+    local sorted_packages=()
+    for unsorted_package in "${packages[@]}"; do
+        _build_add "${unsorted_package}"
+    done
+    packages=("${sorted_packages[@]}")
 }
 
 # Added commits or changed recipes
