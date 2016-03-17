@@ -119,6 +119,36 @@ define_build_order() {
     packages=("${sorted_packages[@]}")
 }
 
+# Associate artifacts with this build
+create_build_references() {
+    local repository_name="${1}"
+    local repository_url="${2}"
+    local references="${repository_name}.builds"
+    test -n "${repository_url}" && wget --no-verbose "${repository_url}/${references}" || touch "${references}"
+    for file in *; do
+        sed -i "/^${file}.*/d" "${references}"
+        printf '%-80s%s\n' "${file}" "${BUILD_URL}" >> "${references}"
+    done
+    sort "${references}" | tee "${references}.sorted" | sed -r 's/(\S+)\s.*\/([^/]+)/\2\t\1/'
+    mv "${references}.sorted" "${references}"
+}
+
+# Add packages to repository
+create_pacman_repository() {
+    local name="${1}"
+    local url="${2}"
+    test -n "${url}" && wget --no-verbose "${url}/${name}".{db,files}{,.tar.xz} || rm -f "${name}".{db,files}{,.tar.xz}
+    repo-add "${name}.db.tar.xz" *.pkg.tar.xz
+}
+
+# Deployment is enabled
+deploy_enabled() {
+    test -n "${BUILD_URL}" || return 1
+    test -n "${DEPLOY_ACCOUNT}" || return 1
+    local repository_account="$(git remote get-url origin | cut -d/ -f4)"
+    [[ "${repository_account}" = "${DEPLOY_ACCOUNT}" ]]
+}
+
 # Added commits or changed recipes
 list_commits()  { _list_changes commits '*' '#*::' --pretty=format:'%ai::[%h] %s'; }
 list_packages() { _list_changes packages '*/PKGBUILD' '%/PKGBUILD' --pretty=format: --name-only; }
