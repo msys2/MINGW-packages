@@ -33,6 +33,7 @@ _as_list() {
     local strip="${3}"
     local lines="${4}"
     local result=1
+    nameref_list=()
     while IFS= read -r line; do
         test -z "${line}" && continue
         result=0
@@ -91,6 +92,19 @@ _build_add() {
     sorted_packages+=("${package}")
 }
 
+# Download previous artifact
+_download_previous() {
+    local filenames=("${@}")
+    [[ "${DEPLOY_PROVIDER}" = bintray ]] || return 1
+    for filename in "${filenames[@]}"; do
+        if ! wget --no-verbose "https://dl.bintray.com/${BINTRAY_ACCOUNT}/${BINTRAY_REPOSITORY}/${filename}"; then
+            rm -f "${filenames[@]}"
+            return 1
+        fi
+    done
+    return 0
+}
+
 # Git configuration
 git_config() {
     local name="${1}"
@@ -122,9 +136,8 @@ define_build_order() {
 # Associate artifacts with this build
 create_build_references() {
     local repository_name="${1}"
-    local repository_url="${2}"
     local references="${repository_name}.builds"
-    test -n "${repository_url}" && wget --no-verbose "${repository_url}/${references}" || touch "${references}"
+    _download_previous "${references}" || touch "${references}"
     for file in *; do
         sed -i "/^${file}.*/d" "${references}"
         printf '%-80s%s\n' "${file}" "${BUILD_URL}" >> "${references}"
@@ -136,22 +149,32 @@ create_build_references() {
 # Add packages to repository
 create_pacman_repository() {
     local name="${1}"
-    local url="${2}"
-    test -n "${url}" && wget --no-verbose "${url}/${name}".{db,files}{,.tar.xz} || rm -f "${name}".{db,files}{,.tar.xz}
+    _download_previous "${name}".{db,files}{,.tar.xz}
     repo-add "${name}.db.tar.xz" *.pkg.tar.xz
 }
 
 # Deployment is enabled
 deploy_enabled() {
     test -n "${BUILD_URL}" || return 1
-    test -n "${DEPLOY_ACCOUNT}" || return 1
+    [[ "${DEPLOY_PROVIDER}" = bintray ]] || return 1
     local repository_account="$(git remote get-url origin | cut -d/ -f4)"
-    [[ "${repository_account}" = "${DEPLOY_ACCOUNT}" ]]
+    [[ "${repository_account,,}" = "${BINTRAY_ACCOUNT,,}" ]]
 }
 
-# Added commits or changed recipes
-list_commits()  { _list_changes commits '*' '#*::' --pretty=format:'%ai::[%h] %s'; }
-list_packages() { _list_changes packages '*/PKGBUILD' '%/PKGBUILD' --pretty=format: --name-only; }
+# Added commits
+list_commits()  {
+    _list_changes commits '*' '#*::' --pretty=format:'%ai::[%h] %s'
+}
+
+# Changed recipes
+list_packages() {
+    local _packages
+    _list_changes _packages '*/PKGBUILD' '%/PKGBUILD' --pretty=format: --name-only
+    for _package in "${_packages[@]}"; do
+        local find_case_sensitive="$(find -name "${_package}" -type d -print -quit)"
+        test -n "${find_case_sensitive}" && packages+=("${_package}")
+    done
+}
 
 # Status functions
 failure() { local status="${1}"; local items=("${@:2}"); _status failure "${status}." "${items[@]}"; exit 1; }
