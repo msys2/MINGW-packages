@@ -34,7 +34,7 @@ done
 
 # Deploy
 deploy_enabled && cd artifacts || success 'All packages built successfully'
-execute 'Generating pacman repository' create_pacman_repository "${PACMAN_REPOSITORY_NAME:-ci-build}" "${PACMAN_REPOSITORY_URL}"
-execute 'Generating build references'  create_build_references  "${PACMAN_REPOSITORY_NAME:-ci-build}" "${PACMAN_REPOSITORY_URL}"
+execute 'Generating pacman repository' create_pacman_repository "${PACMAN_REPOSITORY_NAME:-ci-build}"
+execute 'Generating build references'  create_build_references  "${PACMAN_REPOSITORY_NAME:-ci-build}"
 execute 'SHA-256 checksums' sha256sum *
 success 'All artifacts built successfully'
