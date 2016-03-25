@@ -86,6 +86,7 @@ _build_add() {
     _package_info "${package}" depends makedepends
     for dependency in "${depends[@]}" "${makedepends[@]}"; do
         for unsorted_package in "${packages[@]}"; do
+            [[ "${package}" = "${unsorted_package}" ]] && continue
             _package_provides "${unsorted_package}" "${dependency}" && _build_add "${unsorted_package}"
         done
     done
