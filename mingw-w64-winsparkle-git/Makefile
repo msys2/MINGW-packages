@@ -1,8 +1,14 @@
 # GCC makefile for WinSparkle
-# Copyright (C) 2015 Renato Silva
+# Copyright (C) 2015, 2016 Renato Silva
 # This file is licensed under the same terms as WinSparkle
 
 all: static dll
+
+translations:
+	@for file in ../translations/*.po; do\
+		msgfmt $$file -o "$${file/%po/mo}"; \
+	done
+	windres ../translations/translations.rc -O coff -o translations.res
 
 objects:
 	gcc -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE appcast.cpp          -I../include
@@ -20,5 +26,5 @@ objects:
 static: objects
 	ar rcs libwinsparkle.a *.o
 
-dll: objects
-	gcc -shared -mthreads -o libwinsparkle.dll *.o -Wl,--out-implib,libwinsparkle.dll.a -lstdc++ $(shell wx-config --libs core) -lexpat -lwininet -lversion -lole32 -loleaut32 -lrpcrt4 -luuid
+dll: objects translations
+	gcc -shared -mthreads -o libwinsparkle.dll *.o translations.res -Wl,--out-implib,libwinsparkle.dll.a -lstdc++ $(shell wx-config --libs core) -lexpat -lwininet -lversion -lole32 -loleaut32 -lrpcrt4 -luuid
