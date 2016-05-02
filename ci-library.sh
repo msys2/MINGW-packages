@@ -118,10 +118,14 @@ git_config() {
 # Run command with status
 execute(){
     local status="${1}"
-    local command=("${@:2}")
+    local command="${2}"
+    local arguments=("${@:3}")
     cd "${package:-.}"
     message "${status}"
-    ${command[@]} || failure "${status} failed"
+    if [[ "${command}" != *:* ]]
+        then ${command} ${arguments[@]}
+        else ${command%%:*} | ${command#*:} ${arguments[@]}
+    fi || failure "${status} failed"
     cd - > /dev/null
 }
 
