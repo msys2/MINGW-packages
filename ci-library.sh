@@ -174,11 +174,12 @@ list_commits()  {
 # Changed recipes
 list_packages() {
     local _packages
-    _list_changes _packages '*/PKGBUILD' '%/PKGBUILD' --pretty=format: --name-only
+    _list_changes _packages '*/PKGBUILD' '%/PKGBUILD' --pretty=format: --name-only || return 1
     for _package in "${_packages[@]}"; do
         local find_case_sensitive="$(find -name "${_package}" -type d -print -quit)"
         test -n "${find_case_sensitive}" && packages+=("${_package}")
     done
+    return 0
 }
 
 # Status functions
