@@ -129,6 +129,13 @@ execute(){
     cd - > /dev/null
 }
 
+# Update system
+update_system() {
+    repman add ci.msys 'https://dl.bintray.com/alexpux/msys2' || return 1
+    pacman --noconfirm --noprogressbar --sync --refresh --refresh --sysupgrade --sysupgrade || return 1
+    pacman --noconfirm --noprogressbar --sync ci.msys/pactoys
+}
+
 # Sort packages by dependency
 define_build_order() {
     local sorted_packages=()
