@@ -20,6 +20,10 @@ message 'Processing changes' "${commits[@]}"
 test -z "${packages}" && success 'No changes in package recipes'
 define_build_order || failure 'Could not determine build order'
 
+# Quality
+message 'Checking recipe quality'
+check_recipe_quality || failure 'Could not pass quality check'
+
 # Build
 message 'Building packages' "${packages[@]}"
 execute 'Upgrading the system' pacman --noconfirm --noprogressbar --sync --refresh --refresh --sysupgrade --sysupgrade
