@@ -129,6 +129,14 @@ execute(){
     cd - > /dev/null
 }
 
+# Update system
+update_system() {
+    repman add ci.msys 'https://dl.bintray.com/alexpux/msys2' || return 1
+    pacman --noconfirm --noprogressbar --sync --refresh --refresh --sysupgrade --sysupgrade || return 1
+    test -n "${DISABLE_QUALITY_CHECK}" && return 0 # TODO: remove this option when not anymore needed
+    pacman --noconfirm --needed --noprogressbar --sync ci.msys/pactoys
+}
+
 # Sort packages by dependency
 define_build_order() {
     local sorted_packages=()
@@ -180,6 +188,16 @@ list_packages() {
         test -n "${find_case_sensitive}" && packages+=("${_package}")
     done
     return 0
+}
+
+# Recipe quality
+check_recipe_quality() {
+    # TODO: remove this option when not anymore needed
+    if test -n "${DISABLE_QUALITY_CHECK}"; then
+        echo 'This feature is disabled.'
+        return 0
+    fi
+    saneman --format='\t%l:%c %p:%c %m' --verbose --no-terminal "${packages[@]}"
 }
 
 # Status functions
