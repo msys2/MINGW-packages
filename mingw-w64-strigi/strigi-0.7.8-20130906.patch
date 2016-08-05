@@ -1,0 +1,121 @@
+Upstream link https://quickgit.kde.org/?p=emerge.git&a=tree&hb=d5ebef626ef2f376c979045748d94a08d32eb875&h=fa080e369f361cf99695fd340d65157991378ff7&f=portage%2Fkdesupport%2Fstrigi
+
+diff -U 3 -H -d -r -N -- strigi.orig/libstreamanalyzer/ConfigureChecks.cmake strigi/libstreamanalyzer/ConfigureChecks.cmake
+--- strigi.orig/libstreamanalyzer/ConfigureChecks.cmake	2013-09-06 01:48:22.799411900 +0200
++++ strigi/libstreamanalyzer/ConfigureChecks.cmake	2013-09-06 01:11:30.460873400 +0200
+@@ -28,6 +28,7 @@
+ CHECK_FUNCTION_EXISTS(isblank HAVE_ISBLANK)             # src/streams/mailinputstream.cpp, src/streams/strigi/compat.cpp
+ CHECK_FUNCTION_EXISTS(mkstemp HAVE_MKSTEMP)             # src/streamanalyzer/helperendanalyzer.cpp
+ CHECK_FUNCTION_EXISTS(nanosleep HAVE_NANOSLEEP)         # src/storage/sqlitestorage.cpp, src/daemon/indexscheduler.cpp, src/searchclient/cmdlinestrigi.cpp
++CHECK_FUNCTION_EXISTS(realpath HAVE_REALPATH)           # lib/lineanalyzers/m3ustreamanalyzer.cpp
+ CHECK_FUNCTION_EXISTS(setenv HAVE_SETENV)               # src/xmlindexer/peranalyzerxml.cpp
+ CHECK_FUNCTION_EXISTS(strcasecmp HAVE_STRCASECMP)       # src/streamindexer/expatsaxendanalyzer.cpp, src/streamindexer/saxendanalyzer.cpp
+ CHECK_FUNCTION_EXISTS(strcasestr HAVE_STRCASESTR)       # src/streams/mailinputstream.cpp
+diff -U 3 -H -d -r -N -- strigi.orig/libstreamanalyzer/lib/config.h.cmake strigi/libstreamanalyzer/lib/config.h.cmake
+--- strigi.orig/libstreamanalyzer/lib/config.h.cmake	2013-09-06 01:48:23.514452800 +0200
++++ strigi/libstreamanalyzer/lib/config.h.cmake	2013-09-06 01:42:09.928084900 +0200
+@@ -30,6 +30,7 @@
+ #cmakedefine HAVE_ISBLANK 1
+ #cmakedefine HAVE_MKSTEMP 1
+ #cmakedefine HAVE_NANOSLEEP 1
++#cmakedefine HAVE_REALPATH 1
+ #cmakedefine HAVE_SETENV 1
+ #cmakedefine HAVE_STRCASECMP 1
+ #cmakedefine HAVE_STRCASESTR 1
+@@ -184,4 +185,13 @@
+  #endif
+ #endif
+ 
++#ifdef _WIN32_WCE
++# undef leave
++# ifdef HAVE_WCECOMPAT
++#  define read _read
++#  define write _write
++# endif
++# define access _access
++#endif
++
+ #endif //CONFIG_H
+diff -U 3 -H -d -r -N -- strigi.orig/libstreamanalyzer/lib/endanalyzers/id3endanalyzer.cpp strigi/libstreamanalyzer/lib/endanalyzers/id3endanalyzer.cpp
+--- strigi.orig/libstreamanalyzer/lib/endanalyzers/id3endanalyzer.cpp	2013-09-06 01:48:23.877473600 +0200
++++ strigi/libstreamanalyzer/lib/endanalyzers/id3endanalyzer.cpp	2013-09-06 00:56:16.435594200 +0200
+@@ -571,7 +571,7 @@
+ 		} else if (strncmp("TCON", p, 4) == 0) {
+ 		    genre_number_parser p(value);
+ 		    if(p) {
+-			indexable.addValue(factory->genreField, genres[ p ]);
++          indexable.addValue(factory->genreField, genres[ static_cast<long>(p) ]);
+ 			found_genre = true;
+ 		    } else {
+ 			// We must not forget that genre could be a string.
+diff -U 3 -H -d -r -N -- strigi.orig/libstreamanalyzer/lib/lineanalyzers/m3ustreamanalyzer.cpp strigi/libstreamanalyzer/lib/lineanalyzers/m3ustreamanalyzer.cpp
+--- strigi.orig/libstreamanalyzer/lib/lineanalyzers/m3ustreamanalyzer.cpp	2013-09-06 01:48:24.942534500 +0200
++++ strigi/libstreamanalyzer/lib/lineanalyzers/m3ustreamanalyzer.cpp	2013-09-06 01:44:21.861631100 +0200
+@@ -26,7 +26,18 @@
+ #include <string>
+ #include <cstring>
+ 
++#ifdef HAVE_UNISTD_H
+ #include <unistd.h>
++#endif
++#ifndef HAVE_REALPATH
++#ifdef _WIN32
++# define WIN32_LEAN_AND_MEAN
++# include <windows.h> /* for GetFullPathName */
++# include <io.h>
++// this one should come from unistd.h originally
++# define F_OK        0
++# endif
++#endif
+ #include <stdlib.h>
+ 
+ // AnalyzerFactory
+@@ -57,7 +68,31 @@
+ 
+ std::string M3uLineAnalyzer::constructAbsolutePath(const std::string &relative) const
+ {
+-    if(char* buf = realpath(analysisResult->path().c_str(), 0)) {
++    char* buf;
++#ifdef HAVE_REALPATH
++    buf = realpath(analysisResult->path().c_str(), 0);
++#else
++#ifdef _WIN32
++    /* The MS Windows method.  If we don't have realpath, we assume we
++       don't have symlinks and just canonicalize to a Windows absolute
++       path.  GetFullPath converts ../ and ./ in relative paths to
++       absolute paths, filling in current drive if one is not given
++       or using the current directory of a specified drive (eg, "E:foo").
++       It also converts all forward slashes to back slashes.  */
++    /* The file system is case-insensitive but case-preserving.
++       So we do not lowercase the path.  Otherwise, we might not
++       be able to display the original casing in a given path.  */
++    char buf2[MAX_PATH];
++    const char* filename = analysisResult->path().c_str();
++    DWORD len = GetFullPathName(filename, MAX_PATH, buf2, NULL);
++
++    if (len == 0 || len > MAX_PATH - 1)
++        buf = strdup(filename);
++    else
++        buf = buf2;
++#endif
++#endif
++    if(buf) {
+ #ifdef _WIN32
+         static const char s_pathSeparator = '\\';
+ #else
+diff -U 3 -H -d -r -N -- strigi.orig/libstreams/include/strigi/bufferedstream.h strigi/libstreams/include/strigi/bufferedstream.h
+--- strigi.orig/libstreams/include/strigi/bufferedstream.h	2013-09-06 01:48:07.144516500 +0200
++++ strigi/libstreams/include/strigi/bufferedstream.h	2013-09-06 00:49:53.509692100 +0200
+@@ -34,7 +34,11 @@
+  * BufferedStream will do the rest.
+  */
+ template <class T>
+-class BufferedStream : public StreamBase<T> {
++class
++#ifndef _MSC_VER
++STREAMS_EXPORT
++#endif
++BufferedStream : public StreamBase<T> {
+ private:
+     StreamBuffer<T> buffer;
+     bool finishedWritingToBuffer;
