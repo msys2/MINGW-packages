@@ -1,0 +1,436 @@
+diff -urN qt-everywhere-opensource-src-5.6.1.orig/qtbase/src/corelib/io/io.pri qt-everywhere-opensource-src-5.6.1/qtbase/src/corelib/io/io.pri
+--- qt-everywhere-opensource-src-5.6.1.orig/qtbase/src/corelib/io/io.pri	2016-05-25 17:46:17.000000000 +0200
++++ qt-everywhere-opensource-src-5.6.1/qtbase/src/corelib/io/io.pri	2016-08-14 22:48:12.057698100 +0200
+@@ -108,6 +108,7 @@
+     !winrt {
+         SOURCES += io/qsettings_win.cpp
+         SOURCES += io/qstandardpaths_win.cpp
++        SOURCES += io/qstandardpaths_msys.cpp
+ 
+         wince* {
+             SOURCES += io/qprocess_wince.cpp \
+diff -urN qt-everywhere-opensource-src-5.6.1.orig/qtbase/src/corelib/io/qstandardpaths.cpp qt-everywhere-opensource-src-5.6.1/qtbase/src/corelib/io/qstandardpaths.cpp
+--- qt-everywhere-opensource-src-5.6.1.orig/qtbase/src/corelib/io/qstandardpaths.cpp	2016-05-25 17:46:17.000000000 +0200
++++ qt-everywhere-opensource-src-5.6.1/qtbase/src/corelib/io/qstandardpaths.cpp	2016-08-14 22:48:30.814791100 +0200
+@@ -417,6 +417,19 @@
+     return QString();
+ }
+ 
++#ifndef QT_BOOTSTRAPPED
++QString QStandardPaths::locateMsys(StandardLocation type, const QString &fileName, LocateOptions options)
++{
++    const QStringList &dirs = standardLocationsMsys(type);
++    for (QStringList::const_iterator dir = dirs.constBegin(); dir != dirs.constEnd(); ++dir) {
++        const QString path = *dir + QLatin1Char('/') + fileName;
++        if (existsAsSpecified(path, options))
++            return path;
++    }
++    return QString();
++}
++#endif
++
+ /*!
+    Tries to find all files or directories called \a fileName in the standard locations
+    for \a type.
+@@ -437,6 +437,20 @@
+     return result;
+ }
+ 
++#ifndef QT_BOOTSTRAPPED
++QStringList QStandardPaths::locateAllMsys(StandardLocation type, const QString &fileName, LocateOptions options)
++{
++    const QStringList &dirs = standardLocationsMsys(type);
++    QStringList result;
++    for (QStringList::const_iterator dir = dirs.constBegin(); dir != dirs.constEnd(); ++dir) {
++        const QString path = *dir + QLatin1Char('/') + fileName;
++        if (existsAsSpecified(path, options))
++            result.append(path);
++    }
++    return result;
++}
++#endif
++
+ #ifdef Q_OS_WIN
+ static QStringList executableExtensions()
+ {
+diff -urN qt-everywhere-opensource-src-5.6.1.orig/qtbase/src/corelib/io/qstandardpaths.h qt-everywhere-opensource-src-5.6.1/qtbase/src/corelib/io/qstandardpaths.h
+--- qt-everywhere-opensource-src-5.6.1.orig/qtbase/src/corelib/io/qstandardpaths.h	2016-05-25 17:46:17.000000000 +0200
++++ qt-everywhere-opensource-src-5.6.1/qtbase/src/corelib/io/qstandardpaths.h	2016-08-14 22:49:13.814791100 +0200
+@@ -70,6 +70,9 @@
+ 
+     static QString writableLocation(StandardLocation type);
+     static QStringList standardLocations(StandardLocation type);
++    
++    static QString writableLocationMsys(StandardLocation type);
++    static QStringList standardLocationsMsys(StandardLocation type);
+ 
+     enum LocateOption {
+         LocateFile = 0x0,
+@@ -79,6 +82,8 @@
+ 
+     static QString locate(StandardLocation type, const QString &fileName, LocateOptions options = LocateFile);
+     static QStringList locateAll(StandardLocation type, const QString &fileName, LocateOptions options = LocateFile);
++    static QString locateMsys(StandardLocation type, const QString &fileName, LocateOptions options = LocateFile);
++    static QStringList locateAllMsys(StandardLocation type, const QString &fileName, LocateOptions options = LocateFile);
+ #ifndef QT_BOOTSTRAPPED
+     static QString displayName(StandardLocation type);
+ #endif
+diff -urN qt-everywhere-opensource-src-5.6.1.orig/qtbase/src/corelib/io/qstandardpaths_msys.cpp qt-everywhere-opensource-src-5.6.1/qtbase/src/corelib/io/qstandardpaths_msys.cpp
+--- qt-everywhere-opensource-src-5.6.1.orig/qtbase/src/corelib/io/qstandardpaths_msys.cpp	1970-01-01 01:00:00.000000000 +0100
++++ qt-everywhere-opensource-src-5.6.1/qtbase/src/corelib/io/qstandardpaths_msys.cpp	2016-08-14 22:48:12.062193200 +0200
+@@ -0,0 +1,354 @@
++/****************************************************************************
++**
++** Copyright (C) 2015 The Qt Company Ltd.
++** Contact: http://www.qt.io/licensing/
++**
++** This file is part of the QtCore module of the Qt Toolkit.
++**
++** $QT_BEGIN_LICENSE:LGPL21$
++** Commercial License Usage
++** Licensees holding valid commercial Qt licenses may use this file in
++** accordance with the commercial license agreement provided with the
++** Software or, alternatively, in accordance with the terms contained in
++** a written agreement between you and The Qt Company. For licensing terms
++** and conditions see http://www.qt.io/terms-conditions. For further
++** information use the contact form at http://www.qt.io/contact-us.
++**
++** GNU Lesser General Public License Usage
++** Alternatively, this file may be used under the terms of the GNU Lesser
++** General Public License version 2.1 or version 3 as published by the Free
++** Software Foundation and appearing in the file LICENSE.LGPLv21 and
++** LICENSE.LGPLv3 included in the packaging of this file. Please review the
++** following information to ensure the GNU Lesser General Public License
++** requirements will be met: https://www.gnu.org/licenses/lgpl.html and
++** http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html.
++**
++** As a special exception, The Qt Company gives you certain additional
++** rights. These rights are described in The Qt Company LGPL Exception
++** version 1.1, included in the file LGPL_EXCEPTION.txt in this package.
++**
++** $QT_END_LICENSE$
++**
++****************************************************************************/
++
++#include "qstandardpaths.h"
++#include <qdir.h>
++#include <qfile.h>
++#include <qhash.h>
++#include <qtextstream.h>
++#include <private/qfilesystemengine_p.h>
++#include <errno.h>
++#include <stdlib.h>
++
++#ifndef QT_BOOTSTRAPPED
++#include "qconfig.cpp"
++#include <qcoreapplication.h>
++#endif
++
++#ifndef QT_NO_STANDARDPATHS
++
++QT_BEGIN_NAMESPACE
++
++static void appendOrganizationAndApp(QString &path)
++{
++#ifndef QT_BOOTSTRAPPED
++    const QString org = QCoreApplication::organizationName();
++    if (!org.isEmpty())
++        path += QLatin1Char('/') + org;
++    const QString appName = QCoreApplication::applicationName();
++    if (!appName.isEmpty())
++        path += QLatin1Char('/') + appName;
++#else
++    Q_UNUSED(path);
++#endif
++}
++
++QString QStandardPaths::writableLocationMsys(StandardLocation type)
++{
++    QDir homeDir;
++    QDir mingwDir;
++    QDir tempDir;
++#ifndef QT_BOOTSTRAPPED
++    homeDir.setPath(qgetenv("HOME"));
++    if (!homeDir.exists())   
++       homeDir.setPath(QT_CONFIGURE_PREFIX_PATH + QLatin1String("/../home/") + qgetenv("USER"));
++    mingwDir.setPath(QT_CONFIGURE_PREFIX_PATH);
++    tempDir.setPath(QT_CONFIGURE_PREFIX_PATH + QLatin1String("/../tmp"));
++#else
++    Q_UNUSED(homeDir);
++    Q_UNUSED(mingwDir);
++    Q_UNUSED(tempDir);
++#endif
++    
++    switch (type) {
++    case HomeLocation:
++        return homeDir.absolutePath();
++    case TempLocation:
++        return tempDir.absolutePath();
++    case CacheLocation:
++    case GenericCacheLocation:
++    {
++        // http://standards.freedesktop.org/basedir-spec/basedir-spec-0.6.html
++        QString xdgCacheHome = QFile::decodeName(qgetenv("XDG_CACHE_HOME"));
++        if (isTestModeEnabled())
++            xdgCacheHome = homeDir.absolutePath() + QLatin1String("/.qttest/cache");
++        if (xdgCacheHome.isEmpty())
++            xdgCacheHome = homeDir.absolutePath() + QLatin1String("/.cache");
++        if (type == QStandardPaths::CacheLocation)
++            appendOrganizationAndApp(xdgCacheHome);
++        return xdgCacheHome;
++    }
++    case AppDataLocation:
++    case AppLocalDataLocation:
++    case GenericDataLocation:
++    {
++        QString xdgDataHome = QFile::decodeName(qgetenv("XDG_DATA_HOME"));
++        if (isTestModeEnabled())
++            xdgDataHome = homeDir.absolutePath() + QLatin1String("/.qttest/share");
++        if (xdgDataHome.isEmpty())
++            xdgDataHome = homeDir.absolutePath() + QLatin1String("/.local/share");
++        if (type == AppDataLocation || type == AppLocalDataLocation)
++            appendOrganizationAndApp(xdgDataHome);
++        return xdgDataHome;
++    }
++    case ConfigLocation:
++    case GenericConfigLocation:
++    case AppConfigLocation:
++    {
++        // http://standards.freedesktop.org/basedir-spec/latest/
++        QString xdgConfigHome = QFile::decodeName(qgetenv("XDG_CONFIG_HOME"));
++        if (isTestModeEnabled())
++            xdgConfigHome = homeDir.absolutePath() + QLatin1String("/.qttest/config");
++        if (xdgConfigHome.isEmpty())
++            xdgConfigHome = homeDir.absolutePath() + QLatin1String("/.config");
++        if (type == AppConfigLocation)
++            appendOrganizationAndApp(xdgConfigHome);
++        return xdgConfigHome;
++    }
++    case RuntimeLocation:
++    {
++        // http://standards.freedesktop.org/basedir-spec/latest/
++        QFileInfo fileInfo;
++        QString xdgRuntimeDir = QFile::decodeName(qgetenv("XDG_RUNTIME_DIR"));
++        if (xdgRuntimeDir.isEmpty()) {
++            const QString userName = qgetenv("USER");
++            xdgRuntimeDir = tempDir.absolutePath() + QLatin1String("/runtime-") + userName;
++            fileInfo.setFile(xdgRuntimeDir);
++            if (!fileInfo.isDir()) {
++                if (!QDir().mkdir(xdgRuntimeDir)) {
++                    qWarning("QStandardPaths: error creating runtime directory %s: %s", qPrintable(xdgRuntimeDir), qPrintable(qt_error_string(errno)));
++                    return QString();
++                }
++            }
++            qWarning("QStandardPaths: XDG_RUNTIME_DIR not set, defaulting to '%s'", qPrintable(xdgRuntimeDir));
++        } else {
++            fileInfo.setFile(xdgRuntimeDir);
++            if (!fileInfo.exists()) {
++                qWarning("QStandardPaths: XDG_RUNTIME_DIR points to non-existing path '%s', "
++                         "please create it with 0700 permissions.", qPrintable(xdgRuntimeDir));
++                return QString();
++            }
++            if (!fileInfo.isDir()) {
++                qWarning("QStandardPaths: XDG_RUNTIME_DIR points to '%s' which is not a directory",
++                         qPrintable(xdgRuntimeDir));
++                return QString();
++            }
++        }
++        const QFile::Permissions wantedPerms = QFile::ReadUser | QFile::WriteUser | QFile::ExeUser
++                                               | QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner;
++        if (fileInfo.permissions() != wantedPerms) {
++            QFile file(xdgRuntimeDir);
++            if (!file.setPermissions(wantedPerms)) {
++                qWarning("QStandardPaths: could not set correct permissions on runtime directory %s: %s",
++                         qPrintable(xdgRuntimeDir), qPrintable(file.errorString()));
++                return QString();
++            }
++        }
++        return xdgRuntimeDir;
++    }
++    default:
++        break;
++    }
++
++#ifndef QT_BOOTSTRAPPED
++    // http://www.freedesktop.org/wiki/Software/xdg-user-dirs
++    QString xdgConfigHome = QFile::decodeName(qgetenv("XDG_CONFIG_HOME"));
++    if (xdgConfigHome.isEmpty())
++        xdgConfigHome = homeDir.absolutePath() + QLatin1String("/.config");
++    QFile file(xdgConfigHome + QLatin1String("/user-dirs.dirs"));
++    if (!isTestModeEnabled() && file.open(QIODevice::ReadOnly)) {
++        QHash<QString, QString> lines;
++        QTextStream stream(&file);
++        // Only look for lines like: XDG_DESKTOP_DIR="$HOME/Desktop"
++        QRegExp exp(QLatin1String("^XDG_(.*)_DIR=(.*)$"));
++        while (!stream.atEnd()) {
++            const QString &line = stream.readLine();
++            if (exp.indexIn(line) != -1) {
++                const QStringList lst = exp.capturedTexts();
++                const QString key = lst.at(1);
++                QString value = lst.at(2);
++                if (value.length() > 2
++                    && value.startsWith(QLatin1Char('\"'))
++                    && value.endsWith(QLatin1Char('\"')))
++                    value = value.mid(1, value.length() - 2);
++                // Store the key and value: "DESKTOP", "$HOME/Desktop"
++                lines[key] = value;
++            }
++        }
++
++        QString key;
++        switch (type) {
++        case DesktopLocation:
++            key = QLatin1String("DESKTOP");
++            break;
++        case DocumentsLocation:
++            key = QLatin1String("DOCUMENTS");
++            break;
++        case PicturesLocation:
++            key = QLatin1String("PICTURES");
++            break;
++        case MusicLocation:
++            key = QLatin1String("MUSIC");
++            break;
++        case MoviesLocation:
++            key = QLatin1String("VIDEOS");
++            break;
++        case DownloadLocation:
++            key = QLatin1String("DOWNLOAD");
++            break;
++        default:
++            break;
++        }
++        if (!key.isEmpty()) {
++            QString value = lines.value(key);
++            if (!value.isEmpty()) {
++                // value can start with $HOME
++                if (value.startsWith(QLatin1String("$HOME")))
++                    value = homeDir.absolutePath() + value.mid(5);
++                if (value.length() > 1 && value.endsWith(QLatin1Char('/')))
++                    value.chop(1);
++                return value;
++            }
++        }
++    }
++#endif
++
++    QString path;
++    switch (type) {
++    case DesktopLocation:
++        path = QDir::homePath() + QLatin1String("/Desktop");
++        break;
++    case DocumentsLocation:
++        path = QDir::homePath() + QLatin1String("/Documents");
++       break;
++    case PicturesLocation:
++        path = QDir::homePath() + QLatin1String("/Pictures");
++        break;
++
++    case FontsLocation:
++        path = homeDir.absolutePath() + QLatin1String("/.fonts");
++        break;
++
++    case MusicLocation:
++        path = QDir::homePath() + QLatin1String("/Music");
++        break;
++
++    case MoviesLocation:
++        path = QDir::homePath() + QLatin1String("/Videos");
++        break;
++    case DownloadLocation:
++        path = QDir::homePath() + QLatin1String("/Downloads");
++        break;
++    case ApplicationsLocation:
++        path = writableLocationMsys(GenericDataLocation) + QLatin1String("/applications");
++        break;
++
++    default:
++        break;
++    }
++
++    return path;
++}
++
++static QStringList xdgDataDirs()
++{
++    QStringList dirs;
++    // http://standards.freedesktop.org/basedir-spec/latest/
++    QString xdgDataDirsEnv = QFile::decodeName(qgetenv("XDG_DATA_DIRS"));
++    if (xdgDataDirsEnv.isEmpty()) {
++        dirs.append(QT_CONFIGURE_PREFIX_PATH + QString::fromLatin1("/local/share"));
++        dirs.append(QT_CONFIGURE_PREFIX_PATH + QString::fromLatin1("/share"));
++    } else {
++        dirs = xdgDataDirsEnv.split(QLatin1Char(':'), QString::SkipEmptyParts);
++
++        // Normalize paths, skip relative paths
++        QMutableListIterator<QString> it(dirs);
++        while (it.hasNext()) {
++            const QString dir = it.next();
++            if (!dir.startsWith(QLatin1Char('/')))
++                it.remove();
++            else
++                it.setValue(QDir::cleanPath(dir));
++        }
++
++        // Remove duplicates from the list, there's no use for duplicated
++        // paths in XDG_DATA_DIRS - if it's not found in the given
++        // directory the first time, it won't be there the second time.
++        // Plus duplicate paths causes problems for example for mimetypes,
++        // where duplicate paths here lead to duplicated mime types returned
++        // for a file, eg "text/plain,text/plain" instead of "text/plain"
++        dirs.removeDuplicates();
++    }
++    return dirs;
++}
++
++static QStringList xdgConfigDirs()
++{
++    QStringList dirs;
++    // http://standards.freedesktop.org/basedir-spec/latest/
++    const QString xdgConfigDirs = QFile::decodeName(qgetenv("XDG_CONFIG_DIRS"));
++    if (xdgConfigDirs.isEmpty())
++        dirs.append(QT_CONFIGURE_PREFIX_PATH + QString::fromLatin1("/etc/xdg"));
++    else
++        dirs = xdgConfigDirs.split(QLatin1Char(':'));
++    return dirs;
++}
++
++QStringList QStandardPaths::standardLocationsMsys(StandardLocation type)
++{
++    QStringList dirs;
++    switch (type) {
++    case ConfigLocation:
++    case GenericConfigLocation:
++        dirs = xdgConfigDirs();
++        break;
++    case AppConfigLocation:
++        dirs = xdgConfigDirs();
++        for (int i = 0; i < dirs.count(); ++i)
++            appendOrganizationAndApp(dirs[i]);
++        break;
++    case GenericDataLocation:
++        dirs = xdgDataDirs();
++        break;
++    case ApplicationsLocation:
++        dirs = xdgDataDirs();
++        for (int i = 0; i < dirs.count(); ++i)
++            dirs[i].append(QLatin1String("/applications"));
++        break;
++    case AppDataLocation:
++    case AppLocalDataLocation:
++        dirs = xdgDataDirs();
++        for (int i = 0; i < dirs.count(); ++i)
++            appendOrganizationAndApp(dirs[i]);
++        break;
++    default:
++        break;
++    }
++    const QString localDir = writableLocationMsys(type);
++    dirs.prepend(localDir);
++    return dirs;
++}
++
++QT_END_NAMESPACE
++
++#endif // QT_NO_STANDARDPATHS
+
