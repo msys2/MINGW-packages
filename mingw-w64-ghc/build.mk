@@ -8,7 +8,7 @@
 # Uncomment one of these to select a build profile below:
 
 # Full build with max optimisation and everything enabled (very slow build)
-#BuildFlavour = perf
+BuildFlavour = perf
 
 # As above but build GHC using the LLVM backend
 #BuildFlavour = perf-llvm
@@ -28,7 +28,7 @@
 # Even faster build.  NOT RECOMMENDED: the libraries will be
 # completely unoptimised, so any code built with this compiler
 # (including stage2) will run very slowly:
-BuildFlavour = quickest
+#BuildFlavour = quickest
 
 # Profile the stage2 compiler:
 #BuildFlavour = prof
@@ -77,7 +77,7 @@ V=0
 
 # Build the "extra" packages (see ./packages). This enables more tests. See:
 # https://ghc.haskell.org/trac/ghc/wiki/Building/RunningTests/Running#AdditionalPackages
-#BUILD_EXTRA_PKGS=YES
+BUILD_EXTRA_PKGS=YES
 
 # Uncomment the following line to enable building DPH
 #BUILD_DPH=YES
@@ -87,8 +87,8 @@ V=0
 #libraries/integer-gmp_CONFIGURE_OPTS += --configure-option=--with-intree-gmp
 
 # Enable pretty hyperlinked sources
-#HADDOCK_DOCS = YES
-#EXTRA_HADDOCK_OPTS += --hyperlinked-source
+HADDOCK_DOCS = YES
+EXTRA_HADDOCK_OPTS += --hyperlinked-source
 
 # Don't strip debug and other unneeded symbols from libraries and executables.
 STRIP_CMD = :
