@@ -87,8 +87,8 @@ BUILD_EXTRA_PKGS=YES
 #libraries/integer-gmp_CONFIGURE_OPTS += --configure-option=--with-intree-gmp
 
 # Enable pretty hyperlinked sources
-HADDOCK_DOCS = YES
-EXTRA_HADDOCK_OPTS += --hyperlinked-source
+#HADDOCK_DOCS = YES
+#EXTRA_HADDOCK_OPTS += --hyperlinked-source
 
 # Don't strip debug and other unneeded symbols from libraries and executables.
 STRIP_CMD = :
