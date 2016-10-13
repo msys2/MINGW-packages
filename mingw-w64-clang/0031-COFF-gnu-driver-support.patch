@@ -1,0 +1,230 @@
+From 5bd9ff32fea92a763d99186619946764793bec87 Mon Sep 17 00:00:00 2001
+From: Martell Malone <martellmalone@gmail.com>
+Date: Sat, 6 Aug 2016 02:33:13 -0700
+Subject: [PATCH] COFF: gnu driver support
+
+Notes:
+-aligncomm is not needed anymore
+we should patch mingw-w64 to use _ImageBase
+A new seperate driver should be made.
+Now that this works we should be able to revisit
+this with Rui
+
+diff --git a/COFF/Driver.cpp b/COFF/Driver.cpp
+index ffd6936..c927355 100644
+--- a/COFF/Driver.cpp
++++ b/COFF/Driver.cpp
+@@ -130,6 +130,7 @@ void LinkerDriver::parseDirectives(StringRef S) {
+     case OPT_fastfail:
+     case OPT_guardsym:
+     case OPT_throwingnew:
++    case OPT_aligncomm:
+       break;
+     default:
+       fatal(Arg->getSpelling() + " is not allowed in .drectve");
+@@ -158,6 +159,31 @@ StringRef LinkerDriver::doFindFile(StringRef Filename) {
+   return Filename;
+ }
+ 
++// Searches a given library from input search paths, which are filled
++// from -L command line switches. Returns a path to an existent library file.
++StringRef LinkerDriver::searchLibrary(StringRef Filename) {
++
++  std::vector<std::string> Names;
++  if (Filename[0] == ':') {
++    Names.push_back(Filename.drop_front());
++  } else {
++    //TODO: Link with static only
++    //if (!Config->Static)
++    Names.push_back(("lib" + Filename + ".dll.a").str());
++    Names.push_back(("lib" + Filename + ".a").str());
++  }
++
++  for (const std::string &Name : Names) {
++    for (StringRef Dir : SearchPaths) {
++      SmallString<128> Path = Dir;
++      llvm::sys::path::append(Path, Name.c_str());
++      if (llvm::sys::fs::exists(Path.str()))
++        return Alloc.save(Path.str());
++    }
++  }
++  fatal("Unable to find library -l" + Filename);
++}
++
+ // Resolves a file path. This never returns the same path
+ // (in that case, it returns None).
+ Optional<StringRef> LinkerDriver::findFile(StringRef Filename) {
+@@ -526,6 +552,9 @@ void LinkerDriver::link(llvm::ArrayRef<const char *> ArgsArr) {
+   // for /defaultlib option.
+   std::vector<StringRef> Paths;
+   std::vector<MemoryBufferRef> MBs;
++  for (auto *Arg : Args.filtered(OPT_l))
++    if (Optional<StringRef> Path = searchLibrary(Arg->getValue()))
++      Paths.push_back(*Path);
+   for (auto *Arg : Args.filtered(OPT_INPUT))
+     if (Optional<StringRef> Path = findFile(Arg->getValue()))
+       Paths.push_back(*Path);
+@@ -655,6 +684,8 @@ void LinkerDriver::link(llvm::ArrayRef<const char *> ArgsArr) {
+     Config->ImageBase = getDefaultImageBase();
+ 
+   Symtab.addRelative(mangle("__ImageBase"), 0);
++  // no mangle because mingw has defines to stop it for i686
++  Symtab.addRelative("__image_base__", 0);
+   if (Config->Machine == I386) {
+     Config->SEHTable = Symtab.addRelative("___safe_se_handler_table", 0);
+     Config->SEHCount = Symtab.addAbsolute("___safe_se_handler_count", 0);
+diff --git a/COFF/Driver.h b/COFF/Driver.h
+index 0afde18..530baff 100644
+--- a/COFF/Driver.h
++++ b/COFF/Driver.h
+@@ -87,6 +87,9 @@ private:
+   StringRef doFindFile(StringRef Filename);
+   StringRef doFindLib(StringRef Filename);
+ 
++  // Searches for a gnu library
++  StringRef searchLibrary(StringRef Path);
++
+   // Parses LIB environment which contains a list of search paths.
+   void addLibSearchPaths();
+ 
+diff --git a/COFF/DriverUtils.cpp b/COFF/DriverUtils.cpp
+index 5d7dc2b..571761c 100644
+--- a/COFF/DriverUtils.cpp
++++ b/COFF/DriverUtils.cpp
+@@ -86,6 +86,19 @@ MachineTypes getMachineType(StringRef S) {
+   fatal("unknown /machine argument: " + S);
+ }
+ 
++StringRef GNUMachineToStr(MachineTypes MT) {
++  switch (MT) {
++  case ARMNT:
++    return "arm";
++  case AMD64:
++    return "x86_64";
++  case I386:
++    return "x86";
++  default:
++    llvm_unreachable("unknown machine type");
++  }
++}
++
+ StringRef machineToStr(MachineTypes MT) {
+   switch (MT) {
+   case ARMNT:
+@@ -591,7 +604,7 @@ static const llvm::opt::OptTable::Info infoTable[] = {
+ 
+ class COFFOptTable : public llvm::opt::OptTable {
+ public:
+-  COFFOptTable() : OptTable(infoTable, true) {}
++  COFFOptTable() : OptTable(infoTable) {}
+ };
+ 
+ // Parses a given list of options.
+diff --git a/COFF/Options.td b/COFF/Options.td
+index 3866993..a097325 100644
+--- a/COFF/Options.td
++++ b/COFF/Options.td
+@@ -94,7 +94,41 @@ def help_q : Flag<["/?", "-?"], "">, Alias<help>;
+ def nosymtab : F<"nosymtab">;
+ 
+ // Flags for debugging
+-def lldmap : Joined<["/", "-"], "lldmap:">;
++def lldmap : Joined<["/", "-"], "debugmap:">;
++
++def output : Separate<["-"], "o">, Alias<out>;
++def L : Joined<["-"], "L">, Alias<libpath>;
++def e : Separate<["-"], "e">, Alias<entry>;
++def subs : Separate<["--"], "subsystem">, Alias<subsystem>;
++
++def outlib : Separate<["--"], "out-implib">, Alias<implib>;
++
++def l : JoinedOrSeparate<["-"], "l">, MetaVarName<"<libName>">;
++
++def enable_auto_image_base: Flag<["--"], "enable-auto-image-base">;
++
++def unexported_symbols_list : Separate<["-"], "unexported_symbols_list">;
++def reexported_symbols_list : Separate<["-"], "reexported_symbols_list">;
++def force_symbols_not_weak_list : Separate<["-"], "force_symbols_not_weak_list">;
++def force_symbols_weak_list : Separate<["-"], "force_symbols_weak_list">;
++
++def major_image_version : Separate<["--"], "major-image-version">;
++def minor_image_version : Separate<["--"], "minor-image-version">;
++
++
++def shared: Flag<["--"], "shared">, Alias<dll>;
++
++// Used to silence some gnu warnings
++def aligncomm : P<"aligncomm", "Comm Alignment">;
++def Bdynamic: Flag<["-"], "Bdynamic">;
++
++// Used to override gnu pe targets
++def m : Separate<["-"], "m">, MetaVarName<"<emulation>">,
++     HelpText<"Select target emulation">;
++
++// Select an optional flavor
++def flavor: Separate<["-"], "flavor">,
++     HelpText<"Flavor for linking, options are gnu/darwin/link">;
+ 
+ //==============================================================================
+ // The flags below do nothing. They are defined only for link.exe compatibility.
+diff --git a/COFF/SymbolTable.cpp b/COFF/SymbolTable.cpp
+index df9da4c..1f5552d 100644
+--- a/COFF/SymbolTable.cpp
++++ b/COFF/SymbolTable.cpp
+@@ -210,9 +210,10 @@ void SymbolTable::addSymbol(SymbolBody *New) {
+   // compare() returns -1, 0, or 1 if the lhs symbol is less preferable,
+   // equivalent (conflicting), or more preferable, respectively.
+   int Comp = Existing->compare(New);
+-  if (Comp == 0)
+-    fatal("duplicate symbol: " + Existing->getDebugName() + " and " +
+-          New->getDebugName());
++  // disable for now because of _free_locale in libc++ with mingw
++  //if (Comp == 0)
++  //  fatal("duplicate symbol: " + Existing->getDebugName() + " and " +
++  //        New->getDebugName());
+   if (Comp < 0)
+     Sym->Body = New;
+ }
+diff --git a/tools/lld/lld.cpp b/tools/lld/lld.cpp
+index 8805e02..d6baefd 100644
+--- a/tools/lld/lld.cpp
++++ b/tools/lld/lld.cpp
+@@ -51,6 +51,24 @@ static Flavor getFlavor(StringRef S) {
+       .Default(Invalid);
+ }
+ 
++static bool isPETarget(const std::vector<const char *> &V) {
++  for (auto It = V.begin(); It != V.end(); It++) {
++    if (*It == StringRef("-m")) {
++      It++;
++      if (It == V.end())
++        return false;
++      if (*It == StringRef("i386pe"))
++        return true;
++      if (*It == StringRef("i386pep"))
++        return true;
++      if (*It == StringRef("thumb2pe"))
++        return true;
++      return false;
++    }
++  }
++  return false;
++}
++
+ static Flavor parseProgname(StringRef Progname) {
+ #if __APPLE__
+   // Use Darwin driver for "ld" on Darwin.
+@@ -101,6 +119,10 @@ int main(int Argc, const char **Argv) {
+   llvm_shutdown_obj Shutdown;
+ 
+   std::vector<const char *> Args(Argv, Argv + Argc);
++
++  if (isPETarget(Args))
++    return !coff::link(Args);
++
+   switch (parseFlavor(Args)) {
+   case Gnu:
+     return !elf::link(Args);
+-- 
+2.8.3
+
