@@ -23,8 +23,19 @@ makedepends=("git"
 			 "${MINGW_PACKAGE_PREFIX}-perl")
 options=('!makeflags' 'staticlibs')
 #install=rust.install
-source=(https://static.rust-lang.org/dist/${_realname}c-${pkgver}-src.tar.gz)
-sha256sums=('ac5907d6fa96c19bd5901d8d99383fb8755127571ead3d4070cce9c1fb5f337a')
+source=(https://static.rust-lang.org/dist/${_realname}c-${pkgver}-src.tar.gz
+'force-curl-cargo.patch'
+"git+https://github.com/rust-lang/cargo.git#tag=0.13.0")
+sha256sums=('ac5907d6fa96c19bd5901d8d99383fb8755127571ead3d4070cce9c1fb5f337a'
+'50c979b48ebc86dfddb295f2bea62e491ce868eb4308a0ae2324514c8d45e4fd'
+'SKIP')
+
+prepare() {
+  cd ${srcdir}/cargo
+  git submodule update --init --recursive
+  patch -p1 -i "${srcdir}/force-curl-cargo.patch"
+  sed 's^share/doc^share/licenses^g' -i Makefile.in
+}
 
 build() {
   [[ -d "${srcdir}/build-${MINGW_CHOST}" ]] && rm -rf "${srcdir}/build-${MINGW_CHOST}"
@@ -35,7 +46,7 @@ build() {
   #We have to do the following because rust doesn't count x86_64-w64-mingw32 as a target triple
   OSTYPE="$CARCH-pc-windows-gnu"
   
-   #We have to get rust to build it's own version of LLVM because LLVM version 8.3 (which is what Mingw64 has) doesn't work: https://github.com/rust-lang/rust/issues/36774
+  #We have to get rust to build it's own version of LLVM because LLVM version 8.3 (which is what Mingw64 has) doesn't work: https://github.com/rust-lang/rust/issues/36774
   ../${_realname}c-${pkgver}/configure \
     --prefix=${MINGW_PREFIX} \
     --build=$OSTYPE \
@@ -43,17 +54,18 @@ build() {
     --target=$OSTYPE \
     --release-channel=stable
 
-    #--enable-local-rust              use an installed rustc rather than downloading a snapshot
-    #--local-rust-root=[/usr/local]   set prefix for local rust binary
-    #--enable-clang                   prefer clang to gcc for building the runtime
-
-    make CFLAGS="$CFLAGS -fPIC -w"
+  make CFLAGS="$CFLAGS -fPIC -w"
 }
 
 package() {
+  #install rust
   cd "${srcdir}/build-${MINGW_CHOST}"
   
   make DESTDIR=${pkgdir} install
+
+  cd "${pkgdir}${MINGW_PREFIX}/lib"
+  rm rustlib/{components,manifest-rustc,rust-installer-version}
+  ln -sf rustlib/$CARCH-pc-windows-gnu/lib/*.dll .
   
   install -Dm644 LICENSE-APACHE \
     "$pkgdir${MINGW_PREFIX}/share/licenses/$_realname/LICENSE-APACHE"
@@ -65,4 +77,31 @@ package() {
   
   rm -f ${pkgdir}${MINGW_PREFIX}/bin/libgcc*.dll
   rm -f ${pkgdir}${MINGW_PREFIX}/bin/libstd*.dll
+  
+  install -Dm644 ${srcdir}/${_realname}c-${pkgver}/LICENSE-APACHE "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE-APACHE"
+  install -Dm644 ${srcdir}/${_realname}c-${pkgver}/LICENSE-MIT "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE-MIT"
+  
+  #build cargo
+  #We need to build cargo here because it requires rustc, so we need to wait until rustc is packaged.
+  [[ -d "${srcdir}/build-cargo-${MINGW_CHOST}" ]] && rm -rf "${srcdir}/build-cargo-${MINGW_CHOST}"
+  mkdir -p "${srcdir}/build-cargo-${MINGW_CHOST}"
+  cd "${srcdir}/build-cargo-${MINGW_CHOST}"
+  
+  OSTYPE="$CARCH-pc-windows-gnu"
+  
+  ../cargo/configure --local-rust-root=${pkgdir}${MINGW_PREFIX} --prefix=${MINGW_PREFIX} --build=$OSTYPE --host=$OSTYPE --target=$OSTYPE --enable-optimize
+  make
+  
+  #Install cargo
+  cd "${srcdir}/build-cargo-${MINGW_CHOST}"
+
+  make DESTDIR="$pkgdir" install
+
+  # Remove files that contains references to $srcdir or $pkgdir,
+  # or that conflicts with the rust package.
+  rm -f "$pkgdir${MINGW_PREFIX}/lib/rustlib/"{install.log,manifest-cargo,uninstall.sh}
+
+  install -d "$pkgdir${MINGW_PREFIX}/share/bash-completion/completions"
+  mv "$pkgdir${MINGW_PREFIX}/etc/bash_completion.d/cargo" \
+    "$pkgdir${MINGW_PREFIX}/share/bash-completion/completions/cargo"
 }
