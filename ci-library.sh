@@ -118,11 +118,23 @@ git_config() {
 # Run command with status
 execute(){
     local status="${1}"
-    local command=("${@:2}")
+    local command="${2}"
+    local arguments=("${@:3}")
     cd "${package:-.}"
     message "${status}"
-    ${command[@]} || failure "${status} failed"
+    if [[ "${command}" != *:* ]]
+        then ${command} ${arguments[@]}
+        else ${command%%:*} | ${command#*:} ${arguments[@]}
+    fi || failure "${status} failed"
     cd - > /dev/null
+}
+
+# Update system
+update_system() {
+    repman add ci.msys 'https://dl.bintray.com/alexpux/msys2' || return 1
+    pacman --noconfirm --noprogressbar --sync --refresh --refresh --sysupgrade --sysupgrade || return 1
+    test -n "${DISABLE_QUALITY_CHECK}" && return 0 # TODO: remove this option when not anymore needed
+    pacman --noconfirm --needed --noprogressbar --sync ci.msys/pactoys
 }
 
 # Sort packages by dependency
@@ -170,11 +182,22 @@ list_commits()  {
 # Changed recipes
 list_packages() {
     local _packages
-    _list_changes _packages '*/PKGBUILD' '%/PKGBUILD' --pretty=format: --name-only
+    _list_changes _packages '*/PKGBUILD' '%/PKGBUILD' --pretty=format: --name-only || return 1
     for _package in "${_packages[@]}"; do
         local find_case_sensitive="$(find -name "${_package}" -type d -print -quit)"
         test -n "${find_case_sensitive}" && packages+=("${_package}")
     done
+    return 0
+}
+
+# Recipe quality
+check_recipe_quality() {
+    # TODO: remove this option when not anymore needed
+    if test -n "${DISABLE_QUALITY_CHECK}"; then
+        echo 'This feature is disabled.'
+        return 0
+    fi
+    saneman --format='\t%l:%c %p:%c %m' --verbose --no-terminal "${packages[@]}"
 }
 
 # Status functions
