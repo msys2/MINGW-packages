@@ -1,0 +1,303 @@
+diff -Naur flickcurl-1.26.orig/configure.ac flickcurl-1.26/configure.ac
+--- flickcurl-1.26.orig/configure.ac	2014-01-14 08:16:05.000000000 +0100
++++ flickcurl-1.26/configure.ac	2016-10-29 09:49:02.381685500 +0200
+@@ -9,6 +9,9 @@
+ AC_CONFIG_MACRO_DIR(build)
+ AM_INIT_AUTOMAKE([1.11 check-news std-options -Wobsolete -Wportability -Wsyntax -Wunsupported -Wextra-portability])
+ 
++AC_LIBTOOL_WIN32_DLL
++AM_PROG_LIBTOOL
++
+ AM_MAINTAINER_MODE
+ 
+ if test "$USE_MAINTAINER_MODE" = yes; then 
+@@ -68,7 +71,7 @@
+ #     then set AGE to 0.
+ #
+ # syntax: CURRENT[:REVISION[:AGE]]
+-LIBFLICKCURL_LIBTOOL_VERSION=0:0:0
++LIBFLICKCURL_LIBTOOL_VERSION=1:0:0
+ AC_SUBST(LIBFLICKCURL_LIBTOOL_VERSION)
+ 
+ 
+@@ -88,7 +91,8 @@
+ AC_MSG_RESULT($CC_IS_CLANG)
+ 
+ dnl Initialize libtool
+-LT_INIT
++# LT_INIT
++LT_INIT([win32-dll])
+ 
+ # Checks for libraries.
+ 
+diff -Naur flickcurl-1.26.orig/src/common.c flickcurl-1.26/src/common.c
+--- flickcurl-1.26.orig/src/common.c	2014-06-01 20:02:58.000000000 +0200
++++ flickcurl-1.26/src/common.c	2016-10-29 07:17:04.695581600 +0200
+@@ -1516,14 +1516,18 @@
+ }
+ 
+ 
++/*
++ * INTERNAL - free a form.
++ */
+ void
+-flickcurl_free_form(char **form, int count)
++flickcurl_free_form(char **form)
+ {
+   if(!form)
+     return;
+ 
+   /* free content which is the first key */
+-  free(form[0]);
++  if(form[0])
++    free(form[0]);
+ 
+   free(form);
+ }
+@@ -1537,10 +1541,16 @@
+ * INTERNAL - decoded content from current request as HTTP FORM and return fields
+ *
+ * NOTE: The result may be an empty array with just two NULL
+-* terminating pointers if there are no fields.
++* terminating pointers if there are no fields or no content.
++*
++* If @count_p is not NULL, *@count_p is set to the number of pairs of
++* fields.
++*
++* Index 0 is used to store the raw content.
++*
++* Return value: NULL on failure or an array of [char* field name,
++* char* field value] starting at index 1, terminated by a NULL pair.
+ *
+-* Return value: array of [char* field name, char* field value] with
+-* NULL pair terminating or NULL on failure
+ */
+ char**
+ flickcurl_invoke_get_form_content(flickcurl *fc, int* count_p)
+@@ -1562,21 +1572,24 @@
+     count++; /* counting separators so need +1 for number of contents */
+   }
+   
+-  /* Allocate count + 1 sized array of char* (key, value) pointers
++  /* Allocate 1+ count + 1 sized array of char* (key, value) pointers
+    * The last pair are always (NULL, NULL).
+    *
+    * The pointers are into the 'content' buffer which is kept around
+    * and owned by this array and stored in form[0].
+    */
+-  form = (char**)calloc(2*(count + 1), sizeof(char*));
++  form = (char**)calloc(1 + 2*(count + 1), sizeof(char*));
+   if(!form) {
+     if(content)
+       free(content);
+     return NULL;
+   }
+ 
++  /* the form owns the content array */
++  form[0] = content;
++
+   if(content) {
+-    for(p = content, i = 0; *p; p++) {
++    for(p = content, i = 1; *p; p++) {
+       char *start = p;
+ 
+       while(*p && *p != '&' && *p != '=')
+@@ -1590,8 +1603,6 @@
+     }
+     form[i++] = NULL;
+     form[i] = NULL;
+-
+-    free(content);
+   }
+ 
+   if(count_p)
+diff -Naur flickcurl-1.26.orig/src/flickcurl.h flickcurl-1.26/src/flickcurl.h
+--- flickcurl-1.26.orig/src/flickcurl.h	2013-08-31 23:27:06.000000000 +0200
++++ flickcurl-1.26/src/flickcurl.h	2016-10-29 09:44:18.243165800 +0200
+@@ -1945,6 +1945,7 @@
+ /* flickr.commons */
+ FLICKCURL_API
+ flickcurl_institution** flickcurl_commons_getInstitutions(flickcurl* fc);
++FLICKCURL_API
+ const char* flickcurl_get_institution_url_type_label(flickcurl_institution_url_type url_type);
+ 
+ /* flickr.favorites */
+@@ -2198,6 +2199,7 @@
+ flickcurl_place* flickcurl_places_resolvePlaceURL(flickcurl* fc, const char* url);
+ FLICKCURL_API
+ const char* flickcurl_get_place_type_label(flickcurl_place_type place_type);
++FLICKCURL_API
+ flickcurl_place_type flickcurl_get_place_type_by_label(const char* place_label);
+ FLICKCURL_API
+ flickcurl_place_type_info** flickcurl_places_getPlaceTypes(flickcurl* fc);
+diff -Naur flickcurl-1.26.orig/src/flickcurl_internal.h flickcurl-1.26/src/flickcurl_internal.h
+--- flickcurl-1.26.orig/src/flickcurl_internal.h	2013-06-17 19:42:59.000000000 +0200
++++ flickcurl-1.26/src/flickcurl_internal.h	2016-10-29 07:17:04.695581600 +0200
+@@ -119,7 +119,7 @@
+ char* flickcurl_invoke_get_content(flickcurl *fc, size_t* size_p);
+ /* Invoke URI prepared above and get back 'count' key/values */
+ char** flickcurl_invoke_get_form_content(flickcurl *fc, int* count_p);
+-void flickcurl_free_form(char **form, int count);
++void flickcurl_free_form(char **form);
+ 
+ /* args.c */
+ void flickcurl_free_arg(flickcurl_arg *arg);
+diff -Naur flickcurl-1.26.orig/src/Makefile.am flickcurl-1.26/src/Makefile.am
+--- flickcurl-1.26.orig/src/Makefile.am	2014-01-14 08:16:05.000000000 +0100
++++ flickcurl-1.26/src/Makefile.am	2016-10-29 09:32:42.292000100 +0200
+@@ -97,7 +97,7 @@
+ libflickcurl_la_LIBADD = $(top_builddir)/libmtwist/libmtwist.la
+ libflickcurl_la_DEPENDENCIES = $(top_builddir)/libmtwist/libmtwist.la
+ 
+-libflickcurl_la_LDFLAGS = -version-info @LIBFLICKCURL_LIBTOOL_VERSION@
++libflickcurl_la_LDFLAGS = -no-undefined -version-info @LIBFLICKCURL_LIBTOOL_VERSION@
+ 
+ $(top_builddir)/libmtwist/libmtwist.la:
+ 	cd $(top_builddir)/libmtwist && $(MAKE) libmtwist.la
+diff -Naur flickcurl-1.26.orig/src/oauth.c flickcurl-1.26/src/oauth.c
+--- flickcurl-1.26.orig/src/oauth.c	2014-06-01 20:02:58.000000000 +0200
++++ flickcurl-1.26/src/oauth.c	2016-10-29 09:23:47.302693700 +0200
+@@ -29,6 +29,11 @@
+ #include <flickcurl.h>
+ #include <flickcurl_internal.h>
+ 
++#if defined(HAVE_GETTIMEOFDAY) && defined(WIN32)
++/* have it as an external function */
++int gettimeofday(struct timeval* tp, void *tzp);
++#endif
++
+ /* Only used in the test in this file so needs to be in the library */
+ int flickcurl_oauth_build_key(flickcurl_oauth_data* od);
+ 
+@@ -741,11 +746,12 @@
+           uri, count);
+ #endif
+ 
+-  for(i = 0; i < (2 * count); i += 2) {
+-    if(!strcmp(form[i], "oauth_token")) {
+-      request_token = form[i+1];
+-    } else if(!strcmp(form[i], "oauth_token_secret")) {
+-      request_token_secret = form[i+1];
++  for(i = 0; i < count; i++) {
++    int offset = 1 + (2 * i);
++    if(!strcmp(form[offset], "oauth_token")) {
++      request_token = form[offset+1];
++    } else if(!strcmp(form[offset], "oauth_token_secret")) {
++      request_token_secret = form[offset+1];
+     }
+   }
+ 
+@@ -771,7 +777,7 @@
+   
+   tidy:
+   if(form)
+-    flickcurl_free_form(form, count);
++    flickcurl_free_form(form);
+   
+   return rc;
+ }
+@@ -888,15 +894,16 @@
+           uri, count);
+ #endif
+ 
+-  for(i = 0; i < (2 * count); i += 2) {
+-    if(!strcmp(form[i], "oauth_token")) {
+-      access_token = form[i+1];
+-    } else if(!strcmp(form[i], "oauth_token_secret")) {
+-      access_token_secret = form[i+1];
+-    } else if(!strcmp(form[i], "username")) {
+-      username = form[i+1];
+-    } else if(!strcmp(form[i], "user_nsid")) {
+-      user_nsid = form[i+1];
++  for(i = 0; i < count; i++) {
++    int offset = 1 + (2 * i);
++    if(!strcmp(form[offset], "oauth_token")) {
++      access_token = form[offset+1];
++    } else if(!strcmp(form[offset], "oauth_token_secret")) {
++      access_token_secret = form[offset+1];
++    } else if(!strcmp(form[offset], "username")) {
++      username = form[offset+1];
++    } else if(!strcmp(form[offset], "user_nsid")) {
++      user_nsid = form[offset+1];
+     }
+     /* ignoring: fullname */
+   }
+@@ -952,7 +959,7 @@
+   
+   tidy:
+   if(form)
+-    flickcurl_free_form(form, count);
++    flickcurl_free_form(form);
+   
+   return rc;
+ }
+diff -Naur flickcurl-1.26.orig/src/win32_flickcurl_config.h flickcurl-1.26/src/win32_flickcurl_config.h
+--- flickcurl-1.26.orig/src/win32_flickcurl_config.h	1970-01-01 01:00:00.000000000 +0100
++++ flickcurl-1.26/src/win32_flickcurl_config.h	2016-10-24 22:58:09.148220000 +0200
+@@ -0,0 +1,65 @@
++/* -*- Mode: c; c-basic-offset: 2 -*-
++ *
++ * win32_flickcurl_config.h - Flickcurl WIN32 hard-coded config
++ *
++ * Copyright (C) 2008-2012, David Beckett http://www.dajobe.org/
++ * 
++ * It is licensed under the following three licenses as alternatives:
++ *   1. GNU Lesser General Public License (LGPL) V2.1 or any newer version
++ *   2. GNU General Public License (GPL) V2 or any newer version
++ *   3. Apache License, V2.0 or any newer version
++ * 
++ * You may not use this file except in compliance with at least one of
++ * the above three licenses.
++ * 
++ * See LICENSE.html or LICENSE.txt at the top of this package for the
++ * complete terms and further detail along with the license texts for
++ * the licenses in COPYING.LIB, COPYING and LICENSE-2.0.txt respectively.
++ * 
++ * 
++ */
++
++
++#ifndef WIN32_CONFIG_H
++#define WIN32_CONFIG_H
++
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#include <winsock2.h>
++#include <windows.h>
++#include <io.h>
++#include <memory.h>
++
++
++/* MS names for these functions */
++#define vsnprintf _vsnprintf
++#define access _access
++
++/* define missing flag for access() - the only one used here */
++#ifndef R_OK
++#define R_OK 4
++#endif
++
++
++/* 
++ * All defines from config.h should be added here with appropriate values
++ */
++
++#undef HAVE_NANOSLEEP
++
++/* not quite true - but it's called something else and the define above
++ * handles it
++ */
++#define HAVE_VSNPRINTF 1
++
++/* FIXME - rest of win32 config defines should go here */
++
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+\ No newline at end of file
