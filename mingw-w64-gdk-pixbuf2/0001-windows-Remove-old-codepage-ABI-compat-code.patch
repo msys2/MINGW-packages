@@ -1,0 +1,431 @@
+From 820ebc828ec2c8166e74c4b8806516edf8d438e8 Mon Sep 17 00:00:00 2001
+From: Christoph Reiter <reiter.christoph@gmail.com>
+Date: Mon, 31 Oct 2016 21:02:14 +0100
+Subject: [PATCH] windows: Remove old codepage ABI compat code
+
+(and as a side effect make the gi bindings API compatible with
+other platforms)
+
+The compat code was added in
+https://git.gnome.org/browse/gdk-pixbuf/commit/?id=141506eb46927eb10b74bc24727488bdbde1c7d4
+to allow switching to utf-8 paths while keeping binary compatibility and to
+make new programs link against the "_utf8" variants.
+
+This results in two problems for gi bindings:
+(1) g-ir-scanner can't find the annotations due to the renames and thus
+    gdk_pixbuf_savev() can't be used in bindings (the other functions happen to
+    work with default annotations)
+(2) g-ir-scanner will write the renamed functions in the gir/typelib with
+    the "_utf8" suffix, making the resulting bindings API incompatible with other
+    platforms.
+
+Some months ago
+https://git.gnome.org/browse/gdk-pixbuf/commit/?id=6855a2d806b2305938abc04b0cb4fa383f8ccd3b
+got rid of symbol files, breaking ABI and old binaries.
+
+This patch removes the, now unused, codepage code and removes the renames so that
+new code links against the real functions again. To not break recent binaries
+add new functions with the _utf8 suffix which just call the main functions.
+Annotations are copied as well to not break bindings API.
+
+A similar change in glib was commited some years ago
+https://git.gnome.org/browse/glib/commit/?id=8c42a663f8182f8281c083390aa761e8e9badc63
+
+https://bugzilla.gnome.org/show_bug.cgi?id=773760
+---
+ gdk-pixbuf/gdk-pixbuf-animation.c |  34 +++---
+ gdk-pixbuf/gdk-pixbuf-animation.h |   7 +-
+ gdk-pixbuf/gdk-pixbuf-core.h      |  35 +++++--
+ gdk-pixbuf/gdk-pixbuf-io.c        | 211 +++++++++++++++-----------------------
+ 4 files changed, 132 insertions(+), 155 deletions(-)
+
+diff --git a/gdk-pixbuf/gdk-pixbuf-animation.c b/gdk-pixbuf/gdk-pixbuf-animation.c
+index f273b56..33c9d9c 100644
+--- a/gdk-pixbuf/gdk-pixbuf-animation.c
++++ b/gdk-pixbuf/gdk-pixbuf-animation.c
+@@ -294,28 +294,24 @@ fail_begin_load:
+ }
+ 
+ #ifdef G_OS_WIN32
+-
+-#undef gdk_pixbuf_animation_new_from_file
+-
++/**
++ * gdk_pixbuf_animation_new_from_file_utf8:
++ * @filename: Name of file to load, in the GLib file name encoding
++ * @error: return location for error
++ *
++ * Same as gdk_pixbuf_animation_new_from_file()
++ *
++ * Return value: A newly-created animation with a reference count of 1, or %NULL
++ * if any of several error conditions ocurred:  the file could not be opened,
++ * there was no loader for the file's format, there was not enough memory to
++ * allocate the image buffer, or the image file contained invalid data.
++ */
+ GdkPixbufAnimation *
+-gdk_pixbuf_animation_new_from_file (const gchar  *filename,
+-                                    GError      **error)
++gdk_pixbuf_animation_new_from_file_utf8 (const gchar  *filename,
++                                         GError      **error)
+ {
+-	gchar *utf8_filename;
+-	GdkPixbufAnimation *retval;
+-
+-	utf8_filename = g_locale_to_utf8 (filename, -1, NULL, NULL, error);
+-
+-	if (utf8_filename == NULL)
+-		return NULL;
+-
+-	retval = gdk_pixbuf_animation_new_from_file_utf8 (utf8_filename, error);
+-
+-	g_free (utf8_filename);
+-
+-	return retval;
++    return gdk_pixbuf_animation_new_from_file (filename, error);
+ }
+-
+ #endif
+ 
+ /**
+diff --git a/gdk-pixbuf/gdk-pixbuf-animation.h b/gdk-pixbuf/gdk-pixbuf-animation.h
+index 01ccab9..8691709 100644
+--- a/gdk-pixbuf/gdk-pixbuf-animation.h
++++ b/gdk-pixbuf/gdk-pixbuf-animation.h
+@@ -63,10 +63,11 @@ typedef struct _GdkPixbufAnimationIter GdkPixbufAnimationIter;
+ GDK_PIXBUF_AVAILABLE_IN_ALL
+ GType               gdk_pixbuf_animation_get_type        (void) G_GNUC_CONST;
+ 
+-#ifndef __GTK_DOC_IGNORE__
+ #ifdef G_OS_WIN32
+-#define gdk_pixbuf_animation_new_from_file gdk_pixbuf_animation_new_from_file_utf8
+-#endif
++/* API/ABI compat, see gdk-pixbuf-core.h for details */
++GDK_PIXBUF_AVAILABLE_IN_ALL
++GdkPixbufAnimation *gdk_pixbuf_animation_new_from_file_utf8   (const char         *filename,
++                                                               GError            **error);
+ #endif
+ 
+ GDK_PIXBUF_AVAILABLE_IN_ALL
+diff --git a/gdk-pixbuf/gdk-pixbuf-core.h b/gdk-pixbuf/gdk-pixbuf-core.h
+index be452f0..d021ca1 100644
+--- a/gdk-pixbuf/gdk-pixbuf-core.h
++++ b/gdk-pixbuf/gdk-pixbuf-core.h
+@@ -284,13 +284,25 @@ GdkPixbuf *gdk_pixbuf_new_subpixbuf (GdkPixbuf *src_pixbuf,
+ 
+ /* Simple loading */
+ 
+-#ifndef __GTK_DOC_IGNORE__
+ #ifdef G_OS_WIN32
+-/* DLL ABI stability hack. */
+-#define gdk_pixbuf_new_from_file gdk_pixbuf_new_from_file_utf8
+-#define gdk_pixbuf_new_from_file_at_size gdk_pixbuf_new_from_file_at_size_utf8
+-#define gdk_pixbuf_new_from_file_at_scale gdk_pixbuf_new_from_file_at_scale_utf8
+-#endif
++/* In previous versions these _utf8 variants where exported and linked to
++ * by default. Export them here for ABI (and gi API) compat.
++ */
++
++GDK_PIXBUF_AVAILABLE_IN_ALL
++GdkPixbuf *gdk_pixbuf_new_from_file_utf8 (const char *filename,
++                                          GError    **error);
++GDK_PIXBUF_AVAILABLE_IN_2_4
++GdkPixbuf *gdk_pixbuf_new_from_file_at_size_utf8 (const char *filename,
++                                                  int         width,
++                                                  int         height,
++                                                  GError    **error);
++GDK_PIXBUF_AVAILABLE_IN_2_6
++GdkPixbuf *gdk_pixbuf_new_from_file_at_scale_utf8 (const char *filename,
++                                                   int         width,
++                                                   int         height,
++                                                   gboolean    preserve_aspect_ratio,
++                                                   GError    **error);
+ #endif
+ 
+ GDK_PIXBUF_AVAILABLE_IN_ALL
+@@ -357,7 +369,6 @@ void       gdk_pixbuf_fill              (GdkPixbuf    *pixbuf,
+ #ifdef G_OS_WIN32
+ /* DLL ABI stability hack. */
+ #define gdk_pixbuf_save gdk_pixbuf_save_utf8
+-#define gdk_pixbuf_savev gdk_pixbuf_savev_utf8
+ #endif
+ #endif
+ 
+@@ -376,6 +387,16 @@ gboolean gdk_pixbuf_savev          (GdkPixbuf  *pixbuf,
+                                     char      **option_values,
+                                     GError    **error);
+ 
++#ifdef G_OS_WIN32
++GDK_PIXBUF_AVAILABLE_IN_ALL
++gboolean gdk_pixbuf_savev_utf8     (GdkPixbuf  *pixbuf,
++                                    const char *filename,
++                                    const char *type,
++                                    char      **option_keys,
++                                    char      **option_values,
++                                    GError    **error);
++#endif
++
+ /* Saving to a callback function */
+ 
+ 
+diff --git a/gdk-pixbuf/gdk-pixbuf-io.c b/gdk-pixbuf/gdk-pixbuf-io.c
+index b49929b..b81d3d2 100644
+--- a/gdk-pixbuf/gdk-pixbuf-io.c
++++ b/gdk-pixbuf/gdk-pixbuf-io.c
+@@ -1132,24 +1132,25 @@ gdk_pixbuf_new_from_file (const char *filename,
+ 
+ #ifdef G_OS_WIN32
+ 
+-#undef gdk_pixbuf_new_from_file
++/**
++ * gdk_pixbuf_new_from_file_utf8:
++ * @filename: Name of file to load, in the GLib file name encoding
++ * @error: Return location for an error
++ *
++ * Same as gdk_pixbuf_new_from_file()
++ *
++ * Return value: A newly-created pixbuf with a reference count of 1, or %NULL if
++ * any of several error conditions occurred:  the file could not be opened,
++ * there was no loader for the file's format, there was not enough memory to
++ * allocate the image buffer, or the image file contained invalid data.
++ **/
+ GdkPixbuf *
+-gdk_pixbuf_new_from_file (const char *filename,
+-                          GError    **error)
++gdk_pixbuf_new_from_file_utf8 (const char *filename,
++                                GError    **error)
+ {
+-        gchar *utf8_filename =
+-                g_locale_to_utf8 (filename, -1, NULL, NULL, error);
+-        GdkPixbuf *retval;
+-
+-        if (utf8_filename == NULL)
+-                return NULL;
+-
+-        retval = gdk_pixbuf_new_from_file_utf8 (utf8_filename, error);
+-
+-        g_free (utf8_filename);
+-
+-        return retval;
++    return gdk_pixbuf_new_from_file (filename, error);
+ }
++
+ #endif
+ 
+ 
+@@ -1192,29 +1193,32 @@ gdk_pixbuf_new_from_file_at_size (const char *filename,
+ 
+ #ifdef G_OS_WIN32
+ 
+-#undef gdk_pixbuf_new_from_file_at_size
+-
++/**
++ * gdk_pixbuf_new_from_file_at_size_utf8:
++ * @filename: Name of file to load, in the GLib file name encoding
++ * @width: The width the image should have or -1 to not constrain the width
++ * @height: The height the image should have or -1 to not constrain the height
++ * @error: Return location for an error
++ *
++ * Same as gdk_pixbuf_new_from_file_at_size()
++ *
++ * Return value: A newly-created pixbuf with a reference count of 1, or
++ * %NULL if any of several error conditions occurred:  the file could not
++ * be opened, there was no loader for the file's format, there was not
++ * enough memory to allocate the image buffer, or the image file contained
++ * invalid data.
++ *
++ * Since: 2.4
++ **/
+ GdkPixbuf *
+-gdk_pixbuf_new_from_file_at_size (const char *filename,
+-                                  int         width, 
+-                                  int         height,
+-                                  GError    **error)
++gdk_pixbuf_new_from_file_at_size_utf8 (const char *filename,
++                                       int         width,
++                                       int         height,
++                                       GError    **error)
+ {
+-        gchar *utf8_filename =
+-                g_locale_to_utf8 (filename, -1, NULL, NULL, error);
+-        GdkPixbuf *retval;
+-
+-        if (utf8_filename == NULL)
+-                return NULL;
+-
+-        retval = gdk_pixbuf_new_from_file_at_size_utf8 (utf8_filename,
+-                                                        width, height,
+-                                                        error);
+-
+-        g_free (utf8_filename);
+-
+-        return retval;
++    return gdk_pixbuf_new_from_file_at_size (filename, width, height, error);
+ }
++
+ #endif
+ 
+ typedef struct {
+@@ -1396,30 +1400,32 @@ gdk_pixbuf_new_from_file_at_scale (const char *filename,
+ 
+ #ifdef G_OS_WIN32
+ 
+-#undef gdk_pixbuf_new_from_file_at_scale
+-
++/**
++ * gdk_pixbuf_new_from_file_at_scale_utf8:
++ * @filename: Name of file to load, in the GLib file name encoding
++ * @width: The width the image should have or -1 to not constrain the width
++ * @height: The height the image should have or -1 to not constrain the height
++ * @preserve_aspect_ratio: %TRUE to preserve the image's aspect ratio
++ * @error: Return location for an error
++ *
++ * Same as gdk_pixbuf_new_from_file_at_scale().
++ *
++ * Return value: A newly-created pixbuf with a reference count of 1, or %NULL
++ * if any of several error conditions occurred:  the file could not be opened,
++ * there was no loader for the file's format, there was not enough memory to
++ * allocate the image buffer, or the image file contained invalid data.
++ *
++ * Since: 2.6
++ **/
+ GdkPixbuf *
+-gdk_pixbuf_new_from_file_at_scale (const char *filename,
+-                                   int         width, 
+-                                   int         height,
+-                                   gboolean    preserve_aspect_ratio,
+-                                   GError    **error)
++gdk_pixbuf_new_from_file_at_scale_utf8 (const char *filename,
++                                        int         width,
++                                        int         height,
++                                        gboolean    preserve_aspect_ratio,
++                                        GError    **error)
+ {
+-        gchar *utf8_filename =
+-                g_locale_to_utf8 (filename, -1, NULL, NULL, error);
+-        GdkPixbuf *retval;
+-
+-        if (utf8_filename == NULL)
+-                return NULL;
+-
+-        retval = gdk_pixbuf_new_from_file_at_scale_utf8 (utf8_filename,
+-                                                         width, height,
+-                                                         preserve_aspect_ratio,
+-                                                         error);
+-
+-        g_free (utf8_filename);
+-
+-        return retval;
++    return gdk_pixbuf_new_from_file_at_scale (filename, width, height,
++                                              preserve_aspect_ratio, error);
+ }
+ #endif
+ 
+@@ -2426,50 +2432,6 @@ gdk_pixbuf_save (GdkPixbuf  *pixbuf,
+         return result;
+ }
+ 
+-#ifdef G_OS_WIN32
+-
+-#undef gdk_pixbuf_save
+-
+-gboolean
+-gdk_pixbuf_save (GdkPixbuf  *pixbuf, 
+-                 const char *filename, 
+-                 const char *type, 
+-                 GError    **error,
+-                 ...)
+-{
+-        char *utf8_filename;
+-        gchar **keys = NULL;
+-        gchar **values = NULL;
+-        va_list args;
+-        gboolean result;
+-
+-        g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+-        
+-        utf8_filename = g_locale_to_utf8 (filename, -1, NULL, NULL, error);
+-
+-        if (utf8_filename == NULL)
+-                return FALSE;
+-
+-        va_start (args, error);
+-        
+-        collect_save_options (args, &keys, &values);
+-        
+-        va_end (args);
+-
+-        result = gdk_pixbuf_savev_utf8 (pixbuf, utf8_filename, type,
+-                                        keys, values,
+-                                        error);
+-
+-        g_free (utf8_filename);
+-
+-        g_strfreev (keys);
+-        g_strfreev (values);
+-
+-        return result;
+-}
+-
+-#endif
+-
+ /**
+  * gdk_pixbuf_savev:
+  * @pixbuf: a #GdkPixbuf.
+@@ -2547,32 +2509,29 @@ gdk_pixbuf_savev (GdkPixbuf  *pixbuf,
+ 
+ #ifdef G_OS_WIN32
+ 
+-#undef gdk_pixbuf_savev
+-
++/**
++ * gdk_pixbuf_savev_utf8:
++ * @pixbuf: a #GdkPixbuf.
++ * @filename: name of file to save.
++ * @type: name of file format.
++ * @option_keys: (array zero-terminated=1): name of options to set, %NULL-terminated
++ * @option_values: (array zero-terminated=1): values for named options
++ * @error: (allow-none): return location for error, or %NULL
++ *
++ * Same as gdk_pixbuf_savev()
++ *
++ * Return value: whether an error was set
++ **/
+ gboolean
+-gdk_pixbuf_savev (GdkPixbuf  *pixbuf, 
+-                  const char *filename, 
+-                  const char *type,
+-                  char      **option_keys,
+-                  char      **option_values,
+-                  GError    **error)
+-{
+-        char *utf8_filename;
+-        gboolean retval;
+-
+-        g_return_val_if_fail (filename != NULL, FALSE);
+-       
+-        utf8_filename = g_locale_to_utf8 (filename, -1, NULL, NULL, error);
+-
+-        if (utf8_filename == NULL)
+-                return FALSE;
+-
+-        retval = gdk_pixbuf_savev_utf8 (pixbuf, utf8_filename, type,
+-                                        option_keys, option_values, error);
+-
+-        g_free (utf8_filename);
+-
+-        return retval;
++gdk_pixbuf_savev_utf8 (GdkPixbuf  *pixbuf,
++                       const char *filename,
++                       const char *type,
++                       char      **option_keys,
++                       char      **option_values,
++                       GError    **error)
++{
++    return gdk_pixbuf_savev (pixbuf, filename, type, option_keys,
++                             option_values, error);
+ }
+ 
+ #endif
+-- 
+2.10.2
+
