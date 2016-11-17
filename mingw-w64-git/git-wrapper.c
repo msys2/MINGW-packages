@@ -48,6 +48,10 @@ static void setup_environment(LPWSTR top_level_path, int full_path)
 		L"MINGW%d", (int) sizeof(void *) * 8);
 	SetEnvironmentVariable(L"MSYSTEM", msystem);
 
+	/* if not set, set LC_ALL to allow non-ASCII characters */
+	if (!GetEnvironmentVariable(L"LC_ALL", NULL, 0))
+		SetEnvironmentVariable(L"LC_ALL", L"C");
+
 	/* if not set, set PLINK_PROTOCOL to ssh */
 	if (!GetEnvironmentVariable(L"PLINK_PROTOCOL", NULL, 0))
 		SetEnvironmentVariable(L"PLINK_PROTOCOL", L"ssh");
