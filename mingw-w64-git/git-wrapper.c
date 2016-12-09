@@ -51,7 +51,7 @@ static void setup_environment(LPWSTR top_level_path, int full_path,
 
 	/* if not set, set LC_ALL to allow non-ASCII characters */
 	if (needs_lc_all && !GetEnvironmentVariable(L"LC_ALL", NULL, 0))
-		SetEnvironmentVariable(L"LC_ALL", L"C");
+		SetEnvironmentVariable(L"LC_ALL", L"C.UTF-8");
 
 	/* if not set, set PLINK_PROTOCOL to ssh */
 	if (!GetEnvironmentVariable(L"PLINK_PROTOCOL", NULL, 0))
