@@ -37,7 +37,8 @@ static void print_error(LPCWSTR prefix, DWORD error_number)
 	LocalFree((HLOCAL)buffer);
 }
 
-static void setup_environment(LPWSTR top_level_path, int full_path)
+static void setup_environment(LPWSTR top_level_path, int full_path,
+			      int needs_lc_all)
 {
 	WCHAR msystem[64];
 	LPWSTR path2 = NULL;
@@ -49,7 +50,7 @@ static void setup_environment(LPWSTR top_level_path, int full_path)
 	SetEnvironmentVariable(L"MSYSTEM", msystem);
 
 	/* if not set, set LC_ALL to allow non-ASCII characters */
-	if (!GetEnvironmentVariable(L"LC_ALL", NULL, 0))
+	if (needs_lc_all && !GetEnvironmentVariable(L"LC_ALL", NULL, 0))
 		SetEnvironmentVariable(L"LC_ALL", L"C");
 
 	/* if not set, set PLINK_PROTOCOL to ssh */
@@ -495,7 +496,7 @@ int main(void)
 	int r = 1, wait = 1, prefix_args_len = -1, needs_env_setup = 1,
 		is_git_command = 1, full_path = 1, skip_arguments = 0,
 		allocate_console = 0, show_console = 0,
-		append_quote_to_cmdline = 0;
+		append_quote_to_cmdline = 0, needs_lc_all = 0;
 	WCHAR exepath[MAX_PATH], exe[MAX_PATH], top_level_path[MAX_PATH];
 	LPWSTR cmd = NULL, exep = exe, prefix_args = NULL, basename;
 	LPWSTR working_directory = NULL;
@@ -560,6 +561,7 @@ int main(void)
 	}
 	else if (!wcsicmp(basename, L"git.exe")) {
 		initialize_top_level_path(top_level_path, exepath, NULL, 1);
+		needs_lc_all = 1;
 
 		/* set the default exe module */
 		wcscpy(exe, top_level_path);
@@ -597,7 +599,7 @@ int main(void)
 			initialize_top_level_path(top_level_path, exepath,
 					msystem_bin, -4);
 
-		setup_environment(top_level_path, full_path);
+		setup_environment(top_level_path, full_path, needs_lc_all);
 	}
 	cmd = fixup_commandline(exepath, &exep, &wait,
 		prefix_args, prefix_args_len, is_git_command, skip_arguments,
