@@ -142,7 +142,7 @@ static LPWSTR fixup_commandline(LPWSTR exepath, LPWSTR *exep, int *wait,
 	LPWSTR cmd = NULL, cmdline = NULL;
 	LPWSTR *wargv = NULL, p = NULL;
 
-	cmdline = GetCommandLine();
+	cmdline = GetCommandLineW();
 	wargv = CommandLineToArgvW(cmdline, &wargc);
 	cmd = (LPWSTR)malloc(sizeof(WCHAR) *
 		(wcslen(cmdline) + prefix_args_len + 1 + MAX_PATH +
@@ -389,7 +389,7 @@ static int configure_via_resource(LPWSTR basename, LPWSTR exepath, LPWSTR exep,
 	*prefix_args_len = wcslen(buf2);
 
 	*is_git_command = 0;
-	wargv = CommandLineToArgvW(GetCommandLine(), &wargc);
+	wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
 	for (i = 1; i < wargc; i++) {
 		if (!wcscmp(L"--no-cd", wargv[i]))
 			*working_directory = NULL;
