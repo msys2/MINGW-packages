@@ -491,7 +491,53 @@ static void initialize_top_level_path(LPWSTR top_level_path, LPWSTR exepath,
 	}
 }
 
-int main(void)
+/*
+ * Returns 0 if it is not UTF-8, 1 if it is UTF-8, -1 if it is plain ASCII.
+ * This is purposefully kept simply, i.e. *not* checking for overlong sequences.
+ */
+static inline int is_utf8(const char *p)
+{
+	while (*p) {
+		unsigned char c = (unsigned char)*(p++);
+		int count;
+
+		if (c < 0x80) {
+			if (c < 0x20 && c != 0x09 && c != 0x0a && c != 0x0d)
+				return 0;
+			continue;
+		}
+
+		if (c < 0xc0 || c >= 0xf8)
+			return 0;
+
+		if (c < 0xe0)
+			count = 1;
+		else if (c < 0xf0)
+			count = 2;
+		else
+			count = 3;
+		while (count--)
+			if ((*(p++) & 0xc0) != 0x80)
+				return 0;
+	}
+	return -1;
+}
+
+static inline int argv_are_utf8(int argc, const char **argv)
+{
+	int ret = 0, i;
+
+	for (i = 0; i < argc; i++)
+		switch (is_utf8(argv[i])) {
+		case 0:
+			return 0;
+		case 1:
+			ret = 1;
+		}
+	return ret;
+}
+
+int main(int argc, const char **argv)
 {
 	int r = 1, wait = 1, prefix_args_len = -1, needs_env_setup = 1,
 		is_git_command = 1, full_path = 1, skip_arguments = 0,
@@ -561,7 +607,7 @@ int main(void)
 	}
 	else if (!wcsicmp(basename, L"git.exe")) {
 		initialize_top_level_path(top_level_path, exepath, NULL, 1);
-		needs_lc_all = 1;
+		needs_lc_all = argv_are_utf8(argc, argv);
 
 		/* set the default exe module */
 		wcscpy(exe, top_level_path);
