@@ -1,0 +1,324 @@
+--- mpdecimal-2.4.2/configure.ac.orig	2016-02-27 16:55:00.000000000 -0500
++++ mpdecimal-2.4.2/configure.ac	2017-02-14 09:04:56.759794200 -0500
+@@ -5,19 +5,51 @@
+ AC_CONFIG_FILES([Makefile libmpdec/Makefile tests/Makefile libmpdec/mpdecimal.h])
+ AC_ARG_VAR(MACHINE, [force configuration: x64, uint128, ansi64, ppro, ansi32, ansi-legacy])
+ 
+-LIBSTATIC=libmpdec.a
+-LIBSONAME=libmpdec.so.2
+-LIBSHARED=libmpdec.so.2.4.2
+-AC_SUBST(LIBSTATIC)
+-AC_SUBST(LIBSONAME)
+-AC_SUBST(LIBSHARED)
+-
+-
+-# Apparently purely informational for this particular build:
+ AC_CANONICAL_HOST
+ AC_SUBST(build)
+ AC_SUBST(host)
+ 
++case $host in
++  *-*-mingw*)
++  LIBSTATIC=libmpdec.a
++  LIBSOALIAS=
++  LIBSONAME=libmpdec-${PACKAGE_VERSION}.dll
++  LIBSHARED=libmpdec-2.dll
++  LIBIMPORT=libmpdec.dll.a
++  IS_WINDOWS=yes
++  ;;
++  *-*-cygwin*)
++  LIBSTATIC=libmpdec.a
++  LIBSOALIAS=
++  LIBSONAME=cygmpdec-2.dll
++  LIBSHARED=cygmpdec-${PACKAGE_VERSION}.dll
++  LIBIMPORT=libmpdec.dll.a
++  IS_WINDOWS=yes
++  ;;
++  *-*-msys*)
++  LIBSTATIC=libmpdec.a
++  LIBSOALIAS=
++  LIBSONAME=msys-mpdec-2.dll
++  LIBSHARED=msys-mpdec-${PACKAGE_VERSION}.dll
++  LIBIMPORT=libmpdec.dll.a
++  IS_WINDOWS=yes
++  ;;
++  *)
++  LIBSTATIC=libmpdec.a
++  LIBSOALIAS=libmpdec.so
++  LIBSONAME=libmpdec.so.2
++  LIBSHARED=libmpdec.so.2.4.2
++  LIBIMPORT=
++  IS_WINDOWS=no
++  ;;
++esac
++AC_SUBST(LIBSTATIC)
++AC_SUBST(LIBSOALIAS)
++AC_SUBST(LIBSONAME)
++AC_SUBST(LIBSHARED)
++AC_SUBST(LIBIMPORT)
++AC_SUBST(IS_WINDOWS)
++
+ # Language and compiler:
+ AC_LANG_C
+ saved_cflags=$CFLAGS
+@@ -88,6 +120,10 @@
+ AC_PROG_INSTALL
+ AC_SUBST(INSTALL)
+ 
++# ln -s program
++AC_PROG_LN_S
++AC_SUBST(LN_S)
++
+ # _FORTIFY_SOURCE wrappers for memmove and bcopy are incorrect:
+ # http://sourceware.org/ml/libc-alpha/2010-12/msg00009.html
+ AC_MSG_CHECKING(for glibc _FORTIFY_SOURCE/memmove bug)
+--- mpdecimal-2.4.2/libmpdec/Makefile.in.orig	2016-02-27 16:55:00.000000000 -0500
++++ mpdecimal-2.4.2/libmpdec/Makefile.in	2017-02-14 09:58:38.908029100 -0500
+@@ -7,6 +7,13 @@
+ LIBSTATIC = @LIBSTATIC@
+ LIBSONAME = @LIBSONAME@
+ LIBSHARED = @LIBSHARED@
++#In Unix-like systems, used to denote a so without a version number
++LIBSOALIAS= @LIBSOALIAS@
++#LIBIMPORT may be empty.  It's only for systems where you link
++# to a separate import file, rather than directly to the shared
++# file.  
++LIBIMPORT = @LIBIMPORT@
++IS_WINDOWS= @IS_WINDOWS@
+ 
+ CC = @CC@
+ LD = @LD@
+@@ -17,6 +24,8 @@
+ MPD_PREC = @MPD_PREC@
+ MPD_DPREC = @MPD_DPREC@
+ 
++LN_S      = @LN_S@
++
+ CONFIGURE_CFLAGS = @CONFIGURE_CFLAGS@
+ MPD_CFLAGS = $(strip $(CONFIGURE_CFLAGS) $(CFLAGS))
+ 
+@@ -37,7 +46,11 @@
+ ifeq ($(shell uname), Darwin)
+   MPD_SOFLAGS=-dynamiclib -Wl,-install_name,$(LIBSONAME)
+ else
+-  MPD_SOFLAGS=-shared -Wl,-soname,$(LIBSONAME)
++  ifneq ($(LIBIMPORT),)
++    MPD_SOFLAGS=-shared -Wl,-soname,$(LIBSONAME),--out-implib,$(LIBIMPORT)
++  else
++    MPD_SOFLAGS=-shared -Wl,-soname,$(LIBSONAME)
++  endif
+ endif
+ 
+ 
+@@ -60,8 +73,10 @@
+ 
+ $(LIBSHARED): Makefile $(SHARED_OBJS)
+ 	$(LD) $(MPD_LDFLAGS) $(MPD_SOFLAGS) -o $(LIBSHARED) $(SHARED_OBJS) -lm
+-	ln -sf $(LIBSHARED) libmpdec.so
+-	ln -sf $(LIBSHARED) $(LIBSONAME)
++ifneq ($(LIBSOALIAS),)
++	$(LN_S) $(LIBSHARED) $(LIBSOALIAS)
++endif
++	$(LN_S) $(LIBSHARED) $(LIBSONAME)
+ 
+ 
+ basearith.o:\
+@@ -220,7 +235,7 @@
+ 	LD_LIBRARY_PATH=. ./bench_shared $(MPD_PREC) 1000
+ 	LD_LIBRARY_PATH=. ./bench_shared $(MPD_DPREC) 1000
+ 	rm -f *.o *.gch .objs/*.o .objs/*.gch bench bench_shared
+-	rm -f $(LIBSTATIC) $(LIBSHARED) $(LIBSONAME) libmpdec.so
++	rm -f $(LIBSTATIC) $(LIBSHARED) $(LIBSONAME) $(LIBSOALIAS)
+ 
+ profile_use: bench bench_shared
+ 	./bench $(MPD_PREC) 1000
+@@ -234,8 +249,12 @@
+ 
+ clean: FORCE
+ 	rm -f *.o *.so *.gch *.gcda *.gcno *.gcov *.dyn *.dpi *.lock
+-	rm -f bench bench_shared $(LIBSTATIC) $(LIBSHARED) $(LIBSONAME) libmpdec.so
++	rm -f bench bench_shared $(LIBSTATIC) $(LIBSHARED) $(LIBSONAME) $(LIBSOALIAS)
+ 	cd .objs && rm -f *.o *.so *.gch *.gcda *.gcno *.gcov *.dyn *.dpi *.lock
++ifeq ($(IS_WINDOWS),yes)
++	rm -f *.dll *.exe
++	cd .objs && rm -rf *.dll *.exe
++endif
+ 
+ distclean: clean
+ 	rm -f config.h config.log config.status Makefile mpdecimal.h
+--- mpdecimal-2.4.2/Makefile.in.orig	2016-02-27 16:55:00.000000000 -0500
++++ mpdecimal-2.4.2/Makefile.in	2017-02-14 09:58:38.913529400 -0500
+@@ -8,12 +8,23 @@
+ LIBSTATIC = @LIBSTATIC@
+ LIBSONAME = @LIBSONAME@
+ LIBSHARED = @LIBSHARED@
++#In Unix-like systems, used to denote a so without a version number
++LIBSOALIAS= @LIBSOALIAS@
++#LIBIMPORT may be empty.  It's only for systems where you link
++# to a separate import file, rather than directly to the shared
++# file.  
++LIBIMPORT = @LIBIMPORT@
+ INSTALL = @INSTALL@
++LN_S    = @LN_S@
++EXEEXT  = @EXEEXT@
++# Windows demands some special build rules.
++IS_WINDOWS = @IS_WINDOWS@
+ 
+ prefix = @prefix@
+ exec_prefix = @exec_prefix@
+ includedir = @includedir@
+ libdir = @libdir@
++bindir = @bindir@
+ datarootdir = @datarootdir@
+ docdir = @docdir@
+ 
+@@ -35,9 +46,23 @@
+ 	$(INSTALL) -d -m 755 $(DESTDIR)$(includedir)
+ 	$(INSTALL) -m 644 libmpdec/mpdecimal.h $(DESTDIR)$(includedir)
+ 	$(INSTALL) -d -m 755 $(DESTDIR)$(libdir)
++ifneq ($(LIBIMPORT),)
++	$(INSTALL) -m 644 libmpdec/$(LIBIMPORT) $(DESTDIR)$(libdir)
++endif
+ 	$(INSTALL) -m 644 libmpdec/$(LIBSTATIC) $(DESTDIR)$(libdir)
++ifeq ($(IS_WINDOWS),yes)
++	$(INSTALL) -d -m 755 $(DESTDIR)$(bindir)
++	$(INSTALL) -m 755 libmpdec/$(LIBSHARED) $(DESTDIR)$(bindir)
++ifneq ($(LIBSOALIAS),)
++	cd $(DESTDIR)$(bindir) && $(LN_S) $(LIBSHARED) $(LIBSOALIAS)
++endif
++else
+ 	$(INSTALL) -m 755 libmpdec/$(LIBSHARED) $(DESTDIR)$(libdir)
+-	cd $(DESTDIR)$(libdir) && ln -sf $(LIBSHARED) $(LIBSONAME) && ln -sf $(LIBSHARED) libmpdec.so
++	cd $(DESTDIR)$(libdir) && $(LN_S) $(LIBSHARED) $(LIBSONAME)
++ifneq ($(LIBSOALIAS),)
++	cd $(DESTDIR)$(libdir) && $(LN_S) $(LIBSHARED) $(LIBSOALIAS)
++endif
++endif
+ 	$(INSTALL) -d -m 755 $(DESTDIR)$(docdir)
+ 	cp -R doc/* $(DESTDIR)$(docdir)
+ 
+--- mpdecimal-2.4.2/tests/Makefile.in.orig	2016-02-27 16:55:00.000000000 -0500
++++ mpdecimal-2.4.2/tests/Makefile.in	2017-02-14 09:58:38.919030700 -0500
+@@ -11,6 +11,9 @@
+ MPD_WARN = @MPD_WARN@
+ MPD_CONFIG = @MPD_CONFIG@
+ 
++# Windows demands some special build rules.
++IS_WINDOWS = @IS_WINDOWS@
++
+ CONFIGURE_CFLAGS = @CONFIGURE_CFLAGS@
+ CFLAGS ?= $(CONFIGURE_CFLAGS)
+ 
+@@ -46,6 +49,9 @@
+ clean: FORCE
+ 	rm -f *.o *.gch *.gcda *.gcno *.gcov *.dyn *.dpi *.lock
+ 	rm -f runtest runtest_shared runtest_alloc runtest_alloc_shared
++ifeq ($(IS_WINDOWS),yes)
++	rm -f *.dll *.exe
++endif
+ 
+ distclean: FORCE
+ 	$(MAKE) clean
+--- mpdecimal-2.4.2/tests/runshort.sh.orig	2016-02-27 16:55:00.000000000 -0500
++++ mpdecimal-2.4.2/tests/runshort.sh	2017-02-14 09:58:38.924030500 -0500
+@@ -30,9 +30,21 @@
+ 
+ printf "Running official tests ...\n\n"
+ 
++case "$(uname -s)" in
++  CYGWIN*|MINGW*|MSYS*)
++  cp ../libmpdec/*.dll .
++  ;;
++esac
++
+ if  ! LD_LIBRARY_PATH=../libmpdec ./runtest_shared official.decTest
+ then
+     printf "\nFAIL\n\n\n"
++    case "$(uname -s)" in
++      CYGWIN*|MINGW*|MSYS*)
++        rm -f *.dll
++      ;;
++    esac
++
+     exit 1
+ fi
+ 
+@@ -41,8 +53,19 @@
+ if ! LD_LIBRARY_PATH=../libmpdec ./runtest_shared additional.decTest
+ then
+     printf "\nFAIL\n\n\n"
++
++    case "$(uname -s)" in
++      CYGWIN*|MINGW*|MSYS*)
++        rm -f *.dll
++      ;;
++    esac
++
+     exit 1
+ fi
+ 
+-
++case "$(uname -s)" in
++  CYGWIN*|MINGW*|MSYS*)
++  rm -f *.dll
++  ;;
++esac
+ 
+--- mpdecimal-2.4.2/tests/runshort_alloc.sh.orig	2016-02-27 16:55:00.000000000 -0500
++++ mpdecimal-2.4.2/tests/runshort_alloc.sh	2017-02-14 09:58:38.933031900 -0500
+@@ -30,9 +30,21 @@
+ 
+ printf "Running official tests with allocation failures ...\n\n"
+ 
++case "$(uname -s)" in
++  CYGWIN*|MINGW*|MSYS*)
++  cp ../libmpdec/*.dll .
++  ;;
++esac
++
+ if  ! LD_LIBRARY_PATH=../libmpdec ./runtest_alloc_shared official.decTest
+ then
+     printf "\nFAIL\n\n\n"
++    case "$(uname -s)" in
++      CYGWIN*|MINGW*|MSYS*)
++        rm -f *.dll
++      ;;
++    esac
++
+     exit 1
+ fi
+ 
+@@ -41,8 +53,18 @@
+ if ! LD_LIBRARY_PATH=../libmpdec ./runtest_alloc_shared additional.decTest
+ then
+     printf "\nFAIL\n\n\n"
++    case "$(uname -s)" in
++      CYGWIN*|MINGW*|MSYS*)
++        rm -f *.dll
++      ;;
++    esac
++
+     exit 1
+ fi
+ 
+-
++case "$(uname -s)" in
++  CYGWIN*|MINGW*|MSYS*)
++     rm -f *.dll
++  ;;
++esac
+ 
+
+--- mpdecimal-2.4.2/tests/runtest.c.orig	2017-02-14 18:41:32.763666600 -0500
++++ mpdecimal-2.4.2/tests/runtest.c	2017-02-14 19:38:26.102943000 -0500
+@@ -46,6 +46,10 @@
+ #include "mptest.h"
+ #include "malloc_fail.h"
+ 
++#if defined(__MINGW32__)
++#define random rand
++#define srandom srand
++#endif
+ 
+ #define MAXLINE 400000
+ #define MAXTOKEN 32
