@@ -1,7 +1,7 @@
-From d712995f903a3245653cc8afaeae445124a85643 Mon Sep 17 00:00:00 2001
+From 239703a5bcaf5df957f56fe21c610f50288af396 Mon Sep 17 00:00:00 2001
 From: Ray Donnelly <mingw.android@gmail.com>
 Date: Mon, 3 Aug 2015 22:00:16 +0100
-Subject: [PATCH] Implement Qt5 static plugin support
+Subject: [PATCH 4/8] Implement Qt5 static plugin support
 
 Enabled via a new target property "AUTOSTATICPLUGINS".
 
@@ -18,14 +18,16 @@ from [1] are necessary [2], [3] and [4]
 CMake but are necessary for this to work on MinGW-w64 (0040- for example).
 ---
  Source/cmGlobalGenerator.cxx            |  1 +
- Source/cmQtAutoGeneratorInitializer.cxx | 64 +++++++++++++++++++++++++++++++--
- Source/cmTarget.cxx                     |  2 ++
- 3 files changed, 65 insertions(+), 2 deletions(-)
+ Source/cmQtAutoGeneratorInitializer.cxx | 70 ++++++++++++++++++++++++++++++++-
+ Source/cmTarget.cxx                     |  1 +
+ Source/cmTargetPropertyComputer.cxx     |  1 +
+ 4 files changed, 72 insertions(+), 1 deletion(-)
 
-diff -urN cmake-3.5.2/Source/cmGlobalGenerator.cxx cmake-3.5.2.new/Source/cmGlobalGenerator.cxx
---- cmake-3.5.2/Source/cmGlobalGenerator.cxx	2016-04-15 14:41:22.000000000 +0100
-+++ cmake-3.5.2.new/Source/cmGlobalGenerator.cxx	2016-06-03 00:38:43.559076300 +0100
-@@ -1352,6 +1352,7 @@
+diff --git a/Source/cmGlobalGenerator.cxx b/Source/cmGlobalGenerator.cxx
+index f11825083e..e8a07361c0 100644
+--- a/Source/cmGlobalGenerator.cxx
++++ b/Source/cmGlobalGenerator.cxx
+@@ -1409,6 +1409,7 @@ cmGlobalGenerator::CreateQtAutoGeneratorsTargets()
        }
        if ((!(*ti)->GetPropertyAsBool("AUTOMOC") &&
             !(*ti)->GetPropertyAsBool("AUTOUIC") &&
@@ -33,31 +35,23 @@ diff -urN cmake-3.5.2/Source/cmGlobalGenerator.cxx cmake-3.5.2.new/Source/cmGlob
             !(*ti)->GetPropertyAsBool("AUTORCC")) ||
            (*ti)->IsImported()) {
          continue;
-diff -urN cmake-3.7.0/Source/cmQtAutoGeneratorInitializer.cxx.orig cmake-3.7.0/Source/cmQtAutoGeneratorInitializer.cxx
---- cmake-3.7.0/Source/cmQtAutoGeneratorInitializer.cxx.orig	2016-11-11 09:37:14.000000000 -0500
-+++ cmake-3.7.0/Source/cmQtAutoGeneratorInitializer.cxx	2016-11-13 17:42:21.268132300 -0500
-@@ -25,6 +25,7 @@
- #include <assert.h>
+diff --git a/Source/cmQtAutoGeneratorInitializer.cxx b/Source/cmQtAutoGeneratorInitializer.cxx
+index 825eba0e1d..61652b80b1 100644
+--- a/Source/cmQtAutoGeneratorInitializer.cxx
++++ b/Source/cmQtAutoGeneratorInitializer.cxx
+@@ -26,6 +26,7 @@
  #include <cmConfigure.h>
  #include <cmsys/FStream.hxx>
-+#include <cmGeneratedFileStream.h>
  #include <cmsys/RegularExpression.hxx>
- #include <iostream>
++#include <cmGeneratedFileStream.h>
  #include <map>
-@@ -39,7 +40,7 @@
- static std::string GetAutogenTargetName(cmGeneratorTarget const* target)
- {
-   std::string autogenTargetName = target->GetName();
--  autogenTargetName += "_automoc";
-+  autogenTargetName += "_autogen";
-   return autogenTargetName;
- }
- 
-@@ -127,6 +128,65 @@
-        fileIt != newRccFiles.end(); ++fileIt) {
-     const_cast<cmGeneratorTarget*>(target)->AddSource(*fileIt);
+ #include <set>
+ #include <sstream>
+@@ -160,6 +161,65 @@ static void SetupSourceFiles(cmGeneratorTarget const* target,
+       }
+     }
    }
-+  
++
 +  /* in qt5-static/lib/cmake/Qt5Core/Qt5CoreConfig.cmake,
 +   * macro(_populate_Core_plugin_properties ..), we'd have:
 +   * set_property(TARGET PROPERTY AUTOSTATICPLUGINS True) // Not currently need
@@ -119,34 +113,36 @@ diff -urN cmake-3.7.0/Source/cmQtAutoGeneratorInitializer.cxx.orig cmake-3.7.0/S
  }
  
  static void GetCompileDefinitionsAndDirectories(
-@@ -717,6 +777,12 @@
-   if (target->GetPropertyAsBool("AUTORCC")) {
-     toolNames.push_back("rcc");
+@@ -742,7 +802,13 @@ void cmQtAutoGeneratorInitializer::InitializeAutogenTarget(
+     }
+     if (toolNames.size() == 1) {
+       tools += " and " + toolNames[0];
++    } else if (toolNames.size() == 0) {
++      /* AUTOSTATICPLUGINS .cpp files are created at cmake execution time,
++       * and not at build time, so in that case it is possible to get here
++       * with no toolNames. */
++      return;
+     }
++
+     autogenComment = "Automatic " + tools + " for target " + target->GetName();
    }
-+  /* AUTOSTATICPLUGINS .cpp files are created at cmake execution time,
-+   * and not at build time, so in that case it is possible to get here
-+   * with no toolNames. */
-+  if (!toolNames.size()) {
-+    return;
-+  }
  
-   std::string tools = toolNames[0];
-   toolNames.erase(toolNames.begin());
-@@ -880,7 +946,9 @@
+@@ -894,7 +960,9 @@ void cmQtAutoGeneratorInitializer::SetupAutoGenerateTarget(
  
    if (target->GetPropertyAsBool("AUTOMOC") ||
        target->GetPropertyAsBool("AUTOUIC") ||
 -      target->GetPropertyAsBool("AUTORCC")) {
 +      target->GetPropertyAsBool("AUTORCC") ||
-+      (target->GetPropertyAsBool("AUTOSTATICPLUGINS")
-+        && target->GetType() == cmState::EXECUTABLE)) {
-     SetupSourceFiles(target, skipMoc, mocSources, mocHeaders, skipUic);
++      (    target->GetPropertyAsBool("AUTOSTATICPLUGINS")
++        && target->GetType() == cmStateEnums::EXECUTABLE)) {
+     SetupSourceFiles(target, mocUicSources, mocUicHeaders, skipMoc, skipUic);
    }
    makefile->AddDefinition(
-diff -urN cmake-3.7.0/Source/cmTarget.cxx.orig cmake-3.7.0/Source/cmTarget.cxx
---- cmake-3.7.0/Source/cmTarget.cxx.orig	2016-11-11 09:37:14.000000000 -0500
-+++ cmake-3.7.0/Source/cmTarget.cxx	2016-11-13 17:56:55.700534100 -0500
-@@ -120,6 +120,7 @@
+diff --git a/Source/cmTarget.cxx b/Source/cmTarget.cxx
+index fe3472d5d7..dcfdfcbd32 100644
+--- a/Source/cmTarget.cxx
++++ b/Source/cmTarget.cxx
+@@ -245,6 +245,7 @@ cmTarget::cmTarget(std::string const& name, cmStateEnums::TargetType type,
      this->SetPropertyDefault("AUTOMOC", CM_NULLPTR);
      this->SetPropertyDefault("AUTOUIC", CM_NULLPTR);
      this->SetPropertyDefault("AUTORCC", CM_NULLPTR);
@@ -154,11 +150,18 @@ diff -urN cmake-3.7.0/Source/cmTarget.cxx.orig cmake-3.7.0/Source/cmTarget.cxx
      this->SetPropertyDefault("AUTOMOC_MOC_OPTIONS", CM_NULLPTR);
      this->SetPropertyDefault("AUTOUIC_OPTIONS", CM_NULLPTR);
      this->SetPropertyDefault("AUTORCC_OPTIONS", CM_NULLPTR);
-@@ -737,6 +738,7 @@
+diff --git a/Source/cmTargetPropertyComputer.cxx b/Source/cmTargetPropertyComputer.cxx
+index a57bc5aea5..b12bd2dea8 100644
+--- a/Source/cmTargetPropertyComputer.cxx
++++ b/Source/cmTargetPropertyComputer.cxx
+@@ -58,6 +58,7 @@ bool cmTargetPropertyComputer::WhiteListedInterfaceProperty(
+     builtIns.insert("EXPORT_NAME");
      builtIns.insert("IMPORTED");
      builtIns.insert("NAME");
-     builtIns.insert("TYPE");
 +    builtIns.insert("STATIC_PLUGINS");
+     builtIns.insert("TYPE");
    }
  
-   if (builtIns.count(prop)) {
+-- 
+2.11.0
+
