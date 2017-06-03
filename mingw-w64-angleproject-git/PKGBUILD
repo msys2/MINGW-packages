@@ -4,31 +4,32 @@
 _realname=angleproject
 pkgbase=mingw-w64-${_realname}-git
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}-git"
-pkgver=2.1.r5864
+pkgver=2.1.r6846
 pkgrel=1
 pkgdesc='ANGLE project built from git source (mingw-w64)'
 arch=('any')
 url='https://chromium.googlesource.com/angle/angle'
 license=('LGPLv2+')
-depends=()
-makedepends=("${MINGW_PACKAGE_PREFIX}-gcc" 'gyp-git' 'git')
+makedepends=("${MINGW_PACKAGE_PREFIX}-gcc" 'gyp-git' 'git' 'python2' 'python2-setuptools')
 provides=("${MINGW_PACKAGE_PREFIX}-angleproject")
 conflicts=("${MINGW_PACKAGE_PREFIX}-angleproject")
-options=('!strip' 'staticlibs')
+options=('strip' 'staticlibs')
 source=("angleproject"::git+https://chromium.googlesource.com/angle/angle
         0000-build-fix.patch
         angleproject-include-import-library-and-use-def-file.patch
         libEGL_mingw32.def
         libGLESv2_mingw32.def
-        entry_points_shader.cpp)
+        0001-static-build-workaround.patch
+        0002-redist.patch)
 sha256sums=('SKIP'
-            '80f1dc27536181e6cce98089de36f2829a525b1e134e733bbe4083607ace45e5'
-            'b96ba955a352ff39aae44bf8d6f3230f200607aa0fecd1e2a8b69ca3bb2bbda8'
+            '462820ab00f0644c96f0d56925f89eca3a1fbf8bc2e033e13c41b971980b2a56'
+            '5652d020d68bd0a6c618306c553684ab65af9428c1f44d86490c60226987bb7d'
             'fb04f30b904760d32c4c0b733d0a0b44359855db1fde9e7f5ca7d0b8b1be3e56'
-            '3186d913a5fb483d2ae568068453e494d52df8f3f23f09d16afbbf916a63e4a4'
-            'ad347c9732f8897497aa51b8969a0e01cd8cd4ebb9a0e873a2ff47c210f1d46c')
+            'a6cf1600fc9dd3b295da3d2934ddcd9a62be8e440d90385cb4fd52907f05938a'
+            '42a9e7d4e4365ce119fe5b036a088f226e35b0f6bb51913f3635e01fb53ef1a6'
+            'dc9ac8ffa9df3bab614cb14d2743804e26a84d5cb1a644b66788919917b9c3cd')
 pkgver() {
-  cd "$srcdir/angleproject"
+  cd "${srcdir}"/${_realname}
   local _major=$(head -n 14 src/common/version.h | grep 'ANGLE_MAJOR_VERSION' | sed -e 's/.* //' | tr '\n' '.' | sed 's/.$/\n/')
   local _minor=$(head -n 14 src/common/version.h | grep 'ANGLE_MINOR_VERSION' | sed -e 's/.* //' | tr '\n' '.' | sed 's/.$/\n/')
   printf "%s.%s.r%s" "$_major" "$_minor" "$(git rev-list --count HEAD)"
@@ -40,29 +41,24 @@ prepare() {
   # provide 32-bit versions of *.def files
   cp ../libEGL_mingw32.def src/libEGL/
   cp ../libGLESv2_mingw32.def src/libGLESv2/
-  
-  # provide a file to export symbols declared in ShaderLang.h as part of libGLESv2.dll
-  # (required to build Qt WebKit which uses the shader interface)
-  cp ../entry_points_shader.cpp src/libGLESv2/
 
   ### Fedora team patches ###
   patch -p1 -i ${srcdir}/0000-build-fix.patch
 
   # Make sure an import library is created and the correct .def file is used during the build
-  # and entry_points_shader.cpp is compiled
   patch -p1 -i ${srcdir}/angleproject-include-import-library-and-use-def-file.patch
 
-  #echo "" > src/copy_compiler_dll.bat
-  #chmod +x src/copy_compiler_dll.bat
-}
+  # Static build workaround
+  patch -p1 -i ${srcdir}/0001-static-build-workaround.patch
+  
+  #Out of source directory fix
+  patch -p1 -i ${srcdir}/0002-redist.patch
+  }
 
 build() {
-  cd "${srcdir}"/angleproject
-
+# Set ar/compiler and architecture specific compiler flags
+  cd "${srcdir}"/${_realname}
   export PYTHON=/usr/bin/python2
-
-  #export CFLAGS="-O2 -g -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions --param=ssp-buffer-size=4"
-  #export CXXFLAGS="-O2 -g -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions --param=ssp-buffer-size=4"
 
   sed -i -e 's_python _python2 _g' -e 's_"python"_"python2"_g' -e "s_'python'_'python2'_g" -e 's_/usr/bin/python_/usr/bin/python2_g' $(find -not \( -path "./.git*" -prune \) -type f)
 
@@ -71,32 +67,35 @@ build() {
   else
     _target="win64"
   fi
+  
+  mkdir -p "${srcdir}"/${_realname}/build-${MINGW_CHOST}-shared
+  mkdir -p "${srcdir}"/${_realname}/build-${MINGW_CHOST}-static
 
-  gyp -D use_ozone=0 -D OS=win -D MSVS_VERSION="" -D TARGET=${_target} --format make --depth . -I build/common.gypi src/angle.gyp
+#Build shared libraries
+  gyp -D angle_enable_vulkan=0 -D use_ozone=0 -D OS=win -D MSVS_VERSION="" -D TARGET=${_target} --format make --generator-output="${srcdir}/${_realname}/build-${MINGW_CHOST}-shared" --depth . -I "${srcdir}/${_realname}/gyp/common.gypi" "${srcdir}/${_realname}/src/angle.gyp"
+  
+  gyp -D angle_enable_vulkan=0 -D use_ozone=0 -D OS=win -D MSVS_VERSION="" -D TARGET=${_target} --format make --generator-output="${srcdir}/${_realname}/build-${MINGW_CHOST}-static" --depth . -I "${srcdir}/${_realname}/gyp/common.gypi" "${srcdir}/${_realname}/src/angle.gyp" -D angle_gl_library_type=static_library
 
-  # Make sure the correct libraries are linked in
-  #sed -i s@'^LIBS :='@'LIBS := -ld3d9 -ldxguid'@ ../src/libGLESv2.target.mk
-  #sed -i s@'^LIBS :='@'LIBS := -ld3d9 -ldxguid -L. -lGLESv2'@ ../src/libEGL.target.mk
-
-  # LINK=g++ is to prevent using flock to serialize linking.
-  LINK=g++ make -j1 V=1 CXXFLAGS="-std=c++11 -msse2 -DUNICODE -D_UNICODE"
+  LINK=g++ make -C "${srcdir}/${_realname}/build-${MINGW_CHOST}-shared" -j$(($(nproc)+1)) V=1 CXXFLAGS="-O2 -g -pipe -Wall -std=c++14 -msse2 -DUNICODE -D_UNICODE"
+cd "${srcdir}"/${_realname}  
+  LINK=g++ make -C "${srcdir}/${_realname}/build-${MINGW_CHOST}-static" -j$(($(nproc)+1)) V=1 CXXFLAGS="-O2 -g -pipe -Wall -std=c++14 -msse2 -DUNICODE -D_UNICODE"
+  
 }
 
 package() {
-  cd "${srcdir}"/angleproject
+  cd "${srcdir}"/${_realname}
 
-  mkdir -p "${pkgdir}${MINGW_PREFIX}"/{bin,lib,include}
+  mkdir -p "${pkgdir}/${MINGW_PREFIX}"/{bin,lib,include}
 
-  install out/Debug/lib.target/libGLESv2.dll "${pkgdir}${MINGW_PREFIX}"/bin/libGLESv2.dll
-  install out/Debug/lib.target/libEGL.dll "${pkgdir}${MINGW_PREFIX}"/bin/libEGL.dll
-  ${MINGW_PREFIX}/bin/strip --strip-unneeded "${pkgdir}${MINGW_PREFIX}"/bin/*.dll
+  install "${srcdir}"/${_realname}/build-${MINGW_CHOST}-shared/out/Debug/lib.target/libGLESv2.dll "${pkgdir}/${MINGW_PREFIX}"/bin/libGLESv2.dll
+  install "${srcdir}"/${_realname}/build-${MINGW_CHOST}-shared/out/Debug/lib.target/libEGL.dll "${pkgdir}/${MINGW_PREFIX}"/bin/libEGL.dll
+  ${MINGW_PREFIX}/bin/strip --strip-unneeded "${pkgdir}/${MINGW_PREFIX}"/bin/*.dll
 
-  #install libGLESv2.a "${pkgdir}${MINGW_PREFIX}"/lib/
-  #install libEGL.a "${pkgdir}${MINGW_PREFIX}"/lib/
-
-  install libEGL.dll.a "${pkgdir}${MINGW_PREFIX}"/lib/
-  install libGLESv2.dll.a "${pkgdir}${MINGW_PREFIX}"/lib/
-  ${MINGW_PREFIX}/bin/strip --strip-unneeded "${pkgdir}${MINGW_PREFIX}"/lib/*.dll.a
-
-  cp -Rv include/* "${pkgdir}${MINGW_PREFIX}"/include/
+  install "${srcdir}"/${_realname}/build-${MINGW_CHOST}-shared/libEGL.dll.a "${pkgdir}/${MINGW_PREFIX}"/lib/
+  install "${srcdir}"/${_realname}/build-${MINGW_CHOST}-shared/libGLESv2.dll.a "${pkgdir}/${MINGW_PREFIX}"/lib/
+  ${MINGW_PREFIX}/bin/strip --strip-unneeded "${pkgdir}/${MINGW_PREFIX}"/lib/*.dll.a
+  
+  install "${srcdir}"/${_realname}/build-${MINGW_CHOST}-static/out/Debug/obj.target/src/{libGLESv2.a,libEGL.a} "${pkgdir}/${MINGW_PREFIX}"/lib/
+  ${MINGW_PREFIX}/bin/strip --strip-unneeded "${pkgdir}/${MINGW_PREFIX}"/lib/{libGLESv2.a,libEGL.a}
+  cp -Rv include/* "${pkgdir}/${MINGW_PREFIX}"/include/
 }

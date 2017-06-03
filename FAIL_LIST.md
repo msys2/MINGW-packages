@@ -17,8 +17,6 @@ List of packages that currently fail to build
 
 - gtkada
 
-- itk
-
 - ldns
 
 - librocket-git
