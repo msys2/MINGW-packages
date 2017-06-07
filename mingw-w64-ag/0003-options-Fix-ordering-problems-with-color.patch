@@ -1,7 +1,7 @@
-From ac70e920d375b271adfeaedba68d8d086d36b7d1 Mon Sep 17 00:00:00 2001
+From ff4e9c3db5b42541494764ad921c80250733e84a Mon Sep 17 00:00:00 2001
 From: Ray Donnelly <mingw.android@gmail.com>
 Date: Mon, 23 Feb 2015 22:12:15 +0000
-Subject: [PATCH 2/6] options: Fix ordering problems with --color
+Subject: [PATCH 3/7] options: Fix ordering problems with --color
 
 Moved around the logic of setting opts.color so that:
 
@@ -18,15 +18,15 @@ Moved around the logic of setting opts.color so that:
 
 4. Default color to TRUE if MSYSCON env. var = mintty.exe
 ---
- src/options.c | 150 +++++++++++++++++++++++++++++++++++-----------------------
+ src/options.c | 145 +++++++++++++++++++++++++++++++++++-----------------------
  src/options.h |  10 ++++
- 2 files changed, 102 insertions(+), 58 deletions(-)
+ 2 files changed, 97 insertions(+), 58 deletions(-)
 
 diff --git a/src/options.c b/src/options.c
-index 1e7648e..8d86e39 100644
+index 83152c5..ca94126 100644
 --- a/src/options.c
 +++ b/src/options.c
-@@ -140,8 +140,16 @@ void print_version(void) {
+@@ -146,8 +146,16 @@ void print_version(void) {
  void init_options(void) {
      memset(&opts, 0, sizeof(opts));
      opts.casing = CASE_DEFAULT;
@@ -44,8 +44,8 @@ index 1e7648e..8d86e39 100644
 +
      opts.max_matches_per_file = 0;
      opts.max_search_depth = DEFAULT_MAX_SEARCH_DEPTH;
-     opts.mmap = TRUE;
-@@ -228,11 +236,11 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
+ #if defined(__APPLE__) || defined(__MACH__)
+@@ -241,11 +249,11 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
          { "before", optional_argument, NULL, 'B' },
          { "break", no_argument, &opts.print_break, 1 },
          { "case-sensitive", no_argument, NULL, 's' },
@@ -59,7 +59,7 @@ index 1e7648e..8d86e39 100644
          { "column", no_argument, &opts.column, 1 },
          { "context", optional_argument, NULL, 'C' },
          { "count", no_argument, NULL, 'c' },
-@@ -265,8 +273,8 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
+@@ -279,8 +287,8 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
          { "noaffinity", no_argument, &opts.use_thread_affinity, 0 },
          { "no-break", no_argument, &opts.print_break, 0 },
          { "nobreak", no_argument, &opts.print_break, 0 },
@@ -70,7 +70,7 @@ index 1e7648e..8d86e39 100644
          { "no-filename", no_argument, NULL, 0 },
          { "nofilename", no_argument, NULL, 0 },
          { "no-follow", no_argument, &opts.follow_symlinks, 0 },
-@@ -341,22 +349,6 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
+@@ -356,22 +364,6 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
          }
      }
  
@@ -78,7 +78,7 @@ index 1e7648e..8d86e39 100644
 -        * turn off colors
 -        * print filenames on every line
 -     */
--    if (!isatty(fileno(stdout))) {
+-    if (!isatty(fileno(stdout)) && !is_cygpty(fileno(stdout))) {
 -        opts.color = 0;
 -        group = 0;
 -
@@ -93,7 +93,7 @@ index 1e7648e..8d86e39 100644
      char *file_search_regex = NULL;
      while ((ch = getopt_long(argc, argv, "A:aB:C:cDG:g:FfHhiLlm:nop:QRrSsvVtuUwW:z0", longopts, &opt_index)) != -1) {
          switch (ch) {
-@@ -707,42 +699,6 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
+@@ -727,42 +719,6 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
          opts.after = opts.context;
      }
  
@@ -134,9 +134,9 @@ index 1e7648e..8d86e39 100644
 -    }
 -
      if (accepts_query && argc > 0) {
-         // use the provided query
-         opts.query = ag_strdup(argv[0]);
-@@ -806,6 +762,84 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
+         if (!needs_query && strlen(argv[0]) == 0) {
+             // use default query
+@@ -842,6 +798,79 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
      (*paths)[i] = NULL;
      (*base_paths)[i] = NULL;
  
@@ -144,7 +144,7 @@ index 1e7648e..8d86e39 100644
 +        * turn off colors
 +        * print filenames on every line
 +     */
-+    if (!isatty(fileno(stdout))) {
++    if (!isatty(fileno(stdout)) && !is_cygpty(fileno(stdout))) {
 +        /* Don't search the file that stdout is redirected to */
 +        rv = fstat(fileno(stdout), &statbuf);
 +        if (rv != 0) {
@@ -153,16 +153,11 @@ index 1e7648e..8d86e39 100644
 +        opts.stdout_inode = statbuf.st_ino;
 +        /* Assume the user knows best */
 +        if (opts.color != COLOR_EXPLICIT_TRUE) {
-+         /* On Windows redirection to regular file *can* br detected via
++         /* On Windows redirection to regular file *can* be detected via
 +            statbuf.st_mode & S_IFREG (while statbuf.st_ino is always 0) */
 +            if (statbuf.st_ino != 0
 +             || statbuf.st_mode & S_IFREG
-+#if !defined(_WIN32)
-+                /* On Windows bash.exe pipes cannot be distinguished from cmd.exe
-+                   pipes or mintty.exe console output (statbuf.st_mode & S_IFIFO)
-+                   so its best not to disable color output here. */
 +             || statbuf.st_mode & S_IFIFO
-+#endif
 +            ) {
 +                opts.color = COLOR_DEFAULT_FALSE;
 +                group = 0;
@@ -222,7 +217,7 @@ index 1e7648e..8d86e39 100644
      windows_use_ansi(opts.color_win_ansi);
  #endif
 diff --git a/src/options.h b/src/options.h
-index 273bb9a..a617a11 100644
+index db3e896..990ce6a 100644
 --- a/src/options.h
 +++ b/src/options.h
 @@ -26,6 +26,16 @@ enum path_print_behavior {
@@ -243,5 +238,5 @@ index 273bb9a..a617a11 100644
      int ackmate;
      pcre *ackmate_dir_filter;
 -- 
-2.10.1
+2.12.1
 
