@@ -515,8 +515,10 @@ int main(void)
 			&show_console, &append_quote_to_cmdline)) {
 		/* do nothing */
 	}
-	else if (!wcsicmp(basename, L"git-gui.exe")) {
+	else if (!wcsicmp(basename, L"git-gui.exe") ||
+			!wcsicmp(basename, L"gitk.exe")) {
 		static WCHAR buffer[BUFSIZE];
+		const WCHAR *infix = L"libexec\\git-core";
 		wait = 0;
 		allocate_console = 1;
 		initialize_top_level_path(top_level_path, exepath, NULL, 1);
@@ -525,20 +527,23 @@ int main(void)
 		wcscpy(exe, top_level_path);
 		PathAppend(exe, msystem_bin);
 		PathAppend(exe, L"wish.exe");
+		basename[wcslen(basename) - 4] = L'\0';
+		if (!wcsicmp(basename, L"gitk"))
+			infix = L"bin";
 		if (_waccess(exe, 0) != -1)
 			swprintf(buffer, BUFSIZE,
-				L"\"%s\" \"%s\\%.*s\\libexec\\git-core\"",
+				L"\"%s\" \"%s\\%.*s\\%s\"",
 				exe, top_level_path,
-				wcslen(msystem_bin) - 4, msystem_bin);
+				wcslen(msystem_bin) - 4, msystem_bin, infix);
 		else {
 			wcscpy(exe, top_level_path);
 			PathAppend(exe, L"mingw\\bin\\wish.exe");
 			swprintf(buffer, BUFSIZE,
-				L"\"%s\" \"%s\\mingw\\libexec\\git-core\"",
-				exe, top_level_path);
+				L"\"%s\" \"%s\\mingw\\%s\"",
+				exe, top_level_path, infix);
 		}
 		is_git_command = 0;
-		PathAppend(buffer, L"git-gui");
+		PathAppend(buffer, basename);
 		wcsncat(buffer, L" --", BUFSIZE - wcslen(buffer) - 1);
 		prefix_args = buffer;
 		prefix_args_len = wcslen(buffer);
@@ -567,27 +572,6 @@ int main(void)
 			wcscpy(exe, top_level_path);
 			PathAppend(exe, L"bin\\git.exe");
 		}
-	}
-	else if (!wcsicmp(basename, L"gitk.exe")) {
-		static WCHAR buffer[BUFSIZE];
-		allocate_console = 1;
-		initialize_top_level_path(top_level_path, exepath, NULL, 1);
-
-		/* set the default exe module */
-		wcscpy(exe, top_level_path);
-		swprintf(buffer, BUFSIZE, L"\"%s\"", top_level_path);
-		PathAppend(exe, msystem_bin);
-		PathAppend(exe, L"wish.exe");
-		if (_waccess(exe, 0) != -1)
-			PathAppend(buffer, msystem_bin);
-		else {
-			wcscpy(exe, top_level_path);
-			PathAppend(exe, L"mingw\\bin\\wish.exe");
-			PathAppend(buffer, L"mingw\\bin");
-		}
-		PathAppend(buffer, L"gitk");
-		prefix_args = buffer;
-		prefix_args_len = wcslen(buffer);
 	}
 
 	if (needs_env_setup) {
