@@ -539,6 +539,7 @@ int main(void)
 		}
 		is_git_command = 0;
 		PathAppend(buffer, L"git-gui");
+		wcsncat(buffer, L" --", BUFSIZE - wcslen(buffer) - 1);
 		prefix_args = buffer;
 		prefix_args_len = wcslen(buffer);
 	}
