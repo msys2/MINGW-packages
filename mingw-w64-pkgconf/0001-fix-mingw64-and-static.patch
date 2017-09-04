@@ -1,0 +1,2255 @@
+ CMakeLists.txt               |  115 +++++
+ Makefile.am                  |    7 +-
+ README.md                    |   20 +-
+ configure.ac                 |    7 +-
+ getopt_long.c                |    2 +
+ libpkgconf.pc.in             |    2 +-
+ libpkgconf/CMakeLists.txt    |   38 ++
+ libpkgconf/bsdstubs.c        |    1 +
+ libpkgconf/bsdstubs.h        |    8 +-
+ libpkgconf/client.c          |    2 +-
+ libpkgconf/config.h.cmake.in |    8 +
+ libpkgconf/config.h.meson    |   88 ++++
+ libpkgconf/libpkgconf-api.h  |   20 +
+ libpkgconf/libpkgconf.h      |  171 +++----
+ libpkgconf/meson.build       |   12 +
+ libpkgconf/path.c            |    6 +-
+ libpkgconf/pkg.c             |   44 +-
+ libpkgconf/stdinc.h          |   17 +-
+ libpkgconf/win-dirent.h      | 1159 ++++++++++++++++++++++++++++++++++++++++++
+ main.c                       |   16 +-
+ meson.build                  |   94 ++++
+ tests/test_env.sh.in         |   32 +-
+ 23 files changed, 1838 insertions(+), 118 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+new file mode 100644
+index 0000000..11b3907
+--- /dev/null
++++ b/CMakeLists.txt
+@@ -0,0 +1,115 @@
++# CMake configuration for pkgconf
++#
++# Caution: this assumes you don't set CMAKE_BUILD_TYPE
++#
++# FIXME: this isn't a native cmake approach, it's just a straight translation
++# of configure.ac + Makefile.am, barely good enough to work on Linux, Mac, and Windows.
++
++# Require recent cmake, but not so recent that Ubuntu 16.04 users have to upgrade.
++CMAKE_MINIMUM_REQUIRED(VERSION 3.5.1 FATAL_ERROR)
++
++PROJECT(pkgconf C)
++
++SET(PACKAGE_BUGREPORT http://github.com/pkgconf/pkgconf/issues)
++SET(PACKAGE_NAME pkgconf)
++SET(PACKAGE_VERSION 1.3.8)
++SET(LIBPKGCONF_VERSION "2.0.0")
++SET(LIBPKGCONF_SOVERSION 2)
++
++#-------- GNU directory variables ---------
++
++SET(abs_top_srcdir ${pkgconf_SOURCE_DIR})
++SET(prefix ${CMAKE_INSTALL_PREFIX})
++SET(exec_prefix ${prefix})
++SET(datarootdir ${prefix}/share)
++SET(datadir ${datarootdir})
++SET(libdir ${prefix}/lib)
++SET(includedir ${prefix}/include)
++
++#-------- User-settable options ---------
++
++# FIXME: this is overridden in get_default_pkgconfig_path() on windows, but not in test_env.sh.in?!
++SET(pkg_config_dir "${libdir}/pkgconfig:${datadir}/pkgconfig" CACHE STRING "specify the places where pc files will be found")
++SET(PKGCONFIGDIR "${pkg_config_dir}")
++SET(pkg_default_dir "${PKGCONFIGDIR}")   # c'mon, make up your mind
++
++SET(system_libdir "${libdir}" CACHE STRING "specify the system library directory (default LIBDIR)")
++SET(SYSTEM_LIBDIR "${system_libdir}")
++
++SET(system_includedir "${includedir}" CACHE STRING "specify the system include directory (default INCLUDEDIR)")
++SET(SYSTEM_INCLUDEDIR "${system_includedir}")
++
++#-------- Probe system ---------
++
++INCLUDE (CheckIncludeFiles)
++CHECK_INCLUDE_FILES(sys/stat.h HAVE_SYS_STAT_H)
++INCLUDE (CheckFunctionExists)
++CHECK_FUNCTION_EXISTS(strlcpy HAVE_STRLCPY)
++CHECK_FUNCTION_EXISTS(strlcat HAVE_STRLCAT)
++CHECK_FUNCTION_EXISTS(strndup HAVE_STRNDUP)
++CHECK_FUNCTION_EXISTS(cygwin_conv_path HAVE_CYGWIN_CONV_PATH)
++
++IF (MSYS OR MINGW)
++ADD_DEFINITIONS("-D__USE_MINGW_ANSI_STDIO=1")
++ENDIF()
++#-------- Generate source files ---------
++
++CONFIGURE_FILE(libpkgconf/config.h.cmake.in libpkgconf/config.h @ONLY)
++
++#-------- Configure common compiler options --------
++
++IF (MSVC)
++  # Make warnings fatal... but ignore C4996: 'strdup' two different ways
++  SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /WX /wd4996")
++  # Ignore warning C4996: 'strncpy'
++  ADD_DEFINITIONS("-D_CRT_SECURE_NO_WARNINGS=1")
++ELSE()
++  SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wformat=2")
++ENDIF()
++
++INCLUDE_DIRECTORIES(${pkgconf_SOURCE_DIR} ${pkgconf_BINARY_DIR})
++ADD_DEFINITIONS(-DPKG_DEFAULT_PATH=\"${pkg_default_dir}\")
++ADD_DEFINITIONS(-DSYSTEM_INCLUDEDIR=\"${system_includedir}\")
++ADD_DEFINITIONS(-DSYSTEM_LIBDIR=\"${system_libdir}\")
++
++#-------- Build and install library --------
++
++# Place shared libraries in same place as binary, for ease of setting PATH in test_env.sh
++set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${pkgconf_BINARY_DIR})
++ADD_SUBDIRECTORY(libpkgconf)
++
++#-------- Build and install executable --------
++
++INCLUDE_DIRECTORIES(${libpkgconf_BINARY_DIR})
++ADD_EXECUTABLE(pkgconf main.c getopt_long.c)
++SET_TARGET_PROPERTIES(pkgconf PROPERTIES COMPILE_FLAGS "-DPKGCONFIG_IS_STATIC")
++TARGET_LINK_LIBRARIES(pkgconf libpkgconf_static)
++INSTALL(TARGETS pkgconf DESTINATION bin)
++
++#-------- Tests ---------
++
++ENABLE_TESTING()
++
++# Handy that these files need configuring; cygwin atf doesn't like windows line endings, and NEWLINE_STYLE helps.
++FOREACH(file Kyuafile tests/Kyuafile tests/test_env.sh)
++   CONFIGURE_FILE(${file}.in ${file} @ONLY NEWLINE_STYLE UNIX)
++ENDFOREACH()
++
++SET(test_scripts
++    tests/basic
++    tests/builtins
++    tests/conflicts
++    tests/framework
++    tests/parser
++    tests/provides
++    tests/regress
++    tests/requires
++    tests/sysroot
++    tests/version
++   )
++# Handy that these files need configuring; cygwin atf doesn't like windows line endings, and NEWLINE_STYLE helps.
++FOREACH(file ${test_scripts})
++   CONFIGURE_FILE(${file}.sh ${file} @ONLY NEWLINE_STYLE UNIX)
++ENDFOREACH()
++
++ADD_TEST(kyua kyua --config=none test)
+diff --git a/Makefile.am b/Makefile.am
+index 77d05f7..d187a8d 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -4,7 +4,7 @@ datadir                = @datadir@
+ includedir             = @includedir@
+ system_includedir      = @SYSTEM_INCLUDEDIR@
+ system_libdir          = @SYSTEM_LIBDIR@
+-pkg_default_dir        = @PKGCONFIGDIR@
++pkg_default_dir        = @PKG_DEFAULT_PATH@
+ pkgconfigdir           = $(libdir)/pkgconfig
+ nodist_pkgconfig_DATA  = libpkgconf.pc
+ 
+@@ -14,8 +14,11 @@ bin_PROGRAMS = pkgconf
+ lib_LTLIBRARIES = libpkgconf.la
+ 
+ EXTRA_DIST =	pkg.m4 \
++		CMakeLists.txt \
++		libpkgconf/CMakeLists.txt \
++		libpkgconf/win-dirent.h \
+ 		tests/lib-relocatable/lib/pkgconfig/foo.pc \
+-		tests/lib1/argv-parse-2.pc \
++		tests/lib1/argv-parse-2 .pc \
+ 		tests/lib1/dos-lineendings.pc \
+ 		tests/lib1/paren-quoting.pc \
+ 		tests/lib1/argv-parse-3.pc \
+diff --git a/README.md b/README.md
+index 7a3f440..431c0d1 100644
+--- a/README.md
++++ b/README.md
+@@ -67,7 +67,7 @@ do let us know, but also make sure that the .pc files are valid and follow the r
+ the [pkg-config tutorial][fd-tut], as most likely fixing them to follow the specified
+ rules will solve the problem.
+ 
+-## compiling `pkgconf` and `libpkgconf`
++## compiling `pkgconf` and `libpkgconf` on UNIX
+ 
+ pkgconf is basically compiled the same way any other autotools-based project is
+ compiled:
+@@ -88,6 +88,24 @@ flags like so:
+     $ make
+     $ sudo make install
+ 
++## compiling `pkgconf` and `libpkgconf` with CMake (usually for Windows)
++
++pkgconf is compiled using CMake on Windows.  In theory, you could also use CMake to build
++on UNIX, but this is not recommended at this time as it pkgconf is typically built much earlier
++than CMake.
++
++    $ mkdir build
++    $ cd build
++    $ cmake ..
++    $ make
++    $ sudo make install
++
++There are a few defines such as SYSTEM_LIBDIR, PKGCONFIGDIR and SYSTEM_INCLUDEDIR.
++However, on Windows, the default PKGCONFIGDIR value is usually overridden at runtime based
++on path relocation.
++
++## pkg-config symlink
++
+ If you want pkgconf to be used when you invoke `pkg-config`, you should install a
+ symlink for this.  We do not do this for you, as we believe it is better for vendors
+ to make this determination themselves.
+diff --git a/configure.ac b/configure.ac
+index 2972b69..794d9c5 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -15,6 +15,7 @@ AC_PREREQ([2.68])
+ AC_INIT([pkgconf], [1.3.8], [http://github.com/pkgconf/pkgconf/issues])
+ AC_CONFIG_SRCDIR([main.c])
+ AC_CONFIG_HEADERS([libpkgconf/config.h])
++AC_CONFIG_MACRO_DIR([m4])
+ AC_CHECK_FUNCS([strlcpy strlcat strndup cygwin_conv_path])
+ AC_CHECK_HEADERS([sys/stat.h])
+ AM_INIT_AUTOMAKE([foreign dist-xz subdir-objects])
+@@ -24,10 +25,10 @@ LT_INIT
+ AC_SYS_LARGEFILE
+ 
+ AC_ARG_WITH([pkg-config-dir],[AC_HELP_STRING([--with-pkg-config-dir],[specify
+-	     the place where pc files will be found])],PKGCONFIGDIR="$withval",
+-	     PKGCONFIGDIR="${libdir}/pkgconfig:${datadir}/pkgconfig")
++	     the place where pc files will be found])],PKG_DEFAULT_PATH="$withval",
++	     PKG_DEFAULT_PATH="${libdir}/pkgconfig:${datadir}/pkgconfig")
+ 
+-AC_SUBST([PKGCONFIGDIR])
++AC_SUBST([PKG_DEFAULT_PATH])
+ 
+ AC_ARG_WITH([system-libdir],[AC_HELP_STRING([--with-system-libdir],[specify the
+ 	     system library directory (default LIBDIR)])],
+diff --git a/getopt_long.c b/getopt_long.c
+index afeb68d..5ce9bfd 100644
+--- a/getopt_long.c
++++ b/getopt_long.c
+@@ -62,7 +62,9 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#ifndef _WIN32
+ #include <unistd.h>
++#endif
+ 
+ #define PKGCONF_HACK_LOGICAL_OR_ALL_VALUES
+ 
+diff --git a/libpkgconf.pc.in b/libpkgconf.pc.in
+index d278136..4cb5541 100644
+--- a/libpkgconf.pc.in
++++ b/libpkgconf.pc.in
+@@ -7,5 +7,5 @@ Name: libpkgconf
+ Description: a library for accessing and manipulating development framework configuration
+ URL: http://github.com/pkgconf/pkgconf
+ Version: @PACKAGE_VERSION@
+-CFlags: -I${includedir}/pkgconf
++CFlags: -DLIBPKGCONF_EXPORT -I${includedir}/pkgconf
+ Libs: -L${libdir} -lpkgconf
+diff --git a/libpkgconf/CMakeLists.txt b/libpkgconf/CMakeLists.txt
+new file mode 100644
+index 0000000..079aa49
+--- /dev/null
++++ b/libpkgconf/CMakeLists.txt
+@@ -0,0 +1,38 @@
++PROJECT(libpkgconf C)
++
++# Enforce visibiliity restrictions when building shared libraries on Unix.
++SET(CMAKE_CXX_VISIBILITY_PRESET hidden)
++#ADD_DEFINITIONS(-DLIBPKGCONF_EXPORT)
++
++SET(libpkgconf_source 
++    argvsplit.c
++    audit.c
++    bsdstubs.c
++    cache.c
++    client.c
++    dependency.c
++    fileio.c
++    fragment.c
++    path.c
++    pkg.c
++    queue.c
++    tuple.c)
++
++ADD_LIBRARY(libpkgconf SHARED ${libpkgconf_source})
++ADD_LIBRARY(libpkgconf_static STATIC ${libpkgconf_source})
++SET_TARGET_PROPERTIES(libpkgconf_static PROPERTIES OUTPUT_NAME pkgconf COMPILE_FLAGS "-DPKGCONFIG_IS_STATIC")
++SET_TARGET_PROPERTIES(libpkgconf PROPERTIES OUTPUT_NAME pkgconf-${LIBPKGCONF_SOVERSION} VERSION ${LIBPKGCONF_VERSION} SOVERSION ${LIBPKGCONF_SOVERSION} COMPILE_FLAGS "-DLIBPKGCONF_EXPORT")
++
++INSTALL(TARGETS libpkgconf
++  RUNTIME DESTINATION bin
++  LIBRARY DESTINATION lib
++  ARCHIVE DESTINATION lib
++)
++INSTALL(
++  FILES bsdstubs.h iter.h libpkgconf.h libpkgconf-api.h stdinc.h
++  DESTINATION include/libpkgconf
++)
++
++# Hypothesis: .pc files are a Unix thing, should always have unix line endings.
++CONFIGURE_FILE(${pkgconf_SOURCE_DIR}/libpkgconf.pc.in libpkgconf.pc @ONLY NEWLINE_STYLE UNIX)
++INSTALL(FILES ${libpkgconf_BINARY_DIR}/libpkgconf.pc DESTINATION lib/pkgconfig)
+diff --git a/libpkgconf/bsdstubs.c b/libpkgconf/bsdstubs.c
+index 8f70ff3..2c000ac 100644
+--- a/libpkgconf/bsdstubs.c
++++ b/libpkgconf/bsdstubs.c
+@@ -17,6 +17,7 @@
+  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+  */
+ 
++#include <stdlib.h>
+ #include <sys/types.h>
+ #include <string.h>
+ 
+diff --git a/libpkgconf/bsdstubs.h b/libpkgconf/bsdstubs.h
+index fe8c950..2e0fb5c 100644
+--- a/libpkgconf/bsdstubs.h
++++ b/libpkgconf/bsdstubs.h
+@@ -16,8 +16,10 @@
+ #ifndef __BSDSTUBS_H__
+ #define __BSDSTUBS_H__
+ 
+-extern size_t pkgconf_strlcpy(char *dst, const char *src, size_t siz);
+-extern size_t pkgconf_strlcat(char *dst, const char *src, size_t siz);
+-extern char *pkgconf_strndup(const char *src, size_t len);
++#include <libpkgconf/libpkgconf-api.h>
++
++PKGCONF_API extern size_t pkgconf_strlcpy(char *dst, const char *src, size_t siz);
++PKGCONF_API extern size_t pkgconf_strlcat(char *dst, const char *src, size_t siz);
++PKGCONF_API extern char *pkgconf_strndup(const char *src, size_t len);
+ 
+ #endif
+diff --git a/libpkgconf/client.c b/libpkgconf/client.c
+index 601e350..1203ffe 100644
+--- a/libpkgconf/client.c
++++ b/libpkgconf/client.c
+@@ -14,7 +14,7 @@
+  */
+ 
+ #include <libpkgconf/libpkgconf.h>
+-
++#include <libpkgconf/config.h>
+ /*
+  * !doc
+  *
+diff --git a/libpkgconf/config.h.cmake.in b/libpkgconf/config.h.cmake.in
+new file mode 100644
+index 0000000..12fc8d4
+--- /dev/null
++++ b/libpkgconf/config.h.cmake.in
+@@ -0,0 +1,8 @@
++#cmakedefine HAVE_CYGWIN_CONV_PATH
++#cmakedefine HAVE_STRLCAT
++#cmakedefine HAVE_STRLCPY
++#cmakedefine HAVE_STRNDUP
++#cmakedefine HAVE_SYS_STAT_H
++#cmakedefine PACKAGE_BUGREPORT "@PACKAGE_BUGREPORT@"
++#cmakedefine PACKAGE_NAME "@PACKAGE_NAME@"
++#cmakedefine PACKAGE_VERSION "@PACKAGE_VERSION@"
+diff --git a/libpkgconf/config.h.meson b/libpkgconf/config.h.meson
+new file mode 100644
+index 0000000..cf9191d
+--- /dev/null
++++ b/libpkgconf/config.h.meson
+@@ -0,0 +1,88 @@
++/* libpkgconf/config.h.in.  Generated from configure.ac by autoheader.  */
++
++/* Define to 1 if you have the `cygwin_conv_path' function. */
++#mesondefine HAVE_CYGWIN_CONV_PATH
++
++/* Define to 1 if you have the <dlfcn.h> header file. */
++#mesondefine HAVE_DLFCN_H
++
++/* Define to 1 if you have the <inttypes.h> header file. */
++#mesondefine HAVE_INTTYPES_H
++
++/* Define to 1 if you have the <memory.h> header file. */
++#mesondefine HAVE_MEMORY_H
++
++/* Define to 1 if you have the <stdint.h> header file. */
++#mesondefine HAVE_STDINT_H
++
++/* Define to 1 if you have the <stdlib.h> header file. */
++#mesondefine HAVE_STDLIB_H
++
++/* Define to 1 if you have the <strings.h> header file. */
++#mesondefine HAVE_STRINGS_H
++
++/* Define to 1 if you have the <string.h> header file. */
++#mesondefine HAVE_STRING_H
++
++/* Define to 1 if you have the `strlcat' function. */
++#mesondefine HAVE_STRLCAT
++
++/* Define to 1 if you have the `strlcpy' function. */
++#mesondefine HAVE_STRLCPY
++
++/* Define to 1 if you have the `strndup' function. */
++#mesondefine HAVE_STRNDUP
++
++/* Define to 1 if you have the <sys/stat.h> header file. */
++#mesondefine HAVE_SYS_STAT_H
++
++/* Define to 1 if you have the <sys/types.h> header file. */
++#mesondefine HAVE_SYS_TYPES_H
++
++/* Define to 1 if you have the <unistd.h> header file. */
++#mesondefine HAVE_UNISTD_H
++
++/* Define to the sub-directory where libtool stores uninstalled libraries. */
++#mesondefine LT_OBJDIR
++
++/* Name of package */
++#mesondefine PACKAGE
++
++/* Define to the address where bug reports for this package should be sent. */
++#mesondefine PACKAGE_BUGREPORT
++
++/* Define to the full name of this package. */
++#mesondefine PACKAGE_NAME
++
++/* Define to the full name and version of this package. */
++#mesondefine PACKAGE_STRING
++
++/* Define to the one symbol short name of this package. */
++#mesondefine PACKAGE_TARNAME
++
++/* Define to the home page for this package. */
++#mesondefine PACKAGE_URL
++
++/* Define to the version of this package. */
++#mesondefine PACKAGE_VERSION
++
++/* Define to 1 if you have the ANSI C header files. */
++#mesondefine STDC_HEADERS
++
++/* Version number of package */
++#mesondefine VERSION
++
++/* Enable large inode numbers on Mac OS X 10.5.  */
++#ifndef _DARWIN_USE_64_BIT_INODE
++# define _DARWIN_USE_64_BIT_INODE 1
++#endif
++
++/* Number of bits in a file offset, on hosts where this is settable. */
++#mesondefine _FILE_OFFSET_BITS
++
++/* Define for large files, on AIX-style hosts. */
++#mesondefine _LARGE_FILES
++
++#mesondefine PKG_DEFAULT_PATH
++#mesondefine SYSTEM_INCLUDEDIR
++#mesondefine SYSTEM_LIBDIR
+diff --git a/libpkgconf/libpkgconf-api.h b/libpkgconf/libpkgconf-api.h
+new file mode 100644
+index 0000000..1c4fb73
+--- /dev/null
++++ b/libpkgconf/libpkgconf-api.h
+@@ -0,0 +1,20 @@
++#ifndef PKGCONFG_API
++#define PKGCONFG_API
++
++/* Makefile.am specifies visibility using the libtool option -export-symbols-regex '^pkgconf_'
++ * Unfortunately, that is not available when building with cmake, so use attributes instead,
++ * in a way that doesn't depend on any cmake magic.
++ */
++#if defined(PKGCONFIG_IS_STATIC)
++# define PKGCONF_API
++#elif defined(_WIN32) || defined(_WIN64)
++# ifdef LIBPKGCONF_EXPORT
++#  define PKGCONF_API __declspec(dllexport)
++# else
++#  define PKGCONF_API __declspec(dllimport)
++# endif
++#else
++# define PKGCONF_API __attribute__((visibility("default")))
++#endif
++
++#endif
+diff --git a/libpkgconf/libpkgconf.h b/libpkgconf/libpkgconf.h
+index 404bf0c..8a0031e 100644
+--- a/libpkgconf/libpkgconf.h
++++ b/libpkgconf/libpkgconf.h
+@@ -19,6 +19,7 @@
+ #include <libpkgconf/stdinc.h>
+ #include <libpkgconf/iter.h>
+ #include <libpkgconf/bsdstubs.h>
++#include <libpkgconf/libpkgconf-api.h>
+ 
+ /* pkg-config uses ';' on win32 as ':' is part of path */
+ #ifdef _WIN32
+@@ -163,24 +164,24 @@ struct pkgconf_client_ {
+ };
+ 
+ /* client.c */
+-void pkgconf_client_init(pkgconf_client_t *client, pkgconf_error_handler_func_t error_handler, void *error_handler_data);
+-pkgconf_client_t *pkgconf_client_new(pkgconf_error_handler_func_t error_handler, void *error_handler_data);
+-void pkgconf_client_deinit(pkgconf_client_t *client);
+-void pkgconf_client_free(pkgconf_client_t *client);
+-const char *pkgconf_client_get_sysroot_dir(const pkgconf_client_t *client);
+-void pkgconf_client_set_sysroot_dir(pkgconf_client_t *client, const char *sysroot_dir);
+-const char *pkgconf_client_get_buildroot_dir(const pkgconf_client_t *client);
+-void pkgconf_client_set_buildroot_dir(pkgconf_client_t *client, const char *buildroot_dir);
+-unsigned int pkgconf_client_get_flags(const pkgconf_client_t *client);
+-void pkgconf_client_set_flags(pkgconf_client_t *client, unsigned int flags);
+-const char *pkgconf_client_get_prefix_varname(const pkgconf_client_t *client);
+-void pkgconf_client_set_prefix_varname(pkgconf_client_t *client, const char *prefix_varname);
+-pkgconf_error_handler_func_t pkgconf_client_get_warn_handler(const pkgconf_client_t *client);
+-void pkgconf_client_set_warn_handler(pkgconf_client_t *client, pkgconf_error_handler_func_t warn_handler, void *warn_handler_data);
+-pkgconf_error_handler_func_t pkgconf_client_get_error_handler(const pkgconf_client_t *client);
+-void pkgconf_client_set_error_handler(pkgconf_client_t *client, pkgconf_error_handler_func_t error_handler, void *error_handler_data);
+-pkgconf_error_handler_func_t pkgconf_client_get_trace_handler(const pkgconf_client_t *client);
+-void pkgconf_client_set_trace_handler(pkgconf_client_t *client, pkgconf_error_handler_func_t trace_handler, void *trace_handler_data);
++PKGCONF_API void pkgconf_client_init(pkgconf_client_t *client, pkgconf_error_handler_func_t error_handler, void *error_handler_data);
++PKGCONF_API pkgconf_client_t * pkgconf_client_new(pkgconf_error_handler_func_t error_handler, void *error_handler_data);
++PKGCONF_API void pkgconf_client_deinit(pkgconf_client_t *client);
++PKGCONF_API void pkgconf_client_free(pkgconf_client_t *client);
++PKGCONF_API const char *pkgconf_client_get_sysroot_dir(const pkgconf_client_t *client);
++PKGCONF_API void pkgconf_client_set_sysroot_dir(pkgconf_client_t *client, const char *sysroot_dir);
++PKGCONF_API const char *pkgconf_client_get_buildroot_dir(const pkgconf_client_t *client);
++PKGCONF_API void pkgconf_client_set_buildroot_dir(pkgconf_client_t *client, const char *buildroot_dir);
++PKGCONF_API unsigned int pkgconf_client_get_flags(const pkgconf_client_t *client);
++PKGCONF_API void pkgconf_client_set_flags(pkgconf_client_t *client, unsigned int flags);
++PKGCONF_API const char *pkgconf_client_get_prefix_varname(const pkgconf_client_t *client);
++PKGCONF_API void pkgconf_client_set_prefix_varname(pkgconf_client_t *client, const char *prefix_varname);
++PKGCONF_API pkgconf_error_handler_func_t pkgconf_client_get_warn_handler(const pkgconf_client_t *client);
++PKGCONF_API void pkgconf_client_set_warn_handler(pkgconf_client_t *client, pkgconf_error_handler_func_t warn_handler, void *warn_handler_data);
++PKGCONF_API pkgconf_error_handler_func_t pkgconf_client_get_error_handler(const pkgconf_client_t *client);
++PKGCONF_API void pkgconf_client_set_error_handler(pkgconf_client_t *client, pkgconf_error_handler_func_t error_handler, void *error_handler_data);
++PKGCONF_API pkgconf_error_handler_func_t pkgconf_client_get_trace_handler(const pkgconf_client_t *client);
++PKGCONF_API void pkgconf_client_set_trace_handler(pkgconf_client_t *client, pkgconf_error_handler_func_t trace_handler, void *trace_handler_data);
+ 
+ #define PKGCONF_IS_MODULE_SEPARATOR(c) ((c) == ',' || isspace ((unsigned int)(c)))
+ #define PKGCONF_IS_OPERATOR_CHAR(c) ((c) == '<' || (c) == '>' || (c) == '!' || (c) == '=')
+@@ -217,10 +218,10 @@ void pkgconf_client_set_trace_handler(pkgconf_client_t *client, pkgconf_error_ha
+ #define DEPRECATED
+ #endif /* defined(__INTEL_COMPILER) || defined(__GNUC__) */
+ 
+-bool pkgconf_error(const pkgconf_client_t *client, const char *format, ...) PRINTFLIKE(2, 3);
+-bool pkgconf_warn(const pkgconf_client_t *client, const char *format, ...) PRINTFLIKE(2, 3);
+-bool pkgconf_trace(const pkgconf_client_t *client, const char *filename, size_t lineno, const char *funcname, const char *format, ...) PRINTFLIKE(5, 6);
+-bool pkgconf_default_error_handler(const char *msg, const pkgconf_client_t *client, const void *data);
++PKGCONF_API bool pkgconf_error(const pkgconf_client_t *client, const char *format, ...) PRINTFLIKE(2, 3);
++PKGCONF_API bool pkgconf_warn(const pkgconf_client_t *client, const char *format, ...) PRINTFLIKE(2, 3);
++PKGCONF_API bool pkgconf_trace(const pkgconf_client_t *client, const char *filename, size_t lineno, const char *funcname, const char *format, ...) PRINTFLIKE(5, 6);
++PKGCONF_API bool pkgconf_default_error_handler(const char *msg, const pkgconf_client_t *client, const void *data);
+ 
+ #if defined(__GNUC__) || defined(__INTEL_COMPILER)
+ #define PKGCONF_TRACE(client, ...) do { \
+@@ -232,87 +233,87 @@ bool pkgconf_default_error_handler(const char *msg, const pkgconf_client_t *clie
+ 	} while (0);
+ #endif
+ 
+-pkgconf_pkg_t *pkgconf_pkg_ref(const pkgconf_client_t *client, pkgconf_pkg_t *pkg);
+-void pkgconf_pkg_unref(pkgconf_client_t *client, pkgconf_pkg_t *pkg);
+-void pkgconf_pkg_free(pkgconf_client_t *client, pkgconf_pkg_t *pkg);
+-pkgconf_pkg_t *pkgconf_pkg_find(pkgconf_client_t *client, const char *name);
+-unsigned int pkgconf_pkg_traverse(pkgconf_client_t *client, pkgconf_pkg_t *root, pkgconf_pkg_traverse_func_t func, void *data, int maxdepth);
+-unsigned int pkgconf_pkg_verify_graph(pkgconf_client_t *client, pkgconf_pkg_t *root, int depth);
+-pkgconf_pkg_t *pkgconf_pkg_verify_dependency(pkgconf_client_t *client, pkgconf_dependency_t *pkgdep, unsigned int *eflags);
+-const char *pkgconf_pkg_get_comparator(const pkgconf_dependency_t *pkgdep);
+-unsigned int pkgconf_pkg_cflags(pkgconf_client_t *client, pkgconf_pkg_t *root, pkgconf_list_t *list, int maxdepth);
+-unsigned int pkgconf_pkg_libs(pkgconf_client_t *client, pkgconf_pkg_t *root, pkgconf_list_t *list, int maxdepth);
+-pkgconf_pkg_comparator_t pkgconf_pkg_comparator_lookup_by_name(const char *name);
+-pkgconf_pkg_t *pkgconf_builtin_pkg_get(const char *name);
+-
+-int pkgconf_compare_version(const char *a, const char *b);
+-pkgconf_pkg_t *pkgconf_scan_all(pkgconf_client_t *client, void *ptr, pkgconf_pkg_iteration_func_t func);
+-void pkgconf_pkg_dir_list_build(pkgconf_client_t *client);
++PKGCONF_API pkgconf_pkg_t *pkgconf_pkg_ref(const pkgconf_client_t *client, pkgconf_pkg_t *pkg);
++PKGCONF_API void pkgconf_pkg_unref(pkgconf_client_t *client, pkgconf_pkg_t *pkg);
++PKGCONF_API void pkgconf_pkg_free(pkgconf_client_t *client, pkgconf_pkg_t *pkg);
++PKGCONF_API pkgconf_pkg_t *pkgconf_pkg_find(pkgconf_client_t *client, const char *name);
++PKGCONF_API unsigned int pkgconf_pkg_traverse(pkgconf_client_t *client, pkgconf_pkg_t *root, pkgconf_pkg_traverse_func_t func, void *data, int maxdepth);
++PKGCONF_API unsigned int pkgconf_pkg_verify_graph(pkgconf_client_t *client, pkgconf_pkg_t *root, int depth);
++PKGCONF_API pkgconf_pkg_t *pkgconf_pkg_verify_dependency(pkgconf_client_t *client, pkgconf_dependency_t *pkgdep, unsigned int *eflags);
++PKGCONF_API const char *pkgconf_pkg_get_comparator(const pkgconf_dependency_t *pkgdep);
++PKGCONF_API unsigned int pkgconf_pkg_cflags(pkgconf_client_t *client, pkgconf_pkg_t *root, pkgconf_list_t *list, int maxdepth);
++PKGCONF_API unsigned int pkgconf_pkg_libs(pkgconf_client_t *client, pkgconf_pkg_t *root, pkgconf_list_t *list, int maxdepth);
++PKGCONF_API pkgconf_pkg_comparator_t pkgconf_pkg_comparator_lookup_by_name(const char *name);
++PKGCONF_API pkgconf_pkg_t *pkgconf_builtin_pkg_get(const char *name);
++
++PKGCONF_API int pkgconf_compare_version(const char *a, const char *b);
++PKGCONF_API pkgconf_pkg_t *pkgconf_scan_all(pkgconf_client_t *client, void *ptr, pkgconf_pkg_iteration_func_t func);
++PKGCONF_API void pkgconf_pkg_dir_list_build(pkgconf_client_t *client);
+ 
+ /* parse.c */
+-pkgconf_pkg_t *pkgconf_pkg_new_from_file(pkgconf_client_t *client, const char *path, FILE *f);
+-void pkgconf_dependency_parse_str(const pkgconf_client_t *client, pkgconf_list_t *deplist_head, const char *depends);
+-void pkgconf_dependency_parse(const pkgconf_client_t *client, pkgconf_pkg_t *pkg, pkgconf_list_t *deplist_head, const char *depends);
+-void pkgconf_dependency_append(pkgconf_list_t *list, pkgconf_dependency_t *tail);
+-void pkgconf_dependency_free(pkgconf_list_t *list);
+-const char *pkgconf_dependency_to_str(const pkgconf_dependency_t *dep);
+-pkgconf_dependency_t *pkgconf_dependency_add(const pkgconf_client_t *client, pkgconf_list_t *list, const char *package, const char *version, pkgconf_pkg_comparator_t compare);
++PKGCONF_API pkgconf_pkg_t *pkgconf_pkg_new_from_file(pkgconf_client_t *client, const char *path, FILE *f);
++PKGCONF_API void pkgconf_dependency_parse_str(const pkgconf_client_t *client, pkgconf_list_t *deplist_head, const char *depends);
++PKGCONF_API void pkgconf_dependency_parse(const pkgconf_client_t *client, pkgconf_pkg_t *pkg, pkgconf_list_t *deplist_head, const char *depends);
++PKGCONF_API void pkgconf_dependency_append(pkgconf_list_t *list, pkgconf_dependency_t *tail);
++PKGCONF_API void pkgconf_dependency_free(pkgconf_list_t *list);
++PKGCONF_API const char *pkgconf_dependency_to_str(const pkgconf_dependency_t *dep);
++PKGCONF_API pkgconf_dependency_t *pkgconf_dependency_add(const pkgconf_client_t *client, pkgconf_list_t *list, const char *package, const char *version, pkgconf_pkg_comparator_t compare);
+ 
+ /* argvsplit.c */
+-int pkgconf_argv_split(const char *src, int *argc, char ***argv);
+-void pkgconf_argv_free(char **argv);
++PKGCONF_API int pkgconf_argv_split(const char *src, int *argc, char ***argv);
++PKGCONF_API void pkgconf_argv_free(char **argv);
+ 
+ /* fragment.c */
+ typedef bool (*pkgconf_fragment_filter_func_t)(const pkgconf_client_t *client, const pkgconf_fragment_t *frag, void *data);
+-void pkgconf_fragment_parse(const pkgconf_client_t *client, pkgconf_list_t *list, pkgconf_list_t *vars, const char *value);
+-void pkgconf_fragment_add(const pkgconf_client_t *client, pkgconf_list_t *list, const char *string);
+-void pkgconf_fragment_copy(const pkgconf_client_t *client, pkgconf_list_t *list, const pkgconf_fragment_t *base, bool is_private);
+-void pkgconf_fragment_delete(pkgconf_list_t *list, pkgconf_fragment_t *node);
+-void pkgconf_fragment_free(pkgconf_list_t *list);
+-void pkgconf_fragment_filter(const pkgconf_client_t *client, pkgconf_list_t *dest, pkgconf_list_t *src, pkgconf_fragment_filter_func_t filter_func, void *data);
+-size_t pkgconf_fragment_render_len(const pkgconf_list_t *list, bool escape);
+-void pkgconf_fragment_render_buf(const pkgconf_list_t *list, char *buf, size_t len, bool escape);
+-char *pkgconf_fragment_render(const pkgconf_list_t *list, bool escape);
+-bool pkgconf_fragment_has_system_dir(const pkgconf_client_t *client, const pkgconf_fragment_t *frag);
++PKGCONF_API void pkgconf_fragment_parse(const pkgconf_client_t *client, pkgconf_list_t *list, pkgconf_list_t *vars, const char *value);
++PKGCONF_API void pkgconf_fragment_add(const pkgconf_client_t *client, pkgconf_list_t *list, const char *string);
++PKGCONF_API void pkgconf_fragment_copy(const pkgconf_client_t *client, pkgconf_list_t *list, const pkgconf_fragment_t *base, bool is_private);
++PKGCONF_API void pkgconf_fragment_delete(pkgconf_list_t *list, pkgconf_fragment_t *node);
++PKGCONF_API void pkgconf_fragment_free(pkgconf_list_t *list);
++PKGCONF_API void pkgconf_fragment_filter(const pkgconf_client_t *client, pkgconf_list_t *dest, pkgconf_list_t *src, pkgconf_fragment_filter_func_t filter_func, void *data);
++PKGCONF_API size_t pkgconf_fragment_render_len(const pkgconf_list_t *list, bool escape);
++PKGCONF_API void pkgconf_fragment_render_buf(const pkgconf_list_t *list, char *buf, size_t len, bool escape);
++PKGCONF_API char *pkgconf_fragment_render(const pkgconf_list_t *list, bool escape);
++PKGCONF_API bool pkgconf_fragment_has_system_dir(const pkgconf_client_t *client, const pkgconf_fragment_t *frag);
+ 
+ /* fileio.c */
+-char *pkgconf_fgetline(char *line, size_t size, FILE *stream);
++PKGCONF_API char *pkgconf_fgetline(char *line, size_t size, FILE *stream);
+ 
+ /* tuple.c */
+-pkgconf_tuple_t *pkgconf_tuple_add(const pkgconf_client_t *client, pkgconf_list_t *parent, const char *key, const char *value, bool parse);
+-char *pkgconf_tuple_find(const pkgconf_client_t *client, pkgconf_list_t *list, const char *key);
+-char *pkgconf_tuple_parse(const pkgconf_client_t *client, pkgconf_list_t *list, const char *value);
+-void pkgconf_tuple_free(pkgconf_list_t *list);
+-void pkgconf_tuple_free_entry(pkgconf_tuple_t *tuple, pkgconf_list_t *list);
+-void pkgconf_tuple_add_global(pkgconf_client_t *client, const char *key, const char *value);
+-char *pkgconf_tuple_find_global(const pkgconf_client_t *client, const char *key);
+-void pkgconf_tuple_free_global(pkgconf_client_t *client);
+-void pkgconf_tuple_define_global(pkgconf_client_t *client, const char *kv);
++PKGCONF_API pkgconf_tuple_t *pkgconf_tuple_add(const pkgconf_client_t *client, pkgconf_list_t *parent, const char *key, const char *value, bool parse);
++PKGCONF_API char *pkgconf_tuple_find(const pkgconf_client_t *client, pkgconf_list_t *list, const char *key);
++PKGCONF_API char *pkgconf_tuple_parse(const pkgconf_client_t *client, pkgconf_list_t *list, const char *value);
++PKGCONF_API void pkgconf_tuple_free(pkgconf_list_t *list);
++PKGCONF_API void pkgconf_tuple_free_entry(pkgconf_tuple_t *tuple, pkgconf_list_t *list);
++PKGCONF_API void pkgconf_tuple_add_global(pkgconf_client_t *client, const char *key, const char *value);
++PKGCONF_API char *pkgconf_tuple_find_global(const pkgconf_client_t *client, const char *key);
++PKGCONF_API void pkgconf_tuple_free_global(pkgconf_client_t *client);
++PKGCONF_API void pkgconf_tuple_define_global(pkgconf_client_t *client, const char *kv);
+ 
+ /* queue.c */
+-void pkgconf_queue_push(pkgconf_list_t *list, const char *package);
+-bool pkgconf_queue_compile(pkgconf_client_t *client, pkgconf_pkg_t *world, pkgconf_list_t *list);
+-void pkgconf_queue_free(pkgconf_list_t *list);
+-bool pkgconf_queue_apply(pkgconf_client_t *client, pkgconf_list_t *list, pkgconf_queue_apply_func_t func, int maxdepth, void *data);
+-bool pkgconf_queue_validate(pkgconf_client_t *client, pkgconf_list_t *list, int maxdepth);
++PKGCONF_API void pkgconf_queue_push(pkgconf_list_t *list, const char *package);
++PKGCONF_API bool pkgconf_queue_compile(pkgconf_client_t *client, pkgconf_pkg_t *world, pkgconf_list_t *list);
++PKGCONF_API void pkgconf_queue_free(pkgconf_list_t *list);
++PKGCONF_API bool pkgconf_queue_apply(pkgconf_client_t *client, pkgconf_list_t *list, pkgconf_queue_apply_func_t func, int maxdepth, void *data);
++PKGCONF_API bool pkgconf_queue_validate(pkgconf_client_t *client, pkgconf_list_t *list, int maxdepth);
+ 
+ /* cache.c */
+-pkgconf_pkg_t *pkgconf_cache_lookup(const pkgconf_client_t *client, const char *id);
+-void pkgconf_cache_add(pkgconf_client_t *client, pkgconf_pkg_t *pkg);
+-void pkgconf_cache_remove(pkgconf_client_t *client, pkgconf_pkg_t *pkg);
+-void pkgconf_cache_free(pkgconf_client_t *client);
++PKGCONF_API pkgconf_pkg_t *pkgconf_cache_lookup(const pkgconf_client_t *client, const char *id);
++PKGCONF_API void pkgconf_cache_add(pkgconf_client_t *client, pkgconf_pkg_t *pkg);
++PKGCONF_API void pkgconf_cache_remove(pkgconf_client_t *client, pkgconf_pkg_t *pkg);
++PKGCONF_API void pkgconf_cache_free(pkgconf_client_t *client);
+ 
+ /* audit.c */
+-void pkgconf_audit_set_log(pkgconf_client_t *client, FILE *auditf);
+-void pkgconf_audit_log(pkgconf_client_t *client, const char *format, ...) PRINTFLIKE(2, 3);
+-void pkgconf_audit_log_dependency(pkgconf_client_t *client, const pkgconf_pkg_t *dep, const pkgconf_dependency_t *depnode);
++PKGCONF_API void pkgconf_audit_set_log(pkgconf_client_t *client, FILE *auditf);
++PKGCONF_API void pkgconf_audit_log(pkgconf_client_t *client, const char *format, ...) PRINTFLIKE(2, 3);
++PKGCONF_API void pkgconf_audit_log_dependency(pkgconf_client_t *client, const pkgconf_pkg_t *dep, const pkgconf_dependency_t *depnode);
+ 
+ /* path.c */
+-void pkgconf_path_add(const char *text, pkgconf_list_t *dirlist, bool filter);
+-size_t pkgconf_path_split(const char *text, pkgconf_list_t *dirlist, bool filter);
+-size_t pkgconf_path_build_from_environ(const char *environ, const char *fallback, pkgconf_list_t *dirlist, bool filter);
+-bool pkgconf_path_match_list(const char *path, const pkgconf_list_t *dirlist);
+-void pkgconf_path_free(pkgconf_list_t *dirlist);
+-bool pkgconf_path_relocate(char *buf, size_t buflen);
++PKGCONF_API void pkgconf_path_add(const char *text, pkgconf_list_t *dirlist, bool filter);
++PKGCONF_API size_t pkgconf_path_split(const char *text, pkgconf_list_t *dirlist, bool filter);
++PKGCONF_API size_t pkgconf_path_build_from_environ(const char *envvarname, const char *fallback, pkgconf_list_t *dirlist, bool filter);
++PKGCONF_API bool pkgconf_path_match_list(const char *path, const pkgconf_list_t *dirlist);
++PKGCONF_API void pkgconf_path_free(pkgconf_list_t *dirlist);
++PKGCONF_API bool pkgconf_path_relocate(char *buf, size_t buflen);
+ 
+ #endif
+diff --git a/libpkgconf/meson.build b/libpkgconf/meson.build
+new file mode 100644
+index 0000000..64db65a
+--- /dev/null
++++ b/libpkgconf/meson.build
+@@ -0,0 +1,12 @@
++configure_file(input : 'config.h.meson',
++  output : 'config.h',
++  configuration : cdata)
++
++
++install_headers('libpkgconf.h',
++  'stdinc.h',
++  'iter.h',
++  'bsdstubs.h',
++  'libpkgconf-api.h',
++  subdir : 'libpkgconf')
++
+diff --git a/libpkgconf/path.c b/libpkgconf/path.c
+index dddb3bf..118cb31 100644
+--- a/libpkgconf/path.c
++++ b/libpkgconf/path.c
+@@ -20,7 +20,7 @@
+ # include <sys/cygwin.h>
+ #endif
+ 
+-#ifdef HAVE_SYS_STAT_H
++#if defined(HAVE_SYS_STAT_H) && ! defined(_WIN32)
+ # include <sys/stat.h>
+ # define PKGCONF_CACHE_INODES
+ #endif
+@@ -169,11 +169,11 @@ pkgconf_path_split(const char *text, pkgconf_list_t *dirlist, bool filter)
+  *    :rtype: size_t
+  */
+ size_t
+-pkgconf_path_build_from_environ(const char *environ, const char *fallback, pkgconf_list_t *dirlist, bool filter)
++pkgconf_path_build_from_environ(const char *envvarname, const char *fallback, pkgconf_list_t *dirlist, bool filter)
+ {
+ 	const char *data;
+ 
+-	data = getenv(environ);
++	data = getenv(envvarname);
+ 	if (data != NULL)
+ 		return pkgconf_path_split(data, dirlist, filter);
+ 
+diff --git a/libpkgconf/pkg.c b/libpkgconf/pkg.c
+index 3f43f76..a98c8a5 100644
+--- a/libpkgconf/pkg.c
++++ b/libpkgconf/pkg.c
+@@ -30,6 +30,8 @@
+ #	define PKG_CONFIG_REG_KEY "Software\\pkgconfig\\PKG_CONFIG_PATH"
+ #	undef PKG_DEFAULT_PATH
+ #	define PKG_DEFAULT_PATH "../lib/pkgconfig;../share/pkgconfig"
++#	define strncasecmp _strnicmp
++#	define strcasecmp _stricmp
+ #endif
+ 
+ #define PKG_CONFIG_EXT		".pc"
+@@ -134,21 +136,21 @@ static int pkgconf_pkg_parser_keyword_pair_cmp(const void *key, const void *ptr)
+ static void
+ pkgconf_pkg_parser_tuple_func(const pkgconf_client_t *client, pkgconf_pkg_t *pkg, const ptrdiff_t offset, char *value)
+ {
+-	char **dest = ((void *) pkg + offset);
++	char **dest = (char **)((char *) pkg + offset);
+ 	*dest = pkgconf_tuple_parse(client, &pkg->vars, value);
+ }
+ 
+ static void
+ pkgconf_pkg_parser_fragment_func(const pkgconf_client_t *client, pkgconf_pkg_t *pkg, const ptrdiff_t offset, char *value)
+ {
+-	pkgconf_list_t *dest = ((void *) pkg + offset);
++	pkgconf_list_t *dest = (pkgconf_list_t *)((char *) pkg + offset);
+ 	pkgconf_fragment_parse(client, dest, &pkg->vars, value);
+ }
+ 
+ static void
+ pkgconf_pkg_parser_dependency_func(const pkgconf_client_t *client, pkgconf_pkg_t *pkg, const ptrdiff_t offset, char *value)
+ {
+-	pkgconf_list_t *dest = ((void *) pkg + offset);
++	pkgconf_list_t *dest = (pkgconf_list_t *)((char *) pkg + offset);
+ 	pkgconf_dependency_parse(client, pkg, dest, value);
+ }
+ 
+@@ -297,7 +299,11 @@ pkgconf_pkg_new_from_file(pkgconf_client_t *client, const char *filename, FILE *
+ 
+ 		lineno++;
+ 
+-		PKGCONF_TRACE(client, "%s:%zu > [%s]", filename, lineno, readbuf);
++#if defined(__MINGW64__)
++		PKGCONF_TRACE(client, "%s:%I64u > [%s]", filename, lineno, readbuf);
++#elif defined(__MINGW32__) && !defined(__MINGW64__)
++		PKGCONF_TRACE(client, "%s:%u > [%s]", filename, lineno, readbuf);
++#endif
+ 
+ 		p = readbuf;
+ 		while (*p && (isalpha((unsigned int)*p) || isdigit((unsigned int)*p) || *p == '_' || *p == '.'))
+@@ -311,7 +317,11 @@ pkgconf_pkg_new_from_file(pkgconf_client_t *client, const char *filename, FILE *
+ 		{
+ 			if (!warned_key_whitespace)
+ 			{
+-				pkgconf_warn(client, "%s:%zu: warning: whitespace encountered while parsing key section\n",
++#if defined(__MINGW64__)
++				pkgconf_warn(client, "%s:%I64u: warning: whitespace encountered while parsing key section\n",
++#elif defined(__MINGW32__) && !defined(__MINGW64__)
++				pkgconf_warn(client, "%s:%u: warning: whitespace encountered while parsing key section\n",
++#endif
+ 					pkg->filename, lineno);
+ 				warned_key_whitespace = true;
+ 			}
+@@ -334,7 +344,11 @@ pkgconf_pkg_new_from_file(pkgconf_client_t *client, const char *filename, FILE *
+ 		{
+ 			if (!warned_value_whitespace && op == '=')
+ 			{
+-				pkgconf_warn(client, "%s:%zu: warning: trailing whitespace encountered while parsing value section\n",
++#if defined(__MINGW64__)
++				pkgconf_warn(client, "%s:%I64u: warning: trailing whitespace encountered while parsing value section\n",
++#elif defined(__MINGW32__) && !defined(__MINGW64__)
++				pkgconf_warn(client, "%s:%u: warning: trailing whitespace encountered while parsing value section\n",
++#endif
+ 					pkg->filename, lineno);
+ 				warned_value_whitespace = true;
+ 			}
+@@ -591,7 +605,7 @@ pkgconf_scan_all(pkgconf_client_t *client, void *data, pkgconf_pkg_iteration_fun
+ 
+ #ifdef _WIN32
+ static pkgconf_pkg_t *
+-pkgconf_pkg_find_in_registry_key(const pkgconf_client_t *client, HKEY hkey, const char *name)
++pkgconf_pkg_find_in_registry_key(pkgconf_client_t *client, HKEY hkey, const char *name)
+ {
+ 	pkgconf_pkg_t *pkg = NULL;
+ 
+@@ -1052,8 +1066,12 @@ typedef struct {
+ 
+ static const pkgconf_pkg_provides_vermatch_rule_t pkgconf_pkg_provides_vermatch_rules[] = {
+ 	[PKGCONF_CMP_ANY] = {
+-		.rulecmp = {},
+-		.depcmp = {},
++		.rulecmp = {
++			[PKGCONF_CMP_ANY]			= pkgconf_pkg_comparator_none,
++                },
++		.depcmp = {
++			[PKGCONF_CMP_ANY]			= pkgconf_pkg_comparator_none,
++                },
+ 	},
+ 	[PKGCONF_CMP_LESS_THAN] = {
+ 		.rulecmp = {
+@@ -1125,7 +1143,9 @@ static const pkgconf_pkg_provides_vermatch_rule_t pkgconf_pkg_provides_vermatch_
+ 			[PKGCONF_CMP_EQUAL]			= pkgconf_pkg_comparator_eq,
+ 			[PKGCONF_CMP_NOT_EQUAL]			= pkgconf_pkg_comparator_ne
+ 		},
+-		.depcmp = {},
++		.depcmp = {
++			[PKGCONF_CMP_ANY]			= pkgconf_pkg_comparator_none,
++                },
+ 	},
+ 	[PKGCONF_CMP_NOT_EQUAL] = {
+ 		.rulecmp = {
+@@ -1137,7 +1157,9 @@ static const pkgconf_pkg_provides_vermatch_rule_t pkgconf_pkg_provides_vermatch_
+ 			[PKGCONF_CMP_EQUAL]			= pkgconf_pkg_comparator_ne,
+ 			[PKGCONF_CMP_NOT_EQUAL]			= pkgconf_pkg_comparator_eq
+ 		},
+-		.depcmp = {},
++		.depcmp = {
++			[PKGCONF_CMP_ANY] 			= pkgconf_pkg_comparator_none,
++                },
+ 	},
+ };
+ 
+diff --git a/libpkgconf/stdinc.h b/libpkgconf/stdinc.h
+index 58cc6c7..d8efcf5 100644
+--- a/libpkgconf/stdinc.h
++++ b/libpkgconf/stdinc.h
+@@ -24,9 +24,7 @@
+ #include <stdbool.h>
+ #include <stdarg.h>
+ #include <string.h>
+-#include <dirent.h>
+ #include <sys/types.h>
+-#include <unistd.h>
+ #include <stdint.h>
+ 
+ #ifdef _WIN32
+@@ -34,8 +32,23 @@
+ # include <windows.h>
+ # include <malloc.h>
+ # define PATH_DEV_NULL	"nul"
++# ifndef ssize_t
++# ifndef __MINGW32__
++#  include <BaseTsd.h>
++# else
++#  include <basetsd.h>
++# endif
++#  define ssize_t SSIZE_T
++# endif
++# ifndef __MINGW32__
++#  include "win-dirent.h"
++# else
++# include <dirent.h>
++# endif
+ #else
+ # define PATH_DEV_NULL	"/dev/null"
++# include <dirent.h>
++# include <unistd.h>
+ #endif
+ 
+ #endif
+diff --git a/libpkgconf/win-dirent.h b/libpkgconf/win-dirent.h
+new file mode 100644
+index 0000000..42b86d7
+--- /dev/null
++++ b/libpkgconf/win-dirent.h
+@@ -0,0 +1,1159 @@
++/*
++ * Dirent interface for Microsoft Visual Studio
++ * Version 1.23
++ *
++ * Copyright (C) 2006-2012 Toni Ronkko
++ * This file is part of dirent.  Dirent may be freely distributed
++ * under the MIT license.  For all details and documentation, see
++ * https://github.com/tronkko/dirent
++ */
++#ifndef DIRENT_H
++#define DIRENT_H
++
++/*
++ * Include windows.h without Windows Sockets 1.1 to prevent conflicts with
++ * Windows Sockets 2.0.
++ */
++#ifndef WIN32_LEAN_AND_MEAN
++#   define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++
++#include <stdio.h>
++#include <stdarg.h>
++#include <wchar.h>
++#include <string.h>
++#include <stdlib.h>
++#include <malloc.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <errno.h>
++
++/* Indicates that d_type field is available in dirent structure */
++#define _DIRENT_HAVE_D_TYPE
++
++/* Indicates that d_namlen field is available in dirent structure */
++#define _DIRENT_HAVE_D_NAMLEN
++
++/* Entries missing from MSVC 6.0 */
++#if !defined(FILE_ATTRIBUTE_DEVICE)
++#   define FILE_ATTRIBUTE_DEVICE 0x40
++#endif
++
++/* File type and permission flags for stat(), general mask */
++#if !defined(S_IFMT)
++#   define S_IFMT _S_IFMT
++#endif
++
++/* Directory bit */
++#if !defined(S_IFDIR)
++#   define S_IFDIR _S_IFDIR
++#endif
++
++/* Character device bit */
++#if !defined(S_IFCHR)
++#   define S_IFCHR _S_IFCHR
++#endif
++
++/* Pipe bit */
++#if !defined(S_IFFIFO)
++#   define S_IFFIFO _S_IFFIFO
++#endif
++
++/* Regular file bit */
++#if !defined(S_IFREG)
++#   define S_IFREG _S_IFREG
++#endif
++
++/* Read permission */
++#if !defined(S_IREAD)
++#   define S_IREAD _S_IREAD
++#endif
++
++/* Write permission */
++#if !defined(S_IWRITE)
++#   define S_IWRITE _S_IWRITE
++#endif
++
++/* Execute permission */
++#if !defined(S_IEXEC)
++#   define S_IEXEC _S_IEXEC
++#endif
++
++/* Pipe */
++#if !defined(S_IFIFO)
++#   define S_IFIFO _S_IFIFO
++#endif
++
++/* Block device */
++#if !defined(S_IFBLK)
++#   define S_IFBLK 0
++#endif
++
++/* Link */
++#if !defined(S_IFLNK)
++#   define S_IFLNK 0
++#endif
++
++/* Socket */
++#if !defined(S_IFSOCK)
++#   define S_IFSOCK 0
++#endif
++
++/* Read user permission */
++#if !defined(S_IRUSR)
++#   define S_IRUSR S_IREAD
++#endif
++
++/* Write user permission */
++#if !defined(S_IWUSR)
++#   define S_IWUSR S_IWRITE
++#endif
++
++/* Execute user permission */
++#if !defined(S_IXUSR)
++#   define S_IXUSR 0
++#endif
++
++/* Read group permission */
++#if !defined(S_IRGRP)
++#   define S_IRGRP 0
++#endif
++
++/* Write group permission */
++#if !defined(S_IWGRP)
++#   define S_IWGRP 0
++#endif
++
++/* Execute group permission */
++#if !defined(S_IXGRP)
++#   define S_IXGRP 0
++#endif
++
++/* Read others permission */
++#if !defined(S_IROTH)
++#   define S_IROTH 0
++#endif
++
++/* Write others permission */
++#if !defined(S_IWOTH)
++#   define S_IWOTH 0
++#endif
++
++/* Execute others permission */
++#if !defined(S_IXOTH)
++#   define S_IXOTH 0
++#endif
++
++/* Maximum length of file name */
++#if !defined(PATH_MAX)
++#   define PATH_MAX MAX_PATH
++#endif
++#if !defined(FILENAME_MAX)
++#   define FILENAME_MAX MAX_PATH
++#endif
++#if !defined(NAME_MAX)
++#   define NAME_MAX FILENAME_MAX
++#endif
++
++/* File type flags for d_type */
++#define DT_UNKNOWN 0
++#define DT_REG S_IFREG
++#define DT_DIR S_IFDIR
++#define DT_FIFO S_IFIFO
++#define DT_SOCK S_IFSOCK
++#define DT_CHR S_IFCHR
++#define DT_BLK S_IFBLK
++#define DT_LNK S_IFLNK
++
++/* Macros for converting between st_mode and d_type */
++#define IFTODT(mode) ((mode) & S_IFMT)
++#define DTTOIF(type) (type)
++
++/*
++ * File type macros.  Note that block devices, sockets and links cannot be
++ * distinguished on Windows and the macros S_ISBLK, S_ISSOCK and S_ISLNK are
++ * only defined for compatibility.  These macros should always return false
++ * on Windows.
++ */
++#if !defined(S_ISFIFO)
++#   define S_ISFIFO(mode) (((mode) & S_IFMT) == S_IFIFO)
++#endif
++#if !defined(S_ISDIR)
++#   define S_ISDIR(mode) (((mode) & S_IFMT) == S_IFDIR)
++#endif
++#if !defined(S_ISREG)
++#   define S_ISREG(mode) (((mode) & S_IFMT) == S_IFREG)
++#endif
++#if !defined(S_ISLNK)
++#   define S_ISLNK(mode) (((mode) & S_IFMT) == S_IFLNK)
++#endif
++#if !defined(S_ISSOCK)
++#   define S_ISSOCK(mode) (((mode) & S_IFMT) == S_IFSOCK)
++#endif
++#if !defined(S_ISCHR)
++#   define S_ISCHR(mode) (((mode) & S_IFMT) == S_IFCHR)
++#endif
++#if !defined(S_ISBLK)
++#   define S_ISBLK(mode) (((mode) & S_IFMT) == S_IFBLK)
++#endif
++
++/* Return the exact length of the file name without zero terminator */
++#define _D_EXACT_NAMLEN(p) ((p)->d_namlen)
++
++/* Return the maximum size of a file name */
++#define _D_ALLOC_NAMLEN(p) ((PATH_MAX)+1)
++
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++
++/* Wide-character version */
++struct _wdirent {
++    /* Always zero */
++    long d_ino;
++
++    /* File position within stream */
++    long d_off;
++
++    /* Structure size */
++    unsigned short d_reclen;
++
++    /* Length of name without \0 */
++    size_t d_namlen;
++
++    /* File type */
++    int d_type;
++
++    /* File name */
++    wchar_t d_name[PATH_MAX+1];
++};
++typedef struct _wdirent _wdirent;
++
++struct _WDIR {
++    /* Current directory entry */
++    struct _wdirent ent;
++
++    /* Private file data */
++    WIN32_FIND_DATAW data;
++
++    /* True if data is valid */
++    int cached;
++
++    /* Win32 search handle */
++    HANDLE handle;
++
++    /* Initial directory name */
++    wchar_t *patt;
++};
++typedef struct _WDIR _WDIR;
++
++/* Multi-byte character version */
++struct dirent {
++    /* Always zero */
++    long d_ino;
++
++    /* File position within stream */
++    long d_off;
++
++    /* Structure size */
++    unsigned short d_reclen;
++
++    /* Length of name without \0 */
++    size_t d_namlen;
++
++    /* File type */
++    int d_type;
++
++    /* File name */
++    char d_name[PATH_MAX+1];
++};
++typedef struct dirent dirent;
++
++struct DIR {
++    struct dirent ent;
++    struct _WDIR *wdirp;
++};
++typedef struct DIR DIR;
++
++
++/* Dirent functions */
++static DIR *opendir (const char *dirname);
++static _WDIR *_wopendir (const wchar_t *dirname);
++
++static struct dirent *readdir (DIR *dirp);
++static struct _wdirent *_wreaddir (_WDIR *dirp);
++
++static int readdir_r(
++    DIR *dirp, struct dirent *entry, struct dirent **result);
++static int _wreaddir_r(
++    _WDIR *dirp, struct _wdirent *entry, struct _wdirent **result);
++
++static int closedir (DIR *dirp);
++static int _wclosedir (_WDIR *dirp);
++
++static void rewinddir (DIR* dirp);
++static void _wrewinddir (_WDIR* dirp);
++
++static int scandir (const char *dirname, struct dirent ***namelist,
++    int (*filter)(const struct dirent*),
++    int (*compare)(const void *, const void *));
++
++static int alphasort (const struct dirent **a, const struct dirent **b);
++
++static int versionsort (const struct dirent **a, const struct dirent **b);
++
++
++/* For compatibility with Symbian */
++#define wdirent _wdirent
++#define WDIR _WDIR
++#define wopendir _wopendir
++#define wreaddir _wreaddir
++#define wclosedir _wclosedir
++#define wrewinddir _wrewinddir
++
++
++/* Internal utility functions */
++static WIN32_FIND_DATAW *dirent_first (_WDIR *dirp);
++static WIN32_FIND_DATAW *dirent_next (_WDIR *dirp);
++
++static int dirent_mbstowcs_s(
++    size_t *pReturnValue,
++    wchar_t *wcstr,
++    size_t sizeInWords,
++    const char *mbstr,
++    size_t count);
++
++static int dirent_wcstombs_s(
++    size_t *pReturnValue,
++    char *mbstr,
++    size_t sizeInBytes,
++    const wchar_t *wcstr,
++    size_t count);
++
++static void dirent_set_errno (int error);
++
++
++/*
++ * Open directory stream DIRNAME for read and return a pointer to the
++ * internal working area that is used to retrieve individual directory
++ * entries.
++ */
++static _WDIR*
++_wopendir(
++    const wchar_t *dirname)
++{
++    _WDIR *dirp = NULL;
++    int error;
++
++    /* Must have directory name */
++    if (dirname == NULL  ||  dirname[0] == '\0') {
++        dirent_set_errno (ENOENT);
++        return NULL;
++    }
++
++    /* Allocate new _WDIR structure */
++    dirp = (_WDIR*) malloc (sizeof (struct _WDIR));
++    if (dirp != NULL) {
++        DWORD n;
++
++        /* Reset _WDIR structure */
++        dirp->handle = INVALID_HANDLE_VALUE;
++        dirp->patt = NULL;
++        dirp->cached = 0;
++
++        /* Compute the length of full path plus zero terminator
++         *
++         * Note that on WinRT there's no way to convert relative paths
++         * into absolute paths, so just assume its an absolute path.
++         */
++#       if defined(WINAPI_FAMILY) && (WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
++            n = wcslen(dirname);
++#       else
++            n = GetFullPathNameW (dirname, 0, NULL, NULL);
++#       endif
++
++        /* Allocate room for absolute directory name and search pattern */
++        dirp->patt = (wchar_t*) malloc (sizeof (wchar_t) * n + 16);
++        if (dirp->patt) {
++
++            /*
++             * Convert relative directory name to an absolute one.  This
++             * allows rewinddir() to function correctly even when current
++             * working directory is changed between opendir() and rewinddir().
++             *
++             * Note that on WinRT there's no way to convert relative paths
++             * into absolute paths, so just assume its an absolute path.
++             */
++#           if defined(WINAPI_FAMILY) && (WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP)
++                wcsncpy_s(dirp->patt, n+1, dirname, n);
++#           else
++                n = GetFullPathNameW (dirname, n, dirp->patt, NULL);
++#           endif
++            if (n > 0) {
++                wchar_t *p;
++
++                /* Append search pattern \* to the directory name */
++                p = dirp->patt + n;
++                if (dirp->patt < p) {
++                    switch (p[-1]) {
++                    case '\\':
++                    case '/':
++                    case ':':
++                        /* Directory ends in path separator, e.g. c:\temp\ */
++                        /*NOP*/;
++                        break;
++
++                    default:
++                        /* Directory name doesn't end in path separator */
++                        *p++ = '\\';
++                    }
++                }
++                *p++ = '*';
++                *p = '\0';
++
++                /* Open directory stream and retrieve the first entry */
++                if (dirent_first (dirp)) {
++                    /* Directory stream opened successfully */
++                    error = 0;
++                } else {
++                    /* Cannot retrieve first entry */
++                    error = 1;
++                    dirent_set_errno (ENOENT);
++                }
++
++            } else {
++                /* Cannot retrieve full path name */
++                dirent_set_errno (ENOENT);
++                error = 1;
++            }
++
++        } else {
++            /* Cannot allocate memory for search pattern */
++            error = 1;
++        }
++
++    } else {
++        /* Cannot allocate _WDIR structure */
++        error = 1;
++    }
++
++    /* Clean up in case of error */
++    if (error  &&  dirp) {
++        _wclosedir (dirp);
++        dirp = NULL;
++    }
++
++    return dirp;
++}
++
++/*
++ * Read next directory entry.
++ *
++ * Returns pointer to static directory entry which may be overwritted by
++ * subsequent calls to _wreaddir().
++ */
++static struct _wdirent*
++_wreaddir(
++    _WDIR *dirp)
++{
++    struct _wdirent *entry;
++
++    /*
++     * Read directory entry to buffer.  We can safely ignore the return value
++     * as entry will be set to NULL in case of error.
++     */
++    (void) _wreaddir_r (dirp, &dirp->ent, &entry);
++
++    /* Return pointer to statically allocated directory entry */
++    return entry;
++}
++
++/*
++ * Read next directory entry.
++ *
++ * Returns zero on success.  If end of directory stream is reached, then sets
++ * result to NULL and returns zero.
++ */
++static int
++_wreaddir_r(
++    _WDIR *dirp,
++    struct _wdirent *entry,
++    struct _wdirent **result)
++{
++    WIN32_FIND_DATAW *datap;
++
++    /* Read next directory entry */
++    datap = dirent_next (dirp);
++    if (datap) {
++        size_t n;
++        DWORD attr;
++
++        /*
++         * Copy file name as wide-character string.  If the file name is too
++         * long to fit in to the destination buffer, then truncate file name
++         * to PATH_MAX characters and zero-terminate the buffer.
++         */
++        n = 0;
++        while (n < PATH_MAX  &&  datap->cFileName[n] != 0) {
++            entry->d_name[n] = datap->cFileName[n];
++            n++;
++        }
++        entry->d_name[n] = 0;
++
++        /* Length of file name excluding zero terminator */
++        entry->d_namlen = n;
++
++        /* File type */
++        attr = datap->dwFileAttributes;
++        if ((attr & FILE_ATTRIBUTE_DEVICE) != 0) {
++            entry->d_type = DT_CHR;
++        } else if ((attr & FILE_ATTRIBUTE_DIRECTORY) != 0) {
++            entry->d_type = DT_DIR;
++        } else {
++            entry->d_type = DT_REG;
++        }
++
++        /* Reset dummy fields */
++        entry->d_ino = 0;
++        entry->d_off = 0;
++        entry->d_reclen = sizeof (struct _wdirent);
++
++        /* Set result address */
++        *result = entry;
++
++    } else {
++
++        /* Return NULL to indicate end of directory */
++        *result = NULL;
++
++    }
++
++    return /*OK*/0;
++}
++
++/*
++ * Close directory stream opened by opendir() function.  This invalidates the
++ * DIR structure as well as any directory entry read previously by
++ * _wreaddir().
++ */
++static int
++_wclosedir(
++    _WDIR *dirp)
++{
++    int ok;
++    if (dirp) {
++
++        /* Release search handle */
++        if (dirp->handle != INVALID_HANDLE_VALUE) {
++            FindClose (dirp->handle);
++            dirp->handle = INVALID_HANDLE_VALUE;
++        }
++
++        /* Release search pattern */
++        if (dirp->patt) {
++            free (dirp->patt);
++            dirp->patt = NULL;
++        }
++
++        /* Release directory structure */
++        free (dirp);
++        ok = /*success*/0;
++
++    } else {
++
++        /* Invalid directory stream */
++        dirent_set_errno (EBADF);
++        ok = /*failure*/-1;
++
++    }
++    return ok;
++}
++
++/*
++ * Rewind directory stream such that _wreaddir() returns the very first
++ * file name again.
++ */
++static void
++_wrewinddir(
++    _WDIR* dirp)
++{
++    if (dirp) {
++        /* Release existing search handle */
++        if (dirp->handle != INVALID_HANDLE_VALUE) {
++            FindClose (dirp->handle);
++        }
++
++        /* Open new search handle */
++        dirent_first (dirp);
++    }
++}
++
++/* Get first directory entry (internal) */
++static WIN32_FIND_DATAW*
++dirent_first(
++    _WDIR *dirp)
++{
++    WIN32_FIND_DATAW *datap;
++
++    /* Open directory and retrieve the first entry */
++    dirp->handle = FindFirstFileExW(
++        dirp->patt, FindExInfoStandard, &dirp->data,
++        FindExSearchNameMatch, NULL, 0);
++    if (dirp->handle != INVALID_HANDLE_VALUE) {
++
++        /* a directory entry is now waiting in memory */
++        datap = &dirp->data;
++        dirp->cached = 1;
++
++    } else {
++
++        /* Failed to re-open directory: no directory entry in memory */
++        dirp->cached = 0;
++        datap = NULL;
++
++    }
++    return datap;
++}
++
++/*
++ * Get next directory entry (internal).
++ *
++ * Returns 
++ */
++static WIN32_FIND_DATAW*
++dirent_next(
++    _WDIR *dirp)
++{
++    WIN32_FIND_DATAW *p;
++
++    /* Get next directory entry */
++    if (dirp->cached != 0) {
++
++        /* A valid directory entry already in memory */
++        p = &dirp->data;
++        dirp->cached = 0;
++
++    } else if (dirp->handle != INVALID_HANDLE_VALUE) {
++
++        /* Get the next directory entry from stream */
++        if (FindNextFileW (dirp->handle, &dirp->data) != FALSE) {
++            /* Got a file */
++            p = &dirp->data;
++        } else {
++            /* The very last entry has been processed or an error occured */
++            FindClose (dirp->handle);
++            dirp->handle = INVALID_HANDLE_VALUE;
++            p = NULL;
++        }
++
++    } else {
++
++        /* End of directory stream reached */
++        p = NULL;
++
++    }
++
++    return p;
++}
++
++/*
++ * Open directory stream using plain old C-string.
++ */
++static DIR*
++opendir(
++    const char *dirname) 
++{
++    struct DIR *dirp;
++    int error;
++
++    /* Must have directory name */
++    if (dirname == NULL  ||  dirname[0] == '\0') {
++        dirent_set_errno (ENOENT);
++        return NULL;
++    }
++
++    /* Allocate memory for DIR structure */
++    dirp = (DIR*) malloc (sizeof (struct DIR));
++    if (dirp) {
++        wchar_t wname[PATH_MAX + 1];
++        size_t n;
++
++        /* Convert directory name to wide-character string */
++        error = dirent_mbstowcs_s(
++            &n, wname, PATH_MAX + 1, dirname, PATH_MAX + 1);
++        if (!error) {
++
++            /* Open directory stream using wide-character name */
++            dirp->wdirp = _wopendir (wname);
++            if (dirp->wdirp) {
++                /* Directory stream opened */
++                error = 0;
++            } else {
++                /* Failed to open directory stream */
++                error = 1;
++            }
++
++        } else {
++            /*
++             * Cannot convert file name to wide-character string.  This
++             * occurs if the string contains invalid multi-byte sequences or
++             * the output buffer is too small to contain the resulting
++             * string.
++             */
++            error = 1;
++        }
++
++    } else {
++        /* Cannot allocate DIR structure */
++        error = 1;
++    }
++
++    /* Clean up in case of error */
++    if (error  &&  dirp) {
++        free (dirp);
++        dirp = NULL;
++    }
++
++    return dirp;
++}
++
++/*
++ * Read next directory entry.
++ */
++static struct dirent*
++readdir(
++    DIR *dirp)
++{
++    struct dirent *entry;
++
++    /*
++     * Read directory entry to buffer.  We can safely ignore the return value
++     * as entry will be set to NULL in case of error.
++     */
++    (void) readdir_r (dirp, &dirp->ent, &entry);
++
++    /* Return pointer to statically allocated directory entry */
++    return entry;
++}
++
++/*
++ * Read next directory entry into called-allocated buffer.
++ *
++ * Returns zero on sucess.  If the end of directory stream is reached, then
++ * sets result to NULL and returns zero.
++ */
++static int
++readdir_r(
++    DIR *dirp,
++    struct dirent *entry,
++    struct dirent **result)
++{
++    WIN32_FIND_DATAW *datap;
++
++    /* Read next directory entry */
++    datap = dirent_next (dirp->wdirp);
++    if (datap) {
++        size_t n;
++        int error;
++
++        /* Attempt to convert file name to multi-byte string */
++        error = dirent_wcstombs_s(
++            &n, entry->d_name, PATH_MAX + 1, datap->cFileName, PATH_MAX + 1);
++
++        /*
++         * If the file name cannot be represented by a multi-byte string,
++         * then attempt to use old 8+3 file name.  This allows traditional
++         * Unix-code to access some file names despite of unicode
++         * characters, although file names may seem unfamiliar to the user.
++         *
++         * Be ware that the code below cannot come up with a short file
++         * name unless the file system provides one.  At least
++         * VirtualBox shared folders fail to do this.
++         */
++        if (error  &&  datap->cAlternateFileName[0] != '\0') {
++            error = dirent_wcstombs_s(
++                &n, entry->d_name, PATH_MAX + 1,
++                datap->cAlternateFileName, PATH_MAX + 1);
++        }
++
++        if (!error) {
++            DWORD attr;
++
++            /* Length of file name excluding zero terminator */
++            entry->d_namlen = n - 1;
++
++            /* File attributes */
++            attr = datap->dwFileAttributes;
++            if ((attr & FILE_ATTRIBUTE_DEVICE) != 0) {
++                entry->d_type = DT_CHR;
++            } else if ((attr & FILE_ATTRIBUTE_DIRECTORY) != 0) {
++                entry->d_type = DT_DIR;
++            } else {
++                entry->d_type = DT_REG;
++            }
++
++            /* Reset dummy fields */
++            entry->d_ino = 0;
++            entry->d_off = 0;
++            entry->d_reclen = sizeof (struct dirent);
++
++        } else {
++
++            /*
++             * Cannot convert file name to multi-byte string so construct
++             * an errornous directory entry and return that.  Note that
++             * we cannot return NULL as that would stop the processing
++             * of directory entries completely.
++             */
++            entry->d_name[0] = '?';
++            entry->d_name[1] = '\0';
++            entry->d_namlen = 1;
++            entry->d_type = DT_UNKNOWN;
++            entry->d_ino = 0;
++            entry->d_off = -1;
++            entry->d_reclen = 0;
++
++        }
++
++        /* Return pointer to directory entry */
++        *result = entry;
++
++    } else {
++
++        /* No more directory entries */
++        *result = NULL;
++
++    }
++
++    return /*OK*/0;
++}
++
++/*
++ * Close directory stream.
++ */
++static int
++closedir(
++    DIR *dirp)
++{
++    int ok;
++    if (dirp) {
++
++        /* Close wide-character directory stream */
++        ok = _wclosedir (dirp->wdirp);
++        dirp->wdirp = NULL;
++
++        /* Release multi-byte character version */
++        free (dirp);
++
++    } else {
++
++        /* Invalid directory stream */
++        dirent_set_errno (EBADF);
++        ok = /*failure*/-1;
++
++    }
++    return ok;
++}
++
++/*
++ * Rewind directory stream to beginning.
++ */
++static void
++rewinddir(
++    DIR* dirp)
++{
++    /* Rewind wide-character string directory stream */
++    _wrewinddir (dirp->wdirp);
++}
++
++/*
++ * Scan directory for entries.
++ */
++static int
++scandir(
++    const char *dirname,
++    struct dirent ***namelist,
++    int (*filter)(const struct dirent*),
++    int (*compare)(const void*, const void*))
++{
++    struct dirent **files = NULL;
++    size_t size = 0;
++    size_t allocated = 0;
++    const size_t init_size = 1;
++    DIR *dir = NULL;
++    struct dirent *entry;
++    struct dirent *tmp = NULL;
++    size_t i;
++    int result = 0;
++
++    /* Open directory stream */
++    dir = opendir (dirname);
++    if (dir) {
++
++        /* Read directory entries to memory */
++        while (1) {
++
++            /* Enlarge pointer table to make room for another pointer */
++            if (size >= allocated) {
++                void *p;
++                size_t num_entries;
++
++                /* Compute number of entries in the enlarged pointer table */
++                if (size < init_size) {
++                    /* Allocate initial pointer table */
++                    num_entries = init_size;
++                } else {
++                    /* Double the size */
++                    num_entries = size * 2;
++                }
++
++                /* Allocate first pointer table or enlarge existing table */
++                p = realloc (files, sizeof (void*) * num_entries);
++                if (p != NULL) {
++                    /* Got the memory */
++                    files = p;
++                    allocated = num_entries;
++                } else {
++                    /* Out of memory */
++                    result = -1;
++                    break;
++                }
++
++            }
++
++            /* Allocate room for temporary directory entry */
++            if (tmp == NULL) {
++                tmp = (struct dirent*) malloc (sizeof (struct dirent));
++                if (tmp == NULL) {
++                    /* Cannot allocate temporary directory entry */
++                    result = -1;
++                    break;
++                }
++            }
++
++            /* Read directory entry to temporary area */
++            if (readdir_r (dir, tmp, &entry) == /*OK*/0) {
++
++                /* Did we got an entry? */
++                if (entry != NULL) {
++                    int pass;
++
++                    /* Determine whether to include the entry in result */
++                    if (filter) {
++                        /* Let the filter function decide */
++                        pass = filter (tmp);
++                    } else {
++                        /* No filter function, include everything */
++                        pass = 1;
++                    }
++
++                    if (pass) {
++                        /* Store the temporary entry to pointer table */
++                        files[size++] = tmp;
++                        tmp = NULL;
++
++                        /* Keep up with the number of files */
++                        result++;
++                    }
++
++                } else {
++
++                    /*
++                     * End of directory stream reached => sort entries and
++                     * exit.
++                     */
++                    qsort (files, size, sizeof (void*), (void*) compare);
++                    break;
++
++                }
++
++            } else {
++                /* Error reading directory entry */
++                result = /*Error*/ -1;
++                break;
++            }
++
++        }
++
++    } else {
++        /* Cannot open directory */
++        result = /*Error*/ -1;
++    }
++
++    /* Release temporary directory entry */
++    if (tmp) {
++        free (tmp);
++    }
++
++    /* Release allocated memory on error */
++    if (result < 0) {
++        for (i = 0; i < size; i++) {
++            free (files[i]);
++        }
++        free (files);
++        files = NULL;
++    }
++
++    /* Close directory stream */
++    if (dir) {
++        closedir (dir);
++    }
++
++    /* Pass pointer table to caller */
++    if (namelist) {
++        *namelist = files;
++    }
++    return result;
++}
++
++/* Alphabetical sorting */
++static int
++alphasort(
++    const struct dirent **a, const struct dirent **b)
++{
++    return strcoll ((*a)->d_name, (*b)->d_name);
++}
++
++/* Sort versions */
++static int
++versionsort(
++    const struct dirent **a, const struct dirent **b)
++{
++    /* FIXME: implement strverscmp and use that */
++    return alphasort (a, b);
++}
++
++
++/* Convert multi-byte string to wide character string */
++static int
++dirent_mbstowcs_s(
++    size_t *pReturnValue,
++    wchar_t *wcstr,
++    size_t sizeInWords,
++    const char *mbstr,
++    size_t count)
++{
++    int error;
++
++#if defined(_MSC_VER)  &&  _MSC_VER >= 1400
++
++    /* Microsoft Visual Studio 2005 or later */
++    error = mbstowcs_s (pReturnValue, wcstr, sizeInWords, mbstr, count);
++
++#else
++
++    /* Older Visual Studio or non-Microsoft compiler */
++    size_t n;
++
++    /* Convert to wide-character string (or count characters) */
++    n = mbstowcs (wcstr, mbstr, sizeInWords);
++    if (!wcstr  ||  n < count) {
++
++        /* Zero-terminate output buffer */
++        if (wcstr  &&  sizeInWords) {
++            if (n >= sizeInWords) {
++                n = sizeInWords - 1;
++            }
++            wcstr[n] = 0;
++        }
++
++        /* Length of resuting multi-byte string WITH zero terminator */
++        if (pReturnValue) {
++            *pReturnValue = n + 1;
++        }
++
++        /* Success */
++        error = 0;
++
++    } else {
++
++        /* Could not convert string */
++        error = 1;
++
++    }
++
++#endif
++
++    return error;
++}
++
++/* Convert wide-character string to multi-byte string */
++static int
++dirent_wcstombs_s(
++    size_t *pReturnValue,
++    char *mbstr,
++    size_t sizeInBytes, /* max size of mbstr */
++    const wchar_t *wcstr,
++    size_t count)
++{
++    int error;
++
++#if defined(_MSC_VER)  &&  _MSC_VER >= 1400
++
++    /* Microsoft Visual Studio 2005 or later */
++    error = wcstombs_s (pReturnValue, mbstr, sizeInBytes, wcstr, count);
++
++#else
++
++    /* Older Visual Studio or non-Microsoft compiler */
++    size_t n;
++
++    /* Convert to multi-byte string (or count the number of bytes needed) */
++    n = wcstombs (mbstr, wcstr, sizeInBytes);
++    if (!mbstr  ||  n < count) {
++
++        /* Zero-terminate output buffer */
++        if (mbstr  &&  sizeInBytes) {
++            if (n >= sizeInBytes) {
++                n = sizeInBytes - 1;
++            }
++            mbstr[n] = '\0';
++        }
++
++        /* Length of resulting multi-bytes string WITH zero-terminator */
++        if (pReturnValue) {
++            *pReturnValue = n + 1;
++        }
++
++        /* Success */
++        error = 0;
++
++    } else {
++
++        /* Cannot convert string */
++        error = 1;
++
++    }
++
++#endif
++
++    return error;
++}
++
++/* Set errno variable */
++static void
++dirent_set_errno(
++    int error)
++{
++#if defined(_MSC_VER)  &&  _MSC_VER >= 1400
++
++    /* Microsoft Visual Studio 2005 and later */
++    _set_errno (error);
++
++#else
++
++    /* Non-Microsoft compiler or older Microsoft compiler */
++    errno = error;
++
++#endif
++}
++
++
++#ifdef __cplusplus
++}
++#endif
++#endif /*DIRENT_H*/
++
+diff --git a/main.c b/main.c
+index 35a4854..4622a02 100644
+--- a/main.c
++++ b/main.c
+@@ -15,8 +15,12 @@
+  */
+ 
+ #include <libpkgconf/libpkgconf.h>
+-#include "config.h"
++#include "libpkgconf/config.h"
+ #include "getopt_long.h"
++#ifdef _WIN32
++#include <io.h>     /* for _setmode() */
++#include <fcntl.h>
++#endif
+ 
+ #define PKG_CFLAGS_ONLY_I		(((uint64_t) 1) << 2)
+ #define PKG_CFLAGS_ONLY_OTHER		(((uint64_t) 1) << 3)
+@@ -652,6 +656,16 @@ main(int argc, char *argv[])
+ 
+ 	want_flags = 0;
+ 
++#ifdef _WIN32
++	/* When running regression tests in cygwin, and building native
++	 * executable, tests fail unless native executable outputs unix
++	 * line endings.  Come to think of it, this will probably help
++	 * real people who use cygwin build environments but native pkgconf, too.
++	 */
++	_setmode(fileno(stdout), O_BINARY);
++	_setmode(fileno(stderr), O_BINARY);
++#endif
++
+ 	struct pkg_option options[] = {
+ 		{ "version", no_argument, &want_flags, PKG_VERSION|PKG_PRINT_ERRORS, },
+ 		{ "about", no_argument, &want_flags, PKG_ABOUT|PKG_PRINT_ERRORS, },
+diff --git a/meson.build b/meson.build
+new file mode 100644
+index 0000000..10c3a9e
+--- /dev/null
++++ b/meson.build
+@@ -0,0 +1,94 @@
++project('pkgconf', 'c',
++  version : '1.4.0',
++  license : 'ISC',
++  meson_version : '>=0.40')
++
++
++cc = meson.get_compiler('c')
++
++
++cdata = configuration_data()
++check_headers = [
++  ['HAVE_DLFCN_H', 'dlfcn.h'],
++  ['HAVE_INTTYPES_H', 'inttypes.h'],
++  ['HAVE_MEMORY_H', 'memory.h'],
++  ['HAVE_STDINT_H', 'stdint.h'],
++  ['HAVE_STDLIB_H', 'stdlib.h'],
++  ['HAVE_STRINGS_H', 'strings.h'],
++  ['HAVE_STRING_H', 'string.h'],
++  ['HAVE_SYS_STAT_H', 'sys/stat.h'],
++  ['HAVE_SYS_TYPES_H', 'sys/types.h'],
++  ['HAVE_UNISTD_H', 'unistd.h'],
++]
++
++foreach h : check_headers
++  if cc.has_header(h.get(1))
++    cdata.set(h.get(0), 1)
++  endif
++endforeach
++
++check_functions = [
++  ['HAVE_CYGWIN_CONV_PATH', 'cygwin_conv_path', '#include<sys/cygwin.h>'],
++  ['HAVE_STRLCAT', 'strlcat', '#include<string.h>'],
++  ['HAVE_STRLCPY', 'strlcpy', '#include<string.h>'],
++  ['HAVE_STRNDUP', 'strndup', '#include<string.h>'],
++]
++
++foreach f : check_functions
++  if cc.has_function(f.get(1), prefix : f.get(2))
++    cdata.set(f.get(0), 1)
++  endif
++endforeach
++
++default_path = []
++foreach f : ['libdir', 'datadir']
++  default_path += [join_paths(get_option('prefix'), get_option(f), 'pkgconfig')]
++endforeach
++
++cdata.set_quoted('SYSTEM_LIBDIR', join_paths(get_option('prefix'), get_option('libdir')))
++cdata.set_quoted('SYSTEM_INCLUDEDIR', join_paths(get_option('prefix'), get_option('includedir')))
++cdata.set_quoted('PKG_DEFAULT_PATH', ':'.join(default_path))
++cdata.set_quoted('PACKAGE_NAME', meson.project_name())
++cdata.set_quoted('PACKAGE_VERSION', meson.project_version())
++cdata.set_quoted('PACKAGE_BUGREPORT', 'http://github.com/pkgconf/pkgconf/issues')
++cdata.set('abs_top_srcdir', meson.source_root())
++cdata.set('abs_top_builddir', meson.build_root())
++
++
++subdir('libpkgconf')
++
++libpkgconf = shared_library('pkgconf',
++  'libpkgconf/argvsplit.c',
++  'libpkgconf/audit.c',
++  'libpkgconf/bsdstubs.c',
++  'libpkgconf/cache.c',
++  'libpkgconf/client.c',
++  'libpkgconf/dependency.c',
++  'libpkgconf/fileio.c',
++  'libpkgconf/fragment.c',
++  'libpkgconf/path.c',
++  'libpkgconf/pkg.c',
++  'libpkgconf/queue.c',
++  'libpkgconf/tuple.c',
++  install : true,
++  version : '2.0.0',
++  soversion : '2',
++)
++
++
++pkgconf_exe = executable('pkgconf',
++  'main.c',
++  'getopt_long.c',
++  link_with : libpkgconf,
++  install : true)
++
++
++kyua_exe = find_program('kyua')
++test('kyua', kyua_exe, args : ['--config=none', 'test', '--kyuafile=' + join_paths(meson.build_root(), 'Kyuafile'), '--build-root=' + meson.build_root()])
++
++
++configure_file(input : 'Kyuafile.in', output : 'Kyuafile', configuration : cdata)
++subdir('tests')
++
++
++install_man('pkgconf.1')
+diff --git a/tests/test_env.sh.in b/tests/test_env.sh.in
+index cf0cfc4..229dd00 100644
+--- a/tests/test_env.sh.in
++++ b/tests/test_env.sh.in
+@@ -1,15 +1,37 @@
+-export PATH="$(atf_get_srcdir)/../:${PATH}"
++srcdir="$(atf_get_srcdir)"
++export PATH="$srcdir/..:${PATH}"
++
++#--- begin windows kludge ---
++# When building with Visual Studio, binaries are in a subdirectory named after the configration...
++# and the configuration is not known unless you're in the IDE, or something.
++# So just guess.  This won't work well if you build more than one configuration.
++the_configuration=""
++for configuration in Debug Release RelWithDebInfo
++do
++    if test -d "$srcdir/../$configuration"
++    then
++        if test "$the_configuration" != ""
++        then
++            echo "test_env.sh: FAIL: more than one configuration found"
++            exit 1
++        fi
++        the_configuration=$configuration
++        export PATH="$srcdir/../${configuration}:${PATH}"
++    fi
++done
++#--- end kludge ---
++
+ selfdir="@abs_top_srcdir@/tests"
+ PATH_SEP=":"
+ SYSROOT_DIR="${selfdir}/test"
+-if [ "$(uname -s)" = "Msys" ]; then
+-	PATH_SEP=";"
+-fi
++case "$(uname -s)" in
++Msys|CYGWIN*) PATH_SEP=";";;
++esac
+ 
+ prefix="@prefix@"
+ exec_prefix="@exec_prefix@"
+ datarootdir="@datarootdir@"
+-pcpath="@PKGCONFIGDIR@"
++pcpath="@PKG_DEFAULT_PATH@"
+ 
+ tests_init()
+ {
