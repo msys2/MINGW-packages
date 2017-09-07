@@ -1,13 +1,13 @@
-From 597cbbbf789ecef0af62686d02a8e342cda8371e Mon Sep 17 00:00:00 2001
+From 2e35677294089d4af7016fcaa4d82e91b726c845 Mon Sep 17 00:00:00 2001
 From: Liu Hao <lh_mouse@126.com>
-Date: Wed, 6 Sep 2017 17:28:12 +0800
-Subject: [PATCH] This patch enables a native GCC to color diagnostic messages
- sent over Windows consoles.
+Date: Thu, 7 Sep 2017 12:50:07 +0800
+Subject: [PATCH] Enable a native GCC to color diagnostic messages sent over
+ Windows consoles.
 
 ---
  gcc/diagnostic-color.c |  28 ++-
- gcc/pretty-print.c     | 606 +++++++++++++++++++++++++++++++++++++++++++++++++
- 2 files changed, 624 insertions(+), 10 deletions(-)
+ gcc/pretty-print.c     | 664 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 682 insertions(+), 10 deletions(-)
 
 diff --git a/gcc/diagnostic-color.c b/gcc/diagnostic-color.c
 index 8353fe016b7..c002331a31f 100644
@@ -68,10 +68,10 @@ index 8353fe016b7..c002331a31f 100644
  }
 -#endif
 diff --git a/gcc/pretty-print.c b/gcc/pretty-print.c
-index bcb1a70ac03..91685484a39 100644
+index bcb1a70ac03..fba4ba87499 100644
 --- a/gcc/pretty-print.c
 +++ b/gcc/pretty-print.c
-@@ -30,6 +30,608 @@ along with GCC; see the file COPYING3.  If not see
+@@ -30,6 +30,666 @@ along with GCC; see the file COPYING3.  If not see
  #include <iconv.h>
  #endif
  
@@ -113,8 +113,7 @@ index bcb1a70ac03..91685484a39 100644
 +      character X in [0x40,0x5F], returns X and stores a pointer to
 +      the third character into *head.
 +   2. If the sequence begins with a character X in [0x80,0x9F], returns
-+      return (X-0x40) and stores a pointer to the second character
-+      into *head.
++      (X-0x40) and stores a pointer to the second character into *head.
 +   Stores the number of ESC character(s) in *prefix_len.
 +   Returns 0 if no such sequence can be found. */
 +static int
@@ -194,6 +193,7 @@ index bcb1a70ac03..91685484a39 100644
 +  COORD cr;
 +  /* ED and EL parameters. */
 +  DWORD cnt, step;
++  long rows;
 +  /* SGR parameters. */
 +  WORD attrib_add, attrib_rm;
 +  const char *param;
@@ -347,7 +347,7 @@ index bcb1a70ac03..91685484a39 100644
 +      break;
 +
 +    /* ESC [ n1 'G'
-+	 Move the cursor to the the (1-based) n1-th column. */
++	 Move the cursor to the (1-based) n1-th column. */
 +    case MAKEWORD ('[', 'G'):
 +      if (esc_head == esc_term)
 +	n1 = 1;
@@ -375,7 +375,7 @@ index bcb1a70ac03..91685484a39 100644
 +
 +    /* ESC [ n1 ';' n2 'H'
 +       ESC [ n1 ';' n2 'f'
-+	 Move the cursor to the the (1-based) n1-th row and
++	 Move the cursor to the (1-based) n1-th row and
 +	 (also 1-based) n2-th column. */
 +    case MAKEWORD ('[', 'H'):
 +    case MAKEWORD ('[', 'f'):
@@ -434,6 +434,64 @@ index bcb1a70ac03..91685484a39 100644
 +	  else
 +	    cr.X = n2;
 +	  SetConsoleCursorPosition (h, cr);
++	}
++      break;
++
++    /* ESC [ n1 'J'
++	 Erase display. */
++    case MAKEWORD ('[', 'J'):
++      if (esc_head == esc_term)
++	/* This is one of the very few codes whose parameters have
++	   a default value of zero. */
++	n1 = 0;
++      else
++	{
++	  n1 = strtol (esc_head, &eptr, 10);
++	  if (eptr != esc_term)
++	    break;
++	}
++
++      if (GetConsoleScreenBufferInfo (h, &sb))
++	{
++	  /* The cursor is not necessarily in the console window, which
++	     makes the behavior of this code harder to define. */
++	  switch (n1)
++	    {
++	    case 0:
++	      /* If the cursor is in or above the window, erase from
++		 it to the bottom of the window; otherwise, do nothing. */
++	      cr = sb.dwCursorPosition;
++	      cnt = sb.dwSize.X - sb.dwCursorPosition.X;
++	      rows = sb.srWindow.Bottom - sb.dwCursorPosition.Y;
++	      break;
++	    case 1:
++	      /* If the cursor is in or under the window, erase from
++		 it to the top of the window; otherwise, do nothing. */
++	      cr.X = 0;
++	      cr.Y = sb.srWindow.Top;
++	      cnt = sb.dwCursorPosition.X + 1;
++	      rows = sb.dwCursorPosition.Y - sb.srWindow.Top;
++	      break;
++	    case 2:
++	      /* Erase the entire window. */
++	      cr.X = sb.srWindow.Left;
++	      cr.Y = sb.srWindow.Top;
++	      cnt = 0;
++	      rows = sb.srWindow.Bottom - sb.srWindow.Top + 1;
++	      break;
++	    default:
++	      /* Erase the entire buffer. */
++	      cr.X = 0;
++	      cr.Y = 0;
++	      cnt = 0;
++	      rows = sb.dwSize.Y;
++	      break;
++	    }
++	  if (rows < 0)
++	    break;
++	  cnt += rows * sb.dwSize.X;
++	  FillConsoleOutputCharacterW (h, L' ', cnt, cr, &step);
++	  FillConsoleOutputAttribute (h, sb.wAttributes, cnt, cr, &step);
 +	}
 +      break;
 +
@@ -680,7 +738,7 @@ index bcb1a70ac03..91685484a39 100644
  static void pp_quoted_string (pretty_printer *, const char *, size_t = -1);
  
  /* Overwrite the given location/range within this text_info's rich_location.
-@@ -140,7 +742,11 @@ void
+@@ -140,7 +800,11 @@ void
  pp_write_text_to_stream (pretty_printer *pp)
  {
    const char *text = pp_formatted_text (pp);
