@@ -1,0 +1,521 @@
+From 447ab15c89ff7d915fc95dabedef0c600d12e1a8 Mon Sep 17 00:00:00 2001
+From: rouault <rouault@f0d54148-0727-0410-94bb-9a71ac55c965>
+Date: Fri, 8 Sep 2017 11:23:00 +0000
+Subject: [PATCH] PDF: add support for Poppler 0.58 (mix of my work and patch
+ by David Tardon, fixes #7033)
+
+git-svn-id: https://svn.osgeo.org/gdal/trunk/gdal@40035 f0d54148-0727-0410-94bb-9a71ac55c965
+---
+ GDALmake.opt.in          |   1 +
+ configure.ac             | 105 +++++++++++++++++++++++++----------------
+ frmts/pdf/GNUmakefile    |   4 ++
+ frmts/pdf/makefile.vc    |   6 ++-
+ frmts/pdf/pdfdataset.cpp |  24 +++++++++-
+ frmts/pdf/pdfio.cpp      |  32 ++++++++++---
+ frmts/pdf/pdfio.h        |  14 ++++--
+ frmts/pdf/pdfobject.cpp  |  62 ++++++++++++++++++++++++
+ nmake.opt                |   2 +
+ 10 files changed, 273 insertions(+), 97 deletions(-)
+
+diff --git a/GDALmake.opt.in b/GDALmake.opt.in
+index a8313e189c..8527fdb607 100644
+--- a/GDALmake.opt.in
++++ b/GDALmake.opt.in
+@@ -475,6 +475,7 @@ POPPLER_HAS_OPTCONTENT = @POPPLER_HAS_OPTCONTENT@
+ POPPLER_BASE_STREAM_HAS_TWO_ARGS = @POPPLER_BASE_STREAM_HAS_TWO_ARGS@
+ POPPLER_0_20_OR_LATER = @POPPLER_0_20_OR_LATER@
+ POPPLER_0_23_OR_LATER = @POPPLER_0_23_OR_LATER@
++POPPLER_0_58_OR_LATER = @POPPLER_0_58_OR_LATER@
+ POPPLER_INC = @POPPLER_INC@
+ POPPLER_PLUGIN_LIB = @POPPLER_PLUGIN_LIB@
+ 
+diff --git a/configure.ac b/configure.ac
+index d771808d1a..6c9b727b66 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -4292,6 +4292,8 @@ HAVE_POPPLER=no
+ POPPLER_HAS_OPTCONTENT=no
+ POPPLER_BASE_STREAM_HAS_TWO_ARGS=no
+ POPPLER_0_20_OR_LATER=no
++POPPLER_0_23_OR_LATER=no
++POPPLER_0_58_OR_LATER=no
+ 
+ AC_MSG_CHECKING([for poppler])
+ 
+@@ -4330,59 +4332,84 @@ if test "$with_poppler" != "no" -a "$with_poppler" != ""; then
+         POPPLER_INC=$TEST_POPPLER_INC
+         POPPLER_PLUGIN_LIB="${TEST_POPPLER_LIB}"
+ 
+-        # And now try another dirty thing, but this one is
+-        # optional.
+-        AC_MSG_CHECKING([if Catalog::optContent exists])
++        CHECK_OTHER_POPPLER_VERSION=yes
++
++        # And now we check if we have Poppler >= 0.58.0
++        AC_MSG_CHECKING([if Object does have new API (>= 0.58.0)])
+         rm -f testpoppler.*
+-        echo '#define private public' > testpoppler.cpp
+-        echo '#include <poppler/Object.h>' >> testpoppler.cpp
+-        echo '#include <poppler/Catalog.h>' >> testpoppler.cpp
+-        echo 'int main(int argc, char** argv) { return &(((Catalog*)0x8000)->optContent) == 0; }' >> testpoppler.cpp
++        echo '#include <poppler/Object.h>' > testpoppler.cpp
++        echo 'int main(int argc, char** argv) { Object o(objNull); return 0; }' >> testpoppler.cpp
+         if test -z "`${CXX} testpoppler.cpp -c ${POPPLER_INC} 2>&1`" ; then
++            POPPLER_0_58_OR_LATER=yes
++            POPPLER_0_23_OR_LATER=yes
++            POPPLER_0_20_OR_LATER=yes
++            POPPLER_BASE_STREAM_HAS_TWO_ARGS=yes
+             POPPLER_HAS_OPTCONTENT=yes
++            CHECK_OTHER_POPPLER_VERSION=no
+             AC_MSG_RESULT([yes])
+         else
+             AC_MSG_RESULT([no])
+         fi
+ 
+-        # And now we check if we have Poppler >= 0.16.0
+-        AC_MSG_CHECKING([if BaseStream constructor needs 2 arguments])
+-        rm -f testpoppler.*
+-        echo '#include <poppler/Object.h>' > testpoppler.cpp
+-        echo '#include <poppler/Stream.h>' >> testpoppler.cpp
+-        echo 'class TestStream: public BaseStream {' >> testpoppler.cpp
+-        echo 'public:' >> testpoppler.cpp
+-        echo '  TestStream() : BaseStream(0,0) {}' >> testpoppler.cpp
+-        echo '};' >> testpoppler.cpp
+-        echo 'int main(int argc, char** argv) { return 0; }' >> testpoppler.cpp
+-        if test -z "`${CXX} testpoppler.cpp -c ${POPPLER_INC} 2>&1`" ; then
+-            POPPLER_BASE_STREAM_HAS_TWO_ARGS=yes
+-            AC_MSG_RESULT([yes])
++        if test "$CHECK_OTHER_POPPLER_VERSION" = "yes"; then
++
++            # And now try another dirty thing, but this one is
++            # optional.
++            AC_MSG_CHECKING([if Catalog::optContent exists])
++            rm -f testpoppler.*
++            echo '#define private public' > testpoppler.cpp
++            echo '#include <poppler/Object.h>' >> testpoppler.cpp
++            echo '#include <poppler/Catalog.h>' >> testpoppler.cpp
++            echo 'int main(int argc, char** argv) { return &(((Catalog*)0x8000)->optContent) == 0; }' >> testpoppler.cpp
++            if test -z "`${CXX} testpoppler.cpp -c ${POPPLER_INC} 2>&1`" ; then
++                POPPLER_HAS_OPTCONTENT=yes
++                AC_MSG_RESULT([yes])
++            else
++                AC_MSG_RESULT([no])
++            fi
+ 
+-            # And now we check if we have Poppler >= 0.20.0
+-            AC_MSG_CHECKING([if we have Poppler >= 0.20.0])
++            # And now we check if we have Poppler >= 0.16.0
++            AC_MSG_CHECKING([if BaseStream constructor needs 2 arguments])
+             rm -f testpoppler.*
+-            echo '#include <poppler/Error.h>' > testpoppler.cpp
+-            echo 'int main(int argc, char** argv) { setErrorCallback(0,0); return 0; }' >> testpoppler.cpp
++            echo '#include <poppler/Object.h>' > testpoppler.cpp
++            echo '#include <poppler/Stream.h>' >> testpoppler.cpp
++            echo 'class TestStream: public BaseStream {' >> testpoppler.cpp
++            echo 'public:' >> testpoppler.cpp
++            echo '  TestStream() : BaseStream(0,0) {}' >> testpoppler.cpp
++            echo '};' >> testpoppler.cpp
++            echo 'int main(int argc, char** argv) { return 0; }' >> testpoppler.cpp
+             if test -z "`${CXX} testpoppler.cpp -c ${POPPLER_INC} 2>&1`" ; then
+-                POPPLER_0_20_OR_LATER=yes
++                POPPLER_BASE_STREAM_HAS_TWO_ARGS=yes
+                 AC_MSG_RESULT([yes])
+ 
+-                # And now we check if we have Poppler >= 0.23.0
+-                AC_MSG_CHECKING([if we have Poppler >= 0.23.0])
++                # And now we check if we have Poppler >= 0.20.0
++                AC_MSG_CHECKING([if we have Poppler >= 0.20.0])
+                 rm -f testpoppler.*
+-                echo '#include <poppler/Object.h>' > testpoppler.cpp
+-                echo '#include <poppler/Stream.h>' >> testpoppler.cpp
+-                echo 'class TestStream: public BaseStream {' >> testpoppler.cpp
+-                echo 'public:' >> testpoppler.cpp
+-                echo '  TestStream() : BaseStream(0,0) {}' >> testpoppler.cpp
+-                echo '  ~TestStream() {}' >> testpoppler.cpp
+-                echo '  virtual BaseStream *copy() { return BaseStream::copy(); }' >> testpoppler.cpp
+-                echo '};' >> testpoppler.cpp
+-                echo 'int main(int argc, char** argv) { return 0; }' >> testpoppler.cpp
++                echo '#include <poppler/Error.h>' > testpoppler.cpp
++                echo 'int main(int argc, char** argv) { setErrorCallback(0,0); return 0; }' >> testpoppler.cpp
+                 if test -z "`${CXX} testpoppler.cpp -c ${POPPLER_INC} 2>&1`" ; then
+-                    POPPLER_0_23_OR_LATER=yes
++                    POPPLER_0_20_OR_LATER=yes
+                     AC_MSG_RESULT([yes])
++
++                    # And now we check if we have Poppler >= 0.23.0
++                    AC_MSG_CHECKING([if we have Poppler >= 0.23.0])
++                    rm -f testpoppler.*
++                    echo '#include <poppler/Object.h>' > testpoppler.cpp
++                    echo '#include <poppler/Stream.h>' >> testpoppler.cpp
++                    echo 'class TestStream: public BaseStream {' >> testpoppler.cpp
++                    echo 'public:' >> testpoppler.cpp
++                    echo '  TestStream() : BaseStream(0,0) {}' >> testpoppler.cpp
++                    echo '  ~TestStream() {}' >> testpoppler.cpp
++                    echo '  virtual BaseStream *copy() { return BaseStream::copy(); }' >> testpoppler.cpp
++                    echo '};' >> testpoppler.cpp
++                    echo 'int main(int argc, char** argv) { return 0; }' >> testpoppler.cpp
++                    if test -z "`${CXX} testpoppler.cpp -c ${POPPLER_INC} 2>&1`" ; then
++                        POPPLER_0_23_OR_LATER=yes
++                        AC_MSG_RESULT([yes])
++                    else
++                        AC_MSG_RESULT([no])
++                    fi
++
+                 else
+                     AC_MSG_RESULT([no])
+                 fi
+@@ -4390,9 +4417,6 @@ if test "$with_poppler" != "no" -a "$with_poppler" != ""; then
+             else
+                 AC_MSG_RESULT([no])
+             fi
+-
+-        else
+-            AC_MSG_RESULT([no])
+         fi
+     else
+         AC_MSG_RESULT([no])
+@@ -4408,6 +4432,7 @@ AC_SUBST(POPPLER_HAS_OPTCONTENT, $POPPLER_HAS_OPTCONTENT)
+ AC_SUBST(POPPLER_BASE_STREAM_HAS_TWO_ARGS, $POPPLER_BASE_STREAM_HAS_TWO_ARGS)
+ AC_SUBST(POPPLER_0_20_OR_LATER, $POPPLER_0_20_OR_LATER)
+ AC_SUBST(POPPLER_0_23_OR_LATER, $POPPLER_0_23_OR_LATER)
++AC_SUBST(POPPLER_0_58_OR_LATER, $POPPLER_0_58_OR_LATER)
+ AC_SUBST(POPPLER_INC, $POPPLER_INC)
+ AC_SUBST(POPPLER_PLUGIN_LIB, $POPPLER_PLUGIN_LIB)
+ 
+diff --git a/frmts/pdf/GNUmakefile b/frmts/pdf/GNUmakefile
+index a032455138..c7265f655e 100644
+--- a/frmts/pdf/GNUmakefile
++++ b/frmts/pdf/GNUmakefile
+@@ -31,6 +31,10 @@ ifeq ($(POPPLER_0_23_OR_LATER),yes)
+ CPPFLAGS +=  -DPOPPLER_0_23_OR_LATER
+ endif
+ 
++ifeq ($(POPPLER_0_58_OR_LATER),yes)
++CPPFLAGS +=  -DPOPPLER_0_58_OR_LATER
++endif
++
+ ifeq ($(HAVE_PODOFO),yes)
+ CPPFLAGS +=  -DHAVE_PODOFO
+ endif
+diff --git a/frmts/pdf/makefile.vc b/frmts/pdf/makefile.vc
+index 92d7b44460..b4fa14d0a1 100644
+--- a/frmts/pdf/makefile.vc
++++ b/frmts/pdf/makefile.vc
+@@ -14,7 +14,7 @@ OBJ = $(OBJ) ..\..\ogr\ogrsf_frmts\mem\ogrmemdatasource.obj ..\..\ogr\ogrsf_frmt
+ EXTRAFLAGS =  -I..\vrt -I..\mem -I..\..\ogr\ogrsf_frmts\mem $(POPPLER_EXTRAFLAGS) $(PODOFO_EXTRAFLAGS) $(PDFIUM_EXTRAFLAGS)
+ 
+ !IFDEF POPPLER_ENABLED
+-POPPLER_EXTRAFLAGS = $(POPPLER_CFLAGS) $(POPPLER_HAS_OPTCONTENT_FLAGS) $(POPPLER_BASE_STREAM_HAS_TWO_ARGS_FLAGS) $(POPPLER_0_20_OR_LATER_FLAGS) $(POPPLER_0_23_OR_LATER_FLAGS) -DHAVE_POPPLER
++POPPLER_EXTRAFLAGS = $(POPPLER_CFLAGS) $(POPPLER_HAS_OPTCONTENT_FLAGS) $(POPPLER_BASE_STREAM_HAS_TWO_ARGS_FLAGS) $(POPPLER_0_20_OR_LATER_FLAGS) $(POPPLER_0_23_OR_LATER_FLAGS) $(POPPLER_0_58_OR_LATER_FLAGS) -DHAVE_POPPLER
+ 
+ !IFDEF POPPLER_HAS_OPTCONTENT
+ POPPLER_HAS_OPTCONTENT_FLAGS = -DPOPPLER_HAS_OPTCONTENT
+@@ -32,6 +32,10 @@ POPPLER_0_20_OR_LATER_FLAGS = -DPOPPLER_0_20_OR_LATER
+ POPPLER_0_23_OR_LATER_FLAGS = -DPOPPLER_0_23_OR_LATER
+ !ENDIF
+ 
++!IFDEF POPPLER_0_58_OR_LATER
++POPPLER_0_58_OR_LATER_FLAGS = -DPOPPLER_0_58_OR_LATER
++!ENDIF
++
+ !ENDIF
+ 
+ !IFDEF PODOFO_ENABLED
+diff --git a/frmts/pdf/pdfdataset.cpp b/frmts/pdf/pdfdataset.cpp
+index 31ff3e763e..75a93456bb 100644
+--- a/frmts/pdf/pdfdataset.cpp
++++ b/frmts/pdf/pdfdataset.cpp
+@@ -129,7 +129,11 @@ class ObjectAutoFree : public Object
+ 
+ public:
+     ObjectAutoFree() {}
+-    ~ObjectAutoFree() { obj.free(); }
++    ~ObjectAutoFree() {
++#ifndef POPPLER_0_58_OR_LATER
++        obj.free();
++#endif
++    }
+ 
+     Object* getObj() { return &obj; }
+ };
+@@ -2290,7 +2294,11 @@ GDALPDFObject* PDFDataset::GetCatalog()
+     if (bUseLib.test(PDFLIB_POPPLER))
+     {
+         poCatalogObjectPoppler = new ObjectAutoFree;
++#ifdef POPPLER_0_58_OR_LATER
++        *poCatalogObjectPoppler->getObj() = poDocPoppler->getXRef()->getCatalog();
++#else
+         poDocPoppler->getXRef()->getCatalog(poCatalogObjectPoppler->getObj());
++#endif
+         if (!poCatalogObjectPoppler->getObj()->isNull())
+             poCatalogObject = new GDALPDFObjectPoppler(poCatalogObjectPoppler->getObj(), FALSE);
+     }
+@@ -4031,7 +4039,11 @@ GDALDataset *PDFDataset::Open( GDALOpenInfo * poOpenInfo )
+     GDALPDFObject* poPageObj = NULL;
+ #ifdef HAVE_POPPLER
+     PDFDoc* poDocPoppler = NULL;
++#ifdef POPPLER_0_58_OR_LATER
++    Object oObj;
++#else
+     ObjectAutoFree oObj;
++#endif
+     Page* poPagePoppler = NULL;
+     Catalog* poCatalogPoppler = NULL;
+ #endif
+@@ -4078,8 +4090,12 @@ GDALDataset *PDFDataset::Open( GDALOpenInfo * poOpenInfo )
+         if (pszUserPwd)
+             poUserPwd = new GooString(pszUserPwd);
+ 
++#ifdef POPPLER_0_58_OR_LATER
++        poDocPoppler = new PDFDoc(new VSIPDFFileStream(fp, pszFilename, std::move(oObj)), NULL, poUserPwd);
++#else
+         oObj.getObj()->initNull();
+         poDocPoppler = new PDFDoc(new VSIPDFFileStream(fp, pszFilename, oObj.getObj()), NULL, poUserPwd);
++#endif
+         delete poUserPwd;
+ 
+         if ( !poDocPoppler->isOk() || poDocPoppler->getNumPages() == 0 )
+@@ -4770,10 +4786,16 @@ GDALDataset *PDFDataset::Open( GDALOpenInfo * poOpenInfo )
+     if( poDocPoppler->getXRef()->isOk() )
+     {
+         Object oInfo;
++#ifdef POPPLER_0_58_OR_LATER
++        oInfo = poDocPoppler->getDocInfo();
++#else
+         poDocPoppler->getDocInfo(&oInfo);
++#endif
+         GDALPDFObjectPoppler oInfoObjPoppler(&oInfo, FALSE);
+         poDS->ParseInfo(&oInfoObjPoppler);
++#ifndef POPPLER_0_58_OR_LATER
+         oInfo.free();
++#endif
+     }
+ 
+     /* Find layers */
+diff --git a/frmts/pdf/pdfio.cpp b/frmts/pdf/pdfio.cpp
+index 1a56a00a07..3f10ec035b 100644
+--- a/frmts/pdf/pdfio.cpp
++++ b/frmts/pdf/pdfio.cpp
+@@ -52,8 +52,12 @@ static vsi_l_offset VSIPDFFileStreamGetSize(VSILFILE* f)
+ /************************************************************************/
+ 
+ VSIPDFFileStream::VSIPDFFileStream(
+-    VSILFILE* fIn, const char* pszFilename, Object *dictA) :
+-#ifdef POPPLER_BASE_STREAM_HAS_TWO_ARGS
++    VSILFILE* fIn, const char* pszFilename,
++    makeSubStream_object_type dictA
++) :
++#ifdef POPPLER_0_58_OR_LATER
++    BaseStream(std::move(dictA), (Goffset)VSIPDFFileStreamGetSize(fIn)),
++#elif defined(POPPLER_BASE_STREAM_HAS_TWO_ARGS)
+     BaseStream(dictA, (setPos_offset_type)VSIPDFFileStreamGetSize(fIn)),
+ #else
+     BaseStream(dictA),
+@@ -77,8 +81,11 @@ VSIPDFFileStream::VSIPDFFileStream(
+ 
+ VSIPDFFileStream::VSIPDFFileStream( VSIPDFFileStream* poParentIn,
+                                     vsi_l_offset startA, GBool limitedA,
+-                                    vsi_l_offset lengthA, Object *dictA ) :
+-#ifdef POPPLER_BASE_STREAM_HAS_TWO_ARGS
++                                    vsi_l_offset lengthA,
++                                    makeSubStream_object_type dictA) :
++#ifdef POPPLER_0_58_OR_LATER
++    BaseStream(std::move(dictA), (Goffset)lengthA),
++#elif defined(POPPLER_BASE_STREAM_HAS_TWO_ARGS)
+     BaseStream(dictA, (makeSubStream_offset_type)lengthA),
+ #else
+     BaseStream(dictA),
+@@ -115,7 +122,13 @@ VSIPDFFileStream::~VSIPDFFileStream()
+ /*                                  copy()                              */
+ /************************************************************************/
+ 
+-#ifdef POPPLER_0_23_OR_LATER
++#ifdef POPPLER_0_58_OR_LATER
++BaseStream* VSIPDFFileStream::copy()
++{
++    return new VSIPDFFileStream(poParent, nStart, bLimited,
++                                nLength, dict.copy());
++}
++#elif defined(POPPLER_0_23_OR_LATER)
+ BaseStream* VSIPDFFileStream::copy()
+ {
+     return new VSIPDFFileStream(poParent, nStart, bLimited,
+@@ -126,13 +139,18 @@ BaseStream* VSIPDFFileStream::copy()
+ /************************************************************************/
+ /*                             makeSubStream()                          */
+ /************************************************************************/
+-
+ Stream *VSIPDFFileStream::makeSubStream(makeSubStream_offset_type startA, GBool limitedA,
+-                                        makeSubStream_offset_type lengthA, Object *dictA)
++                                        makeSubStream_offset_type lengthA, makeSubStream_object_type dictA)
+ {
++#ifdef POPPLER_0_58_OR_LATER
++    return new VSIPDFFileStream(this,
++                                startA, limitedA,
++                                lengthA, std::move(dictA));
++#else
+     return new VSIPDFFileStream(this,
+                                 startA, limitedA,
+                                 lengthA, dictA);
++#endif
+ }
+ 
+ /************************************************************************/
+diff --git a/frmts/pdf/pdfio.h b/frmts/pdf/pdfio.h
+index 3013a3e907..54ba305c5c 100644
+--- a/frmts/pdf/pdfio.h
++++ b/frmts/pdf/pdfio.h
+@@ -52,13 +52,21 @@
+ #define moveStart_delta_type int
+ #endif
+ 
++#ifdef POPPLER_0_58_OR_LATER
++#define makeSubStream_object_type Object&&
++#else
++#define makeSubStream_object_type Object*
++#endif
++
+ class VSIPDFFileStream: public BaseStream
+ {
+     public:
+-        VSIPDFFileStream(VSILFILE* f, const char* pszFilename, Object *dictA);
++        VSIPDFFileStream(VSILFILE* f, const char* pszFilename,
++                         makeSubStream_object_type dictA);
+         VSIPDFFileStream(VSIPDFFileStream* poParent,
+                          vsi_l_offset startA, GBool limitedA,
+-                         vsi_l_offset lengthA, Object *dictA);
++                         vsi_l_offset lengthA,
++                         makeSubStream_object_type dictA);
+         virtual ~VSIPDFFileStream();
+ 
+ #ifdef POPPLER_0_23_OR_LATER
+@@ -66,7 +74,7 @@ class VSIPDFFileStream: public BaseStream
+ #endif
+ 
+         virtual Stream *   makeSubStream(makeSubStream_offset_type startA, GBool limitedA,
+-                                         makeSubStream_offset_type lengthA, Object *dictA) override;
++                                         makeSubStream_offset_type lengthA, makeSubStream_object_type dictA) override;
+         virtual getPos_ret_type      getPos() override;
+         virtual getStart_ret_type    getStart() override;
+ 
+diff --git a/frmts/pdf/pdfobject.cpp b/frmts/pdf/pdfobject.cpp
+index 53e5fa3322..6e102ec417 100644
+--- a/frmts/pdf/pdfobject.cpp
++++ b/frmts/pdf/pdfobject.cpp
+@@ -971,7 +971,9 @@ class GDALPDFStreamPoppler : public GDALPDFStream
+ 
+ GDALPDFObjectPoppler::~GDALPDFObjectPoppler()
+ {
++#ifndef POPPLER_0_58_OR_LATER
+     m_po->free();
++#endif
+     if (m_bDestroy)
+         delete m_po;
+     delete m_poDict;
+@@ -1182,6 +1184,35 @@ GDALPDFObject* GDALPDFDictionaryPoppler::Get(const char* pszKey)
+     if (oIter != m_map.end())
+         return oIter->second;
+ 
++#ifdef POPPLER_0_58_OR_LATER
++    Object o = m_poDict->lookupNF(((char*)pszKey));
++    if (!o.isNull())
++    {
++        int nRefNum = 0;
++        int nRefGen = 0;
++        if( o.isRef())
++        {
++            nRefNum = o.getRefNum();
++            nRefGen = o.getRefGen();
++            Object o2 = m_poDict->lookup((char*)pszKey);
++            if( !o2.isNull() )
++            {
++                GDALPDFObjectPoppler* poObj = new GDALPDFObjectPoppler(new Object(std::move(o2)), TRUE);
++                poObj->SetRefNumAndGen(nRefNum, nRefGen);
++                m_map[pszKey] = poObj;
++                return poObj;
++            }
++        }
++        else
++        {
++            GDALPDFObjectPoppler* poObj = new GDALPDFObjectPoppler(new Object(std::move(o)), TRUE);
++            poObj->SetRefNumAndGen(nRefNum, nRefGen);
++            m_map[pszKey] = poObj;
++            return poObj;
++        }
++    }
++    return NULL;
++#else
+     Object* po = new Object;
+     if (m_poDict->lookupNF((char*)pszKey, po) && !po->isNull())
+     {
+@@ -1210,6 +1241,7 @@ GDALPDFObject* GDALPDFDictionaryPoppler::Get(const char* pszKey)
+         delete po;
+         return NULL;
+     }
++#endif
+ }
+ 
+ /************************************************************************/
+@@ -1286,6 +1318,35 @@ GDALPDFObject* GDALPDFArrayPoppler::Get(int nIndex)
+     if (m_v[nIndex] != NULL)
+         return m_v[nIndex];
+ 
++#ifdef POPPLER_0_58_OR_LATER
++    Object o = m_poArray->getNF(nIndex);
++    if( !o.isNull() )
++    {
++        int nRefNum = 0;
++        int nRefGen = 0;
++        if( o.isRef())
++        {
++            nRefNum = o.getRefNum();
++            nRefGen = o.getRefGen();
++            Object o2 = m_poArray->get(nIndex);
++            if( !o2.isNull() )
++            {
++                GDALPDFObjectPoppler* poObj = new GDALPDFObjectPoppler(new Object(std::move(o2)), TRUE);
++                poObj->SetRefNumAndGen(nRefNum, nRefGen);
++                m_v[nIndex] = poObj;
++                return poObj;
++            }
++        }
++        else
++        {
++            GDALPDFObjectPoppler* poObj = new GDALPDFObjectPoppler(new Object(std::move(o)), TRUE);
++            poObj->SetRefNumAndGen(nRefNum, nRefGen);
++            m_v[nIndex] = poObj;
++            return poObj;
++        }
++    }
++    return NULL;
++#else
+     Object* po = new Object;
+     if (m_poArray->getNF(nIndex, po))
+     {
+@@ -1314,6 +1375,7 @@ GDALPDFObject* GDALPDFArrayPoppler::Get(int nIndex)
+         delete po;
+         return NULL;
+     }
++#endif
+ }
+ 
+ /************************************************************************/
+diff --git a/nmake.opt b/nmake.opt
+index 8bfd930530..bd5719c2d1 100644
+--- a/nmake.opt
++++ b/nmake.opt
+@@ -628,12 +628,14 @@ OCI_INCLUDE =	-I$(ORACLE_HOME)\oci\include
+ # Uncomment POPPLER_BASE_STREAM_HAS_TWO_ARGS = YES for Poppler >= 0.16.0
+ # Uncomment POPPLER_0_20_OR_LATER = YES for Poppler >= 0.20.0
+ # Uncomment POPPLER_0_23_OR_LATER = YES for Poppler >= 0.23.0
++# Uncomment POPPLER_0_58_OR_LATER = YES for Poppler >= 0.58.0
+ #POPPLER_ENABLED = YES
+ #POPPLER_CFLAGS = -Ie:/kde/include -Ie:/kde/include/poppler
+ #POPPLER_HAS_OPTCONTENT = YES
+ #POPPLER_BASE_STREAM_HAS_TWO_ARGS = YES
+ #POPPLER_0_20_OR_LATER = YES
+ #POPPLER_0_23_OR_LATER = YES
++#POPPLER_0_58_OR_LATER = YES
+ #POPPLER_LIBS = e:/kde/lib/poppler.lib e:/kde/lib/freetype.lib e:/kde/lib/liblcms-1.lib advapi32.lib gdi32.lib
+ 
+ # Uncomment for PDF support
