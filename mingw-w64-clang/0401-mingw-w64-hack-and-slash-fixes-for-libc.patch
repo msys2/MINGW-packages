@@ -1,243 +1,27 @@
-From b45cafc920b84ea40f9760266473c0da2260c58e Mon Sep 17 00:00:00 2001
+From 5ad3d8c960e46a85e6fa3ec457dafdd53394ef77 Mon Sep 17 00:00:00 2001
 From: Mateusz Mikula <mati865@gmail.com>
 Date: Mon, 20 Mar 2017 18:33:53 +0100
 Subject: [PATCH] workarounds to build libc++ with MinGW
 
 Based on Martell's patches
 ---
- cmake/Modules/CheckLibcxxAtomic.cmake |  2 +-
- cmake/config-ix.cmake                 |  6 +++++-
- include/__config                      |  5 +++--
- include/locale                        |  8 ++++++++
- include/support/win32/locale_win32.h  | 26 ++++++++++++++++++++------
- include/support/win32/support.h       |  5 +++--
- lib/CMakeLists.txt                    |  2 +-
- src/locale.cpp                        |  2 +-
- src/new.cpp                           |  2 +-
- src/support/win32/locale_win32.cpp    |  4 ++++
- src/support/win32/support.cpp         |  2 ++
- src/system_error.cpp                  |  2 +-
- 12 files changed, 56 insertions(+), 17 deletions(-)
+ src/support/win32/support.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
 
-diff --git a/cmake/Modules/CheckLibcxxAtomic.cmake b/cmake/Modules/CheckLibcxxAtomic.cmake
-index a7ae667..4f9de3e 100644
---- a/cmake/Modules/CheckLibcxxAtomic.cmake
-+++ b/cmake/Modules/CheckLibcxxAtomic.cmake
-@@ -9,7 +9,7 @@ INCLUDE(CheckCXXSourceCompiles)
- 
- function(check_cxx_atomics varname)
-   set(OLD_CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS})
--  set(CMAKE_REQUIRED_FLAGS "-nodefaultlibs -std=c++11 -nostdinc++ -isystem ${LIBCXX_SOURCE_DIR}/include")
-+  set(CMAKE_REQUIRED_FLAGS "-std=c++11 -nostdinc++ -isystem ${LIBCXX_SOURCE_DIR}/include")
-   if (${LIBCXX_GCC_TOOLCHAIN})
-     set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} --gcc-toolchain=${LIBCXX_GCC_TOOLCHAIN}")
-   endif()
-diff --git a/cmake/config-ix.cmake b/cmake/config-ix.cmake
-index 4f13b78..1590399 100644
---- a/cmake/config-ix.cmake
-+++ b/cmake/config-ix.cmake
-@@ -24,7 +24,11 @@ endif()
- # required during compilation (which has the -nodefaultlibs). libc is
- # required for the link to go through. We remove sanitizers from the
- # configuration checks to avoid spurious link errors.
--check_cxx_compiler_flag(-nodefaultlibs LIBCXX_SUPPORTS_NODEFAULTLIBS_FLAG)
-+if (MINGW)
-+  SET(LIBCXX_SUPPORTS_NODEFAULTLIBS_FLAG NO)
-+else()
-+  check_cxx_compiler_flag(-nodefaultlibs LIBCXX_SUPPORTS_NODEFAULTLIBS_FLAG)
-+endif()
- if (LIBCXX_SUPPORTS_NODEFAULTLIBS_FLAG)
-   set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -nodefaultlibs")
-   if (LIBCXX_HAS_C_LIB)
-diff --git a/include/__config b/include/__config
-index 340c573..db9b74a 100644
---- a/include/__config
-+++ b/include/__config
-@@ -222,7 +222,7 @@
-   // including accesses to the special files under /dev. C++11's
-   // std::random_device is instead exposed through a NaCl syscall.
- # define _LIBCPP_USING_NACL_RANDOM
--#elif defined(_LIBCPP_WIN32API)
-+#elif defined(_MSC_VER)
- # define _LIBCPP_USING_WIN32_RANDOM
- #else
- # define _LIBCPP_USING_DEV_RANDOM
-@@ -930,7 +935,8 @@ _LIBCPP_FUNC_VIS extern "C" void __sanitizer_annotate_contiguous_container(
-     defined(__linux__) || \
-     defined(__APPLE__) || \
-     defined(__CloudABI__) || \
--    defined(__sun__)
-+    defined(__sun__) || \
-+    defined(__MINGW32__)
- #   define _LIBCPP_HAS_THREAD_API_PTHREAD
- # elif defined(_LIBCPP_WIN32API)
- #  define _LIBCPP_HAS_THREAD_API_WIN32
-diff --git a/include/locale b/include/locale
-index 9cef429..ad3586a 100644
---- a/include/locale
-+++ b/include/locale
-@@ -695,7 +695,11 @@ __num_get_signed_integral(const char* __a, const char* __a_end,
-         typename remove_reference<decltype(errno)>::type __save_errno = errno;
-         errno = 0;
-         char *__p2;
-+#ifdef __MINGW32__
-+        long long __ll = strtoll(__a, &__p2, __base);
-+#else
-         long long __ll = strtoll_l(__a, &__p2, __base, _LIBCPP_GET_C_LOCALE);
-+#endif
-         typename remove_reference<decltype(errno)>::type __current_errno = errno;
-         if (__current_errno == 0)
-             errno = __save_errno;
-@@ -735,7 +739,11 @@ __num_get_unsigned_integral(const char* __a, const char* __a_end,
-         typename remove_reference<decltype(errno)>::type __save_errno = errno;
-         errno = 0;
-         char *__p2;
-+#ifdef __MINGW32__
-+        unsigned long long __ll = strtoull(__a, &__p2, __base);
-+#else
-         unsigned long long __ll = strtoull_l(__a, &__p2, __base, _LIBCPP_GET_C_LOCALE);
-+#endif
-         typename remove_reference<decltype(errno)>::type __current_errno = errno;
-         if (__current_errno == 0)
-             errno = __save_errno;
-diff --git a/include/support/win32/locale_win32.h b/include/support/win32/locale_win32.h
-index ebf5bda..525cfc7 100644
---- a/include/support/win32/locale_win32.h
-+++ b/include/support/win32/locale_win32.h
-@@ -11,7 +11,11 @@
- #ifndef _LIBCPP_SUPPORT_WIN32_LOCALE_WIN32_H
- #define _LIBCPP_SUPPORT_WIN32_LOCALE_WIN32_H
- 
-+#ifdef __MINGW32__
-+#define _VC_CRT_MAJOR_VERSION 6
-+#else
- #include <crtversion.h>
-+#endif
- 
- #if _VC_CRT_MAJOR_VERSION < 14
- // ctype mask table defined in msvcrt.dll
-@@ -40,16 +44,26 @@ int wctob_l( wint_t c, locale_t loc );
- inline _LIBCPP_ALWAYS_INLINE
- decltype(MB_CUR_MAX) MB_CUR_MAX_L( locale_t __l )
- {
-+#ifdef __MINGW32__
-+  return MB_CUR_MAX;
-+#else
-   return ___mb_cur_max_l_func(__l);
-+#endif
- }
- 
-+#ifdef __MINGW32__
-+#  define strtod_l _strtod_l
-+#  define strtof_l _strtod_l
-+#  define strtold_l _strtod_l
-+#else
- // the *_l functions are prefixed on Windows, only available for msvcr80+, VS2005+
--#define mbtowc_l _mbtowc_l
--#define strtoll_l _strtoi64_l
--#define strtoull_l _strtoui64_l
--#define strtof_l _strtof_l
--#define strtod_l _strtod_l
--#define strtold_l _strtold_l
-+#  define mbtowc_l _mbtowc_l
-+#  define strtoll_l _strtoi64_l
-+#  define strtoull_l _strtoui64_l
-+#  define strtof_l _strtof_l
-+#  define strtod_l _strtod_l
-+#  define strtold_l _strtold_l
-+#endif
- 
- inline _LIBCPP_INLINE_VISIBILITY
- int
-diff --git a/include/support/win32/support.h b/include/support/win32/support.h
-index f961344..501cd06 100644
---- a/include/support/win32/support.h
-+++ b/include/support/win32/support.h
-@@ -37,12 +37,13 @@ extern "C" {
- 
- int vasprintf(char **sptr, const char *__restrict fmt, va_list ap);
- int asprintf(char **sptr, const char *__restrict fmt, ...);
-+}
-+#endif
-+
- size_t mbsnrtowcs(wchar_t *__restrict dst, const char **__restrict src,
-                   size_t nmc, size_t len, mbstate_t *__restrict ps);
- size_t wcsnrtombs(char *__restrict dst, const wchar_t **__restrict src,
-                   size_t nwc, size_t len, mbstate_t *__restrict ps);
--}
--#endif // __MINGW32__
- 
- #if defined(_VC_CRT_MAJOR_VERSION) && _VC_CRT_MAJOR_VERSION < 14
- #define snprintf _snprintf
-diff --git a/lib/CMakeLists.txt b/lib/CMakeLists.txt
-index cc3ed16..3c2716f 100644
---- a/lib/CMakeLists.txt
-+++ b/lib/CMakeLists.txt
-@@ -101,8 +101,8 @@ endif()
- # Setup flags.
- if (NOT WIN32)
-   add_flags_if_supported(-fPIC)
-+  add_link_flags_if_supported(-nodefaultlibs)
- endif()
--add_link_flags_if_supported(-nodefaultlibs)
- 
- if (LIBCXX_OSX_REEXPORT_SYSTEM_ABI_LIBRARY)
-   if (NOT DEFINED LIBCXX_LIBCPPABI_VERSION)
-diff --git a/src/locale.cpp b/src/locale.cpp
-index 338ffde..5c44346 100644
---- a/src/locale.cpp
-+++ b/src/locale.cpp
-@@ -1114,7 +1114,7 @@ ctype<char>::classic_table()  _NOEXCEPT
- #if _VC_CRT_MAJOR_VERSION < 14
-     // This is assumed to be safe, which is a nonsense assumption because we're
-     // going to end up dereferencing it later...
--    return _ctype+1; // internal ctype mask table defined in msvcrt.dll
-+    return (const long unsigned int*)(_ctype + 1); // internal ctype mask table defined in msvcrt.dll
- #else
-     return __pctype_func();
- #endif
-diff --git a/src/new.cpp b/src/new.cpp
-index b1e8ee3..e57b773 100644
---- a/src/new.cpp
-+++ b/src/new.cpp
-@@ -162,7 +162,7 @@ operator new(std::size_t size, std::align_val_t alignment) _THROW_BAD_ALLOC
-     if (static_cast<size_t>(alignment) < sizeof(void*))
-       alignment = std::align_val_t(sizeof(void*));
-     void* p;
--#if defined(_LIBCPP_MSVCRT)
-+#if defined(_LIBCPP_MSVCRT) || defined(__MINGW32__)
-     while ((p = _aligned_malloc(size, static_cast<size_t>(alignment))) == nullptr)
- #else
-     while (::posix_memalign(&p, static_cast<size_t>(alignment), size) != 0)
-diff --git a/src/support/win32/locale_win32.cpp b/src/support/win32/locale_win32.cpp
-index ee13811..f6ac5ed 100644
---- a/src/support/win32/locale_win32.cpp
-+++ b/src/support/win32/locale_win32.cpp
-@@ -13,7 +13,11 @@
- #include <memory>
- #include <type_traits>
- 
-+#ifdef __MINGW32__
-+#define _VC_CRT_MAJOR_VERSION 6
-+#else
- #include <crtversion.h>
-+#endif
- 
- typedef _VSTD::remove_pointer<locale_t>::type __locale_struct;
- typedef _VSTD::unique_ptr<__locale_struct, decltype(&uselocale)> __locale_raii;
 diff --git a/src/support/win32/support.cpp b/src/support/win32/support.cpp
-index e989681..0628767 100644
+index dbd1c4c41..fa8cabd65 100644
 --- a/src/support/win32/support.cpp
 +++ b/src/support/win32/support.cpp
-@@ -17,6 +17,7 @@
+@@ -15,7 +15,7 @@
+ #include <cstring> // strcpy, wcsncpy
+ #include <cwchar>  // mbstate_t
  
- // Some of these functions aren't standard or if they conform, the name does not.
- 
-+#ifndef __MINGW32__
- int asprintf(char **sptr, const char *__restrict format, ...)
- {
-     va_list ap;
-@@ -51,6 +52,7 @@ int vasprintf( char **sptr, const char *__restrict format, va_list ap )
+-
++#ifndef __MINGW64_VERSION_MAJOR
+ // Like sprintf, but when return value >= 0 it returns
+ // a pointer to a malloc'd string in *sptr.
+ // If return >= 0, use free to delete *sptr.
+@@ -40,6 +40,7 @@ int vasprintf( char **sptr, const char *__restrict format, va_list ap )
      *sptr = p;
      return count;
  }
@@ -245,18 +29,6 @@ index e989681..0628767 100644
  
  // Returns >= 0: the number of wide characters found in the 
  // multi byte sequence src (of src_size_bytes), that fit in the buffer dst 
-diff --git a/src/system_error.cpp b/src/system_error.cpp
-index c547124..42171ef 100644
---- a/src/system_error.cpp
-+++ b/src/system_error.cpp
-@@ -65,7 +65,7 @@ constexpr size_t strerror_buff_size = 1024;
- 
- string do_strerror_r(int ev);
- 
--#if defined(_LIBCPP_MSVCRT)
-+#if defined(_LIBCPP_MSVCRT) || defined(__MINGW32__)
- string do_strerror_r(int ev) {
-   char buffer[strerror_buff_size];
-   if (::strerror_s(buffer, strerror_buff_size, ev) == 0)
 -- 
-2.12.0
+2.14.1.windows.1
+
