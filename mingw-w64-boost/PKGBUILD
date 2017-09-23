@@ -5,7 +5,7 @@ pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 pkgver=1.64.0
 _boostver=${pkgver//./_}
-pkgrel=2
+pkgrel=3
 pkgdesc="Free peer-reviewed portable C++ source libraries (mingw-w64)"
 arch=('any')
 url="https://www.boost.org/"
@@ -31,6 +31,7 @@ source=(https://downloads.sourceforge.net/sourceforge/boost/boost_${_boostver}.t
         boost-1.58.0-address-model.patch
         boost-1.60.0-mingw-context.patch
         boost-1.61.0-fix-undefined-referense-to-codecvt.patch
+        boost-1.64-default-python.patch
         boost-include-intrin-h-on-mingw-w64.patch
         using-mingw-w64-python.patch
         msys2-mingw-folders-bootstrap.patch)
@@ -47,6 +48,7 @@ sha256sums=('7bcc5caace97baa948931d712ea5f37038dbb1c5d89b43ad4def4ed7cb683332'
             '6182b9cf28e069920a5e7bf9b7d4155df196fc6ee6a31385aaf17c36a91d55c7'
             '8bc4cc4b6cc704c55929860039106d9564c67d42686d01a5c59e25e958eb4b95'
             '2d5a82277f271612421f05c3b1a1e55fe736a18b581920eea12b54767d74edad'
+            'bbfa002a78d5fdd503b5b97cdc0e367f8e145f514079d95bfd6318fcffefbda4'
             '9a269375b8eb262b93fb18ea6b2ac8c97b16fb71b8bab900faa4c2df2816f2eb'
             '0dd6346d369850aad13bf8d9bc2f0abc16d4b0586e34d61fab11f65d3d7fa9d4'
             '81f74c2eafbe004bcbb863cc3cd74571adcffed1169dde86645db4441be236e1')
@@ -58,7 +60,7 @@ prepare() {
   patch -p1 -i ${srcdir}/boost-1.50.0-fix-non-utf8-files.patch
 
   # Add a manual page for bjam, based on the on-line documentation:
-  # http://www.boost.org/boost-build2/doc/html/bbv2/overview.html
+  # https://www.boost.org/boost-build2/doc/html/bbv2/overview.html
   rm tools/build/v2/doc/bjam.1 || true
   msg2 "boost-1.48.0-add-bjam-man-page.patch"
   patch -p1 -i ${srcdir}/boost-1.48.0-add-bjam-man-page.patch
@@ -101,6 +103,10 @@ prepare() {
   msg2 "boost-1.61.0-fix-undefined-referense-to-codecvt.patch"
   patch -p1 -i ${srcdir}/boost-1.61.0-fix-undefined-referense-to-codecvt.patch
 
+  # https://svn.boost.org/trac10/ticket/12515
+  msg2 "Reverting boost-1.64-default python.patch"
+  patch -p1 -R -i ${srcdir}/boost-1.64-default-python.patch
+
   # Fix FTBFS on recent mingw-w64 and also use intrinsics based
   # versions of the Interlocked symbols which are better optimized
   msg2 "boost-include-intrin-h-on-mingw-w64.patch"
@@ -112,13 +118,12 @@ prepare() {
 
   msg2 "msys2-mingw-folders-bootstrap.patch"
   patch -p1 -i ${srcdir}/msys2-mingw-folders-bootstrap.patch
-#  msg2 "42.patch"
-#  patch -p1 -i ${srcdir}/42.patch
 }
 
 build() {
   local PREFIX_DEPS=$(cygpath -am ${MINGW_PREFIX})
 
+  [[ -d ${srcdir}/build-${MINGW_CHOST} ]] && rm -rf ${srcdir}/build-${MINGW_CHOST}
   mkdir -p "${srcdir}/build-${MINGW_CHOST}"
   lndir "${srcdir}/boost_${_boostver}" "${srcdir}/build-${MINGW_CHOST}"
 
@@ -127,7 +132,7 @@ build() {
   _py2ver=$(${MINGW_PREFIX}/bin/python2 -c "import sys;sys.stdout.write('.'.join(map(str, sys.version_info[:2])))")
   _py3ver=$(${MINGW_PREFIX}/bin/python3 -c "import sys;sys.stdout.write('.'.join(map(str, sys.version_info[:2])))")
 
-  echo "using python : ${_py2ver} : ${PREFIX_DEPS}/bin/python2.exe : ${PREFIX_DEPS}/include/python${_py2ver} ;" >> ./tools/build/src/user-config.jam
+  echo "using python : ${_py2ver} : ${PREFIX_DEPS}/bin/python2.exe : ${PREFIX_DEPS}/include/python${_py2ver}  : ${PREFIX_DEPS}/lib/python${_py2ver}/config ;"             >> ./tools/build/src/user-config.jam
   echo "using python : ${_py3ver} : ${PREFIX_DEPS}/bin/python3.exe : ${PREFIX_DEPS}/include/python${_py3ver}m : ${PREFIX_DEPS}/lib/python${_py3ver}/config-${_py3ver}m ;" >> ./tools/build/src/user-config.jam
   #echo "using gcc : : ${PREFIX_DEPS}/bin/g++.exe : <rc>${PREFIX_DEPS}/bin/windres.exe ;" >> ./tools/build/src/user-config.jam
 
@@ -149,16 +154,16 @@ build() {
   fi
 
   ./b2 \
-    toolset=gcc \
-    link=shared,static \
     address-model=${_model} \
+    link=shared,static \
     pch=off \
     runtime-link=shared \
     threading=multi \
     threadapi=win32 \
+    toolset=gcc \
     variant=${variant} \
     --debug-configuration \
-    --prefix=${pkgdir}${MINGW_PREFIX} \
+    --prefix=${MINGW_PREFIX} \
     --layout=tagged \
     --without-mpi \
     -sHAVE_ICU=1 \
@@ -174,7 +179,8 @@ build() {
     -sZLIB_BINARY=z \
     -sZLIB_INCLUDE=${MINGW_PREFIX}/include \
     -sZLIB_LIBPATH=${MINGW_PREFIX}/lib \
-    -d2
+    -d2 \
+    -j$(nproc)
 }
 
 package() {
@@ -195,13 +201,16 @@ package() {
   fi
 
   ./b2 \
-      toolset=gcc \
-      variant=${variant} \
-      threading=multi \
-      threadapi=win32 \
+      address-model=${_model} \
       link=shared,static \
       runtime-link=shared \
+      threading=multi \
+      threadapi=win32 \
+      toolset=gcc \
+      variant=${variant} \
       --prefix=${pkgdir}${MINGW_PREFIX} \
+      --layout=tagged \
+      --without-mpi \
       -sHAVE_ICU=1 \
       -sICU_PATH=${MINGW_PREFIX} \
       -sICU_LINK="-L${MINGW_PREFIX}/lib -licuuc -licuin -licudt" \
@@ -215,9 +224,7 @@ package() {
       -sZLIB_BINARY=z \
       -sZLIB_INCLUDE=${MINGW_PREFIX}/include \
       -sZLIB_LIBPATH=${MINGW_PREFIX}/lib \
-      address-model=${_model} \
-      --layout=tagged install \
-      --without-mpi
+      install
 
   mkdir -p ${pkgdir}${MINGW_PREFIX}/bin
   mv ${pkgdir}${MINGW_PREFIX}/lib/*.dll ${pkgdir}${MINGW_PREFIX}/bin
