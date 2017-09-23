@@ -1,0 +1,113 @@
+diff --git a/src/openssl.c b/src/openssl.c
+index 0404d2d..f1cae1c 100644
+--- a/src/openssl.c
++++ b/src/openssl.c
+@@ -169,6 +169,71 @@ static int ssl_true_initialized = 0;
+ 
+    Returns true on success, false otherwise.  */
+ 
++/* Start: Windows SSL Cert Changes */
++#ifdef WINDOWS
++/* Local version of CERT_CONTEXT, to prevent from bringing in a specific
++   version of the Windows SDK */
++typedef struct _CERT_CONTEXT
++{
++    unsigned int dwCertEncodingType;
++    unsigned char *pbCertEncoded;
++    unsigned int cbCertEncoded;
++    void* pCertInfo;
++    void* hCertStore;
++} CERT_CONTEXT, *PCERT_CONTEXT;typedef const CERT_CONTEXT *PCCERT_CONTEXT;
++
++/* Load crypt32.dll manually to prevent bringing it in unless used */
++HMODULE Local_Crypt32()
++{
++    static HMODULE ret = NULL;
++    if (!ret)
++    {
++        ret = LoadLibraryA("Crypt32.dll");
++    }
++    return ret;
++}
++
++/* Bounce these APIs to our loaded version of crypt32.dll */
++void* Local_CertOpenSystemStoreA(void* hprov, char* szSubsystemProtocol)
++{
++    if (Local_Crypt32())
++    {
++        static FARPROC ret = NULL;
++        if (!ret)
++        {
++            ret = GetProcAddress(Local_Crypt32(), "CertOpenSystemStoreA");
++        }
++        if (ret)
++        {
++            typedef void* (WINAPI * PFN_Func)(void*, char*);
++            return ((PFN_Func) ret)(hprov, szSubsystemProtocol);
++        }
++    }
++    return NULL;
++}
++
++void* Local_CertEnumCertificatesInStore(void* hCertStore, void* pPrevCertContext)
++{
++    if (Local_Crypt32())
++    {
++        static FARPROC ret = NULL;
++        if (!ret)
++        {
++            ret = GetProcAddress(Local_Crypt32(), "CertEnumCertificatesInStore");
++        }
++        if (ret)
++        {
++            typedef void* (WINAPI * PFN_Func)(void*, void*);
++            return ((PFN_Func) ret)(hCertStore, pPrevCertContext);
++        }
++    }
++    return NULL;
++}
++
++#define PKCS_7_ASN_ENCODING         0x00010000
++#endif
++/* End: Windows SSL Cert Changes */
++
+ bool
+ ssl_init (void)
+ {
+@@ -272,6 +337,36 @@ ssl_init (void)
+     SSL_CTX_set_cipher_list (ssl_ctx, "HIGH:MEDIUM:!RC4:!SRP:!PSK:!RSA:!aNULL@STRENGTH");
+ 
+   SSL_CTX_set_default_verify_paths (ssl_ctx);
++
++  /* Start: Windows SSL Cert Changes */
++#ifdef WINDOWS
++  /* Only attempt to use the Windows store if one is not specified */
++  if (!opt.ca_cert)
++  {
++    /* Open the default Windows cert store */
++    void* hStore = Local_CertOpenSystemStoreA(NULL, "ROOT");
++    if (hStore)
++    {
++      /* And then open the OpenSSL store */
++      X509_STORE * store = SSL_CTX_get_cert_store(ssl_ctx);
++      CERT_CONTEXT * pCertCtx = NULL;
++      /* Loop through all the certs in the Windows cert store */
++      for ( pCertCtx = Local_CertEnumCertificatesInStore(hStore, NULL);
++          pCertCtx != NULL;
++          pCertCtx = Local_CertEnumCertificatesInStore(hStore, pCertCtx) )
++      {
++        if (!((pCertCtx->dwCertEncodingType & PKCS_7_ASN_ENCODING) == PKCS_7_ASN_ENCODING))
++        {
++          /* Add all certs we find to OpenSSL's store */
++          X509 *cert = d2i_X509(NULL, (const unsigned char**)&pCertCtx->pbCertEncoded, pCertCtx->cbCertEncoded);
++          X509_STORE_add_cert(store, cert);
++          X509_free(cert);
++        }
++      }
++    }
++  }
++#endif
++  /* End: Windows SSL Cert Changes */
+   SSL_CTX_load_verify_locations (ssl_ctx, opt.ca_cert, opt.ca_directory);
+ 
+   if (opt.crl_file)
