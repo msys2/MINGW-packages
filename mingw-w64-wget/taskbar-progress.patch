@@ -1,0 +1,237 @@
+ src/Makefile.am  |   5 +-
+ src/mswindows.c  |   3 +
+ src/tbprogress.c | 164 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/tbprogress.h |   6 ++
+ 4 files changed, 176 insertions(+), 2 deletions(-)
+
+diff --git a/src/Makefile.am b/src/Makefile.am
+index 28c0be2..356a21e 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -54,13 +54,14 @@ wget_SOURCES = connect.c convert.c cookies.c ftp.c	\
+ 		ftp-basic.c ftp-ls.c hash.c host.c hsts.c html-parse.c html-url.c	\
+ 		http.c init.c log.c main.c netrc.c progress.c ptimer.c	\
+ 		recur.c res.c retr.c spider.c url.c warc.c $(XATTR_OBJ) \
+-		utils.c exits.c build_info.c $(IRI_OBJ) $(METALINK_OBJ)	\
++		utils.c exits.c tbprogress.c build_info.c \
++		$(IRI_OBJ) $(METALINK_OBJ)	\
+ 		css-url.h css-tokens.h connect.h convert.h cookies.h	\
+ 		ftp.h hash.h host.h hsts.h  html-parse.h html-url.h	\
+ 		http.h http-ntlm.h init.h log.h mswindows.h netrc.h	\
+ 		options.h progress.h ptimer.h recur.h res.h retr.h	\
+ 		spider.h ssl.h sysdep.h url.h warc.h utils.h wget.h iri.h	\
+-		exits.h version.h metalink.h xattr.h
++		exits.h version.h metalink.h tbprogress.h xattr.h
+ nodist_wget_SOURCES = version.c
+ EXTRA_wget_SOURCES = iri.c
+ LDADD = $(LIBOBJS) ../lib/libgnu.a $(GETADDRINFO_LIB) $(HOSTENT_LIB)\
+diff --git a/src/mswindows.c b/src/mswindows.c
+index 90e6ec4..f8ed2da 100644
+--- a/src/mswindows.c
++++ b/src/mswindows.c
+@@ -43,6 +43,7 @@ as that of the covered work.  */
+ #include "utils.h"
+ #include "url.h"
+ #include "exits.h"
++#include "tbprogress.h"
+ 
+ #ifndef ES_SYSTEM_REQUIRED
+ #define ES_SYSTEM_REQUIRED  0x00000001
+@@ -86,6 +87,7 @@ windows_main (char **exec_name)
+ static void
+ ws_cleanup (void)
+ {
++  SetTBProgress(-1);
+   xfree (exec_name);
+   WSACleanup ();
+ }
+@@ -399,6 +401,7 @@ ws_percenttitle (double percentage_float)
+ 
+   sprintf (title_buf, "Wget [%d%%] %s", percentage, curr_url);
+   SetConsoleTitle (title_buf);
++  SetTBProgress((int)(percentage_float * 10.0));
+ }
+ 
+ /* Returns a pointer to the fully qualified name of the directory that
+diff --git a/src/tbprogress.c b/src/tbprogress.c
+new file mode 100644
+index 0000000..59645c0
+--- /dev/null
++++ b/src/tbprogress.c
+@@ -0,0 +1,164 @@
++/*
++ * Adapted from:
++ *   https://eternallybored.org/misc/wget.old/src/taskbar-progress.patch
++ */
++
++#if !defined(__cplusplus)
++  #define CINTERFACE
++  #define COBJMACROS
++#endif
++
++#include "config.h"
++
++#ifndef _WIN32_WINNT
++#define _WIN32_WINNT 0x0500
++#endif
++
++#include <windows.h>
++#include <commctrl.h>
++#include <objbase.h>
++#include <shobjidl.h>
++
++#include "tbprogress.h"
++
++#if !defined(_SHLOBJIDL_H) && !defined(__ITaskbarList3_INTERFACE_DEFINED__)
++#error This file is not for you. Set ENABLE_TASKBAR=0.
++#endif
++
++const GUID CLSID_TaskbarList = { 0x56FDF344, 0xFD6D, 0x11d0, { 0x95,0x8A,0x00,0x60,0x97,0xC9,0xA0,0x90 } };
++const GUID IID_ITaskbarList1 = { 0x56FDF342, 0xFD6D, 0x11d0, { 0x95,0x8A,0x00,0x60,0x97,0xC9,0xA0,0x90 } };
++const GUID IID_ITaskbarList3 = { 0xea1afb91, 0x9e28, 0x4b86, { 0x90,0xe9,0x9e,0x9f,0x8a,0x5e,0xef,0xaf } };
++
++#if !defined(__ITaskbarList3_INTERFACE_DEFINED__)
++  typedef enum {
++    TBPF_NOPROGRESS    = 0, /* Normal state / no progress bar */
++    TBPF_INDETERMINATE = 1, /* Marquee style progress bar */
++    TBPF_NORMAL        = 2, /* Standard progress bar */
++    TBPF_ERROR         = 4, /* Red taskbar button to indicate an error occurred */
++    TBPF_PAUSED        = 8  /* Yellow taskbar button to indicate user attention */
++  } TBPFLAG;
++
++  typedef void* LPTHUMBBUTTON;  /* dummy typedef! */
++  typedef enum { TBATF_DUMMY } TBATFLAG;
++
++  #undef  INTERFACE
++  #define INTERFACE ITaskbarList3
++  DECLARE_INTERFACE_(ITaskbarList3,IUnknown)
++  {
++    STDMETHOD(QueryInterface)(THIS_ REFIID,PVOID*) PURE;
++    STDMETHOD_(ULONG,AddRef)(THIS) PURE;
++    STDMETHOD_(ULONG,Release)(THIS) PURE;
++
++    /* ITaskbarList(1) */
++    STDMETHOD(HrInit)(THIS) PURE;
++    STDMETHOD(AddTab)(THIS, HWND hwnd) PURE;
++    STDMETHOD(DeleteTab)(THIS, HWND hwnd) PURE;
++    STDMETHOD(ActivateTab)(THIS, HWND hwnd) PURE;
++    STDMETHOD(SetActiveAlt)(THIS, HWND hwnd) PURE;
++
++    /* ITaskbarList2 */
++    STDMETHOD(MarkFullscreenWindow)(THIS, HWND hwnd, BOOL fFullscreen) PURE;
++
++    /* ITaskbarList3 */
++    STDMETHOD(SetProgressValue)(THIS, HWND hwnd, ULONGLONG ullCompleted, ULONGLONG ullTotal) PURE;
++    STDMETHOD(SetProgressState)(THIS, HWND hwnd, TBPFLAG tbpFlags) PURE;
++    STDMETHOD(RegisterTab)(THIS, HWND hwndTab, HWND hwndMDI) PURE;
++    STDMETHOD(UnregisterTab)(THIS, HWND hwndTab) PURE;
++    STDMETHOD(SetTabOrder)(THIS, HWND hwndTab,HWND hwndInsertBefore) PURE;
++    STDMETHOD(SetTabActive)(THIS, HWND hwndTab,HWND hwndMDI, TBATFLAG tbatFlags) PURE;
++    STDMETHOD(ThumbBarAddButtons)(THIS, HWND hwnd,UINT cButtons, LPTHUMBBUTTON pButton) PURE;
++    STDMETHOD(ThumbBarUpdateButtons)(THIS, HWND hwnd,UINT cButtons, LPTHUMBBUTTON pButton) PURE;
++    STDMETHOD(ThumbBarSetImageList)(THIS, HWND hwnd, HIMAGELIST himl) PURE;
++    STDMETHOD(SetOverlayIcon)(THIS, HWND hwnd, HICON hIcon, LPCWSTR pszDescription) PURE;
++    STDMETHOD(SetThumbnailTooltip)(THIS, HWND hwnd, LPCWSTR pszTip);
++    STDMETHOD(SetThumbnailClip)(THIS, HWND hwnd, RECT *prcClip);
++
++    STDMETHOD(QueryContextMenu)(THIS_ HMENU,UINT,UINT,UINT,UINT) PURE;
++    STDMETHOD(InvokeCommand)(THIS_ LPCMINVOKECOMMANDINFO) PURE;
++    STDMETHOD(GetCommandString)(THIS_ UINT,UINT,PUINT,LPSTR,UINT) PURE;
++    STDMETHOD(HandleMenuMsg)(THIS_ UINT,WPARAM,LPARAM) PURE;
++  };
++  #undef INTERFACE
++#endif  /* __ITaskbarList3_INTERFACE_DEFINED__ */
++
++static ITaskbarList3 *g_pTL = NULL;
++static HWND           g_hwndConsole = NULL;
++static int            TB_status = 0;
++
++/* Use these macros to gets to the methods.
++ */
++#ifdef __cplusplus
++  #define COCREATEINSTANCE(cls,iunk,ctx,iid,pv)      CoCreateInstance (cls,iunk,gtx,iid,pv)
++  #define HRINIT(iface)                              iface->HrInit()
++  #define RELEASE(iface)                             iface->Release()
++  #define SETPROGRESSVALUE(iface,hwnd,permille,max)  iface->SetProgressValue (hwnd, permille, max)
++  #define SETPROGRESSSTATE(iface,hwnd,state)         iface->SetProgressState (hwnd, state)
++#else
++  #define COCREATEINSTANCE(cls,iunk,ctx,iid,pv)      CoCreateInstance ((REFCLSID)&(cls),iunk,ctx,(REFCLSID)&(iid),pv)
++  #define HRINIT(iface)                              ITaskbarList3_HrInit (iface)
++  #define RELEASE(iface)                             ITaskbarList3_Release (iface)
++  #define SETPROGRESSVALUE(iface,hwnd,permille,max)  ITaskbarList3_SetProgressValue (iface,hwnd,permille,max)
++  #define SETPROGRESSSTATE(iface,hwnd,state)         ITaskbarList3_SetProgressState (iface,hwnd,state)
++#endif
++
++
++void SetTBProgress (int permille)
++{
++  /* Already stopped; quit */
++  if (g_pTL == NULL && permille < 0)
++    return;
++
++  /* Prior attempt failed; quit */
++  if (TB_status != 0)
++    return;
++
++  /* Clamp to max 100% */
++  if (permille > 1000)
++    permille = 1000;
++
++  /* 1st attempt; init */
++  if (g_pTL == NULL) {
++    HRESULT hr;
++
++    g_hwndConsole = GetConsoleWindow();
++    if (!g_hwndConsole) {
++      TB_status = -1;
++      return;
++    }
++
++    hr = CoInitializeEx (NULL, COINIT_APARTMENTTHREADED);
++    if (!SUCCEEDED(hr)) {
++      CoUninitialize();
++      TB_status = -1;
++      return;
++    }
++    COCREATEINSTANCE (CLSID_TaskbarList, NULL, CLSCTX_INPROC_SERVER,
++                      IID_ITaskbarList3, (void**)&g_pTL);
++    if (g_pTL == NULL) {
++      CoUninitialize();
++      TB_status = -1;
++      return;
++    }
++
++    hr = HRINIT (g_pTL);
++    if (!SUCCEEDED(hr)) {
++      TB_status = -1;
++      RELEASE (g_pTL);
++      g_pTL = NULL;
++      CoUninitialize();
++      return;
++    }
++    TB_status = 0;
++  }
++
++  if (permille >= 0) {
++    SETPROGRESSVALUE (g_pTL, g_hwndConsole, permille, 1000);
++  }
++  else {
++    SETPROGRESSSTATE (g_pTL, g_hwndConsole, TBPF_NOPROGRESS);
++    RELEASE (g_pTL);
++    g_pTL = NULL;
++    CoUninitialize();
++  }
++}
++
+diff --git a/src/tbprogress.h b/src/tbprogress.h
+new file mode 100644
+index 0000000..a59ad6d
+--- /dev/null
++++ b/src/tbprogress.h
+@@ -0,0 +1,6 @@
++#ifndef tbprogress_h
++#define tbprogress_h
++
++extern void SetTBProgress(int permille); // 0 - 1000
++
++#endif
