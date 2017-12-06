@@ -75,11 +75,11 @@ goto :eof
   ) else (
     call :restore silent
   )
-  set "PATH=%MINGW_ROOT_PATH%\bin;%PATH%"
+  set "PATH=%MINGW_ROOT_PATH%bin;%PATH%"
   if not "%COB_LIBRARY_PATH%"=="" set "COB_LIBRARY_PATH=;%COB_LIBRARY_PATH%"
-  set "COB_LIBRARY_PATH=%MINGW_ROOT_PATH%\lib\gnucobol%COB_LIBRARY_PATH%"
-  set "COB_COPY_DIR=%MINGW_ROOT_PATH%\share\gnucobol\copy"
-  set "COB_CONFIG_DIR=%MINGW_ROOT_PATH%\share\gnucobol\config"
+  set "COB_LIBRARY_PATH=%MINGW_ROOT_PATH%lib\gnucobol%COB_LIBRARY_PATH%"
+  set "COB_COPY_DIR=%MINGW_ROOT_PATH%share\gnucobol\copy"
+  set "COB_CONFIG_DIR=%MINGW_ROOT_PATH%share\gnucobol\config"
   if %_ce_verbose% lss 0 goto :eof
   call :output environment set
 goto :eof
@@ -118,10 +118,15 @@ goto :eof
 goto :eof
 
 
+:setcleanroot
+  set "MINGW_ROOT_PATH=%~dp1"
+goto :eof
+
+
 :evaluate_opts
 set "_ce_myname=cobenv.bat"
 set "_ce_myextname=%0"
-set "MINGW_ROOT_PATH=%~dp0.."
+call :setcleanroot "%~dp0..\"
 set _ce_verbose=0
 
 if /i [%2]==[--verbose] (
