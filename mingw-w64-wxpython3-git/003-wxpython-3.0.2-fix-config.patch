@@ -1,0 +1,116 @@
+--- wxPython-src-3.0.2.0/wxPython/config.py.orig	2016-09-24 11:14:37.082854400 +0300
++++ wxPython-src-3.0.2.0/wxPython/config.py	2016-09-24 11:44:18.791290600 +0300
+@@ -23,6 +23,7 @@
+ import sys, os, glob, fnmatch, tempfile
+ import subprocess
+ import re
++from sysconfig import _POSIX_BUILD
+ 
+ EGGing = 'bdist_egg' in sys.argv or 'egg_info' in sys.argv
+ if not EGGing:
+@@ -311,10 +312,15 @@
+         flags += ' --version=%s.%s' % (VER_MAJOR, VER_MINOR)
+ 
+         searchpath = os.environ["PATH"]
+-        for p in searchpath.split(':'):
++        if sys.platform == 'win32':
++          psplit = ';'
++        else:
++          psplit = ':'
++        for p in searchpath.split(psplit):
+             fp = os.path.join(p, 'wx-config')
+             if os.path.exists(fp) and os.access(fp, os.X_OK):
+                 # success
++                fp = fp.replace("\\", "/")
+                 msg("Found wx-config: " + fp)
+                 msg("    Using flags: " + flags)
+                 WX_CONFIG = fp + flags
+@@ -330,7 +336,7 @@
+ 
+ 
+ def getWxConfigValue(flag):
+-    cmd = "%s --version=%s.%s  %s" % (WX_CONFIG, VER_MAJOR, VER_MINOR, flag)
++    cmd = "%s \"%s --version=%s.%s  %s\"" % ("sh -c", WX_CONFIG, VER_MAJOR, VER_MINOR, flag)
+     value = os.popen(cmd, 'r').read()[:-1]
+     return value
+ 
+@@ -506,21 +512,24 @@
+         distutils.command.install_headers.install_headers.finalize_options(self)
+ 
+     def run(self):
+-        if os.name == 'nt':
++        if os.name == 'nt' and not "MSYSTEM" in os.environ:
+             return
+         headers = self.distribution.headers
+         if not headers:
+             return
+ 
+         root = self.root
++        inst_prefix = WXPREFIX
++        if _POSIX_BUILD and "MSYSTEM" in os.environ:
++            inst_prefix = os.popen(' '.join(['cygpath', '--unix', inst_prefix])).readline().strip()
+         #print "WXPREFIX is %s, root is %s" % (WXPREFIX, root)
+         # hack for universal builds, which append i386/ppc
+         # to the root
+-        if root is None or WXPREFIX.startswith(os.path.dirname(root)):
++        if root is None or inst_prefix.startswith(os.path.dirname(root)):
+             root = ''
+         for header, location in headers:
+             install_dir = os.path.normpath(root +
+-                                           WXPREFIX +
++                                           inst_prefix +
+                                            '/include/wx-%d.%d/wx' % (VER_MAJOR, VER_MINOR) +
+                                            location)
+             self.mkpath(install_dir)
+@@ -597,7 +606,7 @@
+ def findLib(name, libdirs):
+     name = makeLibName(name)[0]
+     if os.name == 'posix' or COMPILER == 'mingw32':
+-        lflags = getWxConfigValue('--libs')
++        lflags = getWxConfigValue('--libs all')
+         lflags = lflags.split()
+         
+         # if wx-config --libs output does not start with -L, wx is
+@@ -658,9 +667,11 @@
+     newLFLAGS = []
+     for flag in lflags:
+         if flag[:2] == '-L':
+-            libdirs.append(flag[2:])
++            libdirs.append(os.popen(' '.join(['cygpath', '-am', flag[2:]])).readline().strip())
+         elif flag[:2] == '-l':
+             libs.append(flag[2:])
++        elif flag[:1] == '/':
++            libs.append(os.popen(' '.join(['cygpath', '-am', flag])).readline().strip())
+         else:
+             newLFLAGS.append(flag)
+     return removeDuplicates(newLFLAGS) 
+@@ -856,14 +867,16 @@
+         # gcc needs '.res' and '.rc' compiled to object files !!!
+         try:
+             #self.spawn(["windres", "-i", src, "-o", obj])
+-            self.spawn(["windres", "-i", src, "-o", obj] +
+-                       [arg for arg in cc_args if arg.startswith("-I")] )
++            windresflags = getWxConfigValue('--rescomp')
++            windresflags = windresflags.split()
++            self.spawn(['sh', '-c', ' '.join(windresflags + ["-i", src, "-o", obj] +
++                       [arg for arg in cc_args if arg.startswith("-I")]).replace("\\", "/")])
+         except DistutilsExecError, msg:
+             raise CompileError, msg
+     else: # for other files use the C-compiler
+         try:
+-            self.spawn(self.compiler_so + cc_args + [src, '-o', obj] +
+-                       extra_postargs)
++            self.spawn(['sh', '-c', ' '.join(self.compiler_so + cc_args + [src, '-o', obj] +
++                       extra_postargs).replace("\\", "/")])
+         except DistutilsExecError, msg:
+             raise CompileError, msg
+ 
+@@ -1039,7 +1052,7 @@
+     else:
+         cflags.append('-O3')
+ 
+-    lflags = getWxConfigValue('--libs')
++    lflags = getWxConfigValue('--libs all')
+     MONOLITHIC = (lflags.find("_xrc") == -1)
+     lflags = lflags.split()
+ 
