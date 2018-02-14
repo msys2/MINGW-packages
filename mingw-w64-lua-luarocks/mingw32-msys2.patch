@@ -1,0 +1,221 @@
+diff -rup luarocks-2.4.1/src/luarocks/cfg.lua luarocks-2.4.1-ricky/src/luarocks/cfg.lua
+--- luarocks-2.4.1/src/luarocks/cfg.lua	2016-10-07 03:01:56.000000000 +0800
++++ luarocks-2.4.1-ricky/src/luarocks/cfg.lua	2016-11-03 12:17:21.724973800 +0800
+@@ -123,6 +123,7 @@ elseif system and system:match("^MINGW")
+    cfg.platforms.windows = true
+    cfg.platforms.mingw32 = true
+    cfg.platforms.win32 = true
++   cfg.platforms.msys = true
+ elseif system == "Haiku" then
+    cfg.platforms.unix = true
+    cfg.platforms.haiku = true
+@@ -157,7 +158,13 @@ local sys_config_dir, home_config_dir
+ local sys_config_ok, home_config_ok = false, false
+ local extra_luarocks_module_dir
+ sys_config_dir = site_config.LUAROCKS_SYSCONFDIR or site_config.LUAROCKS_PREFIX
+-if cfg.platforms.windows then
++
++if cfg.platforms.mingw32 then
++   cfg.home = os.getenv("HOME") or ""
++   sys_config_dir = sys_config_dir or "/etc/luarocks"
++   home_config_dir = cfg.home.."/.luarocks"
++   cfg.home_tree = (os.getenv("USER") ~= "root") and cfg.home.."/.luarocks/"
++elseif cfg.platforms.windows then
+    cfg.home = os.getenv("APPDATA") or "c:"
+    sys_config_dir = sys_config_dir or "c:/luarocks"
+    home_config_dir = cfg.home.."/luarocks"
+@@ -426,13 +433,6 @@ if cfg.platforms.windows then
+    defaults.variables.CFLAGS = "/nologo /MD /O2"
+    defaults.variables.LIBFLAG = "/nologo /dll"
+ 
+-   local bins = { "SEVENZ", "CP", "FIND", "LS", "MD5SUM",
+-      "MKDIR", "MV", "PWD", "RMDIR", "TEST", "UNAME", "WGET" }
+-   for _, var in ipairs(bins) do
+-      if defaults.variables[var] then
+-         defaults.variables[var] = full_prefix.."\\tools\\"..defaults.variables[var]
+-      end
+-   end
+ 
+    defaults.external_deps_patterns = {
+       bin = { "?.exe", "?.bat" },
+@@ -462,12 +462,14 @@ end
+ if cfg.platforms.mingw32 then
+    defaults.obj_extension = "o"
+    defaults.cmake_generator = "MinGW Makefiles"
++   defaults.external_deps_dirs = { site_config.LUAROCKS_PREFIX }
+    defaults.variables.MAKE = "mingw32-make"
+-   defaults.variables.CC = "mingw32-gcc"
++   defaults.variables.CC = "gcc"
+    defaults.variables.RC = "windres"
+-   defaults.variables.LD = "mingw32-gcc"
++   defaults.variables.LD = "gcc"
+    defaults.variables.CFLAGS = "-O2"
+    defaults.variables.LIBFLAG = "-shared"
++   defaults.variables.LUALIB = "liblua"..cfg.lua_version..".dll.a"
+    defaults.makefile = "Makefile"
+    defaults.external_deps_patterns = {
+       bin = { "?.exe", "?.bat" },
+@@ -481,6 +483,15 @@ if cfg.platforms.mingw32 then
+       lib = { "cyg?.dll", "?.dll", "lib?.dll" },
+       include = { "?.h" }
+    }
++   defaults.export_path = "export PATH='%s'"
++   defaults.export_path_separator = ":"
++   defaults.export_lua_path = "export LUA_PATH='%s'"
++   defaults.export_lua_cpath = "export LUA_CPATH='%s'"
++   defaults.wrapper_suffix = ""
++   defaults.local_cache = cfg.home.."/.cache/luarocks"
++   if not defaults.variables.CFLAGS:match("-fPIC") then
++      defaults.variables.CFLAGS = defaults.variables.CFLAGS.." -fPIC"
++   end
+ 
+ end
+ 
+diff -rup luarocks-2.4.1/src/luarocks/fs/tools.lua luarocks-2.4.1-ricky/src/luarocks/fs/tools.lua
+--- luarocks-2.4.1/src/luarocks/fs/tools.lua	2016-10-07 03:01:56.000000000 +0800
++++ luarocks-2.4.1-ricky/src/luarocks/fs/tools.lua	2016-11-03 12:17:21.731971200 +0800
+@@ -10,6 +10,13 @@ local vars = cfg.variables
+ 
+ local dir_stack = {}
+ 
++local function get_windows_path(unix_path)
++   local pipe = io.popen("cygpath -w".." "..unix_path)
++   local current = pipe:read("*l")
++   pipe:close()
++   return current
++end
++
+ --- Obtain current directory.
+ -- Uses the module's internal directory stack.
+ -- @return string: the absolute pathname of the current directory.
+@@ -18,6 +25,7 @@ function tools.current_dir()
+    if not current then
+       local pipe = io.popen(fs.quiet_stderr(fs.Q(vars.PWD)))
+       current = pipe:read("*l")
++      current = get_windows_path(current)
+       pipe:close()
+       cfg.cache_pwd = current
+    end
+diff -rup luarocks-2.4.1/src/luarocks/fs/win32/tools.lua luarocks-2.4.1-ricky/src/luarocks/fs/win32/tools.lua
+--- luarocks-2.4.1/src/luarocks/fs/win32/tools.lua	2016-10-07 03:01:56.000000000 +0800
++++ luarocks-2.4.1-ricky/src/luarocks/fs/win32/tools.lua	2016-11-03 20:18:50.802128300 +0800
+@@ -44,7 +44,7 @@ end
+ -- @param directory string: pathname of directory to remove.
+ function tools.remove_dir_if_empty(directory)
+    assert(directory)
+-   fs.execute_quiet(fs.Q(vars.RMDIR), directory)
++   fs.execute_quiet(vars.RMDIR, directory)
+ end
+ 
+ --- Remove a directory if it is empty.
+@@ -53,19 +53,28 @@ end
+ -- @param directory string: pathname of directory to remove.
+ function tools.remove_dir_tree_if_empty(directory)
+    assert(directory)
+-   fs.execute_quiet(fs.Q(vars.RMDIR), directory)
++   fs.execute_quiet(vars.RMDIR, "-p", directory)
+ end
+ 
+ --- Copy a file.
+ -- @param src string: Pathname of source
+ -- @param dest string: Pathname of destination
++-- @param perm string or nil: Permissions for destination file,
+ -- @return boolean or (boolean, string): true on success, false on failure,
+ -- plus an error message.
+-function tools.copy(src, dest)
++function tools.copy(src, dest, perm)
+    assert(src and dest)
+-   if dest:match("[/\\]$") then dest = dest:sub(1, -2) end
+-   local ok = fs.execute(fs.Q(vars.CP), src, dest)
+-   if ok then
++   if fs.execute(vars.CP, src, dest) then
++      if perm then
++         if fs.is_dir(dest) then
++            dest = dir.path(dest, dir.base_name(src))
++         end
++         if fs.chmod(dest, perm) then
++            return true
++         else
++            return false, "Failed setting permissions of "..dest
++         end
++      end
+       return true
+    else
+       return false, "Failed copying "..src.." to "..dest
+@@ -79,7 +88,7 @@ end
+ -- plus an error message.
+ function tools.copy_contents(src, dest)
+    assert(src and dest)
+-   if fs.execute_quiet(fs.Q(vars.CP), "-dR", src.."\\*.*", dest) then
++   if fs.execute_quiet(vars.CP.." -pPR "..fs.Q(src).."/* "..fs.Q(dest)) then
+       return true
+    else
+       return false, "Failed copying "..src.." to "..dest
+@@ -129,7 +138,7 @@ end
+ -- additional arguments.
+ -- @return boolean: true on success, false on failure.
+ function tools.zip(zipfile, ...)
+-   return fs.execute_quiet(fs.Q(vars.SEVENZ).." -aoa a -tzip", zipfile, ...)
++   return fs.execute(vars.ZIP.." -r", zipfile, ...)
+ end
+ 
+ --- Uncompress files from a .zip archive.
+@@ -137,7 +146,7 @@ end
+ -- @return boolean: true on success, false on failure.
+ function tools.unzip(zipfile)
+    assert(zipfile)
+-   return fs.execute_quiet(fs.Q(vars.SEVENZ).." -aoa x", zipfile)
++   return fs.execute_quiet(vars.UNZIP, zipfile)
+ end
+ 
+ --- Test is pathname is a directory.
+@@ -166,13 +175,6 @@ local function strip_extension(filename)
+    return (filename:gsub("%.[^.]+$", "")) or filename
+ end
+ 
+---- Uncompress gzip file.
+--- @param archive string: Filename of archive.
+--- @return boolean : success status
+-local function gunzip(archive)
+-  return fs.execute_quiet(fs.Q(vars.SEVENZ).." -aoa x", archive)
+-end
+-
+ --- Unpack an archive.
+ -- Extract the contents of an archive, detecting its format by
+ -- filename extension.
+@@ -181,25 +183,19 @@ end
+ function tools.unpack_archive(archive)
+    assert(type(archive) == "string")
+ 
++   local pipe_to_tar = " | "..vars.TAR.." -xf -"
++
++   if not cfg.verbose then
++      pipe_to_tar = " 2> /dev/null"..fs.quiet(pipe_to_tar)
++   end
++
+    local ok
+-   local sevenzx = fs.Q(vars.SEVENZ).." -aoa x"
+-   if archive:match("%.tar%.gz$") then
+-      ok = gunzip(archive)
+-      if ok then
+-         ok = fs.execute_quiet(sevenzx, strip_extension(archive))
+-      end
+-   elseif archive:match("%.tgz$") then
+-      ok = gunzip(archive)
+-      if ok then
+-         ok = fs.execute_quiet(sevenzx, strip_extension(archive)..".tar")
+-      end
++   if archive:match("%.tar%.gz$") or archive:match("%.tgz$") then
++      ok = fs.execute_string("tar zxf "..fs.Q(archive))
+    elseif archive:match("%.tar%.bz2$") then
+-      ok = fs.execute_quiet(sevenzx, archive)
+-      if ok then
+-         ok = fs.execute_quiet(sevenzx, strip_extension(archive))
+-      end
++      ok = fs.execute_string(vars.TAR.." -jxf "..fs.Q(archive))
+    elseif archive:match("%.zip$") then
+-      ok = fs.execute_quiet(sevenzx, archive)
++      ok = fs.execute_quiet(vars.UNZIP, archive)
+    elseif archive:match("%.lua$") or archive:match("%.c$") then
+       -- Ignore .lua and .c files; they don't need to be extracted.
+       return true

@@ -1,0 +1,242 @@
+From ff4e9c3db5b42541494764ad921c80250733e84a Mon Sep 17 00:00:00 2001
+From: Ray Donnelly <mingw.android@gmail.com>
+Date: Mon, 23 Feb 2015 22:12:15 +0000
+Subject: [PATCH 3/7] options: Fix ordering problems with --color
+
+Moved around the logic of setting opts.color so that:
+
+1. If the user explicitly requests or disables it, then
+   that is respected.
+
+2. Automatic disabling of color doesn't happen for FIFOs
+   on Windows since mintty.exe console handles are pipes.
+
+3. The old location of the isatty check meant that if the
+   user specified --color, then group would get set to 0,
+   color would be TRUE and the output would not show any
+   filenames at all.
+
+4. Default color to TRUE if MSYSCON env. var = mintty.exe
+---
+ src/options.c | 145 +++++++++++++++++++++++++++++++++++-----------------------
+ src/options.h |  10 ++++
+ 2 files changed, 97 insertions(+), 58 deletions(-)
+
+diff --git a/src/options.c b/src/options.c
+index 83152c5..ca94126 100644
+--- a/src/options.c
++++ b/src/options.c
+@@ -146,8 +146,16 @@ void print_version(void) {
+ void init_options(void) {
+     memset(&opts, 0, sizeof(opts));
+     opts.casing = CASE_DEFAULT;
+-    opts.color = TRUE;
+-    opts.color_win_ansi = FALSE;
++    opts.color = COLOR_DEFAULT_TRUE;
++#ifdef _WIN32
++    const char* env_MSYSCON = getenv("MSYSCON");
++    opts.color_win_ansi =  ((getenv("ANSICON") || getenv("CMDER_ROOT")
++                          || (env_MSYSCON && !strcmp(env_MSYSCON, "mintty.exe"))))
++                           ? COLOR_DEFAULT_TRUE : COLOR_DEFAULT_FALSE;
++#else
++    opts.color_win_ansi = COLOR_DEFAULT_FALSE;
++#endif
++
+     opts.max_matches_per_file = 0;
+     opts.max_search_depth = DEFAULT_MAX_SEARCH_DEPTH;
+ #if defined(__APPLE__) || defined(__MACH__)
+@@ -241,11 +249,11 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
+         { "before", optional_argument, NULL, 'B' },
+         { "break", no_argument, &opts.print_break, 1 },
+         { "case-sensitive", no_argument, NULL, 's' },
+-        { "color", no_argument, &opts.color, 1 },
++        { "color", no_argument, &opts.color, COLOR_EXPLICIT_TRUE },
+         { "color-line-number", required_argument, NULL, 0 },
+         { "color-match", required_argument, NULL, 0 },
+         { "color-path", required_argument, NULL, 0 },
+-        { "color-win-ansi", no_argument, &opts.color_win_ansi, TRUE },
++        { "color-win-ansi", no_argument, &opts.color_win_ansi, COLOR_EXPLICIT_TRUE },
+         { "column", no_argument, &opts.column, 1 },
+         { "context", optional_argument, NULL, 'C' },
+         { "count", no_argument, NULL, 'c' },
+@@ -279,8 +287,8 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
+         { "noaffinity", no_argument, &opts.use_thread_affinity, 0 },
+         { "no-break", no_argument, &opts.print_break, 0 },
+         { "nobreak", no_argument, &opts.print_break, 0 },
+-        { "no-color", no_argument, &opts.color, 0 },
+-        { "nocolor", no_argument, &opts.color, 0 },
++        { "no-color", no_argument, &opts.color, COLOR_EXPLICIT_FALSE },
++        { "nocolor", no_argument, &opts.color, COLOR_EXPLICIT_FALSE },
+         { "no-filename", no_argument, NULL, 0 },
+         { "nofilename", no_argument, NULL, 0 },
+         { "no-follow", no_argument, &opts.follow_symlinks, 0 },
+@@ -356,22 +364,6 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
+         }
+     }
+ 
+-    /* If we're not outputting to a terminal. change output to:
+-        * turn off colors
+-        * print filenames on every line
+-     */
+-    if (!isatty(fileno(stdout)) && !is_cygpty(fileno(stdout))) {
+-        opts.color = 0;
+-        group = 0;
+-
+-        /* Don't search the file that stdout is redirected to */
+-        rv = fstat(fileno(stdout), &statbuf);
+-        if (rv != 0) {
+-            die("Error fstat()ing stdout");
+-        }
+-        opts.stdout_inode = statbuf.st_ino;
+-    }
+-
+     char *file_search_regex = NULL;
+     while ((ch = getopt_long(argc, argv, "A:aB:C:cDG:g:FfHhiLlm:nop:QRrSsvVtuUwW:z0", longopts, &opt_index)) != -1) {
+         switch (ch) {
+@@ -727,42 +719,6 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
+         opts.after = opts.context;
+     }
+ 
+-    if (opts.ackmate) {
+-        opts.color = 0;
+-        opts.print_break = 1;
+-        group = 1;
+-        opts.search_stream = 0;
+-    }
+-
+-    if (opts.vimgrep) {
+-        opts.color = 0;
+-        opts.print_break = 0;
+-        group = 1;
+-        opts.search_stream = 0;
+-        opts.print_path = PATH_PRINT_NOTHING;
+-    }
+-
+-    if (opts.parallel) {
+-        opts.search_stream = 0;
+-    }
+-
+-    if (!(opts.print_path != PATH_PRINT_DEFAULT || opts.print_break == 0)) {
+-        if (group) {
+-            opts.print_break = 1;
+-        } else {
+-            opts.print_path = PATH_PRINT_DEFAULT_EACH_LINE;
+-            opts.print_break = 0;
+-        }
+-    }
+-
+-    if (opts.search_stream) {
+-        opts.print_break = 0;
+-        opts.print_path = PATH_PRINT_NOTHING;
+-        if (opts.print_line_numbers != 2) {
+-            opts.print_line_numbers = 0;
+-        }
+-    }
+-
+     if (accepts_query && argc > 0) {
+         if (!needs_query && strlen(argv[0]) == 0) {
+             // use default query
+@@ -842,6 +798,79 @@ void parse_options(int argc, char **argv, char **base_paths[], char **paths[]) {
+     (*paths)[i] = NULL;
+     (*base_paths)[i] = NULL;
+ 
++    /* If we're not outputting to a terminal. change output to:
++        * turn off colors
++        * print filenames on every line
++     */
++    if (!isatty(fileno(stdout)) && !is_cygpty(fileno(stdout))) {
++        /* Don't search the file that stdout is redirected to */
++        rv = fstat(fileno(stdout), &statbuf);
++        if (rv != 0) {
++            die("Error fstat()ing stdout");
++        }
++        opts.stdout_inode = statbuf.st_ino;
++        /* Assume the user knows best */
++        if (opts.color != COLOR_EXPLICIT_TRUE) {
++         /* On Windows redirection to regular file *can* be detected via
++            statbuf.st_mode & S_IFREG (while statbuf.st_ino is always 0) */
++            if (statbuf.st_ino != 0
++             || statbuf.st_mode & S_IFREG
++             || statbuf.st_mode & S_IFIFO
++            ) {
++                opts.color = COLOR_DEFAULT_FALSE;
++                group = 0;
++            }
++        }
++    }
++
++    if (opts.ackmate) {
++        opts.color = COLOR_EMULATION_FALSE;
++        opts.print_break = 1;
++        group = 1;
++        opts.search_stream = 0;
++    }
++
++    if (opts.vimgrep) {
++        opts.color = COLOR_EMULATION_FALSE;
++        opts.print_break = 0;
++        group = 1;
++        opts.search_stream = 0;
++        opts.print_path = PATH_PRINT_NOTHING;
++    }
++
++    if (opts.parallel) {
++        opts.search_stream = 0;
++    }
++
++    if (!(opts.print_path != PATH_PRINT_DEFAULT || opts.print_break == 0)) {
++        if (group) {
++            opts.print_break = 1;
++        } else {
++            opts.print_path = PATH_PRINT_DEFAULT_EACH_LINE;
++            opts.print_break = 0;
++        }
++    }
++
++    if (opts.search_stream) {
++        opts.print_break = 0;
++        opts.print_path = PATH_PRINT_NOTHING;
++        if (opts.print_line_numbers != 2) {
++            opts.print_line_numbers = 0;
++        }
++    }
++
++    if (opts.color == COLOR_DEFAULT_FALSE || opts.color == COLOR_EXPLICIT_FALSE ||
++        opts.color == COLOR_EMULATION_FALSE) {
++        opts.color = COLOR_FALSE;
++    } else {
++        opts.color = COLOR_TRUE;
++    }
++    if (opts.color_win_ansi == COLOR_DEFAULT_FALSE) {
++        opts.color_win_ansi = COLOR_FALSE;
++    } else {
++        opts.color_win_ansi = COLOR_TRUE;
++    }
++
+ #ifdef _WIN32
+     windows_use_ansi(opts.color_win_ansi);
+ #endif
+diff --git a/src/options.h b/src/options.h
+index db3e896..990ce6a 100644
+--- a/src/options.h
++++ b/src/options.h
+@@ -26,6 +26,16 @@ enum path_print_behavior {
+     PATH_PRINT_NOTHING
+ };
+ 
++enum color_behaviour {
++    COLOR_FALSE = 0,
++    COLOR_TRUE = 1,
++    COLOR_DEFAULT_FALSE,
++    COLOR_DEFAULT_TRUE,
++    COLOR_EXPLICIT_FALSE,
++    COLOR_EXPLICIT_TRUE,
++    COLOR_EMULATION_FALSE,
++};
++
+ typedef struct {
+     int ackmate;
+     pcre *ackmate_dir_filter;
+-- 
+2.12.1
+

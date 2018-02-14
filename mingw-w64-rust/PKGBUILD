@@ -1,100 +1,111 @@
 # Maintainer: Alexey Pavlov <alexpux@gmail.com>
 # Contributor: Zion Nimchuk <zionnimchuk@gmail.com>
+# Contributor: Mateusz Mikuła <mati865@gmail.com
 
 _realname=rust
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=1.12.1
+pkgver=1.16.0
 pkgrel=1
 pkgdesc="Systems programming language focused on safety, speed and concurrency (mingw-w64)"
 arch=('any')
 url="https://www.rust-lang.org/"
 license=('MIT' 'Apache')
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs")
-makedepends=("git"
-             "bison"
+makedepends=("bison"
              "flex"
+             "git"
+             "${MINGW_PACKAGE_PREFIX}-cmake>=3.4.3"
              "${MINGW_PACKAGE_PREFIX}-curl"
-             "${MINGW_PACKAGE_PREFIX}-gcc"
+             "${MINGW_PACKAGE_PREFIX}-jemalloc"
              "${MINGW_PACKAGE_PREFIX}-libffi"
+             "${MINGW_PACKAGE_PREFIX}-libssh2"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
              "${MINGW_PACKAGE_PREFIX}-python2"
-             "${MINGW_PACKAGE_PREFIX}-cmake>=3.4.3")
+             "${MINGW_PACKAGE_PREFIX}-rust")
 options=('!makeflags' 'staticlibs')
 #install=rust.install
-source=(https://static.rust-lang.org/dist/${_realname}c-${pkgver}-src.tar.gz
+source=("https://static.rust-lang.org/dist/${_realname}c-${pkgver}-src.tar.gz"
+        "git+https://github.com/rust-lang/cargo.git#tag=0.17.0"
         "force-curl-rust.patch"
-        "force-curl-cargo.patch"
-        "git+https://github.com/rust-lang/cargo.git#tag=0.13.0")
-sha256sums=('97913ae4cb255618aaacd1a534b11f343634b040b32656250d09d8d9ec02d3dc'
-	    '1325ffce8d8ea2b95ed1be0911d5730e82e879ca526422a0458f5da990fb04c1'
-            '50c979b48ebc86dfddb295f2bea62e491ce868eb4308a0ae2324514c8d45e4fd'
-            'SKIP')
+        "fix-jemalloc.patch"
+        "0001-add-missing-libs.patch")
+sha256sums=('f966b31eb1cd9bd2df817c391a338eeb5b9253ae0a19bf8a11960c560f96e8b4'
+            'SKIP'
+            '83dee26bafd634eea2a1e630f757a3a38a419157560b4889437ec08d3e5fb9bb'
+            '7fabd72d1611ef1e46191c245d356d88909ea19062ea6999e1e1a049ebe8784d'
+            '919976d50c0538e5f240ed85063c3d91cf5720c97c20734ebc14caa74ee554d3')
 
 prepare() {
-  cd ${srcdir}/${_realname}c-${pkgver}
+  cd ${srcdir}/${_realname}c-${pkgver}-src
   patch -p1 -i "${srcdir}/force-curl-rust.patch"
-  
+  patch -p1 -i "${srcdir}/fix-jemalloc.patch"
+  patch -p1 -i "${srcdir}/0001-add-missing-libs.patch"
+
   cd ${srcdir}/cargo
+
+  # download cargo installer
   git submodule update --init --recursive
-  patch -p1 -i "${srcdir}/force-curl-cargo.patch"
+
   sed 's^share/doc^share/licenses^g' -i Makefile.in
 }
 
 build() {
   [[ -d "${srcdir}/build-${MINGW_CHOST}" ]] && rm -rf "${srcdir}/build-${MINGW_CHOST}"
-  mkdir -p "${srcdir}/build-${MINGW_CHOST}"
-  
-  cd "${srcdir}/build-${MINGW_CHOST}"
-  
+  mkdir -p "${srcdir}/build-${MINGW_CHOST}" && cd "${srcdir}/build-${MINGW_CHOST}"
+
   #We have to do the following because rust doesn't count x86_64-w64-mingw32 as a target triple
   OSTYPE="$CARCH-pc-windows-gnu"
-  
-  #We have to get rust to build it's own version of LLVM because LLVM version 8.3 (which is what Mingw64 has) doesn't work: https://github.com/rust-lang/rust/issues/36774
-  ../${_realname}c-${pkgver}/configure \
+
+  ../${_realname}c-${pkgver}-src/configure \
     --prefix=${MINGW_PREFIX} \
     --build=$OSTYPE \
     --host=$OSTYPE \
     --target=$OSTYPE \
-    --release-channel=stable
+    --release-channel=stable \
+    --enable-ninja \
+    --enable-local-rust \
+    --disable-codegen-tests \
+    --jemalloc-root=${MINGW_PREFIX}/lib \
+    --local-rust-root=$(cygpath -m ${MINGW_PREFIX})
+    # LLVM 4.0 is unsupported
+    #--llvm-root=${MINGW_PREFIX} \
 
-  make CFLAGS="$CFLAGS -fPIC -w"
+  export RUSTFLAGS="-lffi -lgcc_eh -lpthread"
+  python2 ../${_realname}c-${pkgver}-src/x.py build
+}
+
+check() {
+  cd "${srcdir}/build-${MINGW_CHOST}"
+  # it might fail on Windows
+  python2 ../${_realname}c-${pkgver}-src/x.py test || true
 }
 
 package() {
-  #install rust
   cd "${srcdir}/build-${MINGW_CHOST}"
-  
-  make DESTDIR=${pkgdir} install
 
-  cd "${pkgdir}${MINGW_PREFIX}/lib"
-  rm rustlib/{components,manifest-rustc,rust-installer-version}
-  ln -sf rustlib/$CARCH-pc-windows-gnu/lib/*.dll .
-  
+  make DESTDIR="$pkgdir" install
+
   rm -f ${pkgdir}${MINGW_PREFIX}/bin/libgcc*.dll
   rm -f ${pkgdir}${MINGW_PREFIX}/bin/libstd*.dll
-  
-  install -Dm644 ${srcdir}/${_realname}c-${pkgver}/LICENSE-APACHE "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE-APACHE"
-  install -Dm644 ${srcdir}/${_realname}c-${pkgver}/LICENSE-MIT "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE-MIT"
-  
-  #build cargo
-  #We need to build cargo here because it requires rustc, so we need to wait until rustc is packaged.
+
+  install -Dm644 ${srcdir}/${_realname}c-${pkgver}-src/LICENSE-APACHE "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE-APACHE"
+  install -Dm644 ${srcdir}/${_realname}c-${pkgver}-src/LICENSE-MIT "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE-MIT"
+
+  # build cargo
+  # We need to build cargo here because it requires rustc, so we need to wait until rustc is packaged.
   [[ -d "${srcdir}/build-cargo-${MINGW_CHOST}" ]] && rm -rf "${srcdir}/build-cargo-${MINGW_CHOST}"
-  mkdir -p "${srcdir}/build-cargo-${MINGW_CHOST}"
-  cd "${srcdir}/build-cargo-${MINGW_CHOST}"
-  
+  mkdir -p "${srcdir}/build-cargo-${MINGW_CHOST}" && cd "${srcdir}/build-cargo-${MINGW_CHOST}"
+
   OSTYPE="$CARCH-pc-windows-gnu"
-  
+
   ../cargo/configure --local-rust-root=${pkgdir}${MINGW_PREFIX} --prefix=${MINGW_PREFIX} --build=$OSTYPE --host=$OSTYPE --target=$OSTYPE --enable-optimize
   make
-  
-  #Install cargo
+
+  # Install cargo
   cd "${srcdir}/build-cargo-${MINGW_CHOST}"
 
   make DESTDIR="${pkgdir}" install
-
-  # Remove files that contains references to $srcdir or $pkgdir,
-  # or that conflicts with the rust package.
-  rm -f "${pkgdir}${MINGW_PREFIX}/lib/rustlib/"{install.log,manifest-cargo,uninstall.sh}
 
   install -d "$pkgdir${MINGW_PREFIX}/share/bash-completion/completions"
   mv "${pkgdir}${MINGW_PREFIX}/etc/bash_completion.d/cargo" \

@@ -1,0 +1,264 @@
+From e060fadca221c5966f2655d4d93f6d4cf9c2f2f5 Mon Sep 17 00:00:00 2001
+From: Daniel Espinosa <esodan@gmail.com>
+Date: Thu, 18 Jan 2018 15:21:20 -0600
+Subject: [PATCH] GomElement: Fixed attributes traversing
+
+Is now possible to traverse in all attributes of a GomElement.
+---
+ configure.ac                |  2 +-
+ gxml/GomElement.vala        | 44 +++++++++++++++++++++++++++---
+ meson.build                 |  2 +-
+ test/GHtmlDocumentTest.vala | 37 +++++++++++--------------
+ test/GomElementTest.vala    | 66 +++++++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 124 insertions(+), 27 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index 8b3651f..ff07b54 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -12,7 +12,7 @@
+ # Release Version for API related changes
+ m4_define([project_major_version], [0])
+ m4_define([project_minor_version], [16])
+-m4_define([project_micro_version], [0])
++m4_define([project_micro_version], [1])
+ m4_define([project_nano_version], [0])
+ 
+ # LT_VERSION for ABI related changes
+diff --git a/gxml/GomElement.vala b/gxml/GomElement.vala
+index 4f5811f..f01a6d6 100644
+--- a/gxml/GomElement.vala
++++ b/gxml/GomElement.vala
+@@ -365,13 +365,26 @@ public class GXml.GomElement : GomNode,
+    * key if a namespaced attribute.
+    */
+   public class Attributes : HashMap<string,string>, DomNamedNodeMap  {
++    private TreeMap<long,string> order = new TreeMap<long,string> ();
+     /**
+      * Holds {@link GomElement} refrence to attributes' parent element.
+      * Derived classes should not modify, but set at construction time.
+      */
+     protected GomElement _element;
+     public int length { get { return size; } }
+-    public DomNode? item (int index) { return null; }
++    public DomNode? item (int index) {
++      if (index < 0 || index >= size) return null;
++      long i = -1;
++      foreach (Map.Entry<long,string> e in order.ascending_entries) {
++        i++;
++        if (i == index) {
++          string name = e.value;
++          string v = get (name);
++          return new GomAttr (_element, name, v);
++        }
++      }
++      return null;
++    }
+ 
+     public Attributes (GomElement element) {
+       _element = element;
+@@ -420,6 +433,7 @@ public class GXml.GomElement : GomNode,
+       if (!(node is DomAttr))
+         throw new DomError.HIERARCHY_REQUEST_ERROR (_("Invalid node type. DomAttr was expected"));
+       set ((node as DomAttr).local_name, node.node_value);
++      order.set (size, (node as DomAttr).local_name);
+       return new GomAttr (_element, (node as DomAttr).local_name, node.node_value);
+     }
+     public DomNode? remove_named_item (string name) throws GLib.Error {
+@@ -428,6 +442,12 @@ public class GXml.GomElement : GomNode,
+       if (v == null) return null;
+       var n = new GomAttr (_element, name, v);
+       unset (name);
++      long i = index_of (name);
++      if (i < 0) {
++        warning (_("No index found for ttribute %s").printf (name));
++      } else {
++        order.unset (i);
++      }
+       return n;
+     }
+     // Introduced in DOM Level 2:
+@@ -438,7 +458,14 @@ public class GXml.GomElement : GomNode,
+       var v = get (nsp+":"+local_name);
+       if (v == null) return null;
+       var n = new GomAttr.namespace (_element, namespace_uri, nsp, local_name, v);
+-      unset (nsp+":"+local_name);
++      string k = nsp+":"+local_name;
++      unset (k);
++      long i = index_of (k);
++      if (i < 0) {
++        warning (_("No index found for ttribute %s").printf (k));
++      } else {
++        order.unset (i);
++      }
+       return n;
+     }
+     // Introduced in DOM Level 2:
+@@ -517,8 +544,9 @@ public class GXml.GomElement : GomNode,
+       if ((node as DomAttr).prefix != null
+           && (node as DomAttr).prefix != "")
+         p = (node as DomAttr).prefix + ":";
+-      set (p+(node as DomAttr).local_name,
+-          node.node_value);
++      string k = p+(node as DomAttr).local_name;
++      set (k, node.node_value);
++      order.set (size, k);
+ 
+       var attr = new GomAttr.namespace (_element,
+                                     (node as DomAttr).namespace_uri,
+@@ -527,6 +555,14 @@ public class GXml.GomElement : GomNode,
+                                     node.node_value);
+       return attr;
+     }
++    private long index_of (string name) {
++      long i = -1;
++      foreach (Map.Entry<long,string> e in order.ascending_entries) {
++        i++;
++        if (e.value == name) return i;
++      }
++      return -1;
++    }
+   }
+   public DomNamedNodeMap attributes { owned get { return (DomNamedNodeMap) _attributes; } }
+   public string? get_attribute (string name) {
+diff --git a/meson.build b/meson.build
+index 8ad35c0..d583b83 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1,4 +1,4 @@
+-project('gxml', [ 'vala', 'c'], version : '0.16.0')
++project('gxml', [ 'vala', 'c'], version : '0.16.1')
+ 
+ PROJECT_NAME = meson.project_name ()
+ API_VERSION = '0.16'
+diff --git a/test/GHtmlDocumentTest.vala b/test/GHtmlDocumentTest.vala
+index 81cd96c..0951302 100644
+--- a/test/GHtmlDocumentTest.vala
++++ b/test/GHtmlDocumentTest.vala
+@@ -123,8 +123,7 @@ class GHtmlDocumentTest : GXmlTest {
+ 		// 	}
+ 		// });
+ 		Test.add_func ("/gxml/GHtmlDocument/element-by-property", () => {
+-		 	try {
+-		 		var src = """
++		 	var src = """
+ <!--[if lt IE 7]>      <html dir="ltr" lang="fr" data-locale="fr" data-locale-long="fr_FR" data-locale-name="French (France)" data-locale-facebook="fr_FR" data-locale-twitter="fr" data-locale-google="fr" data-locale-linkedin="fr_FR" class="no-js lt-ie9 lt-ie8 lt-ie7 "> <![endif]-->
+ <!--[if IE 7]>         <html dir="ltr" lang="fr" data-locale="fr" data-locale-long="fr_FR" data-locale-name="French (France)" data-locale-facebook="fr_FR" data-locale-twitter="fr" data-locale-google="fr" data-locale-linkedin="fr_FR" class="no-js lt-ie9 lt-ie8"> <![endif]-->
+ <!--[if IE 8]>         <html dir="ltr" lang="fr" data-locale="fr" data-locale-long="fr_FR" data-locale-name="French (France)" data-locale-facebook="fr_FR" data-locale-twitter="fr" data-locale-google="fr" data-locale-linkedin="fr_FR" class="no-js lt-ie9"> <![endif]-->
+@@ -1508,25 +1507,21 @@ var _analytics_elem = document.getElementsByTagName('script')[0]; _analytics_ele
+ })();
+ // ]]></script></body></html>
+ 		""";
+-		 		DomDocument doc;
+-		 		doc = new GHtmlDocument.from_string (src);
+-		 		message ((doc as GDocument).to_string ());
+-		 		assert (doc.document_element != null);
+-		 		var c = doc.document_element.get_elements_by_property_value ("property", "article:published_time");
+-		 		foreach (DomNode n in c) {
+-		 			message (n.node_name);
+-		 		}
+-		 		var collection = doc.get_elements_by_property_value ("property", "article:published_time");
+-				message (collection.length.to_string ());
+-				assert (collection.length == 1);
+-		 		foreach (DomNode n in c) {
+-		 			message (n.node_name);
+-		 		}
+-		 	} catch (GLib.Error e){
+-		 		message ("ERROR: "+e.message);
+-		 		assert_not_reached ();
+-		 	}
++	 		DomDocument doc;
++	 		doc = new GHtmlDocument.from_string (src);
++	 		message ((doc as GDocument).to_string ());
++	 		assert (doc.document_element != null);
++	 		var c = doc.document_element.get_elements_by_property_value ("property", "article:published_time");
++	 		foreach (DomNode n in c) {
++	 			message (n.node_name);
++	 		}
++	 		var collection = doc.get_elements_by_property_value ("property", "article:published_time");
++			message (collection.length.to_string ());
++			assert (collection.length == 1);
++	 		foreach (DomNode n in c) {
++	 			message (n.node_name);
++	 		}
+ 		 });
+-		
++
+ 	}
+ }
+diff --git a/test/GomElementTest.vala b/test/GomElementTest.vala
+index fc19290..fb5372d 100644
+--- a/test/GomElementTest.vala
++++ b/test/GomElementTest.vala
+@@ -658,5 +658,71 @@ class GomElementTest : GXmlTest  {
+ 		    assert_not_reached ();
+ 		  }
+ 		});
++		Test.add_func ("/gxml/gom-element/ordered-attributes", () => {
++			try {
++				var e = new GomElement ();
++				e.set_attribute ("a1", "v1");
++				e.set_attribute ("a2", "v2");
++				e.set_attribute ("a3", "v3");
++				e.set_attribute ("a4", "v4");
++				assert (e.attributes.length == 4);
++				for (int i = 0; i < e.attributes.length; i++) {
++					assert (e.attributes.item (i) != null);
++				}
++				assert (e.attributes.item (0) != null);
++				assert (e.attributes.item (0).node_name == "a1");
++				assert (e.attributes.item (0).node_value == "v1");
++				assert (e.attributes.item (1) != null);
++				assert (e.attributes.item (1).node_name == "a2");
++				assert (e.attributes.item (1).node_value == "v2");
++				assert (e.attributes.item (2) != null);
++				assert (e.attributes.item (2).node_name == "a3");
++				assert (e.attributes.item (2).node_value == "v3");
++				assert (e.attributes.item (3) != null);
++				assert (e.attributes.item (3).node_name == "a4");
++				assert (e.attributes.item (3).node_value == "v4");
++				e.remove_attribute ("a3");
++				assert (e.attributes.length == 3);
++				assert (e.attributes.item (2) != null);
++				assert (e.attributes.item (2).node_name == "a4");
++				assert (e.attributes.item (2).node_value == "v4");
++				assert (e.attributes.item (3) == null);
++
++				var e2 = new GomElement ();
++				e2.set_attribute_ns ("http://www.w3.org/2000/xmlns", "xmlns:gxml", "http://wiki.gnome.org/GXml");
++				e2.set_attribute_ns ("http://wiki.gnome.org/GXml", "gxml:a1", "v1");
++				e2.set_attribute_ns ("http://wiki.gnome.org/GXml", "gxml:a2", "v2");
++				e2.set_attribute_ns ("http://wiki.gnome.org/GXml", "gxml:a3", "v3");
++				e2.set_attribute_ns ("http://wiki.gnome.org/GXml", "gxml:a4", "v4");
++				assert (e2.attributes.length == 5);
++				for (int i = 0; i < e2.attributes.length; i++) {
++					assert (e2.attributes.item (i) != null);
++				}
++				assert (e2.attributes.item (0) != null);
++				assert (e2.attributes.item (0).node_name == "xmlns:gxml");
++				assert (e2.attributes.item (0).node_value == "http://wiki.gnome.org/GXml");
++				assert (e2.attributes.item (1) != null);
++				assert (e2.attributes.item (1).node_name == "gxml:a1");
++				assert (e2.attributes.item (1).node_value == "v1");
++				assert (e2.attributes.item (2) != null);
++				assert (e2.attributes.item (2).node_name == "gxml:a2");
++				assert (e2.attributes.item (2).node_value == "v2");
++				assert (e2.attributes.item (3) != null);
++				assert (e2.attributes.item (3).node_name == "gxml:a3");
++				assert (e2.attributes.item (3).node_value == "v3");
++				assert (e2.attributes.item (4) != null);
++				assert (e2.attributes.item (4).node_name == "gxml:a4");
++				assert (e2.attributes.item (4).node_value == "v4");
++				e2.remove_attribute_ns ("http://wiki.gnome.org/GXml", "a3");
++				assert (e2.attributes.length == 4);
++				assert (e2.attributes.item (3) != null);
++				assert (e2.attributes.item (3).node_name == "gxml:a4");
++				assert (e2.attributes.item (3).node_value == "v4");
++				assert (e2.attributes.item (4) == null);
++			} catch (GLib.Error e) {
++		    GLib.message ("Error: "+e.message);
++		    assert_not_reached ();
++		  }
++		});
+ 	}
+ }

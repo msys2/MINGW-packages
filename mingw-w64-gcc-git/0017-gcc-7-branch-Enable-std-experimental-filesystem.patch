@@ -1,0 +1,572 @@
+From a662f8402e33aa4c8216d2e3ac5c3af98c4f905a Mon Sep 17 00:00:00 2001
+From: niXman <github.nixman@protonmail.com>
+Date: Wed, 10 May 2017 20:29:02 +0800
+Subject: [PATCH] Enable std::experimental::filesystem.
+
+---
+ libstdc++-v3/src/filesystem/dir.cc     | 24 +++++----
+ libstdc++-v3/src/filesystem/fs-posix.h | 49 ++++++++++++++++++
+ libstdc++-v3/src/filesystem/fs-win32.h | 64 ++++++++++++++++++++++++
+ libstdc++-v3/src/filesystem/ops.cc     | 91 ++++++++++++++++++++--------------
+ libstdc++-v3/src/filesystem/path.cc    |  2 +-
+ 5 files changed, 182 insertions(+), 48 deletions(-)
+ create mode 100644 libstdc++-v3/src/filesystem/fs-posix.h
+ create mode 100644 libstdc++-v3/src/filesystem/fs-win32.h
+
+diff --git a/libstdc++-v3/src/filesystem/dir.cc b/libstdc++-v3/src/filesystem/dir.cc
+index c8457bde102..ac4dda465d2 100644
+--- a/libstdc++-v3/src/filesystem/dir.cc
++++ b/libstdc++-v3/src/filesystem/dir.cc
+@@ -41,9 +41,10 @@
+ #endif
+ 
+ #ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+-# undef opendir
+-# define opendir _wopendir
+-#endif
++# include "fs-win32.h"
++#else
++# include "fs-posix.h"
++#endif // _GLIBCXX_FILESYSTEM_IS_WINDOWS
+ 
+ namespace fs = std::experimental::filesystem;
+ 
+@@ -51,7 +52,7 @@ struct fs::_Dir
+ {
+   _Dir() : dirp(nullptr) { }
+ 
+-  _Dir(DIR* dirp, const fs::path& path) : dirp(dirp), path(path) { }
++  _Dir(os_DIR_t* dirp, const fs::path& path) : dirp(dirp), path(path) { }
+ 
+   _Dir(_Dir&& d)
+   : dirp(std::exchange(d.dirp, nullptr)), path(std::move(d.path)),
+@@ -60,11 +61,11 @@ struct fs::_Dir
+ 
+   _Dir& operator=(_Dir&&) = delete;
+ 
+-  ~_Dir() { if (dirp) ::closedir(dirp); }
++  ~_Dir() { if (dirp) ::os_closedir(dirp); }
+ 
+   bool advance(std::error_code*, directory_options = directory_options::none);
+ 
+-  DIR*			dirp;
++  os_DIR_t*			dirp;
+   fs::path		path;
+   directory_entry	entry;
+   file_type		type = file_type::none;
+@@ -87,7 +88,7 @@ namespace
+     if (ec)
+       ec->clear();
+ 
+-    if (DIR* dirp = ::opendir(p.c_str()))
++    if (os_DIR_t* dirp = ::os_opendir(p.c_str()))
+       return {dirp, p};
+ 
+     const int err = errno;
+@@ -105,7 +106,7 @@ namespace
+   }
+ 
+   inline fs::file_type
+-  get_file_type(const ::dirent& d __attribute__((__unused__)))
++  get_file_type(const ::os_dirent_t& d __attribute__((__unused__)))
+   {
+ #ifdef _GLIBCXX_HAVE_STRUCT_DIRENT_D_TYPE
+     switch (d.d_type)
+@@ -145,13 +146,14 @@ fs::_Dir::advance(error_code* ec, directory_options options)
+     ec->clear();
+ 
+   int err = std::exchange(errno, 0);
+-  const auto entp = readdir(dirp);
++  const auto entp = ::os_readdir(dirp);
+   std::swap(errno, err);
+ 
+   if (entp)
+     {
+       // skip past dot and dot-dot
+-      if (!strcmp(entp->d_name, ".") || !strcmp(entp->d_name, ".."))
++      if (!std::char_traits<path::value_type>::compare(entp->d_name, _WS("."), 1) ||
++	    !std::char_traits<path::value_type>::compare(entp->d_name, _WS(".."), 2))
+ 	return advance(ec, options);
+       entry = fs::directory_entry{path / entp->d_name};
+       type = get_file_type(*entp);
+@@ -239,7 +241,7 @@ recursive_directory_iterator(const path& p, directory_options options,
+                              error_code* ec)
+ : _M_options(options), _M_pending(true)
+ {
+-  if (DIR* dirp = ::opendir(p.c_str()))
++  if (os_DIR_t* dirp = ::os_opendir(p.c_str()))
+     {
+       auto sp = std::make_shared<_Dir_stack>();
+       sp->push(_Dir{ dirp, p });
+diff --git a/libstdc++-v3/src/filesystem/fs-posix.h b/libstdc++-v3/src/filesystem/fs-posix.h
+new file mode 100644
+index 00000000000..08768c59c97
+--- /dev/null
++++ b/libstdc++-v3/src/filesystem/fs-posix.h
+@@ -0,0 +1,49 @@
++
++// Copyright (C) 2014-2017 Free Software Foundation, Inc.
++//
++// This file is part of the GNU ISO C++ Library.  This library is free
++// software; you can redistribute it and/or modify it under the
++// terms of the GNU General Public License as published by the
++// Free Software Foundation; either version 3, or (at your option)
++// any later version.
++
++// This library is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License for more details.
++
++// Under Section 7 of GPL version 3, you are granted additional
++// permissions described in the GCC Runtime Library Exception, version
++// 3.1, as published by the Free Software Foundation.
++
++// You should have received a copy of the GNU General Public License and
++// a copy of the GCC Runtime Library Exception along with this program;
++// see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
++// <http://www.gnu.org/licenses/>.
++
++#ifndef _GLIBCXX_EXPERIMENTAL_FS_POSIX_H
++#define _GLIBCXX_EXPERIMENTAL_FS_POSIX_H 1
++
++#define os_DIR_t DIR
++#define os_dirent_t dirent
++#define os_open open
++#define os_opendir opendir
++#define os_closedir closedir
++#define os_readdir readdir
++#define os_stat stat
++#define os_stat_t stat
++#define os_chmod chmod
++#define os_mkdir mkdir
++#define os_getcwd getcwd
++#define os_chdir chdir
++#define os_utimbuf_t utimbuf
++#define os_utime utime
++#define os_remove remove
++#define os_rename rename
++#define os_truncate truncate
++
++#define os_utime utime
++
++#define _WS(x) x
++
++#endif // _GLIBCXX_EXPERIMENTAL_FS_POSIX_H
+diff --git a/libstdc++-v3/src/filesystem/fs-win32.h b/libstdc++-v3/src/filesystem/fs-win32.h
+new file mode 100644
+index 00000000000..23053343fc0
+--- /dev/null
++++ b/libstdc++-v3/src/filesystem/fs-win32.h
+@@ -0,0 +1,64 @@
++
++// Copyright (C) 2014-2017 Free Software Foundation, Inc.
++//
++// This file is part of the GNU ISO C++ Library.  This library is free
++// software; you can redistribute it and/or modify it under the
++// terms of the GNU General Public License as published by the
++// Free Software Foundation; either version 3, or (at your option)
++// any later version.
++
++// This library is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License for more details.
++
++// Under Section 7 of GPL version 3, you are granted additional
++// permissions described in the GCC Runtime Library Exception, version
++// 3.1, as published by the Free Software Foundation.
++
++// You should have received a copy of the GNU General Public License and
++// a copy of the GCC Runtime Library Exception along with this program;
++// see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
++// <http://www.gnu.org/licenses/>.
++
++#ifndef _GLIBCXX_EXPERIMENTAL_FS_WIN32_H
++#define _GLIBCXX_EXPERIMENTAL_FS_WIN32_H 1
++
++#define os_DIR_t _WDIR
++#define os_dirent_t _wdirent
++#define os_open _wopen
++#define os_opendir _wopendir
++#define os_closedir _wclosedir
++#define os_readdir _wreaddir
++#define os_stat _wstat
++#define os_stat_t _stat
++#define os_chmod _wchmod
++#define os_mkdir _wmkdir
++#define os_getcwd _wgetcwd
++#define os_chdir _wchdir
++#define os_utimbuf_t _utimbuf
++#define os_utime _wutime
++#define os_remove _wremove
++#define os_rename _wrename
++
++#include <unistd.h>
++#include <fcntl.h>
++#include <errno.h>
++
++inline int _wtruncate(const wchar_t *fname, _off64_t size) {
++  int fd = ::os_open(fname, _O_BINARY|_O_RDWR);
++  if (fd == -1) return fd;
++  int ret = ::ftruncate64(fd, size), err=0;
++  _get_errno(&err);
++  _close(fd);
++  _set_errno(err);
++  return ret;
++}
++
++#define os_truncate _wtruncate
++
++#define os_utime _wutime
++
++#define _WS(x) L##x
++
++#endif // _GLIBCXX_EXPERIMENTAL_FS_WIN32_H
+diff --git a/libstdc++-v3/src/filesystem/ops.cc b/libstdc++-v3/src/filesystem/ops.cc
+index 8de3511346e..dfccb8f9b50 100644
+--- a/libstdc++-v3/src/filesystem/ops.cc
++++ b/libstdc++-v3/src/filesystem/ops.cc
+@@ -56,11 +56,10 @@
+ #endif
+ 
+ #ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+-# undef utime
+-# define utime _wutime
+-# undef chmod
+-# define chmod _wchmod
+-#endif
++# include "fs-win32.h"
++#else
++# include "fs-posix.h"
++#endif // _GLIBCXX_FILESYSTEM_IS_WINDOWS
+ 
+ namespace fs = std::experimental::filesystem;
+ 
+@@ -88,11 +87,7 @@ fs::absolute(const path& p, const path& base)
+ 
+ namespace
+ {
+-#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+-  inline bool is_dot(wchar_t c) { return c == L'.'; }
+-#else
+-  inline bool is_dot(char c) { return c == '.'; }
+-#endif
++  inline bool is_dot(fs::path::value_type c) { return c == _WS('.'); }
+ 
+   inline bool is_dot(const fs::path& path)
+   {
+@@ -111,7 +106,7 @@ namespace
+     void operator()(void* p) const { ::free(p); }
+   };
+ 
+-  using char_ptr = std::unique_ptr<char[], free_as_in_malloc>;
++  using char_ptr = std::unique_ptr<fs::path::value_type[], free_as_in_malloc>;
+ }
+ 
+ fs::path
+@@ -250,7 +245,7 @@ namespace
+ #ifdef _GLIBCXX_HAVE_SYS_STAT_H
+ namespace
+ {
+-  typedef struct ::stat stat_type;
++  typedef struct ::os_stat_t stat_type;
+ 
+   inline fs::file_type
+   make_file_type(const stat_type& st) noexcept
+@@ -267,10 +262,12 @@ namespace
+       return file_type::block;
+     else if (S_ISFIFO(st.st_mode))
+       return file_type::fifo;
++#ifndef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+     else if (S_ISLNK(st.st_mode))
+       return file_type::symlink;
+     else if (S_ISSOCK(st.st_mode))
+       return file_type::socket;
++#endif // _GLIBCXX_FILESYSTEM_IS_WINDOWS
+ #endif
+     return file_type::unknown;
+ 
+@@ -323,7 +320,7 @@ namespace
+ 
+     if (to_st == nullptr)
+       {
+-	if (::stat(to.c_str(), &st1))
++	if (::os_stat(to.c_str(), &st1))
+ 	  {
+ 	    int err = errno;
+ 	    if (!is_not_found_errno(err))
+@@ -345,7 +342,7 @@ namespace
+ 
+     if (from_st == nullptr)
+       {
+-	if (::stat(from.c_str(), &st2))
++	if (::os_stat(from.c_str(), &st2))
+ 	  {
+ 	    ec.assign(errno, std::generic_category());
+ 	    return false;
+@@ -410,7 +407,7 @@ namespace
+       int fd;
+     };
+ 
+-    CloseFD in = { ::open(from.c_str(), O_RDONLY) };
++    CloseFD in = { ::os_open(from.c_str(), O_RDONLY) };
+     if (in.fd == -1)
+       {
+ 	ec.assign(errno, std::generic_category());
+@@ -421,7 +418,7 @@ namespace
+       oflag |= O_TRUNC;
+     else
+       oflag |= O_EXCL;
+-    CloseFD out = { ::open(to.c_str(), oflag, S_IWUSR) };
++    CloseFD out = { ::os_open(to.c_str(), oflag, S_IWUSR) };
+     if (out.fd == -1)
+       {
+ 	if (errno == EEXIST && is_set(option, opts::skip_existing))
+@@ -436,7 +433,7 @@ namespace
+ #elif defined _GLIBCXX_USE_FCHMODAT
+     if (::fchmodat(AT_FDCWD, to.c_str(), from_st->st_mode, 0))
+ #else
+-    if (::chmod(to.c_str(), from_st->st_mode))
++    if (::os_chmod(to.c_str(), from_st->st_mode))
+ #endif
+       {
+ 	ec.assign(errno, std::generic_category());
+@@ -522,16 +519,24 @@ fs::copy(const path& from, const path& to, copy_options options,
+   stat_type from_st, to_st;
+   // _GLIBCXX_RESOLVE_LIB_DEFECTS
+   // 2681. filesystem::copy() cannot copy symlinks
++#ifndef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+   if (use_lstat || copy_symlinks
+       ? ::lstat(from.c_str(), &from_st)
+       : ::stat(from.c_str(), &from_st))
++#else
++  if (::os_stat(from.c_str(), &from_st))
++#endif // _GLIBCXX_FILESYSTEM_IS_WINDOWS
+     {
+       ec.assign(errno, std::generic_category());
+       return;
+     }
++#ifndef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+   if (use_lstat
+       ? ::lstat(to.c_str(), &to_st)
+       : ::stat(to.c_str(), &to_st))
++#else
++  if (::os_stat(to.c_str(), &to_st))
++#endif // _GLIBCXX_FILESYSTEM_IS_WINDOWS
+     {
+       if (!is_not_found_errno(errno))
+ 	{
+@@ -716,8 +721,12 @@ namespace
+   {
+     bool created = false;
+ #ifdef _GLIBCXX_HAVE_SYS_STAT_H
++#ifndef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+     ::mode_t mode = static_cast<std::underlying_type_t<fs::perms>>(perm);
+-    if (::mkdir(p.c_str(), mode))
++    if (::os_mkdir(p.c_str(), mode))
++#else
++    if (::os_mkdir(p.c_str()))
++#endif // _GLIBCXX_FILESYSTEM_IS_WINDOWS
+       {
+ 	const int err = errno;
+ 	if (err != EEXIST || !is_directory(p))
+@@ -772,7 +781,7 @@ fs::create_directory(const path& p, const path& attributes,
+ {
+ #ifdef _GLIBCXX_HAVE_SYS_STAT_H
+   stat_type st;
+-  if (::stat(attributes.c_str(), &st))
++  if (::os_stat(attributes.c_str(), &st))
+     {
+       ec.assign(errno, std::generic_category());
+       return false;
+@@ -821,7 +830,7 @@ void
+ fs::create_hard_link(const path& to, const path& new_hard_link,
+ 		     error_code& ec) noexcept
+ {
+-#ifdef _GLIBCXX_HAVE_UNISTD_H
++#if !defined(_GLIBCXX_FILESYSTEM_IS_WINDOWS) && defined(_GLIBCXX_HAVE_UNISTD_H)
+   if (::link(to.c_str(), new_hard_link.c_str()))
+     ec.assign(errno, std::generic_category());
+   else
+@@ -845,7 +854,7 @@ void
+ fs::create_symlink(const path& to, const path& new_symlink,
+ 		   error_code& ec) noexcept
+ {
+-#ifdef _GLIBCXX_HAVE_UNISTD_H
++#if !defined(_GLIBCXX_FILESYSTEM_IS_WINDOWS) && defined(_GLIBCXX_HAVE_UNISTD_H)
+   if (::symlink(to.c_str(), new_symlink.c_str()))
+     ec.assign(errno, std::generic_category());
+   else
+@@ -871,8 +880,8 @@ fs::current_path(error_code& ec)
+ {
+   path p;
+ #ifdef _GLIBCXX_HAVE_UNISTD_H
+-#ifdef __GLIBC__
+-  if (char_ptr cwd = char_ptr{::getcwd(nullptr, 0)})
++#if defined(__GLIBC__) || defined(_GLIBCXX_FILESYSTEM_IS_WINDOWS)
++  if (char_ptr cwd = char_ptr{::os_getcwd(nullptr, 0)})
+     {
+       p.assign(cwd.get());
+       ec.clear();
+@@ -930,7 +939,7 @@ void
+ fs::current_path(const path& p, error_code& ec) noexcept
+ {
+ #ifdef _GLIBCXX_HAVE_UNISTD_H
+-  if (::chdir(p.c_str()))
++  if (::os_chdir(p.c_str()))
+     ec.assign(errno, std::generic_category());
+   else
+     ec.clear();
+@@ -957,14 +966,14 @@ fs::equivalent(const path& p1, const path& p2, error_code& ec) noexcept
+   int err = 0;
+   file_status s1, s2;
+   stat_type st1, st2;
+-  if (::stat(p1.c_str(), &st1) == 0)
++  if (::os_stat(p1.c_str(), &st1) == 0)
+     s1 = make_file_status(st1);
+   else if (is_not_found_errno(errno))
+     s1.type(file_type::not_found);
+   else
+     err = errno;
+ 
+-  if (::stat(p2.c_str(), &st2) == 0)
++  if (::os_stat(p2.c_str(), &st2) == 0)
+     s2 = make_file_status(st2);
+   else if (is_not_found_errno(errno))
+     s2.type(file_type::not_found);
+@@ -1014,7 +1023,7 @@ namespace
+     {
+ #ifdef _GLIBCXX_HAVE_SYS_STAT_H
+       stat_type st;
+-      if (::stat(p.c_str(), &st))
++      if (::os_stat(p.c_str(), &st))
+ 	{
+ 	  ec.assign(errno, std::generic_category());
+ 	  return deflt;
+@@ -1064,8 +1073,14 @@ fs::hard_link_count(const path& p)
+ std::uintmax_t
+ fs::hard_link_count(const path& p, error_code& ec) noexcept
+ {
++#ifndef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+   return do_stat(p, ec, std::mem_fn(&stat::st_nlink),
+ 		 static_cast<uintmax_t>(-1));
++#else
++  ec = std::make_error_code(std::errc::not_supported);
++
++  return static_cast<uintmax_t>(-1);
++#endif // _GLIBCXX_FILESYSTEM_IS_WINDOWS
+ }
+ 
+ bool
+@@ -1140,11 +1155,11 @@ fs::last_write_time(const path& p __attribute__((__unused__)),
+   else
+     ec.clear();
+ #elif _GLIBCXX_HAVE_UTIME_H
+-  ::utimbuf times;
++  ::os_utimbuf_t times;
+   times.modtime = s.count();
+   times.actime = do_stat(p, ec, [](const auto& st) { return st.st_atime; },
+ 			 times.modtime);
+-  if (::utime(p.c_str(), &times))
++  if (::os_utime(p.c_str(), &times))
+     ec.assign(errno, std::generic_category());
+   else
+     ec.clear();
+@@ -1197,7 +1212,7 @@ fs::permissions(const path& p, perms prms, error_code& ec) noexcept
+ #else
+   if (nofollow && is_symlink(st))
+     ec = std::make_error_code(std::errc::operation_not_supported);
+-  else if (::chmod(p.c_str(), static_cast<mode_t>(prms)))
++  else if (::os_chmod(p.c_str(), static_cast<mode_t>(prms)))
+     err = errno;
+ #endif
+ 
+@@ -1220,7 +1235,7 @@ fs::read_symlink(const path& p)
+ fs::path fs::read_symlink(const path& p, error_code& ec)
+ {
+   path result;
+-#ifdef _GLIBCXX_HAVE_SYS_STAT_H
++#if !defined(_GLIBCXX_FILESYSTEM_IS_WINDOWS) && defined(_GLIBCXX_HAVE_SYS_STAT_H)
+   stat_type st;
+   if (::lstat(p.c_str(), &st))
+     {
+@@ -1274,7 +1289,7 @@ fs::remove(const path& p)
+ bool
+ fs::remove(const path& p, error_code& ec) noexcept
+ {
+-  if (::remove(p.c_str()) == 0)
++  if (::os_remove(p.c_str()) == 0)
+     {
+       ec.clear();
+       return true;
+@@ -1336,7 +1351,7 @@ fs::rename(const path& from, const path& to)
+ void
+ fs::rename(const path& from, const path& to, error_code& ec) noexcept
+ {
+-  if (::rename(from.c_str(), to.c_str()))
++  if (::os_rename(from.c_str(), to.c_str()))
+     ec.assign(errno, std::generic_category());
+   else
+     ec.clear();
+@@ -1357,7 +1372,7 @@ fs::resize_file(const path& p, uintmax_t size, error_code& ec) noexcept
+ #ifdef _GLIBCXX_HAVE_UNISTD_H
+   if (size > static_cast<uintmax_t>(std::numeric_limits<off_t>::max()))
+     ec.assign(EINVAL, std::generic_category());
+-  else if (::truncate(p.c_str(), size))
++  else if (::os_truncate(p.c_str(), size))
+     ec.assign(errno, std::generic_category());
+   else
+     ec.clear();
+@@ -1410,7 +1425,7 @@ fs::status(const fs::path& p, error_code& ec) noexcept
+ {
+   file_status status;
+   stat_type st;
+-  if (::stat(p.c_str(), &st))
++  if (::os_stat(p.c_str(), &st))
+     {
+       int err = errno;
+       ec.assign(err, std::generic_category());
+@@ -1428,11 +1443,13 @@ fs::status(const fs::path& p, error_code& ec) noexcept
+     }
+   return status;
+ }
++#endif // _GLIBCXX_FILESYSTEM_IS_WINDOWS
+ 
+ fs::file_status
+ fs::symlink_status(const fs::path& p, std::error_code& ec) noexcept
+ {
+   file_status status;
++#if !defined(_GLIBCXX_FILESYSTEM_IS_WINDOWS) && defined(_GLIBCXX_HAVE_SYS_STAT_H)
+   stat_type st;
+   if (::lstat(p.c_str(), &st))
+     {
+@@ -1446,9 +1463,11 @@ fs::symlink_status(const fs::path& p, std::error_code& ec) noexcept
+       status = make_file_status(st);
+       ec.clear();
+     }
++#else
++  ec = std::make_error_code(std::errc::not_supported);
++#endif
+   return status;
+ }
+-#endif
+ 
+ fs::file_status
+ fs::status(const fs::path& p)
+diff --git a/libstdc++-v3/src/filesystem/path.cc b/libstdc++-v3/src/filesystem/path.cc
+index c66d52bf4b0..c0ecb1e37d3 100644
+--- a/libstdc++-v3/src/filesystem/path.cc
++++ b/libstdc++-v3/src/filesystem/path.cc
+@@ -296,7 +296,7 @@ path::has_filename() const
+ std::pair<const path::string_type*, std::size_t>
+ path::_M_find_extension() const
+ {
+-  const std::string* s = nullptr;
++  const path::string_type* s = nullptr;
+ 
+   if (_M_type != _Type::_Multi)
+     s = &_M_pathname;
+-- 
+2.15.0
+

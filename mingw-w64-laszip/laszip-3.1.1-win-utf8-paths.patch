@@ -1,0 +1,203 @@
+From 22d8fb9ad9dedbde4cebf2d556f1081a5fb0543f Mon Sep 17 00:00:00 2001
+From: Madrich <rsteffen@messbild.de>
+Date: Sat, 14 Oct 2017 16:54:32 +0200
+Subject: [PATCH 1/2] Add utf8 supported filepath for windows
+
+---
+ src/lasindex.cpp   | 96 +++++++++++++++++++++++++++++++++++++++++++++++++++---
+ src/lasindex.hpp   |  1 +
+ src/laszip_dll.cpp |  4 +--
+ 3 files changed, 95 insertions(+), 6 deletions(-)
+
+diff --git a/src/lasindex.cpp b/src/lasindex.cpp
+index a595f1b..0c38a73 100644
+--- a/src/lasindex.cpp
++++ b/src/lasindex.cpp
+@@ -290,6 +290,94 @@ BOOL LASindex::has_intervals()
+   return FALSE;
+ }
+ 
++
++std::wstring ToUtf16(const char* utf8) // convert a utf8 null terminated string to utf16 wstring
++{
++	std::vector<unsigned long> unicode;
++	size_t i = 0;
++	size_t len = strlen(utf8);
++	while (i < len)
++	{
++		unsigned long uni;
++		size_t todo;
++		bool error = false;
++		unsigned char ch = utf8[i++];
++		if (ch <= 0x7F)
++		{
++			uni = ch;
++			todo = 0;
++		}
++		else if (ch <= 0xBF)
++		{
++			throw std::logic_error("not a UTF-8 string");
++		}
++		else if (ch <= 0xDF)
++		{
++			uni = ch & 0x1F;
++			todo = 1;
++		}
++		else if (ch <= 0xEF)
++		{
++			uni = ch & 0x0F;
++			todo = 2;
++		}
++		else if (ch <= 0xF7)
++		{
++			uni = ch & 0x07;
++			todo = 3;
++		}
++		else
++		{
++			throw std::logic_error("not a UTF-8 string");
++		}
++		for (size_t j = 0; j < todo; ++j)
++		{
++			if (i == len)
++				throw std::logic_error("not a UTF-8 string");
++			unsigned char ch = utf8[i++];
++			if (ch < 0x80 || ch > 0xBF)
++				throw std::logic_error("not a UTF-8 string");
++			uni <<= 6;
++			uni += ch & 0x3F;
++		}
++		if (uni >= 0xD800 && uni <= 0xDFFF)
++			throw std::logic_error("not a UTF-8 string");
++		if (uni > 0x10FFFF)
++			throw std::logic_error("not a UTF-8 string");
++		unicode.push_back(uni);
++	}
++	std::wstring utf16;
++	for (size_t i = 0; i < unicode.size(); ++i)
++	{
++		unsigned long uni = unicode[i];
++		if (uni <= 0xFFFF)
++		{
++			utf16 += (wchar_t)uni;
++		}
++		else
++		{
++			uni -= 0x10000;
++			utf16 += (wchar_t)((uni >> 10) + 0xD800);
++			utf16 += (wchar_t)((uni & 0x3FF) + 0xDC00);
++		}
++	}
++	return utf16;
++}
++
++
++FILE* LASindex::openFile(const char* file_name, const char* mode)
++{
++	// because fopen does not handle unicode UTF8 in windows, we use here wfopen
++	#ifdef _WIN32
++	std::wstring wfileName = ToUtf16(file_name);
++	std::wstring wmode = ToUtf16(mode);
++	return _wfopen(wfileName.c_str(), wmode.c_str());
++	#else
++	return fopen(file_name, mode);
++	#endif
++}
++
++
+ BOOL LASindex::read(FILE* file)
+ {
+   if (file == 0) return FALSE;
+@@ -342,7 +430,7 @@ BOOL LASindex::read(const char* file_name)
+     name[strlen(name)-2] = 'a';
+     name[strlen(name)-1] = 'x';
+   }
+-  FILE* file = fopen(name, "rb");
++  FILE* file = LASindex::openFile(name, "rb");
+   if (file == 0)
+   {
+     free(name);
+@@ -379,7 +467,7 @@ BOOL LASindex::append(const char* file_name) const
+ 
+   lasreader->close();
+ 
+-  FILE* file = fopen(file_name, "rb");
++  FILE* file = LASindex::openFile(file_name, "rb");
+   ByteStreamIn* bytestreamin = 0;
+   if (IS_LITTLE_ENDIAN())
+     bytestreamin = new ByteStreamInFileLE(file);
+@@ -443,7 +531,7 @@ BOOL LASindex::append(const char* file_name) const
+   fclose(file);
+ 
+   ByteStreamOut* bytestreamout;
+-  file = fopen(file_name, "rb+");
++  file = LASindex::openFile(file_name, "rb+");
+   if (IS_LITTLE_ENDIAN())
+     bytestreamout = new ByteStreamOutFileLE(file);
+   else
+@@ -517,7 +605,7 @@ BOOL LASindex::write(const char* file_name) const
+     name[strlen(name)-2] = 'a';
+     name[strlen(name)-1] = 'x';
+   }
+-  FILE* file = fopen(name, "wb");
++  FILE* file = LASindex::openFile(name, "wb");
+   if (file == 0)
+   {
+     fprintf(stderr,"ERROR (LASindex): cannot open '%s' for write\n", name);
+diff --git a/src/lasindex.hpp b/src/lasindex.hpp
+index e5814fd..ab92d82 100644
+--- a/src/lasindex.hpp
++++ b/src/lasindex.hpp
+@@ -64,6 +64,7 @@ class LASindex
+   void complete(U32 minimum_points=100000, I32 maximum_intervals=-1, const BOOL verbose=TRUE);
+ 
+   // read from file or write to file
++  static FILE* openFile(const char* file_name, const char* mode);
+   BOOL read(FILE* file);
+   BOOL write(FILE* file) const;
+   BOOL read(const char* file_name);
+diff --git a/src/laszip_dll.cpp b/src/laszip_dll.cpp
+index 3d6518e..6e13548 100644
+--- a/src/laszip_dll.cpp
++++ b/src/laszip_dll.cpp
+@@ -2776,7 +2776,7 @@ laszip_open_writer(
+ 
+     // open the file
+ 
+-    laszip_dll->file = fopen(file_name, "wb");
++    laszip_dll->file = LASindex::openFile(file_name, "wb");
+ 
+     if (laszip_dll->file == 0)
+     {
+@@ -4156,7 +4156,7 @@ laszip_open_reader(
+ 
+     // open the file
+ 
+-    laszip_dll->file = fopen(file_name, "rb");
++    laszip_dll->file = LASindex::openFile(file_name, "rb");
+ 
+     if (laszip_dll->file == 0)
+     {
+
+From 2ad24e275cab7183550af80d162324f7b5b0dc4d Mon Sep 17 00:00:00 2001
+From: Madrich <rsteffen@messbild.de>
+Date: Mon, 16 Oct 2017 15:53:43 +0200
+Subject: [PATCH 2/2] include missing vector
+
+---
+ src/lasindex.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/lasindex.cpp b/src/lasindex.cpp
+index 0c38a73..a26d444 100644
+--- a/src/lasindex.cpp
++++ b/src/lasindex.cpp
+@@ -33,7 +33,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+-
++#include <vector>
+ #include "lasquadtree.hpp"
+ #include "lasinterval.hpp"
+ #ifdef LASZIPDLL_EXPORTS

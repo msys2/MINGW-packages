@@ -5,12 +5,10 @@
 # Author: Qian Hong <fracting@gmail.com>
 
 # Enable colors
-if [[ -t 1 ]]; then
-    normal='\e[0m'
-    red='\e[1;31m'
-    green='\e[1;32m'
-    cyan='\e[1;36m'
-fi
+normal=$(tput sgr0)
+red=$(tput setaf 1)
+green=$(tput setaf 2)
+cyan=$(tput setaf 6)
 
 # Basic status function
 _status() {

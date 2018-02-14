@@ -1,7 +1,7 @@
-From bb1af8e64afa9692cf3ed62532757be370cfeec1 Mon Sep 17 00:00:00 2001
+From 6d7e6014d2bb1b0f883cdaeb8e13861ae0f57c7c Mon Sep 17 00:00:00 2001
 From: Jon Turney <jon.turney@dronecode.org.uk>
 Date: Tue, 4 Feb 2014 00:57:13 +0000
-Subject: [PATCH 05/23] Add support for DWARF in PECOFF as used by Cygwin and
+Subject: [PATCH 05/29] Add support for DWARF in PECOFF as used by Cygwin and
  MinGW
 
 For cygwin and mingw targets, build a dump_syms tool which can read DWARF
@@ -33,11 +33,18 @@ Add needed include of winsock.h for htons etc.
 v6:
 Update for char -> uint8_t changes in commit bc44efdc
 
+v7:
+Update for "Add debug fission support" changes
+
+What's this?  We now build elf_reader.cc into our COFF symbols dumping tool?
+But why is that?  Because dwarf2reader now contains an entirely separate ELF
+reader, for reading .dwo/.dwp files...
+
 Signed-off-by: Jon Turney <jon.turney@dronecode.org.uk>
 ---
- Makefile.am                                    |  29 +
+ Makefile.am                                    |  30 ++
  configure.ac                                   |   5 +
- src/common/pecoff/dump_symbols-inl.h           | 706 +++++++++++++++++++++++++
+ src/common/pecoff/dump_symbols-inl.h           | 705 +++++++++++++++++++++++++
  src/common/pecoff/dump_symbols.cc              |  90 ++++
  src/common/pecoff/dump_symbols.h               |  80 +++
  src/common/pecoff/pecoff.h                     | 262 +++++++++
@@ -58,10 +65,10 @@ Signed-off-by: Jon Turney <jon.turney@dronecode.org.uk>
  create mode 100644 src/tools/windows/dump_syms_dwarf/dump_syms.cc
 
 diff --git a/Makefile.am b/Makefile.am
-index def5be7..60d2164 100644
+index fcff8ea7..8d816efc 100644
 --- a/Makefile.am
 +++ b/Makefile.am
-@@ -61,6 +61,11 @@ AM_CFLAGS += -fPIC
+@@ -51,6 +51,11 @@ AM_CFLAGS += -fPIC
  AM_CXXFLAGS += -fPIC
  endif
  
@@ -73,7 +80,7 @@ index def5be7..60d2164 100644
  # Specify include paths for ac macros
  ACLOCAL_AMFLAGS = -I m4
  
-@@ -361,6 +366,12 @@ endif
+@@ -368,6 +373,12 @@ endif
  endif
  endif LINUX_HOST
  
@@ -86,7 +93,7 @@ index def5be7..60d2164 100644
  
  ## Tests
  if !DISABLE_PROCESSOR
-@@ -705,6 +716,24 @@ src_tools_linux_md2core_minidump_2_core_unittest_LDADD = \
+@@ -768,6 +779,25 @@ src_tools_linux_md2core_minidump_2_core_unittest_LDADD = \
  
  endif LINUX_HOST
  
@@ -101,6 +108,7 @@ index def5be7..60d2164 100644
 +	src/common/dwarf/bytereader.cc \
 +	src/common/dwarf/dwarf2diehandler.cc \
 +	src/common/dwarf/dwarf2reader.cc \
++	src/common/dwarf/elf_reader.cc \
 +	src/common/pecoff/dump_symbols.cc \
 +	src/common/pecoff/pecoffutils.cc \
 +	src/common/pecoff/pecoff_file_id.cc \
@@ -112,10 +120,10 @@ index def5be7..60d2164 100644
  src_processor_address_map_unittest_SOURCES = \
  	src/processor/address_map_unittest.cc
 diff --git a/configure.ac b/configure.ac
-index 23195b7..dc4d9bf 100644
+index ec194ddd..4e92b291 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -84,8 +84,13 @@ case $host in
+@@ -110,8 +110,13 @@ case $host in
    *-*-linux* | *-android* )
      LINUX_HOST=true
      ;;
@@ -131,10 +139,10 @@ index 23195b7..dc4d9bf 100644
  case $host in
 diff --git a/src/common/pecoff/dump_symbols-inl.h b/src/common/pecoff/dump_symbols-inl.h
 new file mode 100644
-index 0000000..7fed966
+index 00000000..23955f6a
 --- /dev/null
 +++ b/src/common/pecoff/dump_symbols-inl.h
-@@ -0,0 +1,706 @@
+@@ -0,0 +1,705 @@
 +// Copyright (c) 2011 Google Inc.
 +// All rights reserved.
 +//
@@ -367,7 +375,8 @@ index 0000000..7fed966
 +    // Make a Dwarf2Handler that drives the DIEHandler.
 +    dwarf2reader::DIEDispatcher die_dispatcher(&root_handler);
 +    // Make a DWARF parser for the compilation unit at OFFSET.
-+    dwarf2reader::CompilationUnit reader(file_context.section_map(),
++    dwarf2reader::CompilationUnit reader(dwarf_filename,
++                                         file_context.section_map(),
 +                                         offset,
 +                                         &byte_reader,
 +                                         &die_dispatcher);
@@ -757,8 +766,6 @@ index 0000000..7fed966
 +    const DumpOptions& options,
 +    Module** out_module) {
 +
-+  typedef typename ObjectFileReader::Section Shdr;
-+
 +  *out_module = NULL;
 +
 +  string identifier = ObjectFileReader::FileIdentifierFromMappedFile(header);
@@ -843,7 +850,7 @@ index 0000000..7fed966
 +#endif // COMMON_PECOFF_DUMP_SYMBOLS_INL_H
 diff --git a/src/common/pecoff/dump_symbols.cc b/src/common/pecoff/dump_symbols.cc
 new file mode 100644
-index 0000000..47be940
+index 00000000..47be9408
 --- /dev/null
 +++ b/src/common/pecoff/dump_symbols.cc
 @@ -0,0 +1,90 @@
@@ -939,7 +946,7 @@ index 0000000..47be940
 +}  // namespace google_breakpad
 diff --git a/src/common/pecoff/dump_symbols.h b/src/common/pecoff/dump_symbols.h
 new file mode 100644
-index 0000000..675a489
+index 00000000..675a4895
 --- /dev/null
 +++ b/src/common/pecoff/dump_symbols.h
 @@ -0,0 +1,80 @@
@@ -1025,7 +1032,7 @@ index 0000000..675a489
 +#endif  // COMMON_PECOFF_DUMP_SYMBOLS_H__
 diff --git a/src/common/pecoff/pecoff.h b/src/common/pecoff/pecoff.h
 new file mode 100644
-index 0000000..9ac32ef
+index 00000000..9ac32ef3
 --- /dev/null
 +++ b/src/common/pecoff/pecoff.h
 @@ -0,0 +1,262 @@
@@ -1293,7 +1300,7 @@ index 0000000..9ac32ef
 +#endif// COMMON_PECOFF_PECOFF_H__
 diff --git a/src/common/pecoff/pecoff_file_id.cc b/src/common/pecoff/pecoff_file_id.cc
 new file mode 100644
-index 0000000..47c2763
+index 00000000..47c2763f
 --- /dev/null
 +++ b/src/common/pecoff/pecoff_file_id.cc
 @@ -0,0 +1,83 @@
@@ -1382,7 +1389,7 @@ index 0000000..47c2763
 +}  // namespace google_breakpad
 diff --git a/src/common/pecoff/pecoff_file_id.h b/src/common/pecoff/pecoff_file_id.h
 new file mode 100644
-index 0000000..fd2ea10
+index 00000000..fd2ea103
 --- /dev/null
 +++ b/src/common/pecoff/pecoff_file_id.h
 @@ -0,0 +1,52 @@
@@ -1440,7 +1447,7 @@ index 0000000..fd2ea10
 +#endif  // COMMON_PECOFF_PECOFF_FILE_ID_H__
 diff --git a/src/common/pecoff/pecoffutils.cc b/src/common/pecoff/pecoffutils.cc
 new file mode 100644
-index 0000000..f097cc6
+index 00000000..f097cc61
 --- /dev/null
 +++ b/src/common/pecoff/pecoffutils.cc
 @@ -0,0 +1,494 @@
@@ -1940,7 +1947,7 @@ index 0000000..f097cc6
 +}
 diff --git a/src/common/pecoff/pecoffutils.h b/src/common/pecoff/pecoffutils.h
 new file mode 100644
-index 0000000..3e2d7b3
+index 00000000..3e2d7b34
 --- /dev/null
 +++ b/src/common/pecoff/pecoffutils.h
 @@ -0,0 +1,167 @@
@@ -2113,7 +2120,7 @@ index 0000000..3e2d7b3
 +#endif  // COMMON_PECOFF_PECOFFUTILS_H__
 diff --git a/src/tools/windows/dump_syms_dwarf/dump_syms.cc b/src/tools/windows/dump_syms_dwarf/dump_syms.cc
 new file mode 100644
-index 0000000..2d7f70a
+index 00000000..2d7f70a6
 --- /dev/null
 +++ b/src/tools/windows/dump_syms_dwarf/dump_syms.cc
 @@ -0,0 +1,88 @@
@@ -2206,5 +2213,5 @@ index 0000000..2d7f70a
 +  return 0;
 +}
 -- 
-2.7.0
+2.15.0
 
