@@ -515,6 +515,14 @@ int main(void)
 			&show_console, &append_quote_to_cmdline)) {
 		/* do nothing */
 	}
+	else if (!wcsicmp(basename, L"git-lfs.exe")) {
+		initialize_top_level_path(top_level_path, exepath, NULL, 1);
+
+		/* set the default exe module */
+		wcscpy(exe, top_level_path);
+		PathAppend(exe, msystem_bin);
+		PathAppend(exe, L"git-lfs.exe");
+	}
 	else if (!wcsicmp(basename, L"git-gui.exe") ||
 			!wcsicmp(basename, L"gitk.exe")) {
 		static WCHAR buffer[BUFSIZE];
