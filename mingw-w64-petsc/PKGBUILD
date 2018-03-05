@@ -1,0 +1,132 @@
+# Contributor: Oleg A. Khlybov <fougas@mail.ru>
+
+_realname=petsc
+
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=3.8.3
+pkgrel=1
+arch=('any')
+pkgdesc="Sparse iterative (non)linear solver package (mingw-w64)"
+depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs" "${MINGW_PACKAGE_PREFIX}-openblas")
+makedepends=("python2" "${MINGW_PACKAGE_PREFIX}-gcc" "${MINGW_PACKAGE_PREFIX}-msmpi" "${MINGW_PACKAGE_PREFIX}-lapack" "${MINGW_PACKAGE_PREFIX}-openblas")
+options=('strip' 'staticlibs')
+license=('2-clause BSD')
+url="https://www.mcs.anl.gov/petsc/"
+source=("http://ftp.mcs.anl.gov/pub/petsc/release-snapshots/${_realname}-lite-${pkgver}.tar.gz")
+noextract=("${_realname}-lite-${pkgver}.tar.gz")
+sha256sums=('5509e35d55d5ce9e92dbe7a83f5e509865aea2a4cc2d9f16f72b7a5ceaafed96')
+
+prepare() {
+  tar xzf ../${_realname}-lite-${pkgver}.tar.gz # bsdtar fails to extract tarballs with symlinks
+  cd "${srcdir}/${_realname}-${pkgver}"
+  for p in ${srcdir}/../*.patch; do
+    patch -p1 < $p
+  done
+}
+
+builds="dso dmo zso zmo"
+
+build() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+  for build in ${builds}; do
+    opts="--disable-shared --with-single-library=0 --with-pthread=0 --with-windows-graphics=0 --with-x=0"
+    case ${build} in
+      ?m?)
+        opts="$opts --with-mpi=1 --with-mpi-compilers=1"
+		ld=mpicc
+      ;;
+      ?s?)
+        opts="$opts --with-mpi=0"
+		ld=gcc
+      ;;
+    esac
+	case ${build} in
+	  z*|d*)
+		opts="$opts --with-precision=double"
+	  ;;
+	  c*|s*)
+		opts="$opts --with-precision=single"
+	  ;;
+	esac
+    case ${build} in
+      d*|s*)
+        opts="$opts --with-scalar-type=real"
+      ;;
+      z*|c*)
+        opts="$opts --with-scalar-type=complex"
+      ;;
+    esac
+    case ${build} in
+      *o)
+        opts="$opts --with-debugging=0"
+      ;;
+      *d)
+        opts="$opts --with-debugging=1"
+      ;;
+    esac
+    /usr/bin/python2 configure --PETSC_ARCH=${build} ${opts} \
+		CFLAGS="${CFLAGS}" FFLAGS="${CFLAGS}" CXXFLAGS="${CXXFLAGS}" CPPFLAGS="${CPPFLAGS}" LDFLAGS="${LDFLAGS}" MAKEFLAGS="${MAKEFLAGS}"
+    make PETSC_DIR=`pwd` PETSC_ARCH=${build} all
+	(
+		cd ${build}/lib
+		lib=libpetsc-${build}
+		rm -rf ${lib}.a
+		strip -S *.a
+		ar crsT ${lib}.a libpetscts.a libpetscsnes.a libpetscksp.a libpetscdm.a libpetscmat.a libpetscvec.a libpetscsys.a
+		${ld} -shared -Wl,--enable-auto-import -Wl,--export-all-symbols -o ${lib}.dll -Wl,--out-implib,${lib}.dll.a -Wl,--whole-archive ${lib}.a -Wl,--no-whole-archive $(pkg-config openblas --libs) -lgfortran
+	)
+  done
+}
+
+package() {
+  cd "$srcdir/${_realname}-${pkgver}"
+  mkdir -p ${pkgdir}${MINGW_PREFIX}/{bin,lib/petsc,include/petsc}
+  mkdir -p "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig"
+  (
+	cd include
+	cp *.h ${pkgdir}${MINGW_PREFIX}/include/petsc
+	cd petsc
+	cp -R finclude mpiuni ${pkgdir}${MINGW_PREFIX}/include/petsc
+	cd ${pkgdir}${MINGW_PREFIX}/include/petsc
+	find . \( ! -name '*.h' -a -type f \) -delete
+  )
+  for build in ${builds}; do
+	(
+		cd ${build}/lib
+		mkdir -p ${pkgdir}${MINGW_PREFIX}/lib/petsc/${build}
+		cp *.a ${pkgdir}${MINGW_PREFIX}/lib/petsc/${build}
+		cp *.dll ${pkgdir}${MINGW_PREFIX}/bin
+	)
+	(
+		cd ${build}/include
+		mkdir -p ${pkgdir}${MINGW_PREFIX}/include/petsc/${build}
+		cp *.{h,mod} ${pkgdir}${MINGW_PREFIX}/include/petsc/${build}
+	)
+	case ${build} in
+		?s?)
+			impi='-I${includedir}/mpiuni'
+			rmpi=''
+		;;
+		*)
+			impi=''
+			rmpi='msmpi'
+		;;
+	esac
+	lib=petsc-${build}
+	_pc="
+		prefix=${MINGW_PREFIX}
+		libdir=\${prefix}/lib/petsc
+		includedir=\${prefix}/include/petsc
+		Name: ${_realname}
+		URL: ${url}
+		Version: ${pkgver}
+		Description: Sparse iterative (non)linear solver package (mingw-w64)
+		Requires.private: openblas ${rmpi}
+		Cflags: ${impi} -I\${includedir}/${build} -I\${includedir}
+		Libs.private: -L\${libdir}/${build} -l${lib} -lgfortran -lquadmath
+		Libs: -L\${libdir}/${build} -l${lib}
+	"
+    echo "${_pc}" | sed '/^\s*$/d;s/^\s*//' > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/${lib}.pc"
+  done
+}
