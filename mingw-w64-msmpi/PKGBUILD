@@ -1,0 +1,97 @@
+# Contributor: Oleg A. Khlybov <fougas@mail.ru>
+
+_realname=msmpi
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=9.0
+pkgrel=1
+pkgdesc="Microsoft MPI SDK (mingw-w64)"
+arch=('any')
+url="https://msdn.microsoft.com/en-us/library/bb524831(v=vs.85).aspx"
+
+license=('GPL') # CHECKME
+
+source=(
+  "https://download.microsoft.com/download/2/E/C/2EC96D7F-687B-4613-80F6-E10F670A2D97/msmpisdk.msi"
+  "https://download.microsoft.com/download/2/E/C/2EC96D7F-687B-4613-80F6-E10F670A2D97/msmpisetup.exe"
+)
+
+noextract=("msmpisdk.msi" "msmpisetup.exe")
+
+sha256sums=(
+  'c22273ba855977f35bc7ff59a7902598d065c9c0278ce6f0480126e094256752'
+  'ef690c941e62c24bf569036b0b60dc057c09b12fd17e3f66f3e9d58f3c12efc0'
+)
+
+makedepends=("${MINGW_PACKAGE_PREFIX}-gcc" "${MINGW_PACKAGE_PREFIX}-binutils" "ruby")
+depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs")
+options=('!staticlibs' 'strip')
+
+# Fix .def file for 32-bit Windows import libraries
+fix_def32() {
+  ruby -n -e '$_.strip!; puts "#{$1}@0=#{$1}\n" if ($_ != $_.upcase) && ($_ != $_.downcase) && /^([a-zA-Z0-9_]*)$/.match($_)' $1 >> $1
+}
+
+prepare() {
+  if [[ `uname -a` != *x86_64* ]]; then
+	echo "msmpi requires msys/mingw64 to build"
+	exit -1
+  fi
+}
+
+build() {
+  [[ -d ${srcdir}/build-${MINGW_CHOST} ]] && rm -rf ${srcdir}/build-${MINGW_CHOST}
+  mkdir -p ${srcdir}/build-${CARCH} && cd ${srcdir}/build-${CARCH}
+  mkdir -p bin include lib
+  # Import library
+  if [ "${CARCH}" = "x86_64" ]; then dir=system32; else dir=syswow64; fi
+  msmpi=`cygpath -m "$WINDIR/$dir/msmpi.dll"`
+  ${MINGW_PREFIX}/bin/gendef "$msmpi"
+  [ "${CARCH}" = "i686" ] && fix_def32 msmpi.def
+  ${MINGW_PREFIX}/bin/dlltool -k -d msmpi.def -l lib/libmsmpi.a
+  rm msmpi.def
+  # Headers
+  if [ "${CARCH}" = "x86_64" ]; then dir=x64; isize=8; else dir=x86; isize=4; fi
+  (
+	cd include
+	dest=`pwd`
+	cd "`cygpath -m "${MSMPI_INC}"`"
+	cp {mpi,mpif}.* $dest
+	cp $dir/* $dest
+  )
+  (
+	  cd include
+	  # Fix Fortran headers
+	  for f in mpif.h mpi.f90; do
+		sed "s/INT_PTR_KIND()/${isize}/g" ${f} > t
+		mv t ${f}
+	  done
+  )
+  # Build compiler drivers
+  mpic=../../mpi.c
+  cc="${MINGW_PREFIX}/bin/gcc"
+  cflags="-O2 -DNDEBUG"
+  "${cc}" ${cflags} -o bin/mpicc.exe -DCC "${mpic}"
+  "${cc}" ${cflags} -o bin/mpic++.exe -DCXX "${mpic}"
+  "${cc}" ${cflags} -o bin/mpif77.exe -DFC "${mpic}"
+  "${cc}" ${cflags} -o bin/mpif90.exe -DFC "${mpic}"
+}
+
+_pc="
+prefix=${MINGW_PREFIX}
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+Name: ${_realname}
+URL: ${url}
+Version: ${pkgver}
+Description: ${pkgdesc}
+Cflags: -I\${includedir}
+Libs: -L\${libdir} -l${_realname}
+"
+
+package() {
+  cd "${srcdir}/build-${CARCH}"
+  mkdir -p "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig"
+  cp -r * "${pkgdir}${MINGW_PREFIX}"
+  echo "${_pc}" > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/${_realname}.pc"
+}
