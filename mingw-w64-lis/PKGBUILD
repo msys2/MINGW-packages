@@ -1,0 +1,104 @@
+# Contributor: Oleg A. Khlybov <fougas@mail.ru>
+
+_realname=lis
+
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=2.0.7
+pkgrel=1
+arch=('any')
+pkgdesc="Sparse direct SLAE solver (mingw-w64)"
+depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs" "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran")
+makedepends=("${MINGW_PACKAGE_PREFIX}-gcc" "${MINGW_PACKAGE_PREFIX}-gcc-fortran" "${MINGW_PACKAGE_PREFIX}-msmpi")
+options=('strip' 'staticlibs')
+license=('3-clause BSD')
+url="http://www.ssisc.org/lis/"
+source=("http://www.ssisc.org/lis/dl/${_realname}-${pkgver}.zip")
+sha256sums=('2ae12d08550bc358ac61a4bc3a6f9adce713949500e1edcc28bdb8ef8a98f1d1')
+
+prepare() {
+  cd ${srcdir}/${_realname}-${pkgver}
+  for p in ${srcdir}/../*.patch; do
+	 true #patch -p1 < $p
+  done
+}
+
+builds="dso dmo dto zso zmo zto"
+
+build() {
+  cd ${srcdir}/${_realname}-${pkgver}
+  for build in ${builds}; do
+    opts="--enable-fortran --enable-f90 --enable-static"
+    ld=gfortran
+    ldflags=
+    pc=
+    case ${build} in
+      ?m?)
+        opts="${opts} --enable-mpi"
+        ld=mpif90
+      ;;
+      ?t?)
+        opts="${opts} --enable-omp"
+        ldflags=-fopenmp
+      ;;
+    esac
+    case ${build} in
+      c*|z*)
+        opts="${opts} --enable-complex"
+      ;;
+    esac
+    [[ -d ${srcdir}/build-${MINGW_CHOST}-${build} ]] && rm -rf ${srcdir}/build-${MINGW_CHOST}-${build}
+    mkdir -p ${srcdir}/build-${MINGW_CHOST}-${build} && cd ${srcdir}/build-${MINGW_CHOST}-${build}
+    ../${_realname}-${pkgver}/configure ${opts}
+    make
+    cd src/.libs
+    lib=liblis-${build}
+    mv liblis.a ${lib}.a
+    ${ld} -shared ${ldflags} -Wl,--enable-auto-import -Wl,--export-all-symbols -o ${lib}.dll -Wl,--out-implib,${lib}.dll.a -Wl,--whole-archive ${lib}.a -Wl,--no-whole-archive
+  done
+}
+
+package() {
+  mkdir -p ${pkgdir}${MINGW_PREFIX}/{bin,lib/pkgconfig,include}
+  cd ${srcdir}/${_realname}-${pkgver}/include
+  cp lis.h lis_*.h ${pkgdir}${MINGW_PREFIX}/include
+  cd ${pkgdir}${MINGW_PREFIX}/include
+  rm -f *_config*.h 
+  for build in ${builds}; do
+    cd ${srcdir}/build-${MINGW_CHOST}-${build}
+    (
+      cd src/.libs
+      cp *.a ${pkgdir}${MINGW_PREFIX}/lib
+      cp *.dll ${pkgdir}${MINGW_PREFIX}/bin
+    )
+    (
+      cd include
+      mkdir -p ${pkgdir}${MINGW_PREFIX}/include/lis/${build}
+      cp *.h ${pkgdir}${MINGW_PREFIX}/include/lis/${build}
+    )
+    lib=lis-${build}
+    rmpi=
+    ldflags=
+    case ${build} in
+      ?m?)
+        rmpi=msmpi
+      ;;
+      ?t?)
+        ldflags=-fopenmp
+      ;;
+    esac
+    echo "
+      prefix=${MINGW_PREFIX}
+      libdir=\${prefix}
+      includedir=\${prefix}/include/lis
+      Name: ${_realname}
+      URL: ${url}
+      Version: ${pkgver}
+      Description: Sparse iterative linear solver library (mingw-w64)
+      Requires.private: ${rmpi}
+      Cflags: -I\${includedir}/lis/${build} -I\${includedir}
+      Libs.private: ${ldflags} -L\${libdir} -l${lib} -lgfortran -lquadmath
+      Libs: -L\${libdir} -l${lib}
+    " | sed '/^\s*$/d;s/^\s*//' > ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/${lib}.pc
+  done
+}
