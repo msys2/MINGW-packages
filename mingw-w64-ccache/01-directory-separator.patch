@@ -1,0 +1,114 @@
+diff --git a/src/ccache.c b/src/ccache.c
+index 9dfdbfc..4d87dd0 100644
+--- a/src/ccache.c
++++ b/src/ccache.c
+@@ -872,6 +872,13 @@ process_preprocessed_file(struct mdfour *hash, const char *path, bool pump)
+ 			}
+ 			// p and q span the include file path.
+ 			char *inc_path = x_strndup(p, q - p);
++#ifdef _WIN32
++			// gcc-E [file.c] -g adds CWD with double forward slashes
++			// like:
++			// # 1 "C:\\msys64\\home\\user\\test//"
++			// double forward slashes should be replaced with simple slashes
++			str_replace(inc_path, "\\\\", "\\");
++#endif
+ 			if (!has_absolute_include_headers) {
+ 				has_absolute_include_headers = is_absolute_path(inc_path);
+ 			}
+@@ -1444,7 +1451,7 @@ get_object_name_from_cpp(struct args *args, struct mdfour *hash)
+ 	}
+ 
+ 	hash_delimiter(hash, "cppstderr");
+-	if (!hash_file(hash, path_stderr)) {
++	if (!direct_i_file && !hash_file(hash, path_stderr)) {
+ 		fatal("Failed to open %s: %s", path_stderr, strerror(errno));
+ 	}
+ 
+diff --git a/src/ccache.h b/src/ccache.h
+index dec11fa..f6943ac 100644
+--- a/src/ccache.h
++++ b/src/ccache.h
+@@ -188,6 +188,7 @@ bool read_file(const char *path, size_t size_hint, char **data, size_t *size);
+ char *read_text_file(const char *path, size_t size_hint);
+ char *subst_env_in_string(const char *str, char **errmsg);
+ void set_cloexec_flag(int fd);
++void str_replace(char *target, const char *needle, const char *replacement);
+ 
+ // ----------------------------------------------------------------------------
+ // stats.c
+diff --git a/src/util.c b/src/util.c
+index b89a33e..d554ecc 100644
+--- a/src/util.c
++++ b/src/util.c
+@@ -1097,6 +1097,13 @@ x_realpath(const char *path)
+ 	} else {
+ 		snprintf(ret, maxlen, "%s", path);
+ 		p = ret;
++
++		//replace forward slashes with backward slashes inplace
++		char *tmp;
++		for(tmp = p; *tmp; tmp++)	{
++			if(*tmp == '/')
++				*tmp = '\\';
++		}
+ 	}
+ #else
+ 	// Yes, there are such systems. This replacement relies on the fact that when
+@@ -1286,11 +1293,17 @@ common_dir_prefix_length(const char *s1, const char *s2)
+ 	const char *p1 = s1;
+ 	const char *p2 = s2;
+ 
++#ifndef _WIN32
++	char dirseparator = '/';
++#else
++	char dirseparator = '\\';
++#endif
++
+ 	while (*p1 && *p2 && *p1 == *p2) {
+ 		++p1;
+ 		++p2;
+ 	}
+-	while ((*p1 && *p1 != '/') || (*p2 && *p2 != '/')) {
++	while ((*p1 && *p1 != dirseparator) || (*p2 && *p2 != dirseparator)) {
+ 		p1--;
+ 		p2--;
+ 	}
+@@ -1671,3 +1684,36 @@ set_cloexec_flag(int fd)
+ 	}
+ #endif
+ }
++
++void str_replace(char *target, const char *needle, const char *replacement)
++{
++    char buffer[1024] = { 0 };
++    char *insert_point = &buffer[0];
++    const char *tmp = target;
++    size_t needle_len = strlen(needle);
++    size_t repl_len = strlen(replacement);
++
++    while (1) {
++        const char *p = strstr(tmp, needle);
++
++        // walked past last occurrence of needle; copy remaining part
++        if (p == NULL) {
++            strcpy(insert_point, tmp);
++            break;
++        }
++
++        // copy part before needle
++        memcpy(insert_point, tmp, p - tmp);
++        insert_point += p - tmp;
++
++        // copy replacement string
++        memcpy(insert_point, replacement, repl_len);
++        insert_point += repl_len;
++
++        // adjust pointers, move on
++        tmp = p + needle_len;
++    }
++
++    // write altered string back to target
++    strcpy(target, buffer);
++}
+\ No newline at end of file
