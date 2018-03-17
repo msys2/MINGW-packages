@@ -11,7 +11,7 @@ total=0
 passed=0
 
 pkg=petsc
-exdir=src/petsc-*/src/snes/examples/tutorials
+exdir=src/build-${MINGW_CHOST}/petsc-*/src/snes/examples/tutorials
 
 for build in dso dmo zso zmo; do
 	for lang in c f; do
