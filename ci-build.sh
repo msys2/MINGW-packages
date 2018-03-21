@@ -12,6 +12,8 @@ git_config user.email 'ci@msys2.org'
 git_config user.name  'MSYS2 Continuous Integration'
 git remote add upstream 'https://github.com/Alexpux/MINGW-packages'
 git fetch --quiet upstream
+# reduce time required to install packages by disabling pacman's disk space checking
+sed -i 's/^CheckSpace/#CheckSpace/g' /etc/pacman.conf
 
 # Detect
 list_commits  || failure 'Could not detect added commits'
