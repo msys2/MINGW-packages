@@ -1,0 +1,97 @@
+# Contributor: Oleg A. Khlybov <fougas@mail.ru>
+
+_realname=slepc
+
+pkgbase=mingw-w64-${_realname}
+pkgname=${MINGW_PACKAGE_PREFIX}-${_realname}
+pkgver=3.8.2
+pkgrel=1
+arch=('any')
+petsc_required=3.8
+pkgdesc="Sparse iterative eigenvalue problem solver package (mingw-w64)"
+depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs" "${MINGW_PACKAGE_PREFIX}-openblas" "${MINGW_PACKAGE_PREFIX}-petsc>=${petsc_required}")
+makedepends=("python2" "${MINGW_PACKAGE_PREFIX}-gcc" "${MINGW_PACKAGE_PREFIX}-msmpi" "${MINGW_PACKAGE_PREFIX}-lapack" "${MINGW_PACKAGE_PREFIX}-openblas" "${MINGW_PACKAGE_PREFIX}-petsc-build>=${petsc_required}")
+options=('strip' 'staticlibs')
+license=('2-clause BSD')
+url="http://slepc.upv.es/"
+source=("http://slepc.upv.es/download/distrib/${_realname}-${pkgver}.tar.gz")
+noextract=("${_realname}-${pkgver}.tar.gz")
+sha256sums=('1e7d20d20eb26da307d36017461fe4a55f40e947e232739179dbe6412e22ed13')
+
+prepare() {
+  mkdir -p $srcdir/build-${MINGW_CHOST} && cd $srcdir/build-${MINGW_CHOST}
+  tar xzf $srcdir/../${_realname}-${pkgver}.tar.gz # bsdtar fails to extract tarballs with symlinks
+  cd ${_realname}-${pkgver}
+  for p in ${srcdir}/../*.patch; do
+    patch -p1 < $p
+  done
+}
+
+builds="dso dmo zso zmo"
+
+build() {
+  for build in ${builds}; do
+    case ${build} in
+      ?m?)
+		ld=mpicc
+      ;;
+      ?s?)
+		ld=gcc
+      ;;
+    esac
+    cd ${srcdir}/build-${MINGW_CHOST}/${_realname}-${pkgver}
+	export PETSC_ARCH=${build}
+	export PETSC_DIR=`cygpath -u ${MINGW_PREFIX}/src/petsc-*`
+	export SLEPC_DIR=`pwd`
+	/usr/bin/python2 configure
+	make
+	(
+		cd ${build}/lib
+		lib=libslepc-${build}
+		rm -rf ${lib}.a
+		strip -S *.a
+		ar crsT ${lib}.a libslepcsys.a libslepcmfn.a libslepclme.a libslepceps.a libslepcsvd.a libslepcpep.a libslepcnep.a
+		${ld} -shared -Wl,--enable-auto-import -Wl,--export-all-symbols -o ${lib}.dll -Wl,--out-implib,${lib}.dll.a -Wl,--whole-archive ${lib}.a -Wl,--no-whole-archive $(pkg-config petsc-${build} openblas --libs)
+	)
+  done
+}
+
+package() {
+  cd ${srcdir}/build-${MINGW_CHOST}/${_realname}-${pkgver}
+  mkdir -p ${pkgdir}${MINGW_PREFIX}/{bin,lib/pkgconfig,lib/${_realname},include/${_realname}}
+  (
+	cd include
+	cp *.h ${pkgdir}${MINGW_PREFIX}/include/${_realname}
+	cd ${_realname}
+	cp -R finclude ${pkgdir}${MINGW_PREFIX}/include/${_realname}
+	cd ${pkgdir}${MINGW_PREFIX}/include/${_realname}
+	find . \( ! -name '*.h' -a -type f \) -delete
+  )
+  for build in ${builds}; do
+	(
+		cd ${build}/lib
+		mkdir -p ${pkgdir}${MINGW_PREFIX}/lib/${_realname}/${build}
+		cp *.a ${pkgdir}${MINGW_PREFIX}/lib/${_realname}/${build}
+		cp *.dll ${pkgdir}${MINGW_PREFIX}/bin
+	)
+	(
+		cd ${build}/include
+		mkdir -p ${pkgdir}${MINGW_PREFIX}/include/${_realname}/${build}
+		cp *.{h,mod} ${pkgdir}${MINGW_PREFIX}/include/${_realname}/${build}
+	)
+	lib=${_realname}-${build}
+	echo "
+		prefix=${MINGW_PREFIX}
+		libdir=\${prefix}/lib/${_realname}
+		includedir=\${prefix}/include/${_realname}
+		Name: ${_realname}
+		URL: ${url}
+		Version: ${pkgver}
+		Description: Scalable library for eigenvalue problem computations (mingw-w64)
+		Requires: petsc-${build} openblas
+		Cflags: -I\${includedir}/${build} -I\${includedir}
+		Libs.private: -L\${libdir}/${build} -l${lib}
+		Libs: -L\${libdir}/${build} -l${lib}
+	" | sed '/^\s*$/d;s/^\s*//' > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/${lib}.pc"
+  done
+}
