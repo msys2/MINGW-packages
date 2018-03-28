@@ -1,5 +1,6 @@
 # Maintainer: Alexey Pavlov <Alexpux@gmail.com>
 # Contributor: Renato Silva <br.renatosilva@gmail.com>
+# Contributor: Niklas Holm <jadedcyborg@gmail.com>
 
 _realname=perl
 url='https://www.perl.org'
@@ -8,62 +9,122 @@ license=(GPL1+ Artistic1)
 arch=(any)
 pkgver=5.22.0
 pkgrel=1
-install="perl-${CARCH}.install"
-options=(staticlibs strip '!purge')
+install="${_realname}-${CARCH}.install"
+options=(staticlibs strip '!purge' emptydirs)
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-makedepends=(${MINGW_PACKAGE_PREFIX}-gcc)
-depends=(${MINGW_PACKAGE_PREFIX}-gcc-libs
-         ${MINGW_PACKAGE_PREFIX}-winpthreads
-         ${MINGW_PACKAGE_PREFIX}-dmake)
+makedepends=(
+    ${MINGW_PACKAGE_PREFIX}-gcc
+)
+depends=(
+    ${MINGW_PACKAGE_PREFIX}-gcc-libs
+    ${MINGW_PACKAGE_PREFIX}-winpthreads
+    ${MINGW_PACKAGE_PREFIX}-dmake
+)
+declare -rga _sources=(
+    perlprofile.in
+)
+if [[ -z "${SRCURI:-}" ]]; then
+declare -rga _patches=(
+    001-fhs-directory-structure.patch
+    002-relocate-html-documentation.patch
+    003-replace-batch-scripts-with-bare-perl.patch
+    004-fix-cpan-external-programs.patch
+)
+source=(
+    "https://www.cpan.org/src/5.0/${_realname}-${pkgver}.tar.xz"
+    "${_patches[@]}"
+    "${_sources[@]}"
+)
+else
+source=(
+    "${_realname}-${pkgver}::${SRCURI}"
+    "${_sources[@]}"
+)
+SKIPCHECKSUMS=1
+fi
 
-source=("https://www.cpan.org/src/5.0/perl-${pkgver}.tar.bz2"
-        001-fhs-directory-structure.patch
-        002-relocate-html-documentation.patch
-        003-replace-batch-scripts-with-bare-perl.patch
-        004-fix-cpan-external-programs.patch)
-
-sha256sums=('3689fdb519133d039f49e12834764ff4c1de8f8d925dea44a952ca110d0ac9f7'
+## Run updpkgsums to update
+sha256sums=('be83ead0c5c26cbbe626fa4bac1a4beabe23a9eebc15d35ba49ccde11878e196'
             '03f11be186d8a3cba4a5cc8d30afd2026bcbb30c1537e69bef0facc30af66801'
             '5c3988d3b856aedb52eeccc06a403bb3b99698615cc30a7855a728f010a98a1e'
             '0ac16aff60cbe657b9465e05402f48700e694d5aeab8fa3cb84065b7c5a1c1f8'
-            '8e958e32df2bdac25c3e596a4492539e934c85ca06e921ebf2f929b7614dec7b')
+            '8e958e32df2bdac25c3e596a4492539e934c85ca06e921ebf2f929b7614dec7b'
+            '54d8a5fc218031ee1354c8780a7af5de64f712ad63abdf029b09d33b664d6b0f')
+
+declare -rg _build="build-${CARCH}-${_realname}-${pkgver}"
 
 prepare() {
     cd "${srcdir}/${_realname}-${pkgver}"
     attrib.exe -r //s
-    patch -p1 -i "${srcdir}"/001-fhs-directory-structure.patch
-    patch -p1 -i "${srcdir}"/002-relocate-html-documentation.patch
-    patch -p1 -i "${srcdir}"/003-replace-batch-scripts-with-bare-perl.patch
-    patch -p1 -i "${srcdir}"/004-fix-cpan-external-programs.patch
+    local p
+    for p in "${_patches[@]}"; do
+        msg2 "Applying %s" "$p"
+        patch -p1 -i "${srcdir}"/"$p"
+    done
 }
 
-_build() {
-    local win64
-    unset SHELL
-    cd "${srcdir}/build-${CARCH}-${_realname}-${pkgver}/win32"
-    [[ "$(uname --machine)" = x86_64 && "${CARCH}" = i686 ]] && win64="WIN64=undef"
-    PATH="${MINGW_PREFIX}/bin:${SYSTEMROOT}/system32:${SYSTEMROOT}:${PATH}" dmake \
-        CCHOME="$(cygpath -w "${MINGW_PREFIX}")" INST_TOP="$(cygpath -w "${pkgdir}${MINGW_PREFIX}")" ${win64} ${_target}
+_make() {
+    # Please read README.win32 in the source package
+    local prefix="$(cygpath -w "${pkgdir}${MINGW_PREFIX}")"
+    local cchome="$(cygpath -w "${MINGW_PREFIX}")"
+    local sysroot="$(cygpath -u "${SYSTEMROOT}")"
+    local -i jobs="${JOBS:-$(nproc)}"
+    # README.win32 recommends bulding under Windows' default shell (cmd.exe)
+    # and win32/makefile.mk recommends setting SHELL to it as well
+    local cmd="$(cygpath -u "${COMSPEC}")"
+    local cmdline=(
+        "${cmd}" //C dmake
+#        -P"${jobs}"
+#        TEST_JOBS="${jobs}"
+        CCTYPE=GCC
+        CCHOME="${cchome}"
+        INST_DRV="${prefix:0:2}"
+        INST_TOP="${prefix}"
+        SHELL="${COMSPEC}"
+    )
+    if [[ "$(uname --machine)" == "x86_64" && "${CARCH}" == "i686" ]]; then
+        cmdline+=(WIN64=undef)
+    fi
+    cd "${srcdir}/${_build}/win32"
+    msg2 "Running \"%s\"" "${cmdline[*]}$( (($#)) && echo -n " $*")"
+    # Setting PATH here is not strictly necessary but it might make compilation
+    # slightly faster to have the mostly used commands early on the PATH and
+    # avoids interference with other programs on the PATH during tests.
+    PATH="${sysroot}/system32:${sysroot}:${MINGW_PREFIX}/bin" "${cmdline[@]}" "$@"
 }
 
 build() {
-    msg2 "Synchronizing build directory"
-    rsync --recursive --times "${srcdir}/${_realname}-${pkgver}"/* "${srcdir}/build-${CARCH}-${_realname}-${pkgver}"
+    if [[ -e "${srcdir}/${_build}" ]]; then
+        local -i i=1
+        while [[ -e "${srcdir}/${_build}~${i}" ]]; do ((++i)); done
+        mv -T "${srcdir}/${_build}" "${srcdir}/${_build}~${i}"
+    fi
+    mv -T "${srcdir}/${_realname}-${pkgver}" "${srcdir}/${_build}"
     pkgdir="${pkgdirbase}/${pkgname}"
-    _build
+    _make
+}
+
+check() {
+    # Some tests will fail, this is expected on Windows. Still, it might be good
+    # to have this information in the build logs.
+    _make test || true
 }
 
 package() {
-    _target=install _build
+    _make install
+
     cd "${pkgdir}${MINGW_PREFIX}"
-    mkdir -p lib/perl5/vendor_perl
     attrib.exe -r //s
 
-    # Licenses
-    install -Dm644 "${srcdir}/${_realname}-${pkgver}/README"   share/licenses/${_realname}/README
-    install -Dm644 "${srcdir}/${_realname}-${pkgver}/Copying"  share/licenses/${_realname}/Copying
-    install -Dm644 "${srcdir}/${_realname}-${pkgver}/Artistic" share/licenses/${_realname}/Artistic
+    msg2 "Cleaning up"
+    find -O3 . \( -type f \( \
+        -name '.packlist' -o -name 'perllocal.pod' -o -name '*.tmp' \
+        -o -name '*.pod' ! -path '*/pods/*' \
+        \) -o -type d -empty \) -delete
+
+    msg2 "Post-install configuration"
+    local config_heavy="$(find . -name Config_heavy.pl -print -quit)"
 
     # Path relocation. This is done by replacing hard-coded paths with relocate
     # patterns that will be resolved on package installation. The HTML
@@ -74,33 +135,87 @@ package() {
     local pkgdir_pattern
     local pkgdir_pattern_double
 
-    root_pattern=$(cygpath -w /)
+    root_pattern="$(cygpath -w /)"
     root_pattern="${root_pattern%\\}"
     root_pattern="${root_pattern//\\/\\\\}"
     root_pattern_double="${root_pattern//\\\\/\\\\\\\\}"
-    pkgdir_pattern=$(cygpath -w "${pkgdir}")
+    pkgdir_pattern="$(cygpath -w "${pkgdir}")"
     pkgdir_pattern="${pkgdir_pattern//\\/\\\\}"
     pkgdir_pattern_double="${pkgdir_pattern//\\\\/\\\\\\\\}"
 
     msg2 "Creating relocate patterns for:"
-    printf "     ${root_pattern}\n"
-    printf "     ${root_pattern_double}\n"
-    printf "     ${pkgdir_pattern}\n"
-    printf "     ${pkgdir_pattern_double}\n"
+    plain "%b" "${root_pattern}"
+    plain "%b" "${root_pattern_double}"
+    plain "%b" "${pkgdir_pattern}"
+    plain "%b" "${pkgdir_pattern_double}"
 
-    sed -i "s/${pkgdir_pattern}/@PERL_RELOCATE@/g"                lib/perl5/core_perl/.packlist
-    sed -i "s/${pkgdir_pattern_double}/@PERL_RELOCATE_DOUBLE@/g"  lib/perl5/core_perl/CORE/config.h
-    sed -i "s/${root_pattern}/@PERL_RELOCATE@/g"                  lib/perl5/core_perl/Config.pm
-    sed -i "s/${root_pattern_double}/@PERL_RELOCATE_DOUBLE@/g"    lib/perl5/core_perl/Config.pm
-    sed -i "s/${pkgdir_pattern_double}/@PERL_RELOCATE_DOUBLE@/g"  lib/perl5/core_perl/Config.pm
-    sed -i "s/${root_pattern}/@PERL_RELOCATE@/g"                  lib/perl5/core_perl/Config_heavy.pl
-    sed -i "s/${root_pattern_double}/@PERL_RELOCATE_DOUBLE@/g"    lib/perl5/core_perl/Config_heavy.pl
-    sed -i "s/${pkgdir_pattern}/@PERL_RELOCATE@/g"                lib/perl5/core_perl/Config_heavy.pl
+    # Attach list of files containing relocate patterns for use in post-install script.
+    # Update perl-*.install if changing the filename.
+    local relocate_list="./share/perl/.relocate_list"
+    install -Dvm644 <(grep -rilZ \
+            -e "${pkgdir_pattern_double}" \
+            -e "${pkgdir_pattern}" \
+            -e "${root_pattern_double}" \
+            -e "${root_pattern}" \
+            . ) \
+        "${relocate_list}"
 
-    for script in \
-        c2ph corelist cpan enc2xs encguess exetype h2ph h2xs instmodsh json_pp libnetcfg perlbug  \
-        perldoc perlglob perlivp perlthanks piconv pl2bat pl2pm pod2html pod2man pod2text pod2usage podchecker \
-        podselect prove pstruct ptar ptardiff ptargrep runperl search shasum splain xsubpp zipdetails ; do
-        sed -i "s/${pkgdir_pattern}/@PERL_RELOCATE@/g" bin/${script}
-    done
+    xargs -0 -a "${relocate_list}" sed -i \
+        -e "s/${pkgdir_pattern_double}/@PERL_RELOCATE_DOUBLE@/g" \
+        -e "s/${pkgdir_pattern}/@PERL_RELOCATE@/g" \
+        -e "s/${root_pattern_double}/@PERL_RELOCATE_DOUBLE@/g" \
+        -e "s/${root_pattern}/@PERL_RELOCATE@/g"
+
+    msg2 "Getting PATH components"
+    local skip_paths=("${MINGW_PREFIX}/bin")
+    local path_arr=()
+    # Parse the configuration for paths that should be added to PATH
+    # The sorting is a bit hacky...
+    local p
+    while IFS='' read -r p; do
+        p="${p//\\/\/}"
+        if [[ -n "${p}" \
+              && ! "$(printf '%s\n' "${skip_paths[@]}" "${path_arr[@]}")" \
+              =~ (^|$'\n')"${p}"($'\n'|$) ]]; then
+            path_arr+=("${p}")
+        fi
+    done < <(\
+        sed -nr \
+            -e "s/^installsitebin='@PERL_.*?@(.*)'/1\\t\\1/p" \
+            -e "s/^installsitescript='@PERL_.*?@(.*)'/2\\t\\1/p" \
+            -e "s/^installvendorbin='@PERL_.*?@(.*)'/3\\t\\1/p" \
+            -e "s/^installvendorscript='@PERL_.*?@(.*)'/4\\t\\1/p" \
+            -e "s/^installbin='@PERL_.*?@(.*)'/5\\t\\1/p" \
+            -e "s/^installscript='@PERL_.*?@(.*)'/6\\t\\1/p" \
+            "${config_heavy}" \
+        | sort -n -k1,1 | cut -f2- | uniq
+    )
+    local path="$(IFS=':'; echo "${path_arr[*]}")"
+
+    msg2 "Adding extra files"
+    local profile="/etc/profile.d/z-${_realname}-${CARCH}.sh"
+    install -Dvm644 <(sed \
+            -e "/^\s*local\s\+mypath=/ s/=.*/=\"${path//\//\\\/}\"/" \
+            -e "s/@PREFIX@/${MINGW_PREFIX//\//\\\/}/g" \
+            -e "s/@FILENAME@/${profile//\//\\\/}/g" \
+            -e "/@REM@/d" \
+            "${srcdir}"/perlprofile.in) \
+        "${pkgdir}${profile}"
+
+    # Link perl executable to main bin directory
+    local perldir="$(dirname "$(find ./bin -name "perl.exe" -print -quit)")"
+    if [[ "${perldir}" != ./bin ]]; then
+        ln -vt ./bin/ "${perldir}/perl"{.exe,5*.dll}
+    fi
+
+    # Add these so we have them on PATH before installing the first package
+    sed -nr "s/^install(vendor|site)(bin|script|lib|arch|(man|html)[13]dir)='@PERL_.*?@(.*)'/\\4/p" "${config_heavy}" \
+        | sort | uniq | while IFS='' read -r p; do p="${pkgdir}${p//\\/\/}"; [[ -e "${p}" ]] || echo "${p}"; done \
+        | xargs -r install -dvm755
+
+    # Licenses
+    install -Dvm644 -t "share/licenses/${_realname}" "${srcdir}/${_build}/"{README,Copying,Artistic}
+
 }
+
+# vim: set ts=4 sw=4 et ai:
