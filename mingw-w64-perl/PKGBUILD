@@ -2,7 +2,8 @@
 # Contributor: Renato Silva <br.renatosilva@gmail.com>
 # Contributor: Niklas Holm <jadedcyborg@gmail.com>
 
-_realname=perl
+# Order is important, primary package first
+declare -rga _realname=(perl perl-doc)
 url='https://www.perl.org'
 pkgdesc='A highly capable, feature-rich programming language (mingw-w64)'
 license=(GPL1+ Artistic1)
@@ -12,10 +13,20 @@ arch=(any)
 # changes, update the exisitng patches or add a new one.
 pkgver=5.26.1
 pkgrel=1
-install="${_realname}-${CARCH}.install"
 options=(staticlibs strip '!purge' emptydirs)
-pkgbase=mingw-w64-${_realname}
-pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgbase="mingw-w64-${_realname}"
+pkgname=()
+declare -ga _pkgname=()
+# Associative array to map current pkgname (in package_x()) to realname
+declare -gA _pkgname_ht=()
+local _n _p
+for _n in "${_realname[@]}"; do
+    _p="${MINGW_PACKAGE_PREFIX}-${_n}"
+    _pkgname_ht+=(["${_p}"]="${_n}")
+    _pkgname+=("${_p}")
+    pkgname+=("${_p}")
+done
+readonly _pkgname _pkgname_ht
 makedepends=(
     ${MINGW_PACKAGE_PREFIX}-gcc
 )
@@ -26,6 +37,7 @@ depends=(
 )
 declare -rga _sources=(
     perlprofile.in
+    perlinstall.in
 )
 if [[ -z "${SRCURI:-}" ]]; then
 declare -rga _patches=(
@@ -169,13 +181,14 @@ provides=("${MINGW_PACKAGE_PREFIX}-perl-archive-tar=2.24"
 
 ## Run updpkgsums to update
 sha256sums=('fe8208133e73e47afc3251c08d2c21c5a60160165a8ab8b669c43a420e4ec680'
-            '95915f461a813d2e86c7546e31de5ec30026046f375b34e86e12a50482d392d8'
-            '9b0b84ea06a5cc8fa5c214a1710b8c8fc2b2c657b3f48c182419273e5a0ce035'
-            '6de1563ac63b7bf40326fe9d1b8b2f44b8c1a033c183df9879e9a7d9ea5e6629'
+            'e08491b314a125e8b6aad211eed18e7fde1d2db9a6aea1b4a77d837c3efbc12a'
+            'ccfc7c417e109790046e41cd425e09c91214f72e4cea7138ffb69bb8cb9eb313'
+            '726cabf22ec69923bf2253ff7d8f504b0698054da909a812d1d6716ce4d1320b'
             '33bf80656a00e050f25da056eef69781701ecaf2dc4608b0049fefc938decca5'
             'b6055ad4e61133bf819cb50a36bac8a848c8649bcca70e4d0e48da60edd200e5'
-            'a7cebf208ff295bbe9aafe08c077c5c8c926022c55d8b8cc7fe30ae06a5fbb13'
-            '54d8a5fc218031ee1354c8780a7af5de64f712ad63abdf029b09d33b664d6b0f')
+            '611427bc16f389000c5d030db7351507e36583c8ae9f1a3d20a019ffbe96cdc8'
+            '54d8a5fc218031ee1354c8780a7af5de64f712ad63abdf029b09d33b664d6b0f'
+            'ff2bbc16a26d0583f344a8c88a055a5396c8b0d15e2498169c1ff996ca0d74ae')
 
 declare -rg _build="build-${CARCH}-${_realname}-${pkgver}"
 
@@ -190,8 +203,11 @@ prepare() {
 }
 
 _make() {
-    # Please read README.win32 in the source package
-    local prefix="$(cygpath -w "${pkgdir}${MINGW_PREFIX}")"
+    # Please read README.win32 in the source package.
+    # Using pkgdirbase here is not supported but required since we need the
+    # package directory at build time, something which makepkg doesn't consider.
+    local prefix="$(cygpath -w "${pkgdirbase}/${_pkgname[0]}${MINGW_PREFIX}")"
+    local docprefix="$(cygpath -w "${pkgdirbase}/${_pkgname[1]}${MINGW_PREFIX}")"
     local cchome="$(cygpath -w "${MINGW_PREFIX}")"
     local sysroot="$(cygpath -u "${SYSTEMROOT}")"
     local -i jobs="${JOBS:-$(nproc)}"
@@ -206,6 +222,7 @@ _make() {
         CCHOME="${cchome}"
         INST_DRV="${prefix:0:2}"
         INST_TOP="${prefix}"
+        INST_DOC="${docprefix}"
         SHELL="${COMSPEC}"
         PLMAKE=mingw32-make
     )
@@ -231,7 +248,6 @@ build() {
     [[ "${CARCH}" == "x86_64" ]] && postfix="w64" || postfix="w32"
     sed -ri "/@@CPAN_HOME@@/{N;s/([\._])cpan/\1cpan-${postfix}/g;D}" \
         "${srcdir}/${_build}/cpan/CPAN/lib/CPAN/HandleConfig.pm"
-    pkgdir="${pkgdirbase}/${pkgname}"
     _make
 }
 
@@ -241,8 +257,11 @@ check() {
     _make test || true
 }
 
-package() {
-    _make install
+eval "package_${_pkgname[0]}() { _package_bare; }" # perl
+eval "package_${_pkgname[1]}() { _package_doc; }"  # perl-doc
+
+_package_common() {
+    install="${pkgname}.install"
 
     cd "${pkgdir}${MINGW_PREFIX}"
     attrib.exe -r //s
@@ -253,6 +272,64 @@ package() {
         -o -name '*.pod' ! -path '*/pods/*' \
         \) -o -type d -empty \) -delete
 
+    # Path relocation. This is done by replacing hard-coded paths with relocate
+    # patterns that will be resolved on package installation.
+
+    local grep_args=() sed_args=() paths=() single= double= html= path=
+    mapfile -t -d $'\0' paths < <(printf "${pkgdirbase}/%s/\0" "${_pkgname[@]}")
+    for path in "${paths[@]}" /; do
+        single="$(cygpath -w "${path}")"
+        single="${single//\\/\\\\}"        # \  -> \\
+        double="${single//\\\\/\\\\\\\\}"  # \\ -> \\\\
+        html="${single//\\\\/\\\/}"        # \\ -> \/
+        grep_args+=(
+            -e "${html}"
+            -e "${double}"
+            -e "${single}"
+        )
+        sed_args+=(
+            -e "s/${html}/@PERL_RELOCATE_HTML@\\//g"
+            -e "s/${double}/@PERL_RELOCATE_DOUBLE@\\\\\\\\/g"
+            -e "s/${single}/@PERL_RELOCATE@\\\\/g"
+        )
+    done
+
+    msg2 "Creating relocate patterns for:"
+    local -i i
+    for ((i=0; i<${#grep_args[@]}; ++i)); do
+        if ((i%2 == 1)); then
+            plain "%b" "${grep_args[i]}"
+        fi
+    done
+
+    # Attach list of files containing relocate patterns for use in post-install script.
+    # Update perl-*.install if changing the filename.
+    local relocate_list="./share/${_pkgname_ht["${pkgname}"]}/.relocate_list"
+    install -Dvm644 <(grep -rilZ "${grep_args[@]}" . ) "${relocate_list}"
+
+    xargs -0 -a "${relocate_list}" sed -i "${sed_args[@]}"
+
+    install -Dvm644 <(sed \
+            -e "s/@PREFIX@/${MINGW_PREFIX//\//\\\/}/g" \
+            -e "s/@FILELIST@/${relocate_list//\//\\\/}/g" \
+            -e "/@REM@/d" \
+            "${srcdir}"/perlinstall.in) \
+        "${startdir}/${install}"
+}
+
+_package_doc() {
+    pkgdesc="Perl manpages and html documentation (mingw-64)"
+    optdepends=("${_pkgname[0]}")
+    provides=()
+    _make install.doc
+    _package_common
+}
+
+_package_bare() {
+    optdepends=("${_pkgname[1]}")
+    _make install.bare
+    _package_common
+
     msg2 "Post-install configuration"
     local config_heavy="$(find . -name Config_heavy.pl -print -quit)"
 
@@ -261,55 +338,6 @@ package() {
     sed -i -e '/^man1ext=/ s/=.*/='"'"'1p'"'"'/' \
            -e '/^man3ext=/ s/=.*/='"'"'3pm'"'"'/' \
            "${config_heavy}"
-
-    # Path relocation. This is done by replacing hard-coded paths with relocate
-    # patterns that will be resolved on package installation.
-
-    local root_pattern
-    local root_pattern_double
-    local root_pattern_html
-    local pkgdir_pattern
-    local pkgdir_pattern_double
-    local pkgdir_pattern_html
-
-    root_pattern="$(cygpath -w /)"
-    root_pattern="${root_pattern%\\}"
-    root_pattern="${root_pattern//\\/\\\\}"
-    root_pattern_double="${root_pattern//\\\\/\\\\\\\\}"
-    root_pattern_html="${root_pattern//\\\\/\\\/}"
-    pkgdir_pattern="$(cygpath -w "${pkgdir}")"
-    pkgdir_pattern="${pkgdir_pattern//\\/\\\\}"
-    pkgdir_pattern_double="${pkgdir_pattern//\\\\/\\\\\\\\}"
-    pkgdir_pattern_html="${pkgdir_pattern//\\\\/\\\/}"
-
-    msg2 "Creating relocate patterns for:"
-    plain "%b" "${root_pattern}"
-    plain "%b" "${root_pattern_double}"
-    plain "%b" "${root_pattern_html}"
-    plain "%b" "${pkgdir_pattern}"
-    plain "%b" "${pkgdir_pattern_double}"
-    plain "%b" "${pkgdir_pattern_html}"
-
-    # Attach list of files containing relocate patterns for use in post-install script.
-    # Update perl-*.install if changing the filename.
-    local relocate_list="./share/perl/.relocate_list"
-    install -Dvm644 <(grep -rilZ \
-            -e "${pkgdir_pattern_html}" \
-            -e "${pkgdir_pattern_double}" \
-            -e "${pkgdir_pattern}" \
-            -e "${root_pattern_html}" \
-            -e "${root_pattern_double}" \
-            -e "${root_pattern}" \
-            . ) \
-        "${relocate_list}"
-
-    xargs -0 -a "${relocate_list}" sed -i \
-        -e "s/${pkgdir_pattern_html}/@PERL_RELOCATE_HTML@/g" \
-        -e "s/${pkgdir_pattern_double}/@PERL_RELOCATE_DOUBLE@/g" \
-        -e "s/${pkgdir_pattern}/@PERL_RELOCATE@/g" \
-        -e "s/${root_pattern_html}/@PERL_RELOCATE_HTML@/g" \
-        -e "s/${root_pattern_double}/@PERL_RELOCATE_DOUBLE@/g" \
-        -e "s/${root_pattern}/@PERL_RELOCATE@/g"
 
     msg2 "Getting PATH components"
     local skip_paths=("${MINGW_PREFIX}/bin")
