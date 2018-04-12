@@ -1,4 +1,4 @@
-From 48afa450c9e8e87f736ace18be55ef65360905f0 Mon Sep 17 00:00:00 2001
+From 5176fc67557291c1774c363640c72f80ad409563 Mon Sep 17 00:00:00 2001
 From: Ray Donnelly <mingw.android@gmail.com>
 Date: Wed, 22 Feb 2017 11:03:04 +0100
 Subject: [PATCH] Make cURL relocatable
@@ -11,7 +11,10 @@ instead of the path to the current .exe to determine the location of the
 pseudo-root directory (allowing the .exe file to live completely outside
 of the MSYS2 system, e.g. in $HOME/bin). This requires Win32 API
 available in Windows XP & 2003 and later, well within the Windows
-versions supported by Cygwin (and therefore MSys2).
+versions supported by Cygwin (and therefore MSYS2).
+
+We also need to be extra careful to extend that path logic to the
+ca-bundle.crt used to validate HTTPS *proxies*, not only HTTPS servers.
 
 Original-patch-by: Ray Donnelly <mingw.android@gmail.com>
 Signed-off-by: Johannes Schindelin <johannes.schindelin@gmx.de>
@@ -21,16 +24,16 @@ Signed-off-by: Johannes Schindelin <johannes.schindelin@gmx.de>
  lib/curl_config.h.in |   3 +
  lib/pathtools.c      | 533 +++++++++++++++++++++++++++++++++++++++++++++++++++
  lib/pathtools.h      |  53 +++++
- lib/url.c            |  16 ++
- 6 files changed, 609 insertions(+), 2 deletions(-)
+ lib/url.c            |  26 ++-
+ 6 files changed, 618 insertions(+), 3 deletions(-)
  create mode 100644 lib/pathtools.c
  create mode 100644 lib/pathtools.h
 
 diff --git a/configure.ac b/configure.ac
-index a72a612fb..09c477454 100755
+index 798fa5f1e..2ed766c0d 100755
 --- a/configure.ac
 +++ b/configure.ac
-@@ -3373,6 +3373,7 @@ if test "xyes" = "x$longlong"; then
+@@ -3474,6 +3474,7 @@ if test "xyes" = "x$longlong"; then
    ])
  fi
  
@@ -38,18 +41,21 @@ index a72a612fb..09c477454 100755
  
  # check for ssize_t
  AC_CHECK_TYPE(ssize_t, ,
---- curl-7.59.0/lib/Makefile.inc.orig	2018-03-20 09:52:55.450263500 -0400
-+++ curl-7.59.0/lib/Makefile.inc	2018-03-20 09:55:42.334940800 -0400
-@@ -54,7 +54,7 @@ LIB_CFILES = file.c timeval.c base64.c h
+diff --git a/lib/Makefile.inc b/lib/Makefile.inc
+index 69f9b403d..44e2dc039 100644
+--- a/lib/Makefile.inc
++++ b/lib/Makefile.inc
+@@ -54,7 +54,8 @@ LIB_CFILES = file.c timeval.c base64.c hostip.c progress.c formdata.c   \
    http_ntlm.c curl_ntlm_wb.c curl_ntlm_core.c curl_sasl.c rand.c        \
    curl_multibyte.c hostcheck.c conncache.c pipeline.c dotdot.c          \
    x509asn1.c http2.c smb.c curl_endian.c curl_des.c system_win32.c      \
 -  mime.c sha256.c setopt.c curl_path.c curl_ctype.c curl_range.c
-+  mime.c sha256.c setopt.c pathtools.c curl_path.c curl_ctype.c curl_range.c
++  mime.c sha256.c setopt.c curl_path.c curl_ctype.c curl_range.c        \
++  pathtools.c
  
  LIB_HFILES = arpa_telnet.h netrc.h file.h timeval.h hostip.h progress.h \
    formdata.h cookie.h http.h sendf.h ftp.h url.h dict.h if2ip.h         \
-@@ -74,7 +74,7 @@ LIB_HFILES = arpa_telnet.h netrc.h file.
+@@ -74,7 +75,7 @@ LIB_HFILES = arpa_telnet.h netrc.h file.h timeval.h hostip.h progress.h \
    curl_setup_once.h multihandle.h setup-vms.h pipeline.h dotdot.h       \
    x509asn1.h http2.h sigpipe.h smb.h curl_endian.h curl_des.h           \
    curl_printf.h system_win32.h rand.h mime.h curl_sha256.h setopt.h     \
@@ -59,12 +65,12 @@ index a72a612fb..09c477454 100755
  LIB_RCFILES = libcurl.rc
  
 diff --git a/lib/curl_config.h.in b/lib/curl_config.h.in
-index 3a3368b9b..1f63fed4c 100644
+index 0f2a80403..9bad51f8d 100644
 --- a/lib/curl_config.h.in
 +++ b/lib/curl_config.h.in
-@@ -9,6 +9,9 @@
- /* Location of default ca path */
- #undef CURL_CA_PATH
+@@ -12,6 +12,9 @@
+ /* Default SSL backend */
+ #undef CURL_DEFAULT_SSL_BACKEND
  
 +/* Location of executable */
 +#undef CURL_BINDIR
@@ -671,10 +677,10 @@ index 000000000..d4ff40f8a
 +
 +#endif /* PATHTOOLS_H */
 diff --git a/lib/url.c b/lib/url.c
-index 47f69c9f1..e39638cec 100644
+index 945d4e327..981e60d26 100644
 --- a/lib/url.c
 +++ b/lib/url.c
-@@ -121,6 +121,9 @@ bool curl_win32_idn_to_ascii(const char *in, char **out);
+@@ -119,6 +119,9 @@ bool curl_win32_idn_to_ascii(const char *in, char **out);
  #include "dotdot.h"
  #include "strdup.h"
  #include "setopt.h"
@@ -684,7 +690,7 @@ index 47f69c9f1..e39638cec 100644
  
  /* The last 3 #include files should be in this order */
  #include "curl_printf.h"
-@@ -490,7 +493,20 @@ CURLcode Curl_init_userdefined(struct UserDefined *set)
+@@ -490,11 +493,32 @@ CURLcode Curl_init_userdefined(struct Curl_easy *data)
  
    /* This is our preferred CA cert bundle/path since install time */
  #if defined(CURL_CA_BUNDLE)
@@ -698,13 +704,26 @@ index 47f69c9f1..e39638cec 100644
 +  strncat(relocated, relative, path_max);
 +  simplify_path(relocated);
 +  result = Curl_setstropt(&set->str[STRING_SSL_CAFILE_ORIG], relocated);
-+  free((void*)relative);
 +#else
    result = Curl_setstropt(&set->str[STRING_SSL_CAFILE_ORIG], CURL_CA_BUNDLE);
+-  if(result)
 +#endif /* defined(__MINGW32__) */
++  if(result) {
++#if defined(__MINGW32__)
++    free((void*)relative);
++#endif /* defined(__MINGW32__) */
+     return result;
++  }
+ 
++#if defined(__MINGW32__)
++  result = Curl_setstropt(&set->str[STRING_SSL_CAFILE_PROXY], relocated);
++  free((void*)relative);
++#else
+   result = Curl_setstropt(&set->str[STRING_SSL_CAFILE_PROXY], CURL_CA_BUNDLE);
++#endif
    if(result)
      return result;
  #endif
 -- 
-2.15.0.windows.1
+2.16.1.windows.4
 
