@@ -4,67 +4,95 @@
 _realname=pango
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=1.41.0
-pkgrel=1
+pkgver=1.42.1
+pkgrel=2
 pkgdesc="A library for layout and rendering of text (mingw-w64)"
 arch=('any')
 url="http://www.pango.org"
-
-# TODO: what is the license for the package as a whole? The README file says
-# that most of the code is LGPL but some parts are "GPL/FreeType". However this
-# non-LGPL note makes reference to non-existing files, so would LGPL apply to
-# the whole code? If this note is still correct, are the GPL/FreeType parts
-# under either or both of these licenses, and which versions? What license is
-# compatible with the answers?
-license=(partial:'LGPL2')
-
+license=('LGPL2.1')
 makedepends=("${MINGW_PACKAGE_PREFIX}-gcc"
             "${MINGW_PACKAGE_PREFIX}-pkg-config"
             "${MINGW_PACKAGE_PREFIX}-gobject-introspection"
+            "${MINGW_PACKAGE_PREFIX}-meson"
+            "${MINGW_PACKAGE_PREFIX}-ninja"
             "${MINGW_PACKAGE_PREFIX}-gtk-doc")
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-cairo"
          "${MINGW_PACKAGE_PREFIX}-freetype"
          "${MINGW_PACKAGE_PREFIX}-fontconfig"
          "${MINGW_PACKAGE_PREFIX}-glib2"
-         "${MINGW_PACKAGE_PREFIX}-harfbuzz")
+         "${MINGW_PACKAGE_PREFIX}-harfbuzz"
+         "${MINGW_PACKAGE_PREFIX}-fribidi")
 options=('staticlibs' 'strip' 'emptydirs')
 source=("https://download.gnome.org/sources/pango/${pkgver:0:4}/${_realname}-${pkgver}.tar.xz"
-        0001-no-unconditional-xft-please.all.patch)
-sha256sums=('1f76ef95953dc58ee5d6a53e5f1cb6db913f3e0eb489713ee9266695cae580ba'
-            'bebab6128258d300e677df0751177f5c30235d0a49c150d97987d0f00b309f35')
+        0001-build-move-usp10-before-gdi32.patch
+        0001-meson-skip-pangoxft-headers-on-Windows-gtk-doc-build.patch
+        0002-pangowin32-fix-script-cache-hash-key-for-64bit-build.patch
+        static-skip-help2man.patch)
+sha256sums=('915a6756b298578ff27c7a6393f8c2e62e6e382f9411f2504d7af1a13c7bce32'
+            'f07bfd26bc4eabb03ea0294d2d428e617a6fb505afec0d1c40dc8af659d22a97'
+            '6ec49e382d726c5047f3d06cae58e2d270268042f89f06cfb6c5533e2c52c078'
+            'bbe26df33845ed369dbfa9267256828bffe72be14eecc9784ea1b34240bd087d'
+            '5c245a47af6dd883132cf610723c1832d2b92dae93a75c4bbfa8d77702dfc64f')
 
 prepare() {
   cd "${srcdir}/${_realname}-${pkgver}"
-  patch -p1 -i ${srcdir}/0001-no-unconditional-xft-please.all.patch
 
-  autoreconf -fi
-  sed -i 's/have_libthai=true/have_libthai=false/' configure
+  # https://bugzilla.gnome.org/show_bug.cgi?id=795045
+  patch -p1 -i ${srcdir}/0001-build-move-usp10-before-gdi32.patch
+  patch -p1 -i ${srcdir}/0001-meson-skip-pangoxft-headers-on-Windows-gtk-doc-build.patch
+  patch -p1 -i ${srcdir}/0002-pangowin32-fix-script-cache-hash-key-for-64bit-build.patch
+
+  # pango-view doesn't work in the static build
+  patch -p1 -i ${srcdir}/static-skip-help2man.patch
 }
 
 build() {
-  [[ -d ${srcdir}/build-${MINGW_CHOST} ]] && rm -rf ${srcdir}/build-${MINGW_CHOST}
-  mkdir -p ${srcdir}/build-${MINGW_CHOST} && cd ${srcdir}/build-${MINGW_CHOST}
+  cd "${srcdir}"
+  [[ -d build-${MINGW_CHOST} ]] && rm -rf build-${MINGW_CHOST}
+  mkdir -p build-${MINGW_CHOST}
+  cd build-${MINGW_CHOST}
 
-  mkdir -p docs/html
-  cp -rf ../${_realname}-${pkgver}/docs/html/* docs/html
+  meson \
+    --default-library shared \
+    --buildtype plain \
+    -Denable_docs=true \
+    -Dgir=true \
+    ../${_realname}-${pkgver}
 
-  ../${_realname}-${pkgver}/configure \
-    --prefix=${MINGW_PREFIX} \
-    --build=${MINGW_CHOST} \
-    --host=${MINGW_CHOST} \
-    --enable-introspection \
-    --disable-debug \
-    --enable-shared \
-    --enable-static
-  make
+  ninja
+
+  for pcfile in *.pc; do
+    sed -s "s|$(cygpath -m ${MINGW_PREFIX})|${MINGW_PREFIX}|g" -i "${pcfile}"
+  done
+
+  cd "${srcdir}"
+  [[ -d build-static-${MINGW_CHOST} ]] && rm -rf build-static-${MINGW_CHOST}
+  mkdir -p build-static-${MINGW_CHOST}
+  cd build-static-${MINGW_CHOST}
+
+  meson \
+    --default-library static \
+    --buildtype plain \
+    -Denable_docs=false \
+    -Dgir=false \
+    ../${_realname}-${pkgver}
+
+  ninja
 }
 
 package() {
+  cd "${srcdir}/build-static-${MINGW_CHOST}"
+  DESTDIR=${pkgdir}${MINGW_PREFIX} ninja install
+
   cd "${srcdir}/build-${MINGW_CHOST}"
-  make DESTDIR="${pkgdir}" install
+  DESTDIR=${pkgdir}${MINGW_PREFIX} ninja install
+
+  # remove installed tests, no need and they contain the build path which
+  # leads to pkgbuild warnings
+  rm -Rf "${pkgdir}${MINGW_PREFIX}/share/installed-tests"
+  rm -Rf "${pkgdir}${MINGW_PREFIX}/libexec"
 
   # License
-  install -Dm644 "${srcdir}/${_realname}-${pkgver}/README"  "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/README"
   install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING"
 }
