@@ -557,10 +557,11 @@ int main(void)
 		prefix_args_len = wcslen(buffer);
 	}
 	else if (!wcsnicmp(basename, L"git-", 4)) {
+		is_git_command = 0;
 		needs_env_setup = 0;
 
 		/* Call a builtin */
-		prefix_args = basename + 4;
+		prefix_args = basename;
 		prefix_args_len = wcslen(prefix_args);
 		if (!wcsicmp(prefix_args + prefix_args_len - 4, L".exe"))
 			prefix_args_len -= 4;
