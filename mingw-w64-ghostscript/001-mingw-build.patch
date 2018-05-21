@@ -1,0 +1,599 @@
+--- a/base/gp_mswin.c
++++ b/base/gp_mswin.c
+@@ -989,7 +989,7 @@
+ 
+ /* -------------------------  _snprintf -----------------------------*/
+ 
+-#if defined(_MSC_VER) && _MSC_VER>=1900 /* VS 2014 and later have (finally) snprintf */
++#if (defined(_MSC_VER) && _MSC_VER>=1900) || defined(__MINGW64_VERSION_MAJOR) /* VS 2014 and later have (finally) snprintf */
+ #  define STDC99
+ #else
+ /* Microsoft Visual C++ 2005  doesn't properly define snprintf,
+--- a/base/gp_mswin.h
++++ b/base/gp_mswin.h
+@@ -56,4 +56,13 @@
+ 
+ #endif /* !defined(RC_INVOKED) */
+ 
++// in gp_mswin.c, mswin_popen is called 
++// before it is implemented, so we must
++// provide a prototype (at least with GCC) to
++// avoid implicit definition with the wrong return type
++
++#ifdef __GNUC__
++FILE *mswin_popen(const char *cmd, const char *mode);
++#endif
++
+ #endif /* gp_mswin_INCLUDED */
+--- a/base/gs.mak
++++ b/base/gs.mak
+@@ -520,6 +520,7 @@
+ # save our set of makefile variables that are defined in every build (paths, etc.)
+ $(gconfigd_h) : $(ECHOGS_XE) $(GS_MAK) $(GLSRCDIR)$(D)version.mak $(MAKEDIRS)
+ 	$(EXP)$(ECHOGS_XE) -w $(gconfigd_h) -x 23 define -s -u GS_LIB_DEFAULT -x 2022 $(GS_LIB_DEFAULT) -x 22
++	$(MINGW_FONTPATH_PATCH_OR_EMPTY_COMMAND)
+ 	$(EXP)$(ECHOGS_XE) -a $(gconfigd_h) -x 23 define -s -u GS_DEV_DEFAULT -x 2022 $(GS_DEV_DEFAULT) -x 22
+ 	$(EXP)$(ECHOGS_XE) -a $(gconfigd_h) -x 23 define -s -u GS_CACHE_DIR -x 2022 $(GS_CACHE_DIR) -x 22
+ 	$(EXP)$(ECHOGS_XE) -a $(gconfigd_h) -x 23 define -s -u SEARCH_HERE_FIRST -s $(SEARCH_HERE_FIRST)
+--- a/base/lib.mak
++++ b/base/lib.mak
+@@ -62,7 +62,7 @@
+ # We can't use $(CC_) for GLLCMS2CC because that includes /Za on
+ # msvc builds, and lcms configures itself to depend on msvc extensions
+ # (inline asm, including windows.h) when compiled under msvc.
+-GLLCMS2CC=$(CC) $(LCMS2_CFLAGS) $(CFLAGS) $(I_)$(GLI_) $(II)$(LCMS2SRCDIR)$(D)include$(_I) $(GLF_)
++GLLCMS2CC=$(CC) $(LCMS2_CFLAGS) $(CFLAGS) $(I_)$(GLI_) $(GLF_)
+ lcms2_h=$(LCMS2SRCDIR)$(D)include$(D)lcms2.h
+ lcms2_plugin_h=$(LCMS2SRCDIR)$(D)include$(D)lcms2_plugin.h
+ 
+--- /dev/null
++++ b/base/mingw-fp.sh
+@@ -0,0 +1 @@
++sed -i -e 's?\\?/?g' $1
+--- /dev/null
++++ b/base/mingw-fs.mak
+@@ -0,0 +1,34 @@
++# MSys/MinGW file- and operating-system section
++# adapted from winplat.mak
++
++# Define the name of this makefile.
++
++MINGW_FS_MAK=$(GLSRC)mingw-fs.mak
++
++# Define generic Windows-specific modules.
++
++mingw-fs_=$(GLOBJ)gp_ntfs.$(OBJ) $(GLOBJ)gp_win32.$(OBJ)
++$(GLD)mingw-fs.dev : $(MINGW_FS_MAK) $(ECHOGS_XE) $(mingw-fs_)
++	$(SETMOD) $(GLD)mingw-fs $(mingw-fs_)
++
++$(GLOBJ)gp_ntfs.$(OBJ): $(GLSRC)gp_ntfs.c $(AK)\
++ $(dos__h) $(memory__h) $(stdio__h) $(string__h) $(windows__h)\
++ $(gp_h) $(gpmisc_h) $(gsmemory_h) $(gsstruct_h) $(gstypes_h) $(gsutil_h)
++	$(GLCC) $(GLO_)gp_ntfs.$(OBJ) $(C_) $(GLSRC)gp_ntfs.c
++
++$(GLOBJ)gp_win32.$(OBJ): $(GLSRC)gp_win32.c $(AK)\
++ $(dos__h) $(malloc__h) $(stdio__h) $(string__h) $(windows__h)\
++ $(gp_h) $(gsmemory_h) $(gstypes_h)
++	$(GLCC) $(GLO_)gp_win32.$(OBJ) $(C_) $(GLSRC)gp_win32.c
++
++# Define the Windows thread / synchronization module.
++
++winsync_=$(GLOBJ)gp_wsync.$(OBJ)
++$(GLD)winsync.dev : $(MINGW_FS_MAK) $(ECHOGS_XE) $(winsync_)
++	$(SETMOD) $(GLD)winsync $(winsync_)
++	$(ADDMOD) $(GLD)winsync -replace $(GLD)nosync
++
++$(GLOBJ)gp_wsync.$(OBJ): $(GLSRC)gp_wsync.c $(AK)\
++ $(dos__h) $(malloc__h) $(stdio__h) $(string__h) $(windows__h)\
++ $(gp_h) $(gsmemory_h) $(gstypes_h)
++	$(GLCC) $(GLO_)gp_wsync.$(OBJ) $(C_) $(GLSRC)gp_wsync.c
+--- /dev/null
++++ b/base/mingwlib.mak
+@@ -0,0 +1,76 @@
++# Common makefile section for MSys/MinGW
++# adapted from winlib.mak
++
++# Define the files to be removed by `make clean'.
++# nmake expands macros when encountered, not when used,
++# so this must precede the !include statements.
++
++BEGINFILES=$(GLGENDIR)\ccf32.tr\
++ $(GLOBJDIR)\*.res $(GLOBJDIR)\*.ico\
++ $(BINDIR)\$(GSDLL).dll $(BINDIR)\$(GSCONSOLE).exe\
++ $(BINDIR)\setupgs.exe $(BINDIR)\uninstgs.exe\
++ $(GLOBJDIR)\cups\*.h\
++ $(BEGINFILES2)
++
++# -------------------------------- Library -------------------------------- #
++
++# The MSys/MinGW Win32 platform
++
++mingw32__=$(GLOBJ)gp_mswin.$(OBJ) $(GLOBJ)gp_wgetv.$(OBJ) $(GLOBJ)gp_wpapr.$(OBJ) \
++ $(GLOBJ)gp_stdia.$(OBJ) $(GLOBJ)gp_wutf8.$(OBJ)
++mingw32_inc=$(GLD)nosync.dev $(GLD)mingw-fs.dev
++
++$(GLGEN)mingw32_.dev:  $(mingw32__) $(ECHOGS_XE) $(mingw32_inc)
++	$(SETMOD) $(GLGEN)mingw32_ $(mingw32__)
++	$(ADDMOD) $(GLGEN)mingw32_ -include $(mingw32_inc)
++
++$(GLOBJ)gp_mswin.$(OBJ): $(GLSRC)gp_mswin.c $(AK) $(gp_mswin_h) \
++ $(ctype__h) $(dos__h) $(malloc__h) $(memory__h) $(pipe__h) \
++ $(stdio__h) $(string__h) $(windows__h) $(winspool_h)\
++ $(gx_h) $(gp_h) $(gpcheck_h) $(gpmisc_h) $(gserrors_h) $(gsexit_h)
++	$(GLCC) $(GLO_)gp_mswin.$(OBJ) $(C_) $(GLSRC)gp_mswin.c
++
++$(GLOBJ)gp_wutf8.$(OBJ): $(GLSRC)gp_wutf8.c $(windows__h)
++	$(GLCC) $(GLO_)gp_wutf8.$(OBJ) $(C_) $(GLSRC)gp_wutf8.c
++
++$(GLOBJ)gp_wgetv.$(OBJ): $(GLSRC)gp_wgetv.c $(AK) $(gscdefs_h)
++	$(GLCC) $(GLO_)gp_wgetv.$(OBJ) $(C_) $(GLSRC)gp_wgetv.c
++
++$(GLOBJ)gp_wpapr.$(OBJ): $(GLSRC)gp_wpapr.c $(AK) $(gp_h)
++	$(GLCC) $(GLO_)gp_wpapr.$(OBJ) $(C_) $(GLSRC)gp_wpapr.c
++
++# Define MS-Windows handles (file system) as a separable feature.
++
++mshandle_=$(GLOBJ)gp_mshdl.$(OBJ)
++$(GLD)mshandle.dev: $(ECHOGS_XE) $(mshandle_)
++	$(SETMOD) $(GLD)mshandle $(mshandle_)
++	$(ADDMOD) $(GLD)mshandle -iodev handle
++
++$(GLOBJ)gp_mshdl.$(OBJ): $(GLSRC)gp_mshdl.c $(AK)\
++ $(ctype__h) $(errno__h) $(stdio__h) $(string__h)\
++ $(gsmemory_h) $(gstypes_h) $(gxiodev_h) $(gserrors_h)
++	$(GLCC) $(GLO_)gp_mshdl.$(OBJ) $(C_) $(GLSRC)gp_mshdl.c
++
++# Define MS-Windows printer (file system) as a separable feature.
++
++msprinter_=$(GLOBJ)gp_msprn.$(OBJ)
++$(GLD)msprinter.dev: $(ECHOGS_XE) $(msprinter_)
++	$(SETMOD) $(GLD)msprinter $(msprinter_)
++	$(ADDMOD) $(GLD)msprinter -iodev printer
++
++$(GLOBJ)gp_msprn.$(OBJ): $(GLSRC)gp_msprn.c $(AK)\
++ $(ctype__h) $(errno__h) $(stdio__h) $(string__h)\
++ $(gsmemory_h) $(gstypes_h) $(gxiodev_h)
++	$(GLCC) $(GLO_)gp_msprn.$(OBJ) $(C_) $(GLSRC)gp_msprn.c
++
++# Define MS-Windows polling as a separable feature
++# because it is not needed by the gslib.
++mspoll_=$(GLOBJ)gp_mspol.$(OBJ)
++$(GLD)mspoll.dev: $(ECHOGS_XE) $(mspoll_)
++	$(SETMOD) $(GLD)mspoll $(mspoll_)
++
++$(GLOBJ)gp_mspol.$(OBJ): $(GLSRC)gp_mspol.c $(AK)\
++ $(gx_h) $(gp_h) $(gpcheck_h)
++	$(GLCC) $(GLO_)gp_mspol.$(OBJ) $(C_) $(GLSRC)gp_mspol.c
++
++# end of mingwlib.mak
+--- a/base/time_.h
++++ b/base/time_.h
+@@ -78,7 +78,7 @@
+ #endif
+ 
+ /* Some System V environments, and Posix environments, need <sys/times.h>. */
+-#if defined(HAVE_SYS_TIMES_H) && HAVE_SYS_TIMES_H == 1
++#if defined(HAVE_SYS_TIMES_H) && HAVE_SYS_TIMES_H == 1 && !defined(__MINGW32__)
+ #  include <sys/times.h>
+ #  define use_times_for_usertime 1
+                 /* Posix 1003.1b-1993 section 4.8.1.5 says that
+--- a/base/unix-aux.mak
++++ b/base/unix-aux.mak
+@@ -69,6 +69,13 @@
+  $(UNIX_AUX_MAK) $(MAKEDIRS)
+ 	$(GLCC) $(GLO_)gp_sysv.$(OBJ) $(C_) $(GLSRC)gp_sysv.c
+ 
++# the MINGW platform / build environment, joining unix for the ride 
++mingw__=$(GLOBJ)gp_wgetv.$(OBJ) $(GLOBJ)gp_wpapr.$(OBJ) $(GLOBJ)gp_win32.$(OBJ) $(GLOBJ)gp_mswin.$(OBJ) $(GLOBJ)gp_ntfs.$(OBJ) $(GLOBJ)gp_stdia.$(OBJ) $(GLOBJ)gp_wutf8.$(OBJ) $(GLOBJ)gp_nxpsprn.$(OBJ)
++$(GLGEN)mingw_.dev: $(mingw__) $(GLD)nosync.dev $(GLD)smd5.dev
++	$(SETMOD) $(GLGEN)mingw_ $(mingw__) -include $(GLD)nosync
++	$(ADDMOD) $(GLGEN)mingw_ -include $(GLD)smd5
++
++
+ # -------------------------- Auxiliary programs --------------------------- #
+ 
+ $(ECHOGS_XE): $(GLSRC)echogs.c $(AK) $(stdpre_h) $(UNIX_AUX_MAK) $(MAKEDIRS)
+@@ -91,18 +98,31 @@
+ # To get GS to use the system zlib, you remove/hide the gs/zlib directory
+ # which means that the mkromfs build can't find the zlib source it needs.
+ # So it's split into two targets, one using the zlib source directly.....
+-MKROMFS_OBJS_0=$(MKROMFS_ZLIB_OBJS) $(AUX)gpmisc.$(OBJ) $(AUX)gp_getnv.$(OBJ) \
+- $(AUX)gscdefs.$(OBJ) $(AUX)gp_unix.$(OBJ) $(AUX)gp_unifs.$(OBJ) $(AUX)gp_unifn.$(OBJ) \
+- $(AUX)gp_stdia.$(OBJ) $(AUX)gsutil.$(OBJ) $(AUX)memento.$(OBJ)
++ifeq ($(MINGW_BUILD), 1)
++    MKROMFS_OBJS_0=$(MKROMFS_ZLIB_OBJS) $(AUX)gpmisc.$(OBJ) $(AUX)gp_getnv.$(OBJ) \
++        $(AUX)gscdefs.$(OBJ)  $(AUX)gp_ntfs.$(OBJ) $(AUX)gp_mswin.$(OBJ) \
++        $(AUX)gp_stdia.$(OBJ) $(AUX)gsutil.$(OBJ) $(AUX)memento.$(OBJ)
++else
++    MKROMFS_OBJS_0=$(MKROMFS_ZLIB_OBJS) $(AUX)gpmisc.$(OBJ) $(AUX)gp_getnv.$(OBJ) \
++        $(AUX)gscdefs.$(OBJ) $(AUX)gp_unix.$(OBJ) $(AUX)gp_unifs.$(OBJ) $(AUX)gp_unifn.$(OBJ) \
++        $(AUX)gp_stdia.$(OBJ) $(AUX)gsutil.$(OBJ) $(AUX)memento.$(OBJ)
++endif
+ 
+ $(MKROMFS_XE)_0: $(GLSRC)mkromfs.c $(MKROMFS_COMMON_DEPS) $(MKROMFS_OBJS_0) $(UNIX_AUX_MAK) $(MAKEDIRS)
+ 	$(CCAUX_) $(GENOPTAUX) $(I_)$(GLSRCDIR)$(_I) $(I_)$(GLOBJ)$(_I) $(I_)$(ZSRCDIR)$(_I) $(GLSRC)mkromfs.c $(O_)$(MKROMFS_XE)_0 $(MKROMFS_OBJS_0) $(AUXEXTRALIBS)
+ 
+ # .... and one using the zlib library linked via the command line
+-MKROMFS_OBJS_1=$(AUX)gscdefs.$(OBJ) \
+- $(AUX)gpmisc.$(OBJ) $(AUX)gp_getnv.$(OBJ) \
+- $(AUX)gp_unix.$(OBJ) $(AUX)gp_unifs.$(OBJ) $(AUX)gp_unifn.$(OBJ) \
+- $(AUX)gp_stdia.$(OBJ) $(AUX)gsutil.$(OBJ)
++# (here two, MINGW has a different set of dependencies,
++# most notably gp_ntfs and gp_wutf8)
++ifeq ($(MINGW_BUILD), 1)
++    MKROMFS_OBJS_1=$(GLOBJ)gp_ntfs.$(OBJ) $(GLOBJ)gp_wutf8.$(OBJ) \
++        $(GLOBJ)gpmisc.$(OBJ) $(GLOBJ)gp_wgetv.$(OBJ) $(GLOBJ)gscdefs.$(OBJ)
++else
++    MKROMFS_OBJS_1=$(AUX)gscdefs.$(OBJ) \
++        $(AUX)gpmisc.$(OBJ) $(AUX)gp_getnv.$(OBJ) \
++        $(AUX)gp_unix.$(OBJ) $(AUX)gp_unifs.$(OBJ) $(AUX)gp_unifn.$(OBJ) \
++        $(AUX)gp_stdia.$(OBJ) $(AUX)gsutil.$(OBJ)
++endif
+ 
+ $(MKROMFS_XE)_1: $(GLSRC)mkromfs.c $(MKROMFS_COMMON_DEPS) $(MKROMFS_OBJS_1) $(UNIX_AUX_MAK) $(MAKEDIRS)
+ 	$(CCAUX_) $(GENOPTAUX) $(I_)$(GLSRCDIR)$(_I) $(I_)$(GLOBJ)$(_I) $(I_)$(ZSRCDIR)$(_I) $(GLSRC)mkromfs.c $(O_)$(MKROMFS_XE)_1 $(MKROMFS_OBJS_1) $(AUXEXTRALIBS)
+--- a/base/unix-dll.mak
++++ b/base/unix-dll.mak
+@@ -35,7 +35,12 @@
+ # Shared object names
+ 
+ # simple loader (no support for display device)
+-GSSOC_XENAME=$(GS_SO_BASE)c$(XE)
++ifeq ($(MINGW_WITH_WINLIB_NAMES), 1)
++    GSSOC_XENAME=gswin$(MINGW_PLATFORM_BITS)c$(XE)
++else
++    GSSOC_XENAME=$(GS_SO_BASE)c$(XE)
++endif
++
+ GSSOC_XE=$(BINDIR)/$(GSSOC_XENAME)
+ GSSOC=$(BINDIR)/$(GSSOC_XENAME)
+ 
+@@ -52,12 +52,28 @@
+ GPDLSOC=$(BINDIR)/$(GPDLSOC_XENAME)
+ 
+ # loader suporting display device using Gtk+
+-GSSOX_XENAME=$(GS_SO_BASE)x$(XE)
++ifeq ($(MINGW_WITH_WINLIB_NAMES), 1)
++    GSSOX_XENAME=gswin$(MINGW_PLATFORM_BITS)$(XE)
++else
++    GSSOX_XENAME=$(GS_SO_BASE)x$(XE)
++endif
++
+ GSSOX_XE=$(BINDIR)/$(GSSOX_XENAME)
+ GSSOX=$(BINDIR)/$(GSSOX_XENAME)
+ 
+-# shared library
+-GS_SONAME_BASE=lib$(GS_SO_BASE)
++# shared library: handle unix and mingw library names
++ifeq ($(MINGW_BUILD), 1)
++    ifeq ($(MINGW_WITH_WINLIB_NAMES), 1)
++        GS_SONAME_BASE=gsdll$(MINGW_PLATFORM_BITS)
++        GS_SONAME_LINK=$(GS_SONAME_BASE)
++    else
++        GS_SONAME_BASE=lib$(GS_SO_BASE)
++        GS_SONAME_LINK=lib$(GS_SO_BASE)
++    endif
++else
++    GS_SONAME_BASE=lib$(GS_SO_BASE)
++    GS_SONAME_LINK=$(GS_SO_BASE)
++endif
+ PCL_SONAME_BASE=lib$(PCL_SO_BASE)
+ XPS_SONAME_BASE=lib$(XPS_SO_BASE)
+ GPDL_SONAME_BASE=lib$(GPDL_SO_BASE)
+@@ -140,13 +140,13 @@
+ 
+ # Create symbolic links to the Ghostscript interpreter library
+ 
+-$(GS_SO): $(GS_SO_MAJOR) $(UNIX_DLL_MAK) $(MAKEDIRS)
++$(GS_SO): $(GS_SO_MAJOR_MINOR) $(UNIX_DLL_MAK) $(MAKEDIRS)
+ 	$(RM_) $(GS_SO)
+-	ln -s $(GS_SONAME_MAJOR_MINOR) $(GS_SO)
++	ln -s $(GS_SONAME_MAJOR) $(GS_SO)
+ 
+-$(GS_SO_MAJOR): $(GS_SO_MAJOR_MINOR) $(UNIX_DLL_MAK) $(MAKEDIRS)
+-	$(RM_) $(GS_SO_MAJOR)
+-	ln -s $(GS_SONAME_MAJOR_MINOR) $(GS_SO_MAJOR)
++$(GS_SO_MAJOR_MINOR): $(GS_SO_MAJOR) $(UNIX_DLL_MAK) $(MAKEDIRS)
++	$(RM_) $(GS_SO_MAJOR_MINOR)
++	ln -s $(GS_SONAME_MAJOR) $(GS_SO_MAJOR_MINOR)
+ 
+ $(PCL_SO): $(PCL_SO_MAJOR) $(UNIX_DLL_MAK) $(MAKEDIRS)
+ 	$(RM_) $(PCL_SO)
+@@ -212,12 +212,12 @@
+ 
+ # Build the small Ghostscript loaders, with Gtk+ and without
+ $(GSSOC_XE): gs-so-links-subtarget $(PSSRC)$(SOC_LOADER) $(UNIX_DLL_MAK) $(MAKEDIRS)
+-	$(GLCC) -g -o $(GSSOC_XE) $(PSSRC)dxmainc.c \
+-	-L$(BINDIR) -l$(GS_SO_BASE)
++	$(GLCC) -g -o $(GSSOC_XE) $(PSSRC)$(SOC_LOADER_PLAIN) \
++	-L$(BINDIR) -l$(GS_SONAME_LINK)
+ 
+ $(GSSOX_XE): gs-so-links-subtarget $(PSSRC)$(SOC_LOADER) $(UNIX_DLL_MAK) $(MAKEDIRS)
+ 	$(GLCC) -g $(SOC_CFLAGS) -o $(GSSOX_XE) $(PSSRC)$(SOC_LOADER) \
+-	-L$(BINDIR) -l$(GS_SO_BASE) $(SOC_LIBS)
++	-L$(BINDIR) -l$(GS_SONAME_LINK) $(SOC_LIBS)
+ 
+ $(PCLSOC_XE): gpcl6-so-links-subtarget $(PLSRC)$(REALMAIN_SRC).c $(UNIX_DLL_MAK) $(MAKEDIRS)
+ 	$(GLCC) -g -o $(PCLSOC_XE) $(PLSRC)$(REALMAIN_SRC).c -L$(BINDIR) -l$(PCL_SO_BASE)
+@@ -222,7 +222,7 @@
+ SODEFS=\
+  GS_DOT_O= \
+  REALMAIN_OBJ= \
+- GS_XE=$(BINDIR)/$(GS_SONAME_MAJOR_MINOR) \
++ GS_XE=$(BINDIR)/$(GS_SONAME_MAJOR)\
+  GPCL_XE=$(BINDIR)/$(PCL_SONAME_MAJOR_MINOR) \
+  GXPS_XE=$(BINDIR)/$(XPS_SONAME_MAJOR_MINOR) \
+  GPDL_XE=$(BINDIR)/$(GPDL_SONAME_MAJOR_MINOR) \
+@@ -313,11 +313,17 @@
+ 	-mkdir -p $(DESTDIR)$(gsincludedir)
+ 	$(INSTALL_PROGRAM) $(GSSOC) $(DESTDIR)$(bindir)/$(GSSOC_XENAME)
+ 	$(INSTALL_PROGRAM) $(GSSOX) $(DESTDIR)$(bindir)/$(GSSOX_XENAME)
+-	$(INSTALL_PROGRAM) $(BINDIR)/$(GS_SONAME_MAJOR_MINOR) $(DESTDIR)$(libdir)/$(GS_SONAME_MAJOR_MINOR)
+-	$(RM_) $(DESTDIR)$(libdir)/$(GS_SONAME)
+-	ln -s $(GS_SONAME_MAJOR_MINOR) $(DESTDIR)$(libdir)/$(GS_SONAME)
+-	$(RM_) $(DESTDIR)$(libdir)/$(GS_SONAME_MAJOR)
+-	ln -s $(GS_SONAME_MAJOR_MINOR) $(DESTDIR)$(libdir)/$(GS_SONAME_MAJOR)
++	@if test "$(MINGW_BUILD)" = "1" ; then \
++	  $(INSTALL_PROGRAM) $(BINDIR)/$(GS_SONAME_MAJOR) $(DESTDIR)$(bindir)/$(GS_SONAME_MAJOR) ; \
++	  $(INSTALL_PROGRAM) $(BINDIR)/$(GS_SONAME_LINK).dll.a $(DESTDIR)$(libdir)/$(GS_SONAME_LINK).dll.a ; \
++	else \
++	  $(INSTALL_PROGRAM) $(BINDIR)/$(GS_SONAME_MAJOR) $(DESTDIR)$(libdir)/$(GS_SONAME_MAJOR) ; \
++	  $(RM_) $(DESTDIR)$(libdir)/$(GS_SONAME) ; \
++	  ln -s $(GS_SONAME_MAJOR) $(DESTDIR)$(libdir)/$(GS_SONAME) ; \
++	  $(RM_) $(DESTDIR)$(libdir)/$(GS_SONAME_MAJOR) ; \
++	  ln -s $(GS_SONAME_MAJOR) $(DESTDIR)$(libdir)/$(GS_SONAME_MAJOR_MINOR) ; \
++	fi
++	$(INSTALL_DATA) $(GLSRCDIR)/gserrors.h $(DESTDIR)$(gsincludedir)gserrors.h
+ 	$(INSTALL_DATA) $(PSSRC)iapi.h $(DESTDIR)$(gsincludedir)iapi.h
+ 	$(INSTALL_DATA) $(PSSRC)ierrors.h $(DESTDIR)$(gsincludedir)ierrors.h
+ 	$(INSTALL_DATA) $(GLSRC)gserrors.h $(DESTDIR)$(gsincludedir)gserrors.h
+--- a/base/unix-gcc.mak
++++ b/base/unix-gcc.mak
+@@ -79,7 +79,7 @@
+ INSTALL_DATA = $(INSTALL) -m 644
+ INSTALL_SHARED = 
+ 
+-prefix = /usr/local
++prefix = /usr
+ exec_prefix = ${prefix}
+ bindir = ${exec_prefix}/bin
+ scriptdir = $(bindir)
+@@ -98,7 +98,7 @@
+ gssharedir = ${exec_prefix}/lib/ghostscript/$(GS_DOT_VERSION)
+ gsincludedir = ${prefix}/include/ghostscript/
+ 
+-docdir=$(gsdatadir)/doc
++docdir=$(gsdatadir)/doc/ghostscript-$(GS_DOT_VERSION)
+ exdir=$(gsdatadir)/examples
+ GS_DOCDIR=$(docdir)
+ 
+--- a/base/unixhead.mak
++++ b/base/unixhead.mak
+@@ -22,7 +22,12 @@
+ # Define the platform name.  For a "stock" System V platform,
+ # use sysv_ instead of unix_.
+ 
+-GSPLATFORM=unix_
++# select platform: unix or mingw
++ifeq ($(MINGW_BUILD), 1)
++	GSPLATFORM=mingw_
++else	
++	GSPLATFORM=unix_
++endif
+ 
+ # Define the syntax for command, object, and executable files.
+ 
+@@ -65,3 +70,9 @@
+ # Define the compilation rules and flags.
+ 
+ BEGINFILES=
++
++ifeq ($(MINGW_BUILD), 1)
++	MINGW_FONTPATH_PATCH_OR_EMPTY_COMMAND=$(SH) $(GLSRCDIR)/mingw-fp.sh $(gconfigd_h)
++else
++	MINGW_FONTPATH_PATCH_OR_EMPTY_COMMAND=
++endif
+--- a/configure.ac
+@@ -492,6 +492,27 @@
+         *BSD)
+         OBJDIR_BSDMAKEWORKAOROUND="notobj"
+         ;;
++		MINGW*)
++		MINGW_BUILD=1
++		MINGW_PLATFORM=`uname`
++		MINGW_XTLIBS="-lwinspool"
++		LIBS="$LIBS $MINGW_XTLIBS"
++
++		# inner MINGW case statement: 32/64 bits
++		case $MINGW_PLATFORM in
++            MINGW32*)
++            MINGW_PLATFORM_BITS=32
++            ;;
++            MINGW64*)
++            MINGW_PLATFORM_BITS=64
++            ;;
++        esac
++
++		AC_SUBST(MINGW_BUILD)
++		AC_SUBST(MINGW_PLATFORM)
++		AC_SUBST(MINGW_PLATFORM_BITS)
++		AC_SUBST(MINGW_XTLIBS)
++		;;
+ esac
+ AC_SUBST(OBJDIR_BSDMAKE_WORKAROUND)
+ AC_CHECK_HEADER([sys/window.h])
+@@ -1767,12 +1788,41 @@
+ AC_SUBST(SHARE_JPX)
+ AC_SUBST(JPXDEVS)
+ 
++dnl checks for MinGW shared object name and gdi must precede the gtk checks
++dnl check whether MinGW should use the MSVC dll names
++AC_ARG_WITH([winlib-names], AC_HELP_STRING([--with-winlib-names],
++                                             [MSys/MinGW only: dll and executable names should be gsdll32.dll (gsdll64.dll), gswin32.exe (gswin64.exe), and gswin32c.exe (gswin64c.exe)]),
++            [], [with_winlib_names=no])
++if test "x$with_winlib_names" = "xyes"; then
++    MINGW_WITH_WINLIB_NAMES=1
++fi
++
++dnl check whether MinGW should use the gdi-based (dwmain.c, dwmainc.c) front end
++AC_ARG_WITH([gdi], AC_HELP_STRING([--with-gdi],
++                                             [MSys/MinGW only: use the gdi-based Shared Object loaders (dwmain.c & dwmainc.c; implies --with-winlib-names=yes): not yet implemented]),
++            [], [with_gdi=no])
++if test "x$with_gdi" = "xyes"; then
++    MINGW_WITH_WINLIB_NAMES=1
++    MINGW_WITH_GDI=1
++    # SOC_LOADER value will be set after the initial gtk test
++fi
++
++AC_SUBST(MINGW_WITH_WINLIB_NAMES)
++AC_SUBST(MINGW_WITH_GDI)
++
+ dnl check if we can/should build the gtk loader
+ AC_ARG_ENABLE([gtk], AC_HELP_STRING([--disable-gtk],
+     [Do not build the gtk loader]))
+ SOC_CFLAGS=""
+ SOC_LIBS=""
+-SOC_LOADER=""
++SOC_LOADER="" # default may not be set before the gtk+-2.0 test
++SOC_LOADER_PLAIN=""
++
++if test "x$with_gdi" = "xyes"; then
++    AC_MSG_WARN([the gdi front end under MSys/MinGW is not yet implemented])
++    enable_gtk=yes # try to use gtk+ instead
++fi
++
+ if test "x$enable_gtk" != "xno"; then
+     # Try GTK+ 3.x first...
+     if test "x$PKGCONFIG" != x; then
+@@ -1805,9 +1855,15 @@
+   SOC_LOADER="dxmainc.c"
+ fi
+ 
++dnl set default SOC_LOADER_PLAIN as necessary
++if test "x$SOC_LOADER_PLAIN" = x; then
++	SOC_LOADER_PLAIN="dxmainc.c"
++fi
++
+ AC_SUBST(SOC_CFLAGS)
+ AC_SUBST(SOC_LIBS)
+ AC_SUBST(SOC_LOADER)
++AC_SUBST(SOC_LOADER_PLAIN)
+ 
+ dnl optional X11 for display devices
+ AC_PATH_XTRA
+@@ -2433,6 +2489,20 @@
+ fi
+ 
+ dnl Fix "fontpath" variable...
++if test $MINGW_BUILD = 1; then
++    # Add a reference to the Windows Fonts directory.
++    # This must take place priot to the test below,
++    # as it is also our way to avoid inclusion
++    # of the various unix font directories.
++    # Since gs uses here a colon as delimiter,
++    # we must refer to %windir% as /c/Windows
++    if test "x$fontpath" = "x"; then
++        fontpath="/c/Windows/Fonts"
++    else
++        fontpath="${fontpath}:/c/Windows/Fonts"
++    fi
++fi
++
+ if test "x$fontpath" = "x"; then
+         # These font directories are used by various Linux distributions...
+         fontpath="$datadir/fonts/default/ghostscript"
+@@ -2502,6 +2572,12 @@
+         *sparc*)
+ 	  GCFLAGS="$GCFLAGS -DGS_USE_MEMORY_HEADER_ID=0"
+         ;;
++        MINGW*)
++        DYNAMIC_CFLAGS="-fPIC"
++        DYNAMIC_LDFLAGS="-fPIC -shared"
++        DYNAMIC_LIBS=""
++        DYNANIC_LIB_EXT="dll"
++        ;;
+ esac
+ 
+ dnl --------------------------------------------------
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -60,6 +60,14 @@
+ 
+ CONTRIBDIR=@srcdir@/contrib
+ 
++# ------ MINGW options ------ #
++
++MINGW_BUILD=@MINGW_BUILD@
++MINGW_PLATFORM=@MINGW_PLATFORM@
++MINGW_PLATFORM_BITS=@MINGW_PLATFORM_BITS@
++MINGW_WITH_WINLIB_NAMES=@MINGW_WITH_WINLIB_NAMES@
++MINGW_WITH_GDI=@MINGW_WITH_GDI@
++
+ # Do not edit the next group of lines.
+ 
+ include $(GLSRCDIR)/version.mak
+@@ -433,7 +441,7 @@
+ # Solaris may need -lnsl -lsocket -lposix4.
+ # (Libraries required by individual drivers are handled automatically.)
+ 
+-EXTRALIBS=$(XTRALIBS) @LIBS@ @DYNAMIC_LIBS@ @FONTCONFIG_LIBS@ @FT_LIBS@ @JPX_AUTOCONF_LIBS@ @EXPAT_LIBS@
++EXTRALIBS=$(XTRALIBS) @LIBS@ @MINGW_XTLIBS@ @DYNAMIC_LIBS@ @FONTCONFIG_LIBS@ @FT_LIBS@ @JPX_AUTOCONF_LIBS@ @EXPAT_LIBS@
+ AUXEXTRALIBS=@AUXEXTRALIBS@ @AUX_SHARED_ZLIB@
+ 
+ # Define the standard libraries to search at the end of linking.
+@@ -484,9 +492,10 @@
+ RM=rm -f
+ 
+ # ------ Dynamic loader options ------- #
+-SOC_CFLAGS	=	@SOC_CFLAGS@
+-SOC_LIBS	=	@SOC_LIBS@
+-SOC_LOADER	=	@SOC_LOADER@
++SOC_CFLAGS	        =	@SOC_CFLAGS@
++SOC_LIBS	        =	@SOC_LIBS@
++SOC_LOADER	        =	@SOC_LOADER@
++SOC_LOADER_PLAIN	=	@SOC_LOADER_PLAIN@
+ 
+ # on virtually every Unix-a-like system, this is "so",
+ # but Apple just had to be different, so it's now set
+@@ -637,7 +646,16 @@
+ CC_LEAF=$(CC_)
+ 
+ CCFLAGSAUX=$(GENOPTAUX) $(CAPOPTAUX) $(CFLAGSAUX)
+-CCAUX_=$(CCAUX) $(CCFLAGSAUX)
++
++ifeq ($(MINGW_BUILD), 1)
++	# adding -lz to the compilation flags seems to be an error:
++	# if not always, then at least under MSys/MinGW, 
++	# compiled against the system's zlib,
++	# and having no zlib sub-folder (see also: unixaux.mak)
++	CCAUX_=$(CCAUX) $(CCFLAGSAUX)
++else
++	CCAUX_=$(CCAUX) $(CCFLAGSAUX) @AUX_SHARED_ZLIB@
++endif	
+ 
+ # note gcc can't use -fomit-frame-pointer with -pg.
+ CC_LEAF_PG=$(CC_)
+@@ -707,6 +726,12 @@
+ @CONTRIBINCLUDE@
+ @CUPSINCLUDE@
+ 
++# conditionally include the two .mak files that are only needed with a MINGW build
++ifeq ($(MINGW_BUILD), 1)
++	include $(GLSRCDIR)/mingw-fs.mak
++	include $(GLSRCDIR)/mingwlib.mak
++endif
++
+ # Clean up after the autotools scripts
+ distclean : clean config-clean soclean pgclean debugclean mementoclean
+ 	-$(RM_) -r $(BINDIR) $(GLOBJDIR) $(PSOBJDIR) $(AUXDIR)
+--- a/base/stat_.h
++++ b/base/stat_.h
+@@ -43,7 +43,7 @@
+  * Microsoft C uses _stat instead of stat,
+  * for both the function name and the structure name.
+  */
+-#ifdef _MSC_VER
++#if defined(_MSC_VER) || defined(__MINGW32__)
+ #  define stat __stat64
+ #  define struct_stat struct __stat64
+ #  define fstat _fstat64
