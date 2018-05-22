@@ -1,7 +1,7 @@
-From 43f031469cef14d7efc6a75d03b118559acc76a3 Mon Sep 17 00:00:00 2001
+From 819e93d5d3614ad8c3cf857f269ac8936ae6745d Mon Sep 17 00:00:00 2001
 From: Ray Donnelly <mingw.android@gmail.com>
 Date: Wed, 22 Feb 2017 11:03:04 +0100
-Subject: [PATCH] Make cURL relocatable
+Subject: [PATCH 1/2] Make cURL relocatable
 
 This adds the ability to specify CA_BUNDLE paths that are relative to
 the MSYS2 pseudo-root directory.
@@ -22,10 +22,10 @@ Signed-off-by: Johannes Schindelin <johannes.schindelin@gmx.de>
  configure.ac         |   1 +
  lib/Makefile.inc     |   5 +-
  lib/curl_config.h.in |   3 +
- lib/pathtools.c      | 533 +++++++++++++++++++++++++++++++++++++++++++
- lib/pathtools.h      |  53 +++++
- lib/url.c            |  26 ++-
- 6 files changed, 618 insertions(+), 3 deletions(-)
+ lib/pathtools.c      | 556 +++++++++++++++++++++++++++++++++++++++++++
+ lib/pathtools.h      |  57 +++++
+ lib/url.c            |  26 +-
+ 6 files changed, 645 insertions(+), 3 deletions(-)
  create mode 100644 lib/pathtools.c
  create mode 100644 lib/pathtools.h
 
@@ -80,10 +80,10 @@ index f60321521..e3cdebf56 100644
  
 diff --git a/lib/pathtools.c b/lib/pathtools.c
 new file mode 100644
-index 000000000..c66df924b
+index 000000000..c09458e95
 --- /dev/null
 +++ b/lib/pathtools.c
-@@ -0,0 +1,533 @@
+@@ -0,0 +1,556 @@
 +/*
 +      .Some useful path tools.
 +        .ASCII only for now.
@@ -110,6 +110,13 @@ index 000000000..c66df924b
 +/* If you don't define this, then get_executable_path()
 +   can only use argv[0] which will often not work well */
 +#define IMPLEMENT_SYS_GET_EXECUTABLE_PATH
++
++/* We must include these headers, otherwise free()ing the
++   buffer returned from get_relative_path() will cause a
++   nasty crash */
++#include "curl_setup.h"
++#include "curl_memory.h"
++#include "memdebug.h"
 +
 +#if defined(IMPLEMENT_SYS_GET_EXECUTABLE_PATH)
 +#if defined(__linux__)
@@ -168,6 +175,15 @@ index 000000000..c66df924b
 +  char * common_part;
 +  char * result;
 +  size_t count;
++  size_t match_size_dirsep = 0;  /* The match size up to the last /. Always wind back to this - 1 */
++  size_t match_size = 0;         /* The running (and final) match size. */
++  size_t largest_size;
++  int to_final_is_slash;
++  char from_c;
++  char to_c;
++  size_t ndotdots = 0;
++  char const* from_last;
++  size_t size_result;
 +
 +  /* No to, return "./" */
 +  if (to_in == NULL)
@@ -193,12 +209,8 @@ index 000000000..c66df924b
 +
 +  result[0] = '\0';
 +
-+  size_t match_size_dirsep = 0;  /* The match size up to the last /. Always wind back to this - 1 */
-+  size_t match_size = 0;         /* The running (and final) match size. */
-+  size_t largest_size = (from_size > to_size) ? from_size : to_size;
-+  int to_final_is_slash = (to[to_size-1] == '/') ? 1 : 0;
-+  char from_c;
-+  char to_c;
++  largest_size = (from_size > to_size) ? from_size : to_size;
++  to_final_is_slash = (to[to_size-1] == '/') ? 1 : 0;
 +  for (match_size = 0; match_size < largest_size; ++match_size)
 +  {
 +    /* To simplify the logic, always pretend the strings end with '/' */
@@ -222,8 +234,7 @@ index 000000000..c66df924b
 +  common_part[match_size] = '\0';
 +  from += match_size;
 +  to += match_size;
-+  size_t ndotdots = 0;
-+  char const* from_last = from + strlen(from) - 1;
++  from_last = from + strlen(from) - 1;
 +  while ((from = strchr (from, '/')) && from != from_last)
 +  {
 +    ++ndotdots;
@@ -239,7 +250,7 @@ index 000000000..c66df924b
 +  }
 +  /* Make sure that if to ends with '/' result does the same, and
 +     vice-versa. */
-+  size_t size_result = strlen(result);
++  size_result = strlen(result);
 +  if ((to_final_is_slash == 1)
 +      && (!size_result || result[size_result-1] != '/'))
 +  {
@@ -263,8 +274,10 @@ index 000000000..c66df924b
 +  size_t in_size = strlen (path);
 +  int it_ended_with_a_slash = (path[in_size - 1] == '/') ? 1 : 0;
 +  char * result = path;
++  char * result_p;
++  char const ** toks;
 +  sanitise_path(result);
-+  char * result_p = result;
++  result_p = result;
 +
 +  do
 +  {
@@ -273,7 +286,7 @@ index 000000000..c66df924b
 +  } while ((result_p = strchr (result_p, '/')) != NULL);
 +
 +  result_p = result;
-+  char const ** toks = (char const **) alloca (sizeof (char const*) * n_toks);
++  toks = (char const **) alloca (sizeof (char const*) * n_toks);
 +  n_toks = 0;
 +  do
 +  {
@@ -294,7 +307,7 @@ index 000000000..c66df924b
 +     with an earlier forward path (i.e. neither '.' nor '..') */
 +  for (i = 1; i < n_toks; ++i)
 +  {
-+    int removals[2] = { -1, -1 };
++    ssize_t removals[2] = { -1, -1 };
 +    if ( strcmp (toks[i], "." ) == 0)
 +    {
 +      removals[0] = i;
@@ -354,7 +367,7 @@ index 000000000..c66df924b
 +  return actual_to;
 +}
 +
-+int
++ssize_t
 +get_executable_path(char const * argv0, char * result, ssize_t max_size)
 +{
 +  char * system_result = (char *) alloca (max_size);
@@ -420,7 +433,7 @@ index 000000000..c66df924b
 +
 +#if defined(_WIN32)
 +int
-+get_dll_path(char * result, unsigned long max_size)
++get_dll_path(char * result, size_t max_size)
 +{
 +  HMODULE handle;
 +  char * p;
@@ -428,12 +441,12 @@ index 000000000..c66df924b
 +
 +  if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
 +      GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-+      (LPCSTR) &get_dll_path, &handle))
++      (void *)(uintptr_t)&get_dll_path, &handle))
 +    {
 +      return -1;
 +    }
 +
-+  ret = GetModuleFileNameA(handle, result, max_size);
++  ret = GetModuleFileNameA(handle, result, (DWORD)max_size);
 +  if (ret == 0 || ret == (int)max_size)
 +    {
 +      return -1;
@@ -455,6 +468,7 @@ index 000000000..c66df924b
 +char const *
 +strip_n_prefix_folders(char const * path, size_t n)
 +{
++  char const * last = path;
 +  if (path == NULL)
 +  {
 +    return NULL;
@@ -465,7 +479,6 @@ index 000000000..c66df924b
 +    return path;
 +  }
 +
-+  char const * last = path;
 +  while (n-- && path != NULL)
 +  {
 +    last = path;
@@ -501,6 +514,8 @@ index 000000000..c66df924b
 +  size_t path_count;
 +  size_t path_list_size;
 +  char const * path_list_p;
++  char * all_memory;
++  char const * next_path_list_p = 0;
 +
 +  path_list_p = path_list;
 +  if (path_list == NULL || path_list[0] == '\0')
@@ -518,7 +533,7 @@ index 000000000..c66df924b
 +  while ((path_list_p = strchr (path_list_p, split_char)) != NULL);
 +
 +  /* allocate everything in one go. */
-+  char * all_memory = (char *) malloc (sizeof (char *) * path_count + strlen(path_list) + 1);
++  all_memory = (char *) malloc (sizeof (char *) * path_count + strlen(path_list) + 1);
 +  if (all_memory == NULL)
 +    return 0;
 +  *arr = (char **)all_memory;
@@ -526,15 +541,15 @@ index 000000000..c66df924b
 +
 +  path_count = 0;
 +  path_list_p = path_list;
-+  char const * next_path_list_p = 0;
 +  do
 +  {
++    size_t this_size;
 +    next_path_list_p = strchr (path_list_p, split_char);
 +    if (next_path_list_p != NULL)
 +    {
 +      ++next_path_list_p;
 +    }
-+    size_t this_size = (next_path_list_p != NULL)
++    this_size = (next_path_list_p != NULL)
 +                       ? next_path_list_p - path_list_p - 1
 +                       : &path_list[path_list_size] - path_list_p;
 +    memcpy (all_memory, path_list_p, this_size);
@@ -551,24 +566,31 @@ index 000000000..c66df924b
 +{
 +  char exe_path[MAX_PATH];
 +  char * temp;
++  char **arr = NULL;
++  char split_char = ':';
++  size_t count;
++  size_t result_size;
++  size_t exe_path_size;
++  size_t i;
++  size_t space_required;
++  char * scratch;
++  char * result;
++
 +  get_executable_path (NULL, &exe_path[0], sizeof (exe_path) / sizeof (exe_path[0]));
 +  if ((temp = strrchr (exe_path, '/')) != NULL)
 +  {
 +    temp[1] = '\0';
 +  }
 +
-+  char **arr = NULL;
 +  /* Ask Alexey why he added this. Are we not 100% sure
 +     that we're dealing with unix paths here? */
-+  char split_char = ':';
 +  if (strchr (to_path_list, ';'))
 +  {
 +    split_char = ';';
 +  }
-+  size_t count = split_path_list (to_path_list, split_char, &arr);
-+  int result_size = 1 + (count - 1); /* count - 1 is for ; delim. */
-+  size_t exe_path_size = strlen (exe_path);
-+  size_t i;
++  count = split_path_list (to_path_list, split_char, &arr);
++  result_size = 1 + (count - 1); /* count - 1 is for ; delim. */
++  exe_path_size = strlen (exe_path);
 +  /* Space required is:
 +     count * (exe_path_size + strlen (rel_to_datadir))
 +     rel_to_datadir upper bound is:
@@ -576,27 +598,28 @@ index 000000000..c66df924b
 +     + strlen(arr[i]) + 1.
 +     .. pathalogically num_slashes (from) is strlen (from)
 +     (from = ////////) */
-+  size_t space_required = (count * (exe_path_size + 4 * strlen (from))) + count - 1;
++  space_required = (count * (exe_path_size + 4 * strlen (from))) + count - 1;
 +  for (i = 0; i < count; ++i)
 +  {
 +    space_required += strlen (arr[i]);
 +  }
-+  char * scratch = (char *) alloca (space_required);
++  scratch = (char *) alloca (space_required);
 +  if (scratch == NULL)
 +    return NULL;
 +  for (i = 0; i < count; ++i)
 +  {
 +    char * rel_to_datadir = get_relative_path (from, arr[i]);
++    size_t arr_i_size;
 +    scratch[0] = '\0';
 +    arr[i] = scratch;
 +    strcat (scratch, exe_path);
 +    strcat (scratch, rel_to_datadir);
 +    simplify_path (arr[i]);
-+    size_t arr_i_size = strlen (arr[i]);
++    arr_i_size = strlen (arr[i]);
 +    result_size += arr_i_size;
 +    scratch = arr[i] + arr_i_size + 1;
 +  }
-+  char * result = (char *) malloc (result_size);
++  result = (char *) malloc (result_size + 1);
 +  if (result == NULL)
 +  {
 +    return NULL;
@@ -619,10 +642,10 @@ index 000000000..c66df924b
 +}
 diff --git a/lib/pathtools.h b/lib/pathtools.h
 new file mode 100644
-index 000000000..d4ff40f8a
+index 000000000..dfabfaf10
 --- /dev/null
 +++ b/lib/pathtools.h
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,57 @@
 +/*
 +      .Some useful path tools.
 +        .ASCII only for now.
@@ -651,10 +674,11 @@ index 000000000..d4ff40f8a
 +
 +/* Uses a host OS specific function to determine the path of the executable,
 +   if IMPLEMENT_SYS_GET_EXECUTABLE_PATH is defined, otherwise uses argv0. */
-+int get_executable_path(char const * argv0, char * result, ssize_t max_size);
++ssize_t
++get_executable_path(char const * argv0, char * result, ssize_t max_size);
 +
 +#if defined(_WIN32)
-+int get_dll_path(char * result, unsigned long max_size);
++int get_dll_path(char * result, size_t max_size);
 +#endif
 +
 +/* Where possible, in-place removes occourances of '.' and 'path/..' */
@@ -673,11 +697,14 @@ index 000000000..d4ff40f8a
 +void
 +strip_n_suffix_folders(char * path, size_t n);
 +
++char const *
++get_relocated_path (char const * from, char const * to, char const * actual_from);
++
 +char * get_relocated_path_list(char const * from, char const * to_path_list);
 +
 +#endif /* PATHTOOLS_H */
 diff --git a/lib/url.c b/lib/url.c
-index 701f83ab3..be87f627f 100644
+index 701f83ab3..5e7647289 100644
 --- a/lib/url.c
 +++ b/lib/url.c
 @@ -119,6 +119,9 @@ bool curl_win32_idn_to_ascii(const char *in, char **out);
@@ -696,12 +723,12 @@ index 701f83ab3..be87f627f 100644
  #if defined(CURL_CA_BUNDLE)
 +#if defined(__MINGW32__)
 +    const size_t path_max = PATH_MAX;
-+    char relocated[path_max];
++    char relocated[PATH_MAX], *relative;
 +    get_dll_path(relocated, path_max);
 +    strip_n_suffix_folders(relocated, 1);
 +    strncat(relocated, "/", path_max);
-+    char *relative = get_relative_path(CURL_BINDIR, CURL_CA_BUNDLE);
-+    strncat(relocated, relative, path_max);
++    relative = get_relative_path(CURL_BINDIR, CURL_CA_BUNDLE);
++    strncat(relocated, relative, path_max - 1);
 +    simplify_path(relocated);
 +    result = Curl_setstropt(&set->str[STRING_SSL_CAFILE_ORIG], relocated);
 +#else
