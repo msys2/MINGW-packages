@@ -58,7 +58,6 @@
         )
     )
     @REM See if we have the key
-    @SET "HOME=%USERPROFILE%"
     @"!SSH_ADD!" -l 1>NUL 2>NUL
     @SET result=!ERRORLEVEL!
     @IF NOT !result! == 0 @(
