@@ -6,7 +6,7 @@ _mklpackage=mklml_win_${_mklversion}
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 pkgver=0.14
-pkgrel=1
+pkgrel=2
 pkgdesc="MKL-DNN - Intel(R) Math Kernel Library for Deep Neural Networks (mingw-w64)"
 arch=('any')
 url='https://github.com/intel/mkl-dnn'
@@ -23,7 +23,7 @@ sha256sums=('efebc53882856afec86457a2da644693f5d59c68772d41d640d6b60a8efc4eb0'
 
 prepare() {
   cd "${srcdir}/${_realname}-${pkgver}"
-  patch -p1 -i ${srcdir}/0001-mkl-dnn-mingw.patch
+  patch -p1 -i "${srcdir}/0001-mkl-dnn-mingw.patch"
   [[ -d external ]] && rm -rf external
   mkdir -p external
   cp -a ${srcdir}/${_mklpackage} external/
@@ -44,4 +44,5 @@ build() {
 package() {
   cd "${srcdir}/build-${MINGW_CHOST}"
   make DESTDIR="${pkgdir}" install
+  install -Dm644 -t "${pkgdir}${MINGW_PREFIX}/share/doc/mklml" "${srcdir}/${_realname}-${pkgver}/external/${_mklpackage}/license.txt"
 }
