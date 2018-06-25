@@ -1,14 +1,13 @@
-From 28ff44af9cd7f00c0b09bcc2bc726e4d8083f31c Mon Sep 17 00:00:00 2001
+From 662be0f78e3f5831d5bd8e3ffd1da4646b57b333 Mon Sep 17 00:00:00 2001
 From: Liu Hao <lh_mouse@126.com>
 Date: Sat, 23 Jun 2018 17:02:02 +0800
 Subject: [PATCH] Backport patches for std::filesystem from master.
 
-The following commits were cherry-picked:
+This is done by running the following commands on `gcc-8-branch`:
 
-  * 861db1097d3f
-  * 2fd48392d0a4
-  * 70fea18e0bbb
-  * d4fd5c4964cf
+  git cherry-pick 861db1097d3f 2fd48392d0a4 70fea18e0bbb d4fd5c4964cf
+  git checkout master -- libstdc++-v3/src/filesystem/  \
+    libstdc++-v3/include/bits/fs_\* libstdc++-v3/include/std/filesystem
 
 Testsuites and change logs were discarded to reduce the amount of
 modification.
@@ -21,7 +20,7 @@ Signed-off-by: Liu Hao <lh_mouse@126.com>
  libstdc++-v3/configure                        |  35 +++
  libstdc++-v3/configure.ac                     |   2 +
  libstdc++-v3/crossconfig.m4                   |   1 +
- libstdc++-v3/include/bits/fs_path.h           | 211 +++++++-------
+ libstdc++-v3/include/bits/fs_path.h           | 257 +++++++++--------
  libstdc++-v3/include/bits/fstream.tcc         |  36 +++
  .../include/experimental/bits/fs_path.h       |  74 ++---
  libstdc++-v3/include/std/fstream              | 119 ++++++++
@@ -33,7 +32,7 @@ Signed-off-by: Liu Hao <lh_mouse@126.com>
  libstdc++-v3/src/filesystem/std-dir.cc        |   5 +-
  libstdc++-v3/src/filesystem/std-ops.cc        | 260 ++++++++++++------
  libstdc++-v3/src/filesystem/std-path.cc       | 105 +++++--
- 18 files changed, 909 insertions(+), 333 deletions(-)
+ 18 files changed, 934 insertions(+), 354 deletions(-)
 
 diff --git a/libstdc++-v3/config.h.in b/libstdc++-v3/config.h.in
 index 5a0f0678439..1fc10b511fb 100644
@@ -232,7 +231,7 @@ index fa56795b25e..f0a55c68404 100644
    *-netbsd*)
      SECTION_FLAGS='-ffunction-sections -fdata-sections'
 diff --git a/libstdc++-v3/include/bits/fs_path.h b/libstdc++-v3/include/bits/fs_path.h
-index 3921d17be68..aafba9734bf 100644
+index 3921d17be68..e3938d06d59 100644
 --- a/libstdc++-v3/include/bits/fs_path.h
 +++ b/libstdc++-v3/include/bits/fs_path.h
 @@ -37,11 +37,11 @@
@@ -318,10 +317,30 @@ index 3921d17be68..aafba9734bf 100644
      bool is_relative() const { return !is_absolute(); }
  
      // generation
-@@ -391,6 +363,20 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+@@ -391,6 +363,40 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
      iterator begin() const;
      iterator end() const;
  
++    /// Write a path to a stream
++    template<typename _CharT, typename _Traits>
++      friend std::basic_ostream<_CharT, _Traits>&
++      operator<<(std::basic_ostream<_CharT, _Traits>& __os, const path& __p)
++      {
++	__os << std::quoted(__p.string<_CharT, _Traits>());
++	return __os;
++      }
++
++    /// Read a path from a stream
++    template<typename _CharT, typename _Traits>
++      friend std::basic_istream<_CharT, _Traits>&
++      operator>>(std::basic_istream<_CharT, _Traits>& __is, path& __p)
++      {
++	std::basic_string<_CharT, _Traits> __tmp;
++	if (__is >> std::quoted(__tmp))
++	  __p = std::move(__tmp);
++	return __is;
++      }
++
 +    // Create a basic_string by reading until a null character.
 +    template<typename _InputIterator,
 +	     typename _Traits = std::iterator_traits<_InputIterator>,
@@ -339,7 +358,7 @@ index 3921d17be68..aafba9734bf 100644
    private:
      enum class _Type : unsigned char {
  	_Multi, _Root_name, _Root_dir, _Filename
-@@ -403,19 +389,7 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+@@ -403,19 +409,7 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
  
      enum class _Split { _Stem, _Extension };
  
@@ -360,7 +379,7 @@ index 3921d17be68..aafba9734bf 100644
  
      pair<const string_type*, size_t> _M_find_extension() const;
  
-@@ -443,11 +417,8 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+@@ -443,11 +437,8 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
        static string_type
        _S_convert(_InputIterator __src, __null_terminated)
        {
@@ -374,7 +393,7 @@ index 3921d17be68..aafba9734bf 100644
        }
  
      static string_type
-@@ -467,10 +438,8 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+@@ -467,10 +458,8 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
        _S_convert_loc(_InputIterator __src, __null_terminated,
  		     const std::locale& __loc)
        {
@@ -387,8 +406,12 @@ index 3921d17be68..aafba9734bf 100644
        }
  
      template<typename _CharT, typename _Traits, typename _Allocator>
-@@ -500,25 +469,6 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
-     _Type _M_type = _Type::_Multi;
+@@ -497,28 +486,9 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     struct _Cmpt;
+     using _List = _GLIBCXX_STD_C::vector<_Cmpt>;
+     _List _M_cmpts; // empty unless _M_type == _Type::_Multi
+-    _Type _M_type = _Type::_Multi;
++    _Type _M_type = _Type::_Filename;
    };
  
 -  template<>
@@ -413,29 +436,41 @@ index 3921d17be68..aafba9734bf 100644
    inline void swap(path& __lhs, path& __rhs) noexcept { __lhs.swap(__rhs); }
  
    size_t hash_value(const path& __p) noexcept;
-@@ -556,10 +506,7 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
-     basic_ostream<_CharT, _Traits>&
-     operator<<(basic_ostream<_CharT, _Traits>& __os, const path& __p)
-     {
+@@ -549,60 +519,56 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+ 
+   /// Append one path to another
+   inline path operator/(const path& __lhs, const path& __rhs)
+-  { return path(__lhs) /= __rhs; }
+-
+-  /// Write a path to a stream
+-  template<typename _CharT, typename _Traits>
+-    basic_ostream<_CharT, _Traits>&
+-    operator<<(basic_ostream<_CharT, _Traits>& __os, const path& __p)
+-    {
 -      auto __tmp = __p.string<_CharT, _Traits>();
 -      using __quoted_string
 -	= std::__detail::_Quoted_string<decltype(__tmp)&, _CharT>;
 -      __os << __quoted_string{__tmp, '"', '\\'};
-+      __os << std::quoted(__p.string<_CharT, _Traits>());
-       return __os;
-     }
- 
-@@ -569,40 +516,55 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
-     operator>>(basic_istream<_CharT, _Traits>& __is, path& __p)
-     {
-       basic_string<_CharT, _Traits> __tmp;
+-      return __os;
+-    }
+-
+-  /// Read a path from a stream
+-  template<typename _CharT, typename _Traits>
+-    basic_istream<_CharT, _Traits>&
+-    operator>>(basic_istream<_CharT, _Traits>& __is, path& __p)
+-    {
+-      basic_string<_CharT, _Traits> __tmp;
 -      using __quoted_string
 -	= std::__detail::_Quoted_string<decltype(__tmp)&, _CharT>;
 -      if (__is >> __quoted_string{ __tmp, '"', '\\' })
-+      if (__is >> std::quoted(__tmp))
- 	__p = std::move(__tmp);
-       return __is;
-     }
+-	__p = std::move(__tmp);
+-      return __is;
+-    }
++  {
++    path __result(__lhs);
++    __result /= __rhs;
++    return __result;
++  }
  
 -  template<typename _Source>
 +  template<typename _InputIterator>
@@ -499,7 +534,7 @@ index 3921d17be68..aafba9734bf 100644
  #endif
      }
  
-@@ -911,11 +873,16 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+@@ -911,11 +877,16 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
      path::string(const _Allocator& __a) const
      {
        if constexpr (is_same_v<_CharT, value_type>)
@@ -518,7 +553,7 @@ index 3921d17be68..aafba9734bf 100644
        else
  	return _S_str_convert<_CharT, _Traits>(_M_pathname, __a);
      }
-@@ -1067,6 +1034,16 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+@@ -1067,12 +1038,22 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
      return ext.first && ext.second != string_type::npos;
    }
  
@@ -535,7 +570,14 @@ index 3921d17be68..aafba9734bf 100644
    inline path::iterator
    path::begin() const
    {
-@@ -1083,6 +1060,38 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     if (_M_type == _Type::_Multi)
+       return iterator(this, _M_cmpts.begin());
+-    return iterator(this, false);
++    return iterator(this, empty());
+   }
+ 
+   inline path::iterator
+@@ -1083,6 +1064,38 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
      return iterator(this, true);
    }
  
