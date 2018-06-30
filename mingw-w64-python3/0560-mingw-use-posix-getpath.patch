@@ -1,98 +1,159 @@
-diff -Naur Python-3.6.5-orig/configure.ac Python-3.6.5/configure.ac
---- Python-3.6.5-orig/configure.ac	2018-04-16 09:54:05.811662600 +0300
-+++ Python-3.6.5/configure.ac	2018-04-16 09:54:08.022086100 +0300
-@@ -5601,7 +5601,7 @@
- case $host in
-   *-*-mingw*)
-     dnl default sys.path calculations for windows platforms
--    MODULE_GETPATH=PC/getpathp.o
-+    MODULE_GETPATH=Modules/getpath.o
-     ;;
- esac
- 
-diff -Naur Python-3.6.5-orig/Modules/getpath.c Python-3.6.5/Modules/getpath.c
---- Python-3.6.5-orig/Modules/getpath.c	2018-04-16 09:54:07.688480800 +0300
-+++ Python-3.6.5/Modules/getpath.c	2018-04-16 09:54:08.037686100 +0300
-@@ -10,6 +10,10 @@
- #include <mach-o/dyld.h>
+diff -Naur Python-3.7.0-orig/Include/internal/pystate.h Python-3.7.0/Include/internal/pystate.h
+--- Python-3.7.0-orig/Include/internal/pystate.h	2018-06-30 11:16:58.540296800 +0300
++++ Python-3.7.0/Include/internal/pystate.h	2018-06-30 11:17:01.363901700 +0300
+@@ -43,7 +43,8 @@
+     wchar_t *prefix;
+ #ifdef MS_WINDOWS
+     wchar_t *dll_path;
+-#else
++#endif
++#ifndef _MSC_VER
+     wchar_t *exec_prefix;
+ #endif
+     /* Set by Py_SetPath(), or computed by _PyPathConfig_Init() */
+diff -Naur Python-3.7.0-orig/Modules/getpath.c Python-3.7.0/Modules/getpath.c
+--- Python-3.7.0-orig/Modules/getpath.c	2018-06-30 11:17:01.020701100 +0300
++++ Python-3.7.0/Modules/getpath.c	2018-06-30 11:17:01.363901700 +0300
+@@ -11,6 +11,11 @@
+ #  include <mach-o/dyld.h>
  #endif
  
 +#ifdef MS_WINDOWS
 +#include <windows.h>
++#include <shlwapi.h>
 +#endif
 +
  /* Search in some common locations for the associated Python libraries.
   *
   * Two directories must be found, the platform independent directory
-@@ -109,9 +113,17 @@
- #define LANDMARK L"os.py"
- #endif
+@@ -523,6 +527,97 @@
+ }
  
-+#ifdef __MINGW32__
-+#define wcstok(line, delim, pointer)  wcstok(line, delim)
-+#endif
+ 
++#ifdef MS_WINDOWS
++static int _PathCchCanonicalizeEx_Initialized = 0;
++typedef HRESULT(__stdcall *PPathCchCanonicalizeEx) (PWSTR pszPathOut, size_t cchPathOut,
++    PCWSTR pszPathIn, unsigned long dwFlags);
++static PPathCchCanonicalizeEx _PathCchCanonicalizeEx;
 +
- static wchar_t prefix[MAXPATHLEN+1];
- static wchar_t exec_prefix[MAXPATHLEN+1];
- static wchar_t progpath[MAXPATHLEN+1];
-+#ifdef MS_WINDOWS
-+static wchar_t dllpath[MAXPATHLEN+1];
-+extern HANDLE PyWin_DLLhModule;
-+#endif
- static wchar_t *module_search_path = NULL;
- 
- /* Get file status. Encode the path to the locale encoding. */
-@@ -137,7 +149,7 @@
-     size_t i = wcslen(dir);
-     while (i > 0 && dir[i] != Py_GetSepW(dir))
-         --i;
--    dir[i] = '\0';
-+    dir[i] = 0;
- }
- 
- static int
-@@ -455,6 +467,26 @@
-     return 0;
- }
- 
-+#ifdef MS_WINDOWS
-+/* Calculates dllpath and progpath, replacing \\ with / */
-+int GetWindowsModulePaths()
++static _PyInitError canonicalize(wchar_t *buffer, const wchar_t *path)
 +{
-+    int result = 0;
-+    result = GetModuleFileNameW(NULL, progpath, MAXPATHLEN);
-+    Py_NormalizeSepsW(progpath);
-+    dllpath[0] = 0;
-+#ifdef Py_ENABLE_SHARED
-+    if (PyWin_DLLhModule) {
-+        if((GetModuleFileNameW(PyWin_DLLhModule, dllpath, MAXPATHLEN) > 0)) {
-+            result = 1;
-+            Py_NormalizeSepsW(dllpath);
++    if (buffer == NULL) {
++        return _Py_INIT_NO_MEMORY();
++    }
++
++    if (_PathCchCanonicalizeEx_Initialized == 0) {
++        HMODULE pathapi = LoadLibraryW(L"api-ms-win-core-path-l1-1-0.dll");
++        if (pathapi) {
++            _PathCchCanonicalizeEx = (PPathCchCanonicalizeEx)GetProcAddress(pathapi, "PathCchCanonicalizeEx");
++        }
++        else {
++            _PathCchCanonicalizeEx = NULL;
++        }
++        _PathCchCanonicalizeEx_Initialized = 1;
++    }
++
++    if (_PathCchCanonicalizeEx) {
++        if (FAILED(_PathCchCanonicalizeEx(buffer, MAXPATHLEN + 1, path, 0))) {
++            return _Py_INIT_ERR("buffer overflow in getpathp.c's canonicalize()");
 +        }
 +    }
-+#endif
++    else {
++        if (!PathCanonicalizeW(buffer, path)) {
++            return _Py_INIT_ERR("buffer overflow in getpathp.c's canonicalize()");
++        }
++    }
++    return _Py_INIT_OK();
++}
++
++
++static int
++GetWindowsModulePaths(_PyPathConfig *config)
++{
++    _PyInitError err;
++    int result = 0;
++    wchar_t program_full_path[MAXPATHLEN+1];
++    memset(program_full_path, 0, sizeof(program_full_path));
++
++    if (!GetModuleFileNameW(NULL, program_full_path, MAXPATHLEN)) {
++        result = 1;
++        /* GetModuleFileName should never fail when passed NULL */
++        // return _Py_INIT_ERR("Cannot determine program path");
++    }
++    Py_NormalizeSepsW(program_full_path);
++
++    config->program_full_path = PyMem_RawMalloc(
++        sizeof(wchar_t) * (MAXPATHLEN + 1));
++
++    err = canonicalize(config->program_full_path,
++                        program_full_path);
++    if (_Py_INIT_FAILED(err)) {
++        result = 0;
++    }
 +    return result;
++}
++
++
++static _PyInitError
++get_dll_path(PyCalculatePath *calculate, _PyPathConfig *config)
++{
++    wchar_t dll_path[MAXPATHLEN+1];
++    memset(dll_path, 0, sizeof(dll_path));
++
++#ifdef Py_ENABLE_SHARED
++    extern HANDLE PyWin_DLLhModule;
++    if (PyWin_DLLhModule) {
++        if (!GetModuleFileNameW(PyWin_DLLhModule, dll_path, MAXPATHLEN)) {
++            dll_path[0] = 0;
++        }
++        Py_NormalizeSepsW(dll_path);
++    }
++#else
++    dll_path[0] = 0;
++#endif
++
++    config->dll_path = _PyMem_RawWcsdup(dll_path);
++    if (config->dll_path == NULL) {
++        return _Py_INIT_NO_MEMORY();
++    }
++    return _Py_INIT_OK();
 +}
 +#endif /* MS_WINDOWS */
 +
- static void
- calculate_path(void)
- {
-@@ -534,6 +566,10 @@
-         }
++
+ static _PyInitError
+ calculate_program_full_path(const _PyCoreConfig *core_config,
+                             PyCalculatePath *calculate, _PyPathConfig *config)
+@@ -570,6 +665,10 @@
+         PyMem_RawFree(path);
      }
  #endif /* __APPLE__ */
 +#ifdef MS_WINDOWS
-+    else if(GetWindowsModulePaths()) {
++    else if(GetWindowsModulePaths(config)) {
 +    }
 +#endif /* MS_WINDOWS */
-     else if (path) {
+     else if (calculate->path_env) {
+         wchar_t *path = calculate->path_env;
          while (1) {
-             wchar_t *delim = wcschr(path, DELIM);
-@@ -875,6 +911,45 @@
+@@ -892,6 +991,13 @@
+ {
+     _PyInitError err;
+ 
++#ifdef MS_WINDOWS
++    err = get_dll_path(calculate, config);
++    if (_Py_INIT_FAILED(err)) {
++        return err;
++    }
++#endif
++
+     err = calculate_program_full_path(core_config, calculate, config);
+     if (_Py_INIT_FAILED(err)) {
+         return err;
+@@ -968,6 +1074,48 @@
+     return err;
  }
  
- 
++
 +#ifdef MS_WINDOWS
 +/* Load python3.dll before loading any extension module that might refer
 +   to it. That way, we can be sure that always the python3.dll corresponding
@@ -103,22 +164,24 @@ diff -Naur Python-3.6.5-orig/Modules/getpath.c Python-3.6.5/Modules/getpath.c
 +static int python3_checked = 0;
 +static HANDLE hPython3;
 +int
-+_Py_CheckPython3()
++_Py_CheckPython3(void)
 +{
 +    wchar_t py3path[MAXPATHLEN+1];
 +    wchar_t *s;
-+    if (python3_checked)
++    if (python3_checked) {
 +        return hPython3 != NULL;
++    }
 +    python3_checked = 1;
 +
 +    /* If there is a python3.dll next to the python3y.dll,
 +       assume this is a build tree; use that DLL */
 +    wcscpy(py3path, dllpath);
 +    s = wcsrchr(py3path, Py_GetSepW(py3path));
-+    if (!s)
++    if (!s) {
 +        s = py3path;
-+    else
++    } else {
 +        s += 1;
++    }
 +    wcscpy(s, L"python3.dll");
 +    hPython3 = LoadLibraryExW(py3path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
 +    if (hPython3 != NULL)
@@ -135,10 +198,10 @@ diff -Naur Python-3.6.5-orig/Modules/getpath.c Python-3.6.5/Modules/getpath.c
  #ifdef __cplusplus
  }
  #endif
-diff -Naur Python-3.6.5-orig/Modules/posixmodule.c Python-3.6.5/Modules/posixmodule.c
---- Python-3.6.5-orig/Modules/posixmodule.c	2018-04-16 09:54:07.705080900 +0300
-+++ Python-3.6.5/Modules/posixmodule.c	2018-04-16 09:54:08.037686100 +0300
-@@ -3469,7 +3469,7 @@
+diff -Naur Python-3.7.0-orig/Modules/posixmodule.c Python-3.7.0/Modules/posixmodule.c
+--- Python-3.7.0-orig/Modules/posixmodule.c	2018-06-30 11:17:01.036301200 +0300
++++ Python-3.7.0/Modules/posixmodule.c	2018-06-30 11:17:01.379501800 +0300
+@@ -3524,7 +3524,7 @@
          Py_END_ALLOW_THREADS
          /* FindNextFile sets error to ERROR_NO_MORE_FILES if
             it got to the end of the directory. */
