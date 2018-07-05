@@ -1,0 +1,90 @@
+#!/bin/bash
+
+set -o errexit
+set -o errtrace
+set -o pipefail
+set -o nounset
+
+readonly progpath="$(realpath "$0")"
+readonly progname="$(basename "$progpath")"
+readonly progdir="$(dirname "$progpath")"
+
+perl_corelist() {
+    PATH="${prefix}/bin:${prefix}/bin/core_perl" corelist -v "$1" \
+    | dos2unix \
+    | tail -n+3 \
+    | awk '{
+        if ( $1 !~ /^\s*$/ ) {
+            gsub(/::/, "-", $1)
+            if ( $2 !~ /^\s*$/ ) {
+                printf "perl-%s=%s\n", $1, $2
+            } else {
+                printf "perl-%s\n", $1
+            }
+        }
+    }'
+}
+
+usage() {
+    echo "   Usage: $progname <PKGBUILD> [<perl version>]"
+    echo
+    echo "   Perl and gawk (mingw-w64) needs to be installed"
+    echo
+    [[ "${1:-}" =~ ^[0-9]{1,3}$ ]] && exit $1
+}
+
+pkgbuild="${1:-}"
+[[ -f "$pkgbuild" ]] || usage 1
+
+if [[ -n "${MINGW_PREFIX:-}" ]]; then
+    if [[ -x "${MINGW_PREFIX}/bin/perl" ]]; then
+        prefix="${MINGW_PREFIX}"
+    fi
+elif [[ -x "/mingw64/bin/perl" ]]; then
+    prefix="/mingw64"
+elif [[ -x "/mingw32/bin/perl" ]]; then
+    prefix="/mingw32"
+fi
+[[ -n "${prefix:-}" ]] || usage 1
+
+command -v gawk &>/dev/null || usage 1
+
+version="${2:-}"
+if [[ -n "$version" ]]; then
+    [[ "$version" =~ ^[1-9][0-9]*(\.[0-9]+)*$ ]] || usage 1
+else
+    [[ "$("${prefix}/bin/perl" -V:version)" =~ ^version=\'(.*)\'\; ]]
+    version="${BASH_REMATCH[1]}"
+fi
+
+declare -r tmpfile="$(mktemp)"
+perl_corelist "$version" \
+| while IFS='' read -r line; do
+    if [[ "$line" =~ ^perl-[[:alnum:]_\-]+=(v?[0-9_\.]+)$ ]]; then
+        ver="$(perl -Mversion -le 'print version->parse("'"${BASH_REMATCH[1]}"'")->normal;')"
+        line="${line/%"${BASH_REMATCH[1]}"/"${ver#"v"}"}"
+    fi
+    echo "$line"
+done \
+| sort -f > "$tmpfile"
+
+mv "$pkgbuild" "$pkgbuild~"
+
+gawk '
+/^provides=/ { s = 1 }
+s && /)/ {
+    s = 0
+    print "provides=("
+    while ( (getline line < "'"$tmpfile"'") > 0 ) {
+        print "    \"${MINGW_PACKAGE_PREFIX}-" line "\""
+    }
+    print ")"
+    next
+}
+s { next }
+! s { print }
+' "$pkgbuild~" > "$pkgbuild"
+
+rm "$tmpfile"
+
+# vim: set ts=4 sw=4 et ai:
