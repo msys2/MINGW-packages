@@ -26,76 +26,62 @@ diff -Naur Python-3.7.0-orig/Modules/getpath.c Python-3.7.0/Modules/getpath.c
  /* Search in some common locations for the associated Python libraries.
   *
   * Two directories must be found, the platform independent directory
-@@ -523,6 +527,97 @@
+@@ -323,6 +328,7 @@
+     wcsncpy(prefix, calculate->argv0_path, MAXPATHLEN);
+     prefix[MAXPATHLEN] = L'\0';
+     joinpath(prefix, L"Modules/Setup");
++    Py_NormalizeSepsW(prefix);
+     if (isfile(prefix)) {
+         /* Check VPATH to see if argv0_path is in the build directory. */
+         vpath = Py_DecodeLocale(VPATH, NULL);
+@@ -333,6 +339,7 @@
+             PyMem_RawFree(vpath);
+             joinpath(prefix, L"Lib");
+             joinpath(prefix, LANDMARK);
++            Py_NormalizeSepsW(prefix);
+             if (ismodule(prefix)) {
+                 return -1;
+             }
+@@ -465,6 +465,7 @@
+                 wcsncpy(exec_prefix, calculate->argv0_path, MAXPATHLEN);
+                 exec_prefix[MAXPATHLEN] = L'\0';
+                 joinpath(exec_prefix, rel_builddir_path);
++                Py_NormalizeSepsW(exec_prefix);
+                 PyMem_RawFree(rel_builddir_path );
+                 return -1;
+             }
+@@ -501,6 +508,7 @@
+         }
+         wcsncpy(exec_prefix, calculate->exec_prefix, MAXPATHLEN);
+         joinpath(exec_prefix, L"lib/lib-dynload");
++        Py_NormalizeSepsW(exec_prefix);
+     }
+     /* If we found EXEC_PREFIX do *not* reduce it!  (Yet.) */
+ }
+@@ -523,6 +531,53 @@
  }
  
  
 +#ifdef MS_WINDOWS
-+static int _PathCchCanonicalizeEx_Initialized = 0;
-+typedef HRESULT(__stdcall *PPathCchCanonicalizeEx) (PWSTR pszPathOut, size_t cchPathOut,
-+    PCWSTR pszPathIn, unsigned long dwFlags);
-+static PPathCchCanonicalizeEx _PathCchCanonicalizeEx;
-+
-+static _PyInitError canonicalize(wchar_t *buffer, const wchar_t *path)
-+{
-+    if (buffer == NULL) {
-+        return _Py_INIT_NO_MEMORY();
-+    }
-+
-+    if (_PathCchCanonicalizeEx_Initialized == 0) {
-+        HMODULE pathapi = LoadLibraryW(L"api-ms-win-core-path-l1-1-0.dll");
-+        if (pathapi) {
-+            _PathCchCanonicalizeEx = (PPathCchCanonicalizeEx)GetProcAddress(pathapi, "PathCchCanonicalizeEx");
-+        }
-+        else {
-+            _PathCchCanonicalizeEx = NULL;
-+        }
-+        _PathCchCanonicalizeEx_Initialized = 1;
-+    }
-+
-+    if (_PathCchCanonicalizeEx) {
-+        if (FAILED(_PathCchCanonicalizeEx(buffer, MAXPATHLEN + 1, path, 0))) {
-+            return _Py_INIT_ERR("buffer overflow in getpath.c's canonicalize()");
-+        }
-+    }
-+    else {
-+        if (!PathCanonicalizeW(buffer, path)) {
-+            return _Py_INIT_ERR("buffer overflow in getpath.c's canonicalize()");
-+        }
-+    }
-+    return _Py_INIT_OK();
-+}
-+
-+
 +static int
-+GetWindowsModulePaths(_PyPathConfig *config)
++GetWindowsModulePaths(wchar_t *progpath)
 +{
-+    _PyInitError err;
 +    int result = 0;
 +    wchar_t program_full_path[MAXPATHLEN+1];
 +    memset(program_full_path, 0, sizeof(program_full_path));
 +
-+    if (!GetModuleFileNameW(NULL, program_full_path, MAXPATHLEN)) {
++    if (GetModuleFileNameW(NULL, program_full_path, MAXPATHLEN)) {
 +        result = 1;
-+        /* GetModuleFileName should never fail when passed NULL */
-+        // return _Py_INIT_ERR("Cannot determine program path");
++        Py_NormalizeSepsW(program_full_path);
 +    }
-+    Py_NormalizeSepsW(program_full_path);
 +
-+    config->program_full_path = PyMem_RawMalloc(
-+        sizeof(wchar_t) * (MAXPATHLEN + 1));
-+
-+    err = canonicalize(config->program_full_path,
-+                        program_full_path);
-+    if (_Py_INIT_FAILED(err)) {
-+        result = 0;
-+    }
++    wcscpy(progpath, program_full_path);
 +    return result;
 +}
 +
 +
 +static _PyInitError
-+get_dll_path(PyCalculatePath *calculate, _PyPathConfig *config)
++get_dll_path(_PyPathConfig *config)
 +{
 +    wchar_t dll_path[MAXPATHLEN+1];
 +    memset(dll_path, 0, sizeof(dll_path));
@@ -103,10 +89,12 @@ diff -Naur Python-3.7.0-orig/Modules/getpath.c Python-3.7.0/Modules/getpath.c
 +#ifdef Py_ENABLE_SHARED
 +    extern HANDLE PyWin_DLLhModule;
 +    if (PyWin_DLLhModule) {
-+        if (!GetModuleFileNameW(PyWin_DLLhModule, dll_path, MAXPATHLEN)) {
++        if (GetModuleFileNameW(PyWin_DLLhModule, dll_path, MAXPATHLEN)) {
++            Py_NormalizeSepsW(dll_path);
++            reduce(dll_path);
++        } else {
 +            dll_path[0] = 0;
 +        }
-+        Py_NormalizeSepsW(dll_path);
 +    }
 +#else
 +    dll_path[0] = 0;
@@ -124,44 +112,102 @@ diff -Naur Python-3.7.0-orig/Modules/getpath.c Python-3.7.0/Modules/getpath.c
  static _PyInitError
  calculate_program_full_path(const _PyCoreConfig *core_config,
                              PyCalculatePath *calculate, _PyPathConfig *config)
-@@ -570,14 +665,19 @@
-     char execpath[MAXPATHLEN+1];
- #endif
- 
+@@ -570,6 +624,10 @@
+         PyMem_RawFree(path);
+     }
+ #endif /* __APPLE__ */
 +#ifdef MS_WINDOWS
-+    if(GetWindowsModulePaths(config)) {
++    else if(GetWindowsModulePaths(program_full_path)) {
 +    }
-+#else
-     /* If there is no slash in the argv0 path, then we have to
-      * assume python is on the user's $PATH, since there's no
-      * other way to find a directory to start the search from.  If
-      * $PATH isn't exported, you lose.
-      */
-     if (wcschr(core_config->program_name, SEP)) {
-         wcsncpy(program_full_path, core_config->program_name, MAXPATHLEN);
-     }
 +#endif /* MS_WINDOWS */
- #ifdef __APPLE__
-      /* On Mac OS X, if a script uses an interpreter of the form
-       * "#!/opt/python2.3/bin/python", the kernel only passes "python"
-@@ -703,9 +703,11 @@
-     else {
-         program_full_path[0] = '\0';
+     else if (calculate->path_env) {
+         wchar_t *path = calculate->path_env;
+         while (1) {
+@@ -743,6 +803,7 @@
+         wcsncpy(calculate->zip_path, calculate->prefix, MAXPATHLEN);
      }
-+#ifndef MS_WINDOWS
-     if (program_full_path[0] != SEP && program_full_path[0] != '\0') {
-         absolutize(program_full_path);
-     }
+     joinpath(calculate->zip_path, L"lib/python00.zip");
++    Py_NormalizeSepsW(calculate->zip_path);
+ 
+     /* Replace "00" with version */
+     size_t bufsz = wcslen(calculate->zip_path);
+@@ -785,6 +846,19 @@
+ 
+     bufsz += wcslen(calculate->zip_path) + 1;
+     bufsz += wcslen(exec_prefix) + 1;
++#ifdef MS_WINDOWS
++    if (prefix[0] != '\0' && prefix[1] == L':') {
++        bufsz += wcslen(prefix) + 1;
++    }
++    if (calculate->argv0_path[0] != '\0' && calculate->argv0_path[1] == L':') {
++        bufsz += wcslen(calculate->argv0_path) + 1;
++    }
++    if (config->dll_path[0] != '\0' && config->dll_path[1] == L':') {
++        bufsz += wcslen(config->dll_path) + 1;
++    } else if (config->program_full_path[0] != '\0' && config->program_full_path[1] == L':'){
++        bufsz += wcslen(config->program_full_path) + 1;
++    }
 +#endif
  
-     config->program_full_path = _PyMem_RawWcsdup(program_full_path);
-     if (config->program_full_path == NULL) {
-@@ -892,6 +991,13 @@
+     /* Allocate the buffer */
+     wchar_t *buf = PyMem_RawMalloc(bufsz * sizeof(wchar_t));
+@@ -828,11 +893,28 @@
+         }
+         else {
+             wcscat(buf, defpath);
++            wcscat(buf, delimiter);
+             break;
+         }
+         defpath = delim + 1;
+     }
+-    wcscat(buf, delimiter);
++#ifdef MS_WINDOWS
++    if (prefix[0] != '\0' && prefix[1] == L':') {
++        wcscat(buf, prefix);
++        wcscat(buf, delimiter);
++    }
++    if (calculate->argv0_path[0] != '\0' && calculate->argv0_path[1] == L':') {
++        wcscat(buf, calculate->argv0_path);
++        wcscat(buf, delimiter);
++    }
++    if (config->dll_path[0] != '\0' && config->dll_path[1] == L':') {
++        wcscat(buf, config->dll_path);
++        wcscat(buf, delimiter);
++    } else if (config->program_full_path[0] != '\0' && config->program_full_path[1] == L':'){
++        wcscat(buf, config->program_full_path);
++        wcscat(buf, delimiter);
++    }
++#endif
+ 
+     /* Finally, on goes the directory for dynamic-load modules */
+     wcscat(buf, exec_prefix);
+@@ -855,15 +928,19 @@
+     if (!calculate->pythonpath) {
+         return DECODE_LOCALE_ERR("PYTHONPATH define", len);
+     }
++    Py_NormalizeSepsW(calculate->pythonpath);
+     calculate->prefix = Py_DecodeLocale(PREFIX, &len);
+     if (!calculate->prefix) {
+         return DECODE_LOCALE_ERR("PREFIX define", len);
+     }
++    Py_NormalizeSepsW(calculate->prefix);
+     calculate->exec_prefix = Py_DecodeLocale(EXEC_PREFIX, &len);
+     if (!calculate->prefix) {
+         return DECODE_LOCALE_ERR("EXEC_PREFIX define", len);
+     }
+-    calculate->lib_python = Py_DecodeLocale("lib/python" VERSION, &len);
++    Py_NormalizeSepsW(calculate->exec_prefix);
++    const wchar_t *lib_python_VERSION = (Py_GetSepW(NULL) == L'/') ? L"lib/python" VERSION : L"lib\\python" VERSION;
++    calculate->lib_python = Py_DecodeLocale(lib_python_VERSION, &len);
+     if (!calculate->lib_python) {
+         return DECODE_LOCALE_ERR("EXEC_PREFIX define", len);
+     }
+@@ -892,6 +970,13 @@
  {
      _PyInitError err;
  
 +#ifdef MS_WINDOWS
-+    err = get_dll_path(calculate, config);
++    err = get_dll_path(config);
 +    if (_Py_INIT_FAILED(err)) {
 +        return err;
 +    }
@@ -170,7 +216,7 @@ diff -Naur Python-3.7.0-orig/Modules/getpath.c Python-3.7.0/Modules/getpath.c
      err = calculate_program_full_path(core_config, calculate, config);
      if (_Py_INIT_FAILED(err)) {
          return err;
-@@ -968,6 +1074,48 @@
+@@ -968,6 +1078,60 @@
      return err;
  }
  
@@ -187,6 +233,17 @@ diff -Naur Python-3.7.0-orig/Modules/getpath.c Python-3.7.0/Modules/getpath.c
 +int
 +_Py_CheckPython3(void)
 +{
++    /* This does not work well with mingw-w64-python. First it tries to
++     * look up \python3.dll, which it won't (or should not) find. But the
++     * real problem is when Python is freezed by cx_Freeze. sys.prefix
++     * is then /, and Python tries to load /\DLLs\python3.dll, which makes
++     * windows try to load python3.dll from a network address, causing
++     * a several seconds long delay before proceeding. Since this code does
++     * not do anything useful in the current state, we might just as
++     * well return immediately. */
++#ifdef __MINGW32__
++    return 0;
++#else
 +    wchar_t py3path[MAXPATHLEN+1];
 +    wchar_t *s;
 +    if (python3_checked) {
@@ -196,14 +253,14 @@ diff -Naur Python-3.7.0-orig/Modules/getpath.c Python-3.7.0/Modules/getpath.c
 +
 +    /* If there is a python3.dll next to the python3y.dll,
 +       assume this is a build tree; use that DLL */
-+    wcscpy(py3path, dllpath);
++    wcscpy(py3path, _Py_path_config.dll_path);
 +    s = wcsrchr(py3path, Py_GetSepW(py3path));
 +    if (!s) {
 +        s = py3path;
 +    } else {
 +        s += 1;
 +    }
-+    wcscpy(s, L"python3.dll");
++    wcscpy(s, L"\\python3.dll");
 +    hPython3 = LoadLibraryExW(py3path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
 +    if (hPython3 != NULL)
 +        return 1;
@@ -213,6 +270,7 @@ diff -Naur Python-3.7.0-orig/Modules/getpath.c Python-3.7.0/Modules/getpath.c
 +    wcscat(py3path, L"\\DLLs\\python3.dll");
 +    hPython3 = LoadLibraryExW(py3path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
 +    return hPython3 != NULL;
++#endif
 +}
 +#endif
 +
