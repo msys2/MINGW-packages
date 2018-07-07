@@ -64,6 +64,13 @@ class Tests(unittest.TestCase):
         except URLError:
             pass
 
+    def test_threads(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(1) as pool:
+            for res in pool.map(lambda *x: None, range(10000)):
+                pass
+
 
 def suite():
     return unittest.TestLoader().loadTestsFromName(__name__)
