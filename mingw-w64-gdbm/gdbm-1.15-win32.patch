@@ -1,0 +1,1263 @@
+diff -urN gdbm-1.15_orig/compat/dbmopen.c gdbm-1.15/compat/dbmopen.c
+--- gdbm-1.15_orig/compat/dbmopen.c	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/compat/dbmopen.c	2018-06-17 20:55:43.784407600 +0300
+@@ -58,13 +58,17 @@
+ 
+ /* FIXME: revise return codes */
+ static int
+-ndbm_open_dir_file0 (const char *file_name, int pagfd, int mode)
++ndbm_open_dir_file0 (const char *file_name, struct gdbm_file_info *pag, int mode)
+ {
+   int fd = -1;
+   struct stat st, pagst;
+   unsigned char dirbuf[DEF_DIR_SIZE];
+   int flags = (mode & GDBM_OPENMASK) == GDBM_READER ?
+                 O_RDONLY : O_RDWR;
++  int pagfd = pag->desc;
++#ifdef _WIN32
++  HANDLE hFile;
++#endif
+ 
+   if (mode & GDBM_CLOEXEC)
+     flags |= O_CLOEXEC;
+@@ -76,22 +80,49 @@
+     } 
+       
+   /* Previous versions of GDBM linked pag to dir. Try to detect this: */
++#ifdef _WIN32
++  hFile = CreateFile(file_name, 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
++		     NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
++		     NULL);
++
++  if (hFile != INVALID_HANDLE_VALUE)
++    {
++      BY_HANDLE_FILE_INFORMATION fileInfo;
++      GetFileInformationByHandle (hFile, &fileInfo);
++      CloseHandle (hFile);
++      st.st_size = (fileInfo.nFileSizeHigh * MAXDWORD) + fileInfo.nFileSizeLow;
++
++      if (fileInfo.nNumberOfLinks >= 2)
++	{
++	   BY_HANDLE_FILE_INFORMATION pagInfo;
++	   GetFileInformationByHandle ((HANDLE)_get_osfhandle (pagfd), &pagInfo);
++	   if ((fileInfo.nFileIndexLow == pagInfo.nFileIndexLow) &&
++	       (fileInfo.nFileIndexHigh == pagInfo.nFileIndexHigh))
++	    {
++	      /* Close pag because unlink dir file fails on Windows */
++	      close (pagfd);
++#else
+   if (stat (file_name, &st) == 0)
+     {
+       if (st.st_nlink >= 2)
+ 	{
+ 	  if (st.st_dev == pagst.st_dev && st.st_ino == pagst.st_ino)
+ 	    {
+-	      if (unlink (file_name))
++#endif
++	      int ret = unlink (file_name);
++#ifdef _WIN32
++	      pagfd = pag->desc = open(pag->name, flags | O_BINARY);
++#endif
++	      if (ret)
+ 		{
+ 		  if ((mode & GDBM_OPENMASK) == GDBM_READER)
+ 		    /* Ok, try to cope with it. */
+ 		    return pagfd;
+ 		  else
+ 		    {
+-		      gdbm_set_errno (NULL, GDBM_FILE_OPEN_ERROR, TRUE); 
++		      gdbm_set_errno (NULL, GDBM_FILE_OPEN_ERROR, TRUE);
+ 		      return -1;
+-		    } 
++		    }
+ 		}
+ 	    }
+ 	  else
+@@ -109,7 +140,7 @@
+ 	}
+       else
+ 	{
+-	  fd = open (file_name, flags);
++	  fd = open (file_name, flags | O_BINARY);
+ 	  if (fd == -1)
+ 	    {
+ 	      gdbm_set_errno (NULL, GDBM_FILE_OPEN_ERROR, FALSE);
+@@ -141,7 +172,7 @@
+     }
+   
+   /* File does not exist.  Create it. */
+-  fd = open (file_name, flags | O_CREAT, pagst.st_mode & 0777);
++  fd = open (file_name, flags | O_CREAT | O_BINARY, pagst.st_mode & 0777);
+   if (fd >= 0)
+     {
+       putint (dirbuf, GDBM_DIR_MAGIC);
+@@ -161,10 +192,11 @@
+ }
+ 
+ static int
+-ndbm_open_dir_file (const char *base, int pagfd, int mode)
++ndbm_open_dir_file (const char *base, struct gdbm_file_info *pag, int mode)
+ {
+   char *file_name = malloc (strlen (base) + sizeof (DIRSUF));
+   int fd;
++  int pagfd = pag->desc;
+   
+   if (!file_name)
+     {
+@@ -172,7 +204,7 @@
+       return -1;
+     }
+   fd = ndbm_open_dir_file0 (strcat (strcpy (file_name, base), DIRSUF),
+-			    pagfd, mode);
++			    pag, mode);
+   free (file_name);
+   return fd;
+ }
+@@ -265,7 +297,7 @@
+     }
+   else
+     {
+-      dbm->dirfd = ndbm_open_dir_file (file, dbm->file->desc, open_flags);
++      dbm->dirfd = ndbm_open_dir_file (file, dbm->file, open_flags);
+       if (dbm->dirfd == -1)
+ 	{
+ 	  gdbm_close (dbm->file);
+diff -urN gdbm-1.15_orig/compat/Makefile.am gdbm-1.15/compat/Makefile.am
+--- gdbm-1.15_orig/compat/Makefile.am	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/compat/Makefile.am	2018-06-17 20:55:43.786407700 +0300
+@@ -52,5 +52,5 @@
+ 
+ libgdbm_compat_la_SOURCES = $(DBM_CF) $(NDBM_CF)
+ 
+-libgdbm_compat_la_LDFLAGS = -version-info $(VI_CURRENT):$(VI_REVISION):$(VI_AGE)
++libgdbm_compat_la_LDFLAGS = -no-undefined -version-info $(VI_CURRENT):$(VI_REVISION):$(VI_AGE)
+ 
+diff -urN gdbm-1.15_orig/compat/Makefile.in gdbm-1.15/compat/Makefile.in
+--- gdbm-1.15_orig/compat/Makefile.in	2018-06-15 23:14:27.000000000 +0300
++++ gdbm-1.15/compat/Makefile.in	2018-06-17 22:30:53.220968700 +0300
+@@ -417,7 +417,7 @@
+  dbmrdonly.c
+ 
+ libgdbm_compat_la_SOURCES = $(DBM_CF) $(NDBM_CF)
+-libgdbm_compat_la_LDFLAGS = -version-info $(VI_CURRENT):$(VI_REVISION):$(VI_AGE)
++libgdbm_compat_la_LDFLAGS = -no-undefined -version-info $(VI_CURRENT):$(VI_REVISION):$(VI_AGE)
+ all: all-am
+ 
+ .SUFFIXES:
+diff -urN gdbm-1.15_orig/configure gdbm-1.15/configure
+--- gdbm-1.15_orig/configure	2018-06-15 23:14:27.000000000 +0300
++++ gdbm-1.15/configure	2018-06-17 21:24:30.141149600 +0300
+@@ -639,6 +639,8 @@
+ LTLIBOBJS
+ LIBOBJS
+ AUTOM4TE
++WIN32_FALSE
++WIN32_TRUE
+ COND_GDBMTOOL_DEBUG_FALSE
+ COND_GDBMTOOL_DEBUG_TRUE
+ LFLAGS_DEBUG
+@@ -15169,6 +15171,27 @@
+ fi
+ 
+ 
++if test x$host_os = xmingw32
++then
++   if true; then
++  WIN32_TRUE=
++  WIN32_FALSE='#'
++else
++  WIN32_TRUE='#'
++  WIN32_FALSE=
++fi
++
++else
++   if false; then
++  WIN32_TRUE=
++  WIN32_FALSE='#'
++else
++  WIN32_TRUE='#'
++  WIN32_FALSE=
++fi
++
++fi
++
+ # Initialize the test suite.
+ ac_config_commands="$ac_config_commands tests/atconfig"
+ 
+@@ -15333,6 +15356,14 @@
+   as_fn_error $? "conditional \"COND_GDBMTOOL_DEBUG\" was never defined.
+ Usually this means the macro was only invoked conditionally." "$LINENO" 5
+ fi
++if test -z "${WIN32_TRUE}" && test -z "${WIN32_FALSE}"; then
++  as_fn_error $? "conditional \"WIN32\" was never defined.
++Usually this means the macro was only invoked conditionally." "$LINENO" 5
++fi
++if test -z "${WIN32_TRUE}" && test -z "${WIN32_FALSE}"; then
++  as_fn_error $? "conditional \"WIN32\" was never defined.
++Usually this means the macro was only invoked conditionally." "$LINENO" 5
++fi
+ 
+ : "${CONFIG_STATUS=./config.status}"
+ ac_write_fail=0
+diff -urN gdbm-1.15_orig/configure.ac gdbm-1.15/configure.ac
+--- gdbm-1.15_orig/configure.ac	2018-06-15 23:14:19.000000000 +0300
++++ gdbm-1.15/configure.ac	2018-06-17 20:55:43.812409200 +0300
+@@ -192,6 +192,13 @@
+ 
+ AM_CONDITIONAL([COND_GDBMTOOL_DEBUG], [test "$want_gdbmtool_debug" = yes])
+ 
++if test x$host_os = xmingw32
++then
++  AM_CONDITIONAL(WIN32, true)
++else
++  AM_CONDITIONAL(WIN32, false)
++fi
++
+ # Initialize the test suite.
+ AC_CONFIG_TESTDIR(tests)
+ AC_CONFIG_FILES([tests/Makefile tests/atlocal po/Makefile.in])
+diff -urN gdbm-1.15_orig/src/fullio.c gdbm-1.15/src/fullio.c
+--- gdbm-1.15_orig/src/fullio.c	2018-05-30 14:04:21.000000000 +0300
++++ gdbm-1.15/src/fullio.c	2018-06-17 21:33:28.588947000 +0300
+@@ -81,7 +81,13 @@
+ int
+ _gdbm_file_extend (GDBM_FILE dbf, off_t size)
+ {
++#ifdef _WIN32
++  SYSTEM_INFO si;
++  GetSystemInfo(&si);
++  size_t page_size = si.dwPageSize;
++#else
+   size_t page_size = sysconf (_SC_PAGESIZE);
++#endif
+   char *buf;
+   off_t file_end;
+ 
+diff -urN gdbm-1.15_orig/src/gdbm_load.c gdbm-1.15/src/gdbm_load.c
+--- gdbm-1.15_orig/src/gdbm_load.c	2018-05-30 12:39:15.000000000 +0300
++++ gdbm-1.15/src/gdbm_load.c	2018-06-17 20:55:43.821409700 +0300
+@@ -18,16 +18,12 @@
+ # include "gdbm.h"
+ # include "gdbmapp.h"
+ # include "gdbmdefs.h"
+-# include <pwd.h>
+-# include <grp.h>
+ 
+ int replace = 0;
+ int meta_mask = 0;
+ int no_meta_option;
+ 
+ int mode;
+-uid_t owner_uid;
+-gid_t owner_gid;
+ 
+ char *parseopt_program_doc = "load a GDBM database from a file";
+ char *parseopt_program_args = "FILE [DB_FILE]";
+@@ -45,6 +41,7 @@
+ static int
+ set_meta_info (GDBM_FILE dbf)
+ {
++#if 0
+   if (meta_mask)
+     {
+       int fd = gdbm_fdesc (dbf);
+@@ -63,6 +60,7 @@
+ 	  return 1;
+ 	}
+     }
++#endif
+   return 0;
+ }
+ 
+@@ -139,6 +137,7 @@
+ 	}
+ 	break;
+ 
++#if 0
+       case 'u':
+ 	{
+ 	  size_t len;
+@@ -198,6 +197,7 @@
+ 	  meta_mask |= GDBM_META_MASK_OWNER;
+ 	}
+ 	break;
++#endif
+ 	  
+       case 'r':
+ 	replace = 1;
+diff -urN gdbm-1.15_orig/src/gdbmdump.c gdbm-1.15/src/gdbmdump.c
+--- gdbm-1.15_orig/src/gdbmdump.c	2018-05-30 12:39:15.000000000 +0300
++++ gdbm-1.15/src/gdbmdump.c	2018-06-17 20:55:43.828410100 +0300
+@@ -17,8 +17,6 @@
+ # include "autoconf.h"
+ # include "gdbmdefs.h"
+ # include "gdbm.h"
+-# include <pwd.h>
+-# include <grp.h>
+ # include <time.h>
+ 
+ static int
+@@ -56,8 +54,6 @@
+   time_t t;
+   int fd;
+   struct stat st;
+-  struct passwd *pw;
+-  struct group *gr;
+   datum key;
+   size_t count = 0;
+   unsigned char *buffer = NULL;
+@@ -76,13 +72,7 @@
+ 
+   fprintf (fp, "#:file=%s\n", dbf->name);
+   fprintf (fp, "#:uid=%lu,", (unsigned long) st.st_uid);
+-  pw = getpwuid (st.st_uid);
+-  if (pw)
+-    fprintf (fp, "user=%s,", pw->pw_name);
+   fprintf (fp, "gid=%lu,", (unsigned long) st.st_gid);
+-  gr = getgrgid (st.st_gid);
+-  if (gr)
+-    fprintf (fp, "group=%s,", gr->gr_name);
+   fprintf (fp, "mode=%03o\n", st.st_mode & 0777);
+   fprintf (fp, "# End of header\n");
+   
+@@ -172,7 +162,7 @@
+   switch (open_flags)
+     {
+     case GDBM_WRCREAT:
+-      nfd = open (filename, O_WRONLY | O_CREAT | O_EXCL, mode);
++      nfd = open (filename, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, mode);
+       if (nfd == -1)
+ 	{
+ 	  GDBM_SET_ERRNO (NULL, GDBM_FILE_OPEN_ERROR, FALSE);
+@@ -180,7 +170,7 @@
+ 	}
+       break;
+     case GDBM_NEWDB:
+-      nfd = open (filename, O_WRONLY | O_CREAT | O_TRUNC, mode);
++      nfd = open (filename, O_WRONLY | O_BINARY | O_CREAT | O_TRUNC, mode);
+       if (nfd == -1)
+ 	{
+ 	  GDBM_SET_ERRNO (NULL, GDBM_FILE_OPEN_ERROR, FALSE);
+diff -urN gdbm-1.15_orig/src/gdbmexp.c gdbm-1.15/src/gdbmexp.c
+--- gdbm-1.15_orig/src/gdbmexp.c	2018-05-30 12:39:15.000000000 +0300
++++ gdbm-1.15/src/gdbmexp.c	2018-06-17 20:55:43.832410400 +0300
+@@ -19,7 +19,11 @@
+ 
+ /* Include system configuration before all else. */
+ # include "autoconf.h"
++#ifdef _WIN32
++# include <winsock2.h>
++#else
+ # include <arpa/inet.h>
++#endif
+ 
+ #ifdef GDBM_EXPORT_18
+ # define GDBM_SET_ERRNO(dbf, ec, fatal) gdbm_errno = ec
+@@ -104,7 +108,7 @@
+   switch (flags)
+     {
+     case GDBM_WRCREAT:
+-      nfd = open (exportfile, O_WRONLY | O_CREAT | O_EXCL, mode);
++      nfd = open (exportfile, O_WRONLY | O_BINARY | O_CREAT | O_EXCL, mode);
+       if (nfd == -1)
+ 	{
+ 	  GDBM_SET_ERRNO (NULL, GDBM_FILE_OPEN_ERROR, FALSE);
+@@ -112,7 +116,7 @@
+ 	}
+       break;
+     case GDBM_NEWDB:
+-      nfd = open (exportfile, O_WRONLY | O_CREAT | O_TRUNC, mode);
++      nfd = open (exportfile, O_WRONLY | O_BINARY | O_CREAT | O_TRUNC, mode);
+       if (nfd == -1)
+ 	{
+ 	  GDBM_SET_ERRNO (NULL, GDBM_FILE_OPEN_ERROR, FALSE);
+@@ -128,7 +132,7 @@
+       return -1;
+   }
+ 
+-  fp = fdopen (nfd, "w");
++  fp = fdopen (nfd, "wb");
+   if (!fp)
+     {
+       close (nfd);
+diff -urN gdbm-1.15_orig/src/gdbmimp.c gdbm-1.15/src/gdbmimp.c
+--- gdbm-1.15_orig/src/gdbmimp.c	2018-05-30 12:39:15.000000000 +0300
++++ gdbm-1.15/src/gdbmimp.c	2018-06-17 20:55:43.834410500 +0300
+@@ -18,7 +18,11 @@
+    along with GDBM. If not, see <http://www.gnu.org/licenses/>.   */
+ 
+ # include "autoconf.h"
++#ifdef _WIN32
++# include <winsock2.h>
++#else
+ # include <arpa/inet.h>
++#endif
+ # include <limits.h>
+ 
+ # include "gdbmdefs.h"
+diff -urN gdbm-1.15_orig/src/gdbmload.c gdbm-1.15/src/gdbmload.c
+--- gdbm-1.15_orig/src/gdbmload.c	2018-05-30 12:39:15.000000000 +0300
++++ gdbm-1.15/src/gdbmload.c	2018-06-17 20:55:43.837410600 +0300
+@@ -18,8 +18,6 @@
+ # include "gdbmdefs.h"
+ # include "gdbm.h"
+ # include <sys/types.h>
+-# include <pwd.h>
+-# include <grp.h>
+ 
+ struct datbuf
+ {
+@@ -289,13 +287,12 @@
+ _set_gdbm_meta_info (GDBM_FILE dbf, char *param, int meta_mask)
+ {
+   unsigned long n;
+-  uid_t owner_uid;
+-  uid_t owner_gid;
+   mode_t mode;
+   int meta_flags = 0;
+   const char *p;
+   char *end;
+ 
++#if 0
+   if (!(meta_mask & GDBM_META_MASK_OWNER))
+     {
+       p = getparm (param, "user");
+@@ -341,6 +338,7 @@
+ 	    }
+ 	}
+     }
++#endif
+   
+   if (!(meta_mask & GDBM_META_MASK_MODE))
+     {
+@@ -357,6 +355,7 @@
+ 	}
+     }
+   
++#if 0 
+   if (meta_flags)
+     {
+       int fd = gdbm_fdesc (dbf);
+@@ -387,6 +386,7 @@
+ 	  return 1;
+ 	}
+     }
++#endif
+   return 0;
+ }
+ 
+diff -urN gdbm-1.15_orig/src/gdbmopen.c gdbm-1.15/src/gdbmopen.c
+--- gdbm-1.15_orig/src/gdbmopen.c	2018-05-30 16:55:36.000000000 +0300
++++ gdbm-1.15/src/gdbmopen.c	2018-06-17 21:11:42.126221600 +0300
+@@ -33,7 +33,7 @@
+ #endif
+ 
+ static void
+-compute_directory_size (blksize_t block_size,
++compute_directory_size (ssize_t block_size,
+ 			int *ret_dir_size, int *ret_dir_bits)
+ {
+   /* Create the initial hash table directory.  */
+@@ -355,8 +355,7 @@
+ 	      if (!(flags & GDBM_CLOERROR))
+ 		dbf->desc = -1;
+ 	      gdbm_close (dbf);
+-	      GDBM_SET_ERRNO2 (NULL, GDBM_BLOCK_SIZE_ERROR, FALSE,
+-			       GDBM_DEBUG_OPEN);
++	      GDBM_SET_ERRNO2 (NULL, GDBM_BLOCK_SIZE_ERROR, FALSE,GDBM_DEBUG_OPEN);
+ 	      return NULL;
+ 	    }
+ 	  else
+@@ -656,6 +657,8 @@
+     }
+   if (flags & GDBM_CLOEXEC)
+     fbits |= O_CLOEXEC;
++
++  fbits |= O_BINARY;
+   
+   fd = open (file, fbits, mode);
+   if (fd < 0)
+@@ -689,7 +690,7 @@
+       for (index = 0; index < size; index++)
+         {
+ 	  (dbf->bucket_cache[index]).ca_bucket =
+-	    malloc (dbf->header->bucket_size);
++	    calloc (1, dbf->header->bucket_size);
+           if ((dbf->bucket_cache[index]).ca_bucket == NULL)
+ 	    {
+               GDBM_SET_ERRNO (dbf, GDBM_MALLOC_ERROR, TRUE);
+diff -urN gdbm-1.15_orig/src/gdbmtool.c gdbm-1.15/src/gdbmtool.c
+--- gdbm-1.15_orig/src/gdbmtool.c	2018-06-14 14:53:35.000000000 +0300
++++ gdbm-1.15/src/gdbmtool.c	2018-06-17 20:55:52.053880600 +0300
+@@ -22,8 +22,6 @@
+ #include <errno.h>
+ #include <ctype.h>
+ #include <signal.h>
+-#include <pwd.h>
+-#include <sys/ioctl.h>
+ #ifdef HAVE_SYS_TERMIOS_H
+ # include <sys/termios.h>
+ #endif
+@@ -1993,6 +1995,7 @@
+     {
+       istr = instream_file_create (GDBMTOOLRC);
+     }
++#if 0
+   else
+     {
+       char *fname;
+@@ -2023,6 +2024,7 @@
+ 	exit (EXIT_FATAL);
+       yyparse ();
+     }
++#endif
+ }
+ 
+ #if GDBM_DEBUG_ENABLE
+@@ -2167,8 +2167,6 @@
+ 	}
+     }
+ 
+-  signal (SIGPIPE, SIG_IGN);
+-
+   memset (&param, 0, sizeof (param));
+   argmax = 0;
+ 
+diff -urN gdbm-1.15_orig/src/lock.c gdbm-1.15/src/lock.c
+--- gdbm-1.15_orig/src/lock.c	2018-05-30 12:39:15.000000000 +0300
++++ gdbm-1.15/src/lock.c	2018-06-17 20:55:52.058880900 +0300
+@@ -24,7 +24,7 @@
+ 
+ #include <errno.h>
+ 
+-#if HAVE_FLOCK
++#if HAVE_FLOCK || defined(_WIN32)
+ # ifndef LOCK_SH
+ #  define LOCK_SH 1
+ # endif
+@@ -42,6 +42,83 @@
+ # endif
+ #endif
+ 
++#ifdef _WIN32
++#include <errno.h>
++#include <limits.h>
++
++/*
++ * flock support code for windows
++ *
++ * This code is derived from ruby (http://www.ruby-lang.org/).
++ * Original copyright notice is below.
++ */
++/*
++ *  Copyright (c) 1993, Intergraph Corporation
++ *
++ *  You may distribute under the terms of either the GNU General Public
++ *  License or the Artistic License, as specified in the perl README file.
++ *
++ *  Various Unix compatibility functions and NT specific functions.
++ *
++ *  Some of this code was derived from the MSDOS port(s) and the OS/2 port.
++ *
++ */
++
++#ifndef EWOULDBLOCK
++#define EWOULDBLOCK 10035 /* EBASEERR + 35 (winsock.h) */
++#endif
++
++#define LK_ERR(f,i) ((f) ? (i = 0) : (errno = GetLastError() == ERROR_LOCK_VIOLATION ? EWOULDBLOCK : EACCES))
++#define LK_LEN      ULONG_MAX
++
++static int
++flock_winnt(HANDLE fh, int oper)
++{
++    OVERLAPPED o;
++    int i = -1;
++
++    memset(&o, 0, sizeof(o));
++
++    switch(oper) {
++      case LOCK_SH:		/* shared lock */
++	LK_ERR(LockFileEx(fh, 0, 0, LK_LEN, LK_LEN, &o), i);
++	break;
++      case LOCK_EX:		/* exclusive lock */
++	LK_ERR(LockFileEx(fh, LOCKFILE_EXCLUSIVE_LOCK, 0, LK_LEN, LK_LEN, &o), i);
++	break;
++      case LOCK_SH|LOCK_NB:	/* non-blocking shared lock */
++	LK_ERR(LockFileEx(fh, LOCKFILE_FAIL_IMMEDIATELY, 0, LK_LEN, LK_LEN, &o), i);
++	break;
++      case LOCK_EX|LOCK_NB:	/* non-blocking exclusive lock */
++	LK_ERR(LockFileEx(fh,
++			  LOCKFILE_EXCLUSIVE_LOCK|LOCKFILE_FAIL_IMMEDIATELY,
++			  0, LK_LEN, LK_LEN, &o), i);
++	break;
++      case LOCK_UN:		/* unlock lock */
++	LK_ERR(UnlockFileEx(fh, 0, LK_LEN, LK_LEN, &o), i);
++	break;
++      default:            /* unknown */
++	errno = EINVAL;
++	break;
++    }
++    return i;
++}
++
++#undef LK_ERR
++
++int
++flock(int fd, int oper)
++{
++    static int (*locker)(HANDLE, int) = NULL;
++
++    if (!locker) {
++	locker = flock_winnt;
++    }
++
++    return locker((HANDLE)_get_osfhandle(fd), oper);
++}
++#endif /* _WIN32 */
++
+ #if defined(F_SETLK) && defined(F_RDLCK) && defined(F_WRLCK)
+ # define HAVE_FCNTL_LOCK 1
+ #else
+@@ -66,7 +143,7 @@
+   switch (dbf->lock_type)
+     {
+       case LOCKING_FLOCK:
+-#if HAVE_FLOCK
++#if HAVE_FLOCK || defined(_WIN32)
+ 	flock (dbf->desc, LOCK_UN);
+ #endif
+ 	break;
+@@ -102,7 +179,7 @@
+ #endif
+   int lock_val = -1;
+ 
+-#if HAVE_FLOCK
++#if HAVE_FLOCK || defined(_WIN32)
+   if (dbf->read_write == GDBM_READER)
+     lock_val = flock (dbf->desc, LOCK_SH + LOCK_NB);
+   else
+diff -urN gdbm-1.15_orig/src/Makefile.am gdbm-1.15/src/Makefile.am
+--- gdbm-1.15_orig/src/Makefile.am	2018-06-15 23:11:53.000000000 +0300
++++ gdbm-1.15/src/Makefile.am	2018-06-17 20:55:52.060881000 +0300
+@@ -74,7 +74,7 @@
+   libgdbm_la_SOURCES += debug.c
+ endif
+ 
+-libgdbm_la_LDFLAGS = -version-info $(VI_CURRENT):$(VI_REVISION):$(VI_AGE)
++libgdbm_la_LDFLAGS = -no-undefined -lws2_32 -version-info $(VI_CURRENT):$(VI_REVISION):$(VI_AGE)
+ 
+ noinst_LIBRARIES = libgdbmapp.a
+ 
+diff -urN gdbm-1.15_orig/src/Makefile.in gdbm-1.15/src/Makefile.in
+--- gdbm-1.15_orig/src/Makefile.in	2018-06-15 23:14:27.000000000 +0300
++++ gdbm-1.15/src/Makefile.in	2018-06-17 22:31:16.905323400 +0300
+@@ -474,7 +474,7 @@
+ 	gdbmsetopt.c gdbmstore.c gdbmsync.c base64.c bucket.c falloc.c \
+ 	findkey.c fullio.c hash.c lock.c mmap.c recover.c update.c \
+ 	version.c $(am__append_1)
+-libgdbm_la_LDFLAGS = -version-info $(VI_CURRENT):$(VI_REVISION):$(VI_AGE)
++libgdbm_la_LDFLAGS = -no-undefined -lws2_32 -version-info $(VI_CURRENT):$(VI_REVISION):$(VI_AGE)
+ noinst_LIBRARIES = libgdbmapp.a
+ libgdbmapp_a_SOURCES = \
+  err.c\
+diff -urN gdbm-1.15_orig/src/mem.c gdbm-1.15/src/mem.c
+--- gdbm-1.15_orig/src/mem.c	2018-05-30 12:39:15.000000000 +0300
++++ gdbm-1.15/src/mem.c	2018-06-17 20:55:52.066881300 +0300
+@@ -14,7 +14,7 @@
+    You should have received a copy of the GNU General Public License
+    along with GDBM. If not, see <http://www.gnu.org/licenses/>.   */
+ 
+-# include "autoconf.h"
++# include "../autoconf.h"
+ # include "gdbm.h"
+ # include "gdbmapp.h"
+ # include "gdbmdefs.h"
+diff -urN gdbm-1.15_orig/src/parseopt.c gdbm-1.15/src/parseopt.c
+--- gdbm-1.15_orig/src/parseopt.c	2018-05-30 12:39:15.000000000 +0300
++++ gdbm-1.15/src/parseopt.c	2018-06-17 20:55:52.069881500 +0300
+@@ -14,10 +14,11 @@
+    You should have received a copy of the GNU General Public License
+    along with GDBM. If not, see <http://www.gnu.org/licenses/>.   */
+ 
+-# include "autoconf.h"
++# include "../autoconf.h"
+ # include "gdbm.h"
+ # include "gdbmapp.h"
+ # include "gdbmdefs.h"
++#include "autoconf.h"
+ # include <stdio.h>
+ # include <stdarg.h>
+ # include <errno.h>
+diff -urN gdbm-1.15_orig/src/progname.c gdbm-1.15/src/progname.c
+--- gdbm-1.15_orig/src/progname.c	2018-05-30 12:39:15.000000000 +0300
++++ gdbm-1.15/src/progname.c	2018-06-17 20:55:52.071881600 +0300
+@@ -14,7 +14,7 @@
+    You should have received a copy of the GNU General Public License
+    along with GDBM. If not, see <http://www.gnu.org/licenses/>.   */
+ 
+-# include "autoconf.h"
++# include "../autoconf.h"
+ # include "gdbm.h"
+ # include "gdbmapp.h"
+ # include <string.h>
+diff -urN gdbm-1.15_orig/src/proto.h gdbm-1.15/src/proto.h
+--- gdbm-1.15_orig/src/proto.h	2018-05-30 14:14:11.000000000 +0300
++++ gdbm-1.15/src/proto.h	2018-06-17 22:10:50.270163800 +0300
+@@ -122,6 +122,8 @@
+   _gdbm_mapped_sync (dbf);
+ #elif HAVE_FSYNC
+   fsync (dbf->desc);
++#elif _WIN32
++  FlushFileBuffers(dbf);
+ #else
+   sync ();
+   sync ();
+diff -urN gdbm-1.15_orig/src/recover.c gdbm-1.15/src/recover.c
+--- gdbm-1.15_orig/src/recover.c	2018-05-30 12:39:15.000000000 +0300
++++ gdbm-1.15/src/recover.c	2018-06-17 20:55:52.074881800 +0300
+@@ -29,16 +29,20 @@
+       GDBM_SET_ERRNO (src, GDBM_FILE_STAT_ERROR, src->need_recovery);
+       return -1;
+     }
++#if HAVE_FCHOWN
+   if (fchown (dst->desc, st.st_uid, st.st_gid))
+     {
+       GDBM_SET_ERRNO (dst, GDBM_ERR_FILE_OWNER, dst->need_recovery);
+       return -1;
+     }
++#endif
++#if HAVE_FCHMOD
+   if (fchmod (dst->desc, st.st_mode & 0777))
+     {
+       GDBM_SET_ERRNO (dst, GDBM_ERR_FILE_MODE, dst->need_recovery);
+       return -1;
+     }
++#endif
+   return 0;
+ }
+ 
+@@ -130,18 +134,34 @@
+     }
+   
+   /* Move the new file to old name. */
++#ifdef _WIN32
++  close (new_dbf->desc);
+ 
++  if (dbf->file_locking)
++    {
++      _gdbm_unlock_file (dbf);
++    }
++  close (dbf->desc);
++#endif
+   if (rename (new_dbf->name, dbf->name) != 0)
+     {
+       GDBM_SET_ERRNO (NULL, GDBM_REORGANIZE_FAILED, FALSE);
++#ifdef _WIN32
++      dbf->desc = open (dbf->name, O_RDWR|O_BINARY, 0);
++      new_dbf->desc = open (new_dbf->name, O_RDWR|O_BINARY, 0);
++#endif
+       gdbm_close (new_dbf);
+       return -1;
+     }
+ 
+   /* Fix up DBF to have the correct information for the new file. */
++#ifdef _WIN32
++  new_dbf->desc = open (dbf->name, O_RDWR|O_BINARY, 0);
++#else
+   if (dbf->file_locking)
+     _gdbm_unlock_file (dbf);
+   close (dbf->desc);
++#endif
+   free (dbf->header);
+   free (dbf->dir);
+ 
+diff -urN gdbm-1.15_orig/src/systems.h gdbm-1.15/src/systems.h
+--- gdbm-1.15_orig/src/systems.h	2018-05-30 12:43:12.000000000 +0300
++++ gdbm-1.15/src/systems.h	2018-06-17 21:16:30.716728100 +0300
+@@ -18,6 +18,11 @@
+    along with GDBM. If not, see <http://www.gnu.org/licenses/>.    */
+ 
+ /* Include all system headers first. */
++#ifdef _WIN32
++# undef _WIN32_WINNT
++# define _WIN32_WINNT 0x0501
++# include <windows.h>
++#endif
+ #include <sys/types.h>
+ #include <stdio.h>
+ #if HAVE_SYS_FILE_H
+@@ -43,6 +48,10 @@
+ # define O_CLOEXEC 0
+ #endif
+ 
++#ifndef O_BINARY
++# define O_BINARY 0
++#endif
++
+ /* Default block size.  Some systems do not have blocksize in their
+    stat record. This code uses the BSD blocksize from stat. */
+ 
+@@ -56,11 +65,14 @@
+ #if HAVE_FTRUNCATE
+ # define TRUNCATE(dbf) ftruncate (dbf->desc, 0)
+ #else
+-# define TRUNCATE(dbf) close( open (dbf->name, O_RDWR|O_TRUNC, mode));
++# define TRUNCATE(dbf) close( open (dbf->name, O_RDWR|O_TRUNC|O_BINARY, mode));
+ #endif
+ 
+ #ifndef STDERR_FILENO
+ # define STDERR_FILENO 2
+ #endif
+ 
+-
++/* Windows port of flock */
++#ifdef _WIN32
++extern int flock(int fd, int oper);
++#endif
+diff -urN gdbm-1.15_orig/src/util.c gdbm-1.15/src/util.c
+--- gdbm-1.15_orig/src/util.c	2018-05-30 12:39:15.000000000 +0300
++++ gdbm-1.15/src/util.c	2018-06-17 20:55:52.082882300 +0300
+@@ -16,7 +16,6 @@
+    along with GDBM. If not, see <http://www.gnu.org/licenses/>.    */
+ 
+ #include "gdbmtool.h"
+-#include <pwd.h>
+ 
+ char *
+ mkfilename (const char *dir, const char *file, const char *suf)
+@@ -45,6 +44,7 @@
+ char *
+ tildexpand (char *s)
+ {
++#if 0
+   if (s[0] == '~')
+     {
+       char *p = s + 1;
+@@ -65,6 +65,7 @@
+       if (pw)
+ 	return mkfilename (pw->pw_dir, p + len + 1, NULL);
+     }
++#endif
+   return estrdup (s);
+ }
+ 
+diff -urN gdbm-1.15_orig/tests/blocksize02.at gdbm-1.15/tests/blocksize02.at
+--- gdbm-1.15_orig/tests/blocksize02.at	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/tests/blocksize02.at	2018-06-18 10:58:25.793417500 +0300
+@@ -22,7 +22,6 @@
+ ],
+ [1],
+ [],
+-[gdbm_open failed: Block size error
+-])
++[gdbm_open failed: Block size error])
+ 
+ AT_CLEANUP
+diff -urN gdbm-1.15_orig/tests/dbmdel01.at gdbm-1.15/tests/dbmdel01.at
+--- gdbm-1.15_orig/tests/dbmdel01.at	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/tests/dbmdel01.at	2018-06-17 20:55:52.085882400 +0300
+@@ -25,7 +25,7 @@
+ ],
+ [2],
+ [],
+-[dtdel: cannot delete 11: Item not found
++[dtdel.exe: cannot delete 11: Item not found
+ ])
+ 
+ AT_CLEANUP
+diff -urN gdbm-1.15_orig/tests/dbmfetch01.at gdbm-1.15/tests/dbmfetch01.at
+--- gdbm-1.15_orig/tests/dbmfetch01.at	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/tests/dbmfetch01.at	2018-06-17 20:55:52.086882500 +0300
+@@ -24,7 +24,7 @@
+ ],
+ [2],
+ [],
+-[dtfetch: 0: not found
++[dtfetch.exe: 0: not found
+ ])
+ 
+ AT_CLEANUP
+diff -urN gdbm-1.15_orig/tests/delete01.at gdbm-1.15/tests/delete01.at
+--- gdbm-1.15_orig/tests/delete01.at	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/tests/delete01.at	2018-06-17 20:55:52.088882600 +0300
+@@ -24,7 +24,7 @@
+ ],
+ [2],
+ [],
+-[gtdel: cannot delete 11: Item not found
++[gtdel.exe: cannot delete 11: Item not found
+ ])
+ 
+ AT_CLEANUP
+diff -urN gdbm-1.15_orig/tests/dtdel.c gdbm-1.15/tests/dtdel.c
+--- gdbm-1.15_orig/tests/dtdel.c	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/tests/dtdel.c	2018-06-17 20:55:52.089882700 +0300
+@@ -16,6 +16,7 @@
+ */
+ #include "autoconf.h"
+ #include <stdio.h>
++#include <fcntl.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include "dbm.h"
+@@ -30,7 +31,12 @@
+   int flags = 0;
+   int data_z = 0;
+   int rc = 0;
+-  
++
++#ifdef _WIN32
++  _setmode(_fileno(stdout), O_BINARY);
++  _setmode(_fileno(stderr), O_BINARY);
++#endif
++
+   while (--argc)
+     {
+       char *arg = *++argv;
+diff -urN gdbm-1.15_orig/tests/dtdump.c gdbm-1.15/tests/dtdump.c
+--- gdbm-1.15_orig/tests/dtdump.c	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/tests/dtdump.c	2018-06-17 20:55:52.091882800 +0300
+@@ -16,10 +16,13 @@
+ */
+ #include "autoconf.h"
+ #include <stdio.h>
++#include <fcntl.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include "dbm.h"
+ #include "progname.h"
++#include "../src/gdbm.h"
++#include "../compat/dbm.h"
+ 
+ int
+ main (int argc, char **argv)
+@@ -29,7 +32,12 @@
+   datum key;
+   datum data;
+   int delim = '\t';
+-  
++
++#ifdef _WIN32
++  _setmode(_fileno(stdout), O_BINARY);
++  _setmode(_fileno(stderr), O_BINARY);
++#endif
++
+   while (--argc)
+     {
+       char *arg = *++argv;
+diff -urN gdbm-1.15_orig/tests/dtfetch.c gdbm-1.15/tests/dtfetch.c
+--- gdbm-1.15_orig/tests/dtfetch.c	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/tests/dtfetch.c	2018-06-17 20:55:52.092882800 +0300
+@@ -16,6 +16,7 @@
+ */
+ #include "autoconf.h"
+ #include <stdio.h>
++#include <fcntl.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include "dbm.h"
+@@ -44,7 +45,12 @@
+   int data_z = 0;
+   int delim = 0;
+   int rc = 0;
+-  
++
++#ifdef _WIN32
++  _setmode(_fileno(stdout), O_BINARY);
++  _setmode(_fileno(stderr), O_BINARY);
++#endif
++
+   while (--argc)
+     {
+       char *arg = *++argv;
+diff -urN gdbm-1.15_orig/tests/dtload.c gdbm-1.15/tests/dtload.c
+--- gdbm-1.15_orig/tests/dtload.c	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/tests/dtload.c	2018-06-17 20:55:52.094882900 +0300
+@@ -16,6 +16,7 @@
+ */
+ #include "autoconf.h"
+ #include <stdio.h>
++#include <fcntl.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <unistd.h>
+@@ -39,7 +40,13 @@
+   datum data;
+   int delim = '\t';
+   int data_z = 0;
+-  
++
++#ifdef _WIN32
++  _setmode(_fileno(stdin), O_BINARY);
++  _setmode(_fileno(stdout), O_BINARY);
++  _setmode(_fileno(stderr), O_BINARY);
++#endif
++
+   while (--argc)
+     {
+       char *arg = *++argv;
+diff -urN gdbm-1.15_orig/tests/fetch01.at gdbm-1.15/tests/fetch01.at
+--- gdbm-1.15_orig/tests/fetch01.at	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/tests/fetch01.at	2018-06-17 20:55:52.095883000 +0300
+@@ -23,7 +23,7 @@
+ ],
+ [2],
+ [],
+-[gtfetch: 0: not found
++[gtfetch.exe: 0: not found
+ ])
+ 
+ AT_CLEANUP
+diff -urN gdbm-1.15_orig/tests/gdbmtool03.at gdbm-1.15/tests/gdbmtool03.at
+--- gdbm-1.15_orig/tests/gdbmtool03.at	2018-05-24 07:15:19.000000000 +0300
++++ gdbm-1.15/tests/gdbmtool03.at	2018-06-18 10:57:39.968796500 +0300
+@@ -17,12 +17,13 @@
+ AT_SETUP([Initialization file])
+ AT_KEYWORDS([gdbmtool])
+ AT_CHECK([
+-AT_DATA([.gdbmtoolrc],
+-[open t.db
+-])
+-gdbmtool <<EOT
++AT_DATA([.gdbmtoolrc],[
++open t.db
+ status
++quit
+ EOT
++])
++gdbmtool < .gdbmtoolrc
+ ],
+ [0],
+ [Database file: t.db
+diff -urN gdbm-1.15_orig/tests/gtdel.c gdbm-1.15/tests/gtdel.c
+--- gdbm-1.15_orig/tests/gtdel.c	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/tests/gtdel.c	2018-06-17 20:55:52.097883100 +0300
+@@ -16,6 +16,7 @@
+ */
+ #include "autoconf.h"
+ #include <stdio.h>
++#include <fcntl.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include "gdbm.h"
+@@ -31,7 +32,12 @@
+   GDBM_FILE dbf;
+   int data_z = 0;
+   int rc = 0;
+-  
++
++#ifdef _WIN32
++  _setmode(_fileno(stdout), O_BINARY);
++  _setmode(_fileno(stderr), O_BINARY);
++#endif
++
+   while (--argc)
+     {
+       char *arg = *++argv;
+diff -urN gdbm-1.15_orig/tests/gtdump.c gdbm-1.15/tests/gtdump.c
+--- gdbm-1.15_orig/tests/gtdump.c	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/tests/gtdump.c	2018-06-17 20:55:52.098883200 +0300
+@@ -17,6 +17,7 @@
+ #include "autoconf.h"
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <fcntl.h>
+ #include <string.h>
+ #include "gdbm.h"
+ #include "progname.h"
+@@ -31,7 +32,12 @@
+   int flags = 0;
+   GDBM_FILE dbf;
+   int delim = '\t';
+-  
++
++#ifdef _WIN32
++  _setmode(_fileno(stdin), O_BINARY);
++  _setmode(_fileno(stdout), O_BINARY);
++#endif
++
+   while (--argc)
+     {
+       char *arg = *++argv;
+diff -urN gdbm-1.15_orig/tests/gtfetch.c gdbm-1.15/tests/gtfetch.c
+--- gdbm-1.15_orig/tests/gtfetch.c	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/tests/gtfetch.c	2018-06-17 20:55:52.100883300 +0300
+@@ -16,6 +16,7 @@
+ */
+ #include "autoconf.h"
+ #include <stdio.h>
++#include <fcntl.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include "gdbm.h"
+@@ -46,7 +47,12 @@
+   int data_z = 0;
+   int delim = 0;
+   int rc = 0;
+-  
++
++#ifdef _WIN32
++  _setmode(_fileno(stdout), O_BINARY);
++  _setmode(_fileno(stderr), O_BINARY);
++#endif
++
+   while (--argc)
+     {
+       char *arg = *++argv;
+diff -urN gdbm-1.15_orig/tests/gtload.c gdbm-1.15/tests/gtload.c
+--- gdbm-1.15_orig/tests/gtload.c	2018-05-30 12:16:40.000000000 +0300
++++ gdbm-1.15/tests/gtload.c	2018-06-17 20:55:52.101883300 +0300
+@@ -16,6 +16,7 @@
+ */
+ #include "autoconf.h"
+ #include <stdio.h>
++#include <fcntl.h>
+ #include <stdlib.h>
+ #include <stdarg.h>
+ #include <string.h>
+@@ -102,6 +103,11 @@
+ #ifdef GDBM_DEBUG_ENABLE
+   gdbm_debug_printer = debug_printer;
+ #endif
++
++#ifdef _WIN32
++  _setmode(_fileno(stdin), O_BINARY);
++  _setmode(_fileno(stdout), O_BINARY);
++#endif
+   
+   while (--argc)
+     {
+@@ -199,7 +205,7 @@
+   dbf = gdbm_open (dbname, block_size, mode|flags, 00664, NULL);
+   if (!dbf)
+     {
+-      fprintf (stderr, "gdbm_open failed: %s\n", gdbm_strerror (gdbm_errno));
++      fprintf (stderr, "gdbm_open failed: %s", gdbm_strerror (gdbm_errno));
+       exit (1);
+     }
+ 
+diff -urN gdbm-1.15_orig/tests/gtopt.c gdbm-1.15/tests/gtopt.c
+--- gdbm-1.15_orig/tests/gtopt.c	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/tests/gtopt.c	2018-06-17 20:55:52.104883500 +0300
+@@ -178,7 +178,11 @@
+ int
+ test_maxmapsize (void *valptr)
+ {
++#ifdef _SC_PAGESIZE
+   size_t page_size = sysconf (_SC_PAGESIZE);
++#else
++  size_t page_size = 4096;
++#endif
+   size_t expected_size = ((mapped_size_max + page_size - 1) / page_size) *
+ 	                          page_size;
+   return (*(size_t*) valptr == expected_size) ? RES_PASS : RES_FAIL;
+@@ -308,7 +312,11 @@
+ {
+   GDBM_FILE dbf;
+   struct optest *op;
+-  
++
++#ifdef _WIN32
++  _setmode(_fileno(stdout), O_BINARY);
++#endif
++
+   progname = canonical_progname (argv[0]);
+   while (--argc)
+     {
+diff -urN gdbm-1.15_orig/tests/gtver.c gdbm-1.15/tests/gtver.c
+--- gdbm-1.15_orig/tests/gtver.c	2018-02-10 08:05:11.000000000 +0200
++++ gdbm-1.15/tests/gtver.c	2018-06-17 20:55:52.105883600 +0300
+@@ -17,6 +17,7 @@
+ #include "autoconf.h"
+ #include <stdlib.h>
+ #include <stdio.h>
++#include <fcntl.h>
+ #include <string.h>
+ #include "gdbm.h"
+ #include "progname.h"
+@@ -31,6 +32,10 @@
+   const char *progname = canonical_progname (argv[0]);
+   int library = 0;
+ 
++#ifdef _WIN32
++  _setmode(_fileno(stdout), O_BINARY);
++#endif
++
+   if (argc == 1)
+     {
+       printf ("%s\n", gdbm_version);
+diff -urN gdbm-1.15_orig/tests/num2word.c gdbm-1.15/tests/num2word.c
+--- gdbm-1.15_orig/tests/num2word.c	2018-05-29 10:11:50.000000000 +0300
++++ gdbm-1.15/tests/num2word.c	2018-06-17 22:06:14.980418200 +0300
+@@ -17,6 +17,7 @@
+ #include "autoconf.h"
+ #include <stdlib.h>
+ #include <stdio.h>
++#include <fcntl.h>
+ #include <string.h>
+ #include <unistd.h>
+ #include <errno.h>
+@@ -328,6 +329,10 @@
+ int
+ main (int argc, char **argv)
+ {
++#ifdef _WIN32
++  _setmode(_fileno(stdout), O_BINARY);
++#endif
++
+   progname = *argv++;
+   --argc;
+ 
+@@ -403,10 +408,10 @@
+   
+   if (random_option)
+     {
+-      srandom (time (NULL));
++      srand (time (NULL));
+       while (range_total)
+ 	{
+-	  numeral_t n = range_get (random () % range_total);
++	  numeral_t n = range_get (rand () % range_total);
+ 	  print_number (n);
+ 	}
+     }
+diff -urN gdbm-1.15_orig/tests/testsuite gdbm-1.15/tests/testsuite
+--- gdbm-1.15_orig/tests/testsuite	2018-06-15 23:14:42.000000000 +0300
++++ gdbm-1.15/tests/testsuite	2018-06-17 22:36:55.525691300 +0300
+@@ -2166,7 +2166,7 @@
+ ) >>"$at_stdout" 2>>"$at_stderr" 5>&-
+ at_status=$? at_failed=false
+ $at_check_filter
+-echo >>"$at_stderr"; $as_echo "gtfetch: 0: not found
++echo >>"$at_stderr"; $as_echo "gtfetch.exe: 0: not found
+ " | \
+   $at_diff - "$at_stderr" || at_failed=:
+ at_fn_diff_devnull "$at_stdout" || at_failed=:
+@@ -2262,7 +2262,7 @@
+ ) >>"$at_stdout" 2>>"$at_stderr" 5>&-
+ at_status=$? at_failed=false
+ $at_check_filter
+-echo >>"$at_stderr"; $as_echo "gtdel: cannot delete 11: Item not found
++echo >>"$at_stderr"; $as_echo "gtdel.exe: cannot delete 11: Item not found
+ " | \
+   $at_diff - "$at_stderr" || at_failed=:
+ at_fn_diff_devnull "$at_stdout" || at_failed=:
+@@ -2627,7 +2627,7 @@
+ ) >>"$at_stdout" 2>>"$at_stderr" 5>&-
+ at_status=$? at_failed=false
+ $at_check_filter
+-echo >>"$at_stderr"; $as_echo "dtfetch: 0: not found
++echo >>"$at_stderr"; $as_echo "dtfetch.exe: 0: not found
+ " | \
+   $at_diff - "$at_stderr" || at_failed=:
+ at_fn_diff_devnull "$at_stdout" || at_failed=:
+@@ -2835,7 +2835,7 @@
+ ) >>"$at_stdout" 2>>"$at_stderr" 5>&-
+ at_status=$? at_failed=false
+ $at_check_filter
+-echo >>"$at_stderr"; $as_echo "dtdel: cannot delete 11: Item not found
++echo >>"$at_stderr"; $as_echo "dtdel.exe: cannot delete 11: Item not found
+ " | \
+   $at_diff - "$at_stderr" || at_failed=:
+ at_fn_diff_devnull "$at_stdout" || at_failed=:
