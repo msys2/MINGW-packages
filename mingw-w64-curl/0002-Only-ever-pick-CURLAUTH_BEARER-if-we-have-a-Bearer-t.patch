@@ -1,0 +1,78 @@
+From 4b05f38e750dc2135a5b7b6cde1194dc572ad8d0 Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Tue, 17 Jul 2018 14:52:53 +0200
+Subject: [PATCH] Only ever pick CURLAUTH_BEARER if we *have* a Bearer token
+
+The Bearer authentication was added to cURL 7.61.0, but there is a
+problem: if CURLAUTH_ANY is selected, and the server supports multiple
+authentication methods including the Bearer method, we strongly prefer
+that latter method (only CURLAUTH_NEGOTIATE beats it), and if the Bearer
+authentication fails, we will never even try to attempt any other
+method.
+
+This is particularly unfortunate when we already know that we do not
+have any Bearer token to work with.
+
+Such a scenario happens e.g. when using Git to push to Visual Studio
+Team Services (which supports Basic and Bearer authentication among
+other methods) and specifying the Personal Access Token directly in the
+URL (this aproach is frequently taken by automated builds).
+
+Let's make sure that we have a Bearer token to work with before we
+select the Bearer authentication among the available authentication
+methods.
+
+Signed-off-by: Johannes Schindelin <johannes.schindelin@gmx.de>
+---
+ lib/http.c | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/lib/http.c b/lib/http.c
+index 4ec5f2be6..197ee266a 100644
+--- a/lib/http.c
++++ b/lib/http.c
+@@ -340,11 +340,11 @@ static CURLcode http_output_bearer(struct connectdata *conn)
+  *
+  * return TRUE if one was picked
+  */
+-static bool pickoneauth(struct auth *pick)
++static bool pickoneauth(struct auth *pick, unsigned long mask)
+ {
+   bool picked;
+   /* only deal with authentication we want */
+-  unsigned long avail = pick->avail & pick->want;
++  unsigned long avail = pick->avail & pick->want & mask;
+   picked = TRUE;
+ 
+   /* The order of these checks is highly relevant, as this will be the order
+@@ -506,6 +506,10 @@ CURLcode Curl_http_auth_act(struct connectdata *conn)
+   bool pickhost = FALSE;
+   bool pickproxy = FALSE;
+   CURLcode result = CURLE_OK;
++  unsigned long authmask = ~0ul;
++
++  if(!conn->oauth_bearer)
++    authmask &= (unsigned long)~CURLAUTH_BEARER;
+ 
+   if(100 <= data->req.httpcode && 199 >= data->req.httpcode)
+     /* this is a transient response code, ignore */
+@@ -517,14 +521,14 @@ CURLcode Curl_http_auth_act(struct connectdata *conn)
+   if(conn->bits.user_passwd &&
+      ((data->req.httpcode == 401) ||
+       (conn->bits.authneg && data->req.httpcode < 300))) {
+-    pickhost = pickoneauth(&data->state.authhost);
++    pickhost = pickoneauth(&data->state.authhost, authmask);
+     if(!pickhost)
+       data->state.authproblem = TRUE;
+   }
+   if(conn->bits.proxy_user_passwd &&
+      ((data->req.httpcode == 407) ||
+       (conn->bits.authneg && data->req.httpcode < 300))) {
+-    pickproxy = pickoneauth(&data->state.authproxy);
++    pickproxy = pickoneauth(&data->state.authproxy, authmask);
+     if(!pickproxy)
+       data->state.authproblem = TRUE;
+   }
+-- 
+2.18.0.windows.1
+
