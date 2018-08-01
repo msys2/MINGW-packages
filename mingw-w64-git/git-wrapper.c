@@ -41,6 +41,23 @@ static void print_error(LPCWSTR prefix, DWORD error_number)
 	LocalFree((HLOCAL)buffer);
 }
 
+static void my_path_append(LPWSTR list, LPCWSTR path, size_t alloc)
+{
+	size_t len1 = wcslen(list), len2 = wcslen(path);
+	int need_dir_sep = len1 && list[len1 - 1] != L'\\';
+	LPWSTR sep;
+
+	if (len1 + need_dir_sep + len2 + 1 > alloc &&
+	    (sep = wcschr(list, L';')))
+		/* silently remove the last path element if too long */
+		*sep = L'\0';
+	else {
+		if (need_dir_sep)
+			list[len1++] = L'\\';
+		wcscpy(list + len1, path);
+	}
+}
+
 static void setup_environment(LPWSTR top_level_path, int full_path)
 {
 	WCHAR msystem[64];
@@ -96,28 +113,28 @@ static void setup_environment(LPWSTR top_level_path, int full_path)
 	path2 = (LPWSTR)malloc(len);
 	wcscpy(path2, top_level_path);
 	if (!full_path)
-		PathAppend(path2, L"cmd;");
+		my_path_append(path2, L"cmd;", len);
 	else {
-		PathAppend(path2, msystem_bin);
+		my_path_append(path2, msystem_bin, len);
 		if (_waccess(path2, 0) != -1) {
 			/* We are in an MSys2-based setup */
 			int len2 = GetEnvironmentVariable(L"HOME", NULL, 0);
 
 			wcscat(path2, L";");
 			wcscat(path2, top_level_path);
-			PathAppend(path2, L"usr\\bin;");
+			my_path_append(path2, L"usr\\bin;", len);
 			if (len2 + 6 < MAX_PATH) {
 				GetEnvironmentVariable(L"HOME",
 						path2 + wcslen(path2), len2);
-				PathAppend(path2, L"bin;");
+				my_path_append(path2, L"bin;", len);
 			}
 		}
 		else {
 			/* Fall back to MSys1 paths */
 			wcscpy(path2, top_level_path);
-			PathAppend(path2, L"bin;");
+			my_path_append(path2, L"bin;", len);
 			wcscat(path2, top_level_path);
-			PathAppend(path2, L"mingw\\bin;");
+			my_path_append(path2, L"mingw\\bin;", len);
 		}
 	}
 	GetEnvironmentVariable(L"PATH", path2 + wcslen(path2),
@@ -218,7 +235,7 @@ static void extract_first_arg(LPWSTR command_line, LPWSTR exepath, LPWSTR buf)
 		wcscpy(buf, wargv[0]);
 	else {
 		wcscpy(buf, exepath);
-		PathAppend(buf, wargv[0]);
+		my_path_append(buf, wargv[0], MAX_PATH);
 	}
 	LocalFree(wargv);
 }
@@ -458,14 +475,14 @@ static void initialize_top_level_path(LPWSTR top_level_path, LPWSTR exepath,
 	while (strip_count) {
 		if (strip_count < 0) {
 			int len = wcslen(top_level_path);
-			PathAppend(top_level_path, msystem_bin);
+			my_path_append(top_level_path, msystem_bin, MAX_PATH);
 			if (_waccess(top_level_path, 0) != -1) {
 				/* We are in an MSys2-based setup */
 				top_level_path[len] = L'\0';
 				return;
 			}
 			top_level_path[len] = L'\0';
-			PathAppend(top_level_path, L"mingw\\bin");
+			my_path_append(top_level_path, L"mingw\\bin", MAX_PATH);
 			if (_waccess(top_level_path, 0) != -1) {
 				/* We are in an MSys-based setup */
 				top_level_path[len] = L'\0';
@@ -524,8 +541,8 @@ int main(void)
 
 		/* set the default exe module */
 		wcscpy(exe, top_level_path);
-		PathAppend(exe, msystem_bin);
-		PathAppend(exe, L"git-lfs.exe");
+		my_path_append(exe, msystem_bin, MAX_PATH);
+		my_path_append(exe, L"git-lfs.exe", MAX_PATH);
 	}
 	else if (!wcsicmp(basename, L"git-gui.exe") ||
 			!wcsicmp(basename, L"gitk.exe")) {
@@ -537,8 +554,8 @@ int main(void)
 
 		/* set the default exe module */
 		wcscpy(exe, top_level_path);
-		PathAppend(exe, msystem_bin);
-		PathAppend(exe, L"wish.exe");
+		my_path_append(exe, msystem_bin, MAX_PATH);
+		my_path_append(exe, L"wish.exe", MAX_PATH);
 		basename[wcslen(basename) - 4] = L'\0';
 		if (!wcsicmp(basename, L"gitk"))
 			infix = L"bin";
@@ -549,13 +566,13 @@ int main(void)
 				wcslen(msystem_bin) - 4, msystem_bin, infix);
 		else {
 			wcscpy(exe, top_level_path);
-			PathAppend(exe, L"mingw\\bin\\wish.exe");
+			my_path_append(exe, L"mingw\\bin\\wish.exe", MAX_PATH);
 			swprintf(buffer, BUFSIZE,
 				L"\"%s\" \"%s\\mingw\\%s\"",
 				exe, top_level_path, infix);
 		}
 		is_git_command = 0;
-		PathAppend(buffer, basename);
+		my_path_append(buffer, basename, BUFSIZE);
 		wcsncat(buffer, L" --", BUFSIZE - wcslen(buffer) - 1);
 		prefix_args = buffer;
 		prefix_args_len = wcslen(buffer);
@@ -572,18 +589,18 @@ int main(void)
 
 		/* set the default exe module */
 		wcscpy(exe, exepath);
-		PathAppend(exe, L"git.exe");
+		my_path_append(exe, L"git.exe", MAX_PATH);
 	}
 	else if (!wcsicmp(basename, L"git.exe")) {
 		initialize_top_level_path(top_level_path, exepath, NULL, 1);
 
 		/* set the default exe module */
 		wcscpy(exe, top_level_path);
-		PathAppend(exe, msystem_bin);
-		PathAppend(exe, L"git.exe");
+		my_path_append(exe, msystem_bin, MAX_PATH);
+		my_path_append(exe, L"git.exe", MAX_PATH);
 		if (_waccess(exe, 0) == -1) {
 			wcscpy(exe, top_level_path);
-			PathAppend(exe, L"bin\\git.exe");
+			my_path_append(exe, L"bin\\git.exe", MAX_PATH);
 		}
 	}
 
