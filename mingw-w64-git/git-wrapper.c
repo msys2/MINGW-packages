@@ -14,6 +14,10 @@
 #include <stdio.h>
 #include <wchar.h>
 
+/* Let the system deal with it if the path is too long */
+#undef MAX_PATH
+#define MAX_PATH 4096
+
 static WCHAR msystem_bin[64];
 
 static void print_error(LPCWSTR prefix, DWORD error_number)
