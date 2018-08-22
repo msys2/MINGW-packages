@@ -9,7 +9,7 @@
 
 QWT_VER_MAJ      = 6
 QWT_VER_MIN      = 1
-QWT_VER_PAT      = 1
+QWT_VER_PAT      = 3
 QWT_VERSION      = $${QWT_VER_MAJ}.$${QWT_VER_MIN}.$${QWT_VER_PAT}
 
 ######################################################################
@@ -73,6 +73,12 @@ QWT_CONFIG     += QwtWidgets
 QWT_CONFIG     += QwtSvg
 
 ######################################################################
+# If you want to use a OpenGL plot canvas
+######################################################################
+
+QWT_CONFIG     += QwtOpenGL
+
+######################################################################
 # You can use the MathML renderer of the Qt solutions package to 
 # enable MathML support in Qwt. Because of license implications
 # the ( modified ) code of the MML Widget solution is included and
@@ -92,6 +98,22 @@ QWT_CONFIG     += QwtSvg
 QWT_CONFIG     += QwtDesigner
 
 ######################################################################
+# Compile all Qwt classes into the designer plugin instead
+# of linking it against the shared Qwt library. Has no effect
+# when QwtDesigner or QwtDll are not both enabled.
+#
+# On systems where rpath is supported ( all Unixoids ) the 
+# location of the installed Qwt library is compiled into the plugin,
+# but on Windows it might be easier to have a self contained
+# plugin to avoid any hassle with configuring the runtime
+# environment of the designer/creator.
+######################################################################
+
+win32 {
+    QWT_CONFIG     += QwtDesignerSelfContained
+}
+
+######################################################################
 # If you want to auto build the examples, enable the line below
 # Otherwise you have to build them from the examples directory.
 ######################################################################
@@ -99,11 +121,32 @@ QWT_CONFIG     += QwtDesigner
 #QWT_CONFIG     += QwtExamples
 
 ######################################################################
-# When Qt has been built as framework qmake ( qtAddLibrary ) wants 
+# The playground is primarily intended for the Qwt development 
+# to explore and test new features. Nevertheless you might find
+# ideas or code snippets that help for application development
+# If you want to auto build the applications in playground, enable 
+# the line below.
+# Otherwise you have to build them from the playground directory.
+######################################################################
+
+#QWT_CONFIG     += QwtPlayground
+
+######################################################################
+# When Qt has been built as framework qmake wants 
 # to link frameworks instead of regular libs
 ######################################################################
 
-macx:CONFIG(qt_framework, qt_framework|qt_no_framework) {
+macx:!static:CONFIG(qt_framework, qt_framework|qt_no_framework) {
 
     QWT_CONFIG += QwtFramework
+}  
+
+######################################################################
+# Create and install pc files for pkg-config
+# See http://www.freedesktop.org/wiki/Software/pkg-config/
+######################################################################
+
+unix {
+
+    #QWT_CONFIG     += QwtPkgConfig
 }

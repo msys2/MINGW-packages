@@ -1,0 +1,192 @@
+diff -Naur libdbus-c++-0.9.0.orig/include/dbus-c++/eventloop-integration.h libdbus-c++-0.9.0/include/dbus-c++/eventloop-integration.h
+--- libdbus-c++-0.9.0.orig/include/dbus-c++/eventloop-integration.h	2018-06-18 09:00:31.731863100 -0400
++++ libdbus-c++-0.9.0/include/dbus-c++/eventloop-integration.h	2018-06-18 10:41:14.726173200 -0400
+@@ -90,7 +90,7 @@
+ 
+ private:
+   bool _running;
+-  int _pipe[2];
++  int _Pipe[2];
+   std::list <Pipe *> pipe_list;
+ };
+ 
+diff -Naur libdbus-c++-0.9.0.orig/src/eventloop.cpp libdbus-c++-0.9.0/src/eventloop.cpp
+--- libdbus-c++-0.9.0.orig/src/eventloop.cpp	2018-06-18 09:00:31.607861900 -0400
++++ libdbus-c++-0.9.0/src/eventloop.cpp	2018-06-18 09:22:34.113010700 -0400
+@@ -28,7 +28,13 @@
+ #include <dbus-c++/eventloop.h>
+ #include <dbus-c++/debug.h>
+ 
++#ifdef _WIN32
++#include <winsock2.h>
++#define poll WSAPoll
++#define pollfd WSAPOLLFD
++#else
+ #include <sys/poll.h>
++#endif
+ #include <sys/time.h>
+ 
+ #include <dbus/dbus.h>
+@@ -85,7 +91,7 @@
+ {
+   if (recursive)
+   {
+-    pthread_mutex_t recmutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
++    pthread_mutex_t recmutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
+     _mutex = recmutex;
+   }
+   else
+diff -Naur libdbus-c++-0.9.0.orig/src/eventloop-integration.cpp libdbus-c++-0.9.0/src/eventloop-integration.cpp
+--- libdbus-c++-0.9.0.orig/src/eventloop-integration.cpp	2018-06-18 09:00:31.605863100 -0400
++++ libdbus-c++-0.9.0/src/eventloop-integration.cpp	2018-06-18 10:49:21.392037900 -0400
+@@ -36,7 +36,13 @@
+ /* STD */
+ #include <string.h>
+ #include <cassert>
++#ifdef _WIN32
++#include <winsock2.h>
++#define poll WSAPoll
++#define pollfd WSAPOLLFD
++#else
+ #include <sys/poll.h>
++#endif
+ #include <fcntl.h>
+ 
+ using namespace DBus;
+@@ -79,13 +85,16 @@
+ BusDispatcher::BusDispatcher() :
+   _running(false)
+ {
++  #ifdef _WIN32
++  #define pipe _pipe
++  #endif
+   // pipe to create a new fd used to unlock a dispatcher at any
+   // moment (used by leave function)
+-  int ret = pipe(_pipe);
++  int ret = pipe(_Pipe, 0, _O_BINARY | _O_NOINHERIT);
+   if (ret == -1) throw Error("PipeError:errno", toString(errno).c_str());
+ 
+-  _fdunlock[0] = _pipe[0];
+-  _fdunlock[1] = _pipe[1];
++  _fdunlock[0] = _Pipe[0];
++  _fdunlock[1] = _Pipe[1];
+ }
+ 
+ void BusDispatcher::enter()
+diff -Naur libdbus-c++-0.9.0.orig/src/Makefile.am libdbus-c++-0.9.0/src/Makefile.am
+--- libdbus-c++-0.9.0.orig/src/Makefile.am	2018-06-18 09:00:31.630862000 -0400
++++ libdbus-c++-0.9.0/src/Makefile.am	2018-06-18 09:02:41.541225800 -0400
+@@ -31,6 +31,9 @@
+ libdbus_c___1_la_LIBADD = \
+ 	$(dbus_LIBS)
+ 
++libdbus_c___1_la_LDFLAGS = \
++    -no-undefined
++
+ AM_CPPFLAGS = \
+ 	$(dbus_CFLAGS) \
+ 	$(glib_CFLAGS) \
+diff -Naur libdbus-c++-0.9.0.orig/src/pipe.cpp libdbus-c++-0.9.0/src/pipe.cpp
+--- libdbus-c++-0.9.0.orig/src/pipe.cpp	2018-06-18 09:00:31.618869800 -0400
++++ libdbus-c++-0.9.0/src/pipe.cpp	2018-06-18 10:34:24.220185100 -0400
+@@ -32,7 +32,13 @@
+ 
+ /* STD */
+ #include <unistd.h>
++#ifdef _WIN32
++#include <winsock2.h>
++#define poll WSAPoll
++#define pollfd WSAPOLLFD
++#else
+ #include <sys/poll.h>
++#endif
+ #include <fcntl.h>
+ #include <errno.h>
+ #include <cassert>
+@@ -47,12 +53,21 @@
+   _data(data)
+ {
+   int fd[2];
+-
++  #ifdef _WIN32
++  #define pipe _pipe
++  if (_pipe((fd), 0, _O_BINARY | _O_NOINHERIT) == 0)
++  #else
+   if (pipe(fd) == 0)
++  #endif
+   {
+     _fd_read = fd[0];
+     _fd_write = fd[1];
++    #ifdef _WIN32
++    u_long nonblock = 1;
++    ioctlsocket(_fd_read, FIONBIO, &nonblock);
++    #else
+     fcntl(_fd_read, F_SETFL, O_NONBLOCK);
++    #endif
+   }
+   else
+   {
+diff -Naur libdbus-c++-0.9.0.orig/tools/generate_proxy.cpp libdbus-c++-0.9.0/tools/generate_proxy.cpp
+--- libdbus-c++-0.9.0.orig/tools/generate_proxy.cpp	2018-06-18 09:00:31.311874400 -0400
++++ libdbus-c++-0.9.0/tools/generate_proxy.cpp	2018-06-18 11:15:32.307777800 -0400
+@@ -352,7 +352,7 @@
+         if (!arg_name.length())
+         {
+           arg_name = "argin";
+-          arg_name += toString <uint> (i);
++          arg_name += toString <int> (i);
+         }
+ 
+         // generate extra code to wrap object
+@@ -445,7 +445,7 @@
+ 
+           if (!arg_name.length())
+           {
+-            arg_name = "argout" + toString <uint> (i);
++            arg_name = "argout" + toString <int> (i);
+           }
+ 
+           if (arg_object.length())
+@@ -569,7 +569,7 @@
+         // use a default if no arg name given
+         if (!arg_name.length())
+         {
+-          arg_name = "arg" + toString <uint> (i);
++          arg_name = "arg" + toString <int> (i);
+         }
+ 
+         body << arg_name << ";" << endl;
+@@ -605,7 +605,7 @@
+ 
+         if (!arg_name.length())
+         {
+-          arg_name = "arg" + toString <uint> (j);
++          arg_name = "arg" + toString <int> (j);
+         }
+ 
+         if (arg_object.length())
+diff -Naur libdbus-c++-0.9.0.orig/tools/introspect.cpp libdbus-c++-0.9.0/tools/introspect.cpp
+--- libdbus-c++-0.9.0.orig/tools/introspect.cpp	2018-06-18 09:00:31.305870900 -0400
++++ libdbus-c++-0.9.0/tools/introspect.cpp	2018-06-18 10:57:13.796040700 -0400
+@@ -45,9 +45,11 @@
+ 
+ int main(int argc, char **argv)
+ {
++#ifndef _WIN32
+   signal(SIGTERM, niam);
+   signal(SIGINT, niam);
+   signal(SIGALRM, niam);
++#endif
+ 
+   if (argc == 1)
+   {
+@@ -70,7 +72,9 @@
+ 
+     DBus::default_dispatcher = &dispatcher;
+ 
++#ifndef _WIN32
+     alarm(1);
++#endif
+ 
+     dispatcher.enter();
+   }

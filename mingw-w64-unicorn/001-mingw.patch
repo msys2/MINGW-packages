@@ -1,0 +1,134 @@
+--- unicorn-1.0.1/Makefile.orig	2018-07-16 08:59:47.518887600 +0300
++++ unicorn-1.0.1/Makefile	2018-07-16 09:04:38.977399900 +0300
+@@ -133,8 +133,7 @@
+ BIN_EXT = .exe
+ UNICORN_QEMU_FLAGS += --disable-stack-protector
+ UNICORN_CFLAGS := $(UNICORN_CFLAGS:-fPIC=)
+-$(LIBNAME)_LDFLAGS += -Wl,--output-def,unicorn.def
+-DO_WINDOWS_EXPORT = 1
++DO_WINDOWS_EXPORT = 0
+ 
+ # Linux, Darwin
+ else
+@@ -147,7 +146,9 @@
+ 
+ ifeq ($(UNICORN_SHARED),yes)
+ ifneq ($(filter MINGW%,$(UNAME_S)),)
+-LIBRARY = $(LIBNAME).$(EXT)
++LIBRARY = lib$(LIBNAME).$(EXT)
++LIBRARY_DLLA = lib$(LIBNAME).$(EXT).$(AR_EXT)
++$(LIBNAME)_LDFLAGS += -Wl,--out-implib=$(LIBRARY_DLLA)
+ else ifneq ($(filter CYGWIN%,$(UNAME_S)),)
+ LIBRARY = cyg$(LIBNAME).$(EXT)
+ LIBRARY_DLLA = lib$(LIBNAME).$(EXT).$(AR_EXT)
+@@ -162,7 +163,7 @@
+ 
+ ifeq ($(UNICORN_STATIC),yes)
+ ifneq ($(filter MINGW%,$(UNAME_S)),)
+-ARCHIVE = $(LIBNAME).$(AR_EXT)
++ARCHIVE = lib$(LIBNAME).$(AR_EXT)
+ # Cygwin, Linux, Darwin
+ else
+ ARCHIVE = lib$(LIBNAME).$(AR_EXT)
+@@ -265,6 +266,10 @@
+ ifneq ($(filter CYGWIN%,$(UNAME_S)),)
+ 	$(INSTALL_LIB) $(LIBRARY) $(DESTDIR)$(BINDIR)
+ 	$(INSTALL_DATA) $(LIBRARY_DLLA) $(DESTDIR)$(LIBDIR)
++else ifneq ($(filter MINGW%,$(UNAME_S)),)
++	mkdir -p $(DESTDIR)$(BINDIR)
++	$(INSTALL_LIB) $(LIBRARY) $(DESTDIR)$(BINDIR)
++	$(INSTALL_DATA) $(LIBRARY_DLLA) $(DESTDIR)$(LIBDIR)
+ else
+ 	$(INSTALL_LIB) $(LIBRARY) $(DESTDIR)$(LIBDIR)
+ endif
+--- unicorn-1.0.1/bindings/python/setup.py.orig	2018-07-16 09:02:48.997206700 +0300
++++ unicorn-1.0.1/bindings/python/setup.py	2018-07-16 09:03:35.625688600 +0300
+@@ -15,6 +15,7 @@
+ from distutils.command.build import build
+ from distutils.command.sdist import sdist
+ from setuptools.command.bdist_egg import bdist_egg
++from sysconfig import _POSIX_BUILD
+ 
+ SYSTEM = sys.platform
+ 
+@@ -67,8 +68,8 @@
+     LIBRARY_FILE = "libunicorn.dylib"
+     STATIC_LIBRARY_FILE = 'libunicorn.a'
+ elif SYSTEM in ('win32', 'cygwin'):
+-    LIBRARY_FILE = "unicorn.dll"
+-    STATIC_LIBRARY_FILE = "unicorn.lib"
++    LIBRARY_FILE = "libunicorn.dll"
++    STATIC_LIBRARY_FILE = "libunicorn.a"
+ else:
+     LIBRARY_FILE = "libunicorn.so"
+     STATIC_LIBRARY_FILE = 'libunicorn.a'
+@@ -125,10 +126,11 @@
+     os.mkdir(LIBS_DIR)
+ 
+     # copy public headers
+-    shutil.copytree(os.path.join(BUILD_DIR, 'include', 'unicorn'), os.path.join(HEADERS_DIR, 'unicorn'))
++    if not _POSIX_BUILD:
++        shutil.copytree(os.path.join(BUILD_DIR, 'include', 'unicorn'), os.path.join(HEADERS_DIR, 'unicorn'))
+ 
+     # copy special library dependencies
+-    if SYSTEM == 'win32':
++    if SYSTEM == 'win32' and not _POSIX_BUILD:
+         got_all = True
+         for dll in ALL_WINDOWS_DLLS:
+             dllpath = os.path.join(sys.prefix, 'bin', dll)
+@@ -174,15 +176,16 @@
+ 
+     subprocess.call(cmd, env=new_env)
+ 
+-    shutil.copy(LIBRARY_FILE, LIBS_DIR)
+-    try:
+-        # static library may fail to build on windows if user doesn't have visual studio installed. this is fine.
+-        shutil.copy(STATIC_LIBRARY_FILE, LIBS_DIR)
+-    except:
+-        print('Warning: Could not build static library file! This build is not appropriate for a binary distribution')
+-        # enforce this
+-        if 'upload' in sys.argv:
+-            sys.exit(1)
++    if not _POSIX_BUILD:
++        shutil.copy(LIBRARY_FILE, LIBS_DIR)
++        try:
++            # static library may fail to build on windows if user doesn't have visual studio installed. this is fine.
++            shutil.copy(STATIC_LIBRARY_FILE, LIBS_DIR)
++        except:
++            print('Warning: Could not build static library file! This build is not appropriate for a binary distribution')
++            # enforce this
++            if 'upload' in sys.argv:
++                sys.exit(1)
+     os.chdir(cwd)
+ 
+ 
+--- unicorn-1.0.1/samples/Makefile.orig	2018-07-16 09:14:10.223004100 +0300
++++ unicorn-1.0.1/samples/Makefile	2018-07-16 09:15:38.343959400 +0300
+@@ -48,7 +48,7 @@
+ 
+ ifeq ($(UNICORN_STATIC),yes)
+ ifneq ($(filter MINGW%,$(UNAME_S)),)
+-ARCHIVE = $(LIBDIR)/unicorn.$(AR_EXT)
++ARCHIVE = $(LIBDIR)/libunicorn.$(AR_EXT)
+ else ifneq ($(filter CYGWIN%,$(UNAME_S)),)
+ ARCHIVE = $(LIBDIR)/libunicorn.$(AR_EXT)
+ else
+--- unicorn-1.0.1/bindings/python/unicorn/unicorn.py.orig	2018-07-16 09:18:04.230615900 +0300
++++ unicorn-1.0.1/bindings/python/unicorn/unicorn.py	2018-07-16 09:23:24.151578600 +0300
+@@ -19,7 +19,7 @@
+     range = xrange
+ 
+ _lib = { 'darwin': 'libunicorn.dylib',
+-         'win32': 'unicorn.dll',
++         'win32': 'libunicorn.dll',
+          'cygwin': 'cygunicorn.dll',
+          'linux': 'libunicorn.so',
+          'linux2': 'libunicorn.so' }
+@@ -78,6 +78,7 @@
+ # - last-gasp attempt at some hardcoded paths on darwin and linux
+ 
+ _path_list = [pkg_resources.resource_filename(__name__, 'lib'),
++              sys.prefix + '/bin',
+               os.path.join(os.path.split(__file__)[0], 'lib'),
+               '',
+               distutils.sysconfig.get_python_lib(),

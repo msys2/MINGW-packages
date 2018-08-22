@@ -54,6 +54,23 @@ class Tests(unittest.TestCase):
         from multiprocessing import Queue
         Queue(0)
 
+    def test_socket_timout_normal_error(self):
+        import urllib.request
+        from urllib.error import URLError
+
+        try:
+            urllib.request.urlopen(
+                'http://localhost', timeout=0.0001).close()
+        except URLError:
+            pass
+
+    def test_threads(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(1) as pool:
+            for res in pool.map(lambda *x: None, range(10000)):
+                pass
+
 
 def suite():
     return unittest.TestLoader().loadTestsFromName(__name__)
