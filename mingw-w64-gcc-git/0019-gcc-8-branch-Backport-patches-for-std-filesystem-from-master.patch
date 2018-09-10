@@ -1,4 +1,4 @@
-From ff9550c0761d269ac0b7a7423a15befc37946cac Mon Sep 17 00:00:00 2001
+From 953d61a7250a144603df548e1d80651ea9190f12 Mon Sep 17 00:00:00 2001
 From: Liu Hao <lh_mouse@126.com>
 Date: Sat, 23 Jun 2018 17:02:02 +0800
 Subject: [PATCH] Backport patches for std::filesystem from master.
@@ -20,6 +20,7 @@ Signed-off-by: Liu Hao <lh_mouse@126.com>
  libstdc++-v3/configure                        |  35 +++
  libstdc++-v3/configure.ac                     |   2 +
  libstdc++-v3/crossconfig.m4                   |   1 +
+ libstdc++-v3/include/bits/fs_dir.h            |   5 +-
  libstdc++-v3/include/bits/fs_path.h           | 251 +++++++++--------
  libstdc++-v3/include/bits/fstream.tcc         |  36 +++
  .../include/experimental/bits/fs_path.h       |  74 ++---
@@ -31,11 +32,11 @@ Signed-off-by: Liu Hao <lh_mouse@126.com>
  libstdc++-v3/src/filesystem/path.cc           |  24 +-
  libstdc++-v3/src/filesystem/std-dir.cc        |   5 +-
  libstdc++-v3/src/filesystem/std-ops.cc        | 260 ++++++++++++------
- libstdc++-v3/src/filesystem/std-path.cc       | 105 +++++--
- 18 files changed, 929 insertions(+), 353 deletions(-)
+ libstdc++-v3/src/filesystem/std-path.cc       | 122 +++++---
+ 19 files changed, 933 insertions(+), 371 deletions(-)
 
 diff --git a/libstdc++-v3/config.h.in b/libstdc++-v3/config.h.in
-index 5a0f0678439..1fc10b511fb 100644
+index 765cedc6edf..3fb685ce9aa 100644
 --- a/libstdc++-v3/config.h.in
 +++ b/libstdc++-v3/config.h.in
 @@ -264,6 +264,9 @@
@@ -139,7 +140,7 @@ index 58f24f670f6..3c857272c57 100644
        sys_open(__c_file* __file, ios_base::openmode);
  
 diff --git a/libstdc++-v3/configure b/libstdc++-v3/configure
-index fbc9daeb195..3dd63c9631d 100755
+index 5535bfa2b5a..b9883d413f6 100755
 --- a/libstdc++-v3/configure
 +++ b/libstdc++-v3/configure
 @@ -28127,6 +28127,17 @@ eval as_val=\$$as_ac_var
@@ -230,6 +231,22 @@ index cb6e3afff3d..669d87f7602 100644
      ;;
    *-netbsd*)
      SECTION_FLAGS='-ffunction-sections -fdata-sections'
+diff --git a/libstdc++-v3/include/bits/fs_dir.h b/libstdc++-v3/include/bits/fs_dir.h
+index c8c1e5e5bef..6b332e171cf 100644
+--- a/libstdc++-v3/include/bits/fs_dir.h
++++ b/libstdc++-v3/include/bits/fs_dir.h
+@@ -313,10 +313,7 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     _M_file_type(error_code& __ec) const noexcept
+     {
+       if (_M_type != file_type::none && _M_type != file_type::symlink)
+-	{
+-	  __ec.clear();
+-	  return _M_type;
+-	}
++	return _M_type;
+       return status(__ec).type();
+     }
+ 
 diff --git a/libstdc++-v3/include/bits/fs_path.h b/libstdc++-v3/include/bits/fs_path.h
 index 51af2891647..e3938d06d59 100644
 --- a/libstdc++-v3/include/bits/fs_path.h
@@ -2380,7 +2397,7 @@ index 74868cd48e6..e266fa6d3f8 100644
    if (ec)
      result.clear();
 diff --git a/libstdc++-v3/src/filesystem/std-path.cc b/libstdc++-v3/src/filesystem/std-path.cc
-index 6f594cec1d5..f6c0b8bb0f6 100644
+index d5016e06138..f6c0b8bb0f6 100644
 --- a/libstdc++-v3/src/filesystem/std-path.cc
 +++ b/libstdc++-v3/src/filesystem/std-path.cc
 @@ -38,6 +38,66 @@ fs::filesystem_error::~filesystem_error() = default;
@@ -2518,12 +2535,43 @@ index 6f594cec1d5..f6c0b8bb0f6 100644
      {
  #ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
        // Replace each slash character in the root-name
--      if (p.is_root_name())
+-      if (p._M_type == _Type::_Root_name || p._M_type == _Type::_Root_dir)
 +      if (p._M_type == _Type::_Root_name)
  	{
  	  string_type s = p.native();
  	  std::replace(s.begin(), s.end(), L'/', L'\\');
-@@ -487,7 +547,7 @@ path::lexically_proximate(const path& base) const
+@@ -398,8 +458,7 @@ path::lexically_normal() const
+ 	    }
+ 	  else if (!ret.has_relative_path())
+ 	    {
+-	      // remove a dot-dot filename immediately after root-directory
+-	      if (!ret.has_root_directory())
++	      if (!ret.is_absolute())
+ 		ret /= p;
+ 	    }
+ 	  else
+@@ -412,18 +471,8 @@ path::lexically_normal() const
+ 		{
+ 		  // Remove the filename before the trailing slash
+ 		  // (equiv. to ret = ret.parent_path().remove_filename())
+-
+-		  if (elem == ret.begin())
+-		    ret.clear();
+-		  else
+-		    {
+-		      ret._M_pathname.erase(elem._M_cur->_M_pos);
+-		      // Do we still have a trailing slash?
+-		      if (std::prev(elem)->_M_type == _Type::_Filename)
+-			ret._M_cmpts.erase(elem._M_cur);
+-		      else
+-			ret._M_cmpts.erase(elem._M_cur, ret._M_cmpts.end());
+-		    }
++		  ret._M_pathname.erase(elem._M_cur->_M_pos);
++		  ret._M_cmpts.erase(elem._M_cur, ret._M_cmpts.end());
+ 		}
+ 	      else // ???
+ 		ret /= p;
+@@ -498,7 +547,7 @@ path::lexically_proximate(const path& base) const
  std::pair<const path::string_type*, std::size_t>
  path::_M_find_extension() const
  {
@@ -2532,7 +2580,7 @@ index 6f594cec1d5..f6c0b8bb0f6 100644
  
    if (_M_type == _Type::_Filename)
      s = &_M_pathname;
-@@ -502,9 +562,9 @@ path::_M_find_extension() const
+@@ -513,9 +562,9 @@ path::_M_find_extension() const
      {
        if (auto sz = s->size())
  	{
@@ -2544,7 +2592,7 @@ index 6f594cec1d5..f6c0b8bb0f6 100644
  	  return { s, pos ? pos : string_type::npos };
  	}
      }
-@@ -514,11 +574,13 @@ path::_M_find_extension() const
+@@ -525,11 +574,13 @@ path::_M_find_extension() const
  void
  path::_M_split_cmpts()
  {
@@ -2561,7 +2609,7 @@ index 6f594cec1d5..f6c0b8bb0f6 100644
  
    size_t pos = 0;
    const size_t len = _M_pathname.size();
-@@ -593,8 +655,7 @@ path::_M_split_cmpts()
+@@ -604,8 +655,7 @@ path::_M_split_cmpts()
        // An empty element, if trailing non-root directory-separator present.
        if (_M_cmpts.back()._M_type == _Type::_Filename)
  	{
@@ -2571,7 +2619,7 @@ index 6f594cec1d5..f6c0b8bb0f6 100644
  	  _M_cmpts.emplace_back(string_type(), _Type::_Filename, pos);
  	}
      }
-@@ -704,8 +765,8 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+@@ -715,8 +765,8 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
  
    std::string filesystem_error::_M_gen_what()
    {
@@ -2583,5 +2631,5 @@ index 6f594cec1d5..f6c0b8bb0f6 100644
  
  _GLIBCXX_END_NAMESPACE_CXX11
 -- 
-2.17.1
+2.18.0
 
