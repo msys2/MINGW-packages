@@ -1,0 +1,504 @@
+--- openssl-1.1.1/Configurations/10-main.conf.orig	2018-09-11 08:48:19.000000000 -0400
++++ openssl-1.1.1/Configurations/10-main.conf	2018-09-19 02:45:32.244002900 -0400
+@@ -1384,7 +1384,7 @@ my %targets = (
+                                    debug   => "-g -O0",
+                                    release => "-O3 -fomit-frame-pointer"),
+         cflags           => "-m32",
+-        cppflags         => combine("-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN",
++        cppflags         => combine("-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -D__USE_MINGW_ANSI_STDIO=1",
+                                     threads("-D_MT")),
+         lib_cppflags     => "-DL_ENDIAN",
+         sys_id           => "MINGW32",
+@@ -1416,7 +1416,7 @@ my %targets = (
+                                    debug   => "-g -O0",
+                                    release => "-O3"),
+         cflags           => "-m64",
+-        cppflags         => combine("-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN",
++        cppflags         => combine("-DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -D__USE_MINGW_ANSI_STDIO=1",
+                                     threads("-D_MT")),
+         lib_cppflags     => "-DL_ENDIAN",
+         sys_id           => "MINGW64",
+--- openssl-1.1.1/apps/s_client.c.orig	2018-09-11 08:48:20.000000000 -0400
++++ openssl-1.1.1/apps/s_client.c	2018-09-19 02:45:32.403165700 -0400
+@@ -912,7 +912,12 @@ int s_client_main(int argc, char **argv)
+     int prexit = 0;
+     int sdebug = 0;
+     int reconnect = 0, verify = SSL_VERIFY_NONE, vpmtouched = 0;
++#if defined(OPENSSL_SYS_WINDOWS)
++    SOCKET s = (SOCKET) -1;
++    int ret = 1, in_init = 1, i, nbio_test = 0, k, width, state = 0;
++#else
+     int ret = 1, in_init = 1, i, nbio_test = 0, s = -1, k, width, state = 0;
++#endif
+     int sbuf_len, sbuf_off, cmdletters = 1;
+     int socket_family = AF_UNSPEC, socket_type = SOCK_STREAM, protocol = 0;
+     int starttls_proto = PROTO_OFF, crl_format = FORMAT_PEM, crl_download = 0;
+--- openssl-1.1.1/apps/s_server.c.orig	2018-09-11 08:48:20.000000000 -0400
++++ openssl-1.1.1/apps/s_server.c	2018-09-19 03:20:13.286517600 -0400
+@@ -14,6 +14,8 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #if defined(_WIN32)
++/* Include Winsock2 before windows.h to avoid warnings and use SOCKET type. */
++# include <Winsock2.h>
+ /* Included before async.h to avoid some warnings */
+ # include <windows.h>
+ #endif
+@@ -61,9 +63,15 @@ typedef unsigned int u_int;
+ #include "internal/sockets.h"
+ 
+ static int not_resumable_sess_cb(SSL *s, int is_forward_secure);
++#if defined(OPENSSL_SYS_WINDOWS)
++static int sv_body(SOCKET s, int stype, int prot, unsigned char *context);
++static int www_body(SOCKET s, int stype, int prot, unsigned char *context);
++static int rev_body(SOCKET s, int stype, int prot, unsigned char *context);
++#else
+ static int sv_body(int s, int stype, int prot, unsigned char *context);
+ static int www_body(int s, int stype, int prot, unsigned char *context);
+ static int rev_body(int s, int stype, int prot, unsigned char *context);
++#endif
+ static void close_accept_socket(void);
+ static int init_ssl_connection(SSL *s);
+ static void print_stats(BIO *bp, SSL_CTX *ctx);
+@@ -77,7 +85,11 @@ static DH *load_dh_param(const char *dhf
+ static void print_connection_info(SSL *con);
+ 
+ static const int bufsize = 16 * 1024;
++#if defined(OPENSSL_SYS_WINDOWS)
++static SOCKET accept_socket = (SOCKET)-1;
++#else
+ static int accept_socket = -1;
++#endif
+ 
+ #define TEST_CERT       "server.pem"
+ #define TEST_CERT2      "server2.pem"
+@@ -2209,7 +2221,11 @@ static void print_stats(BIO *bio, SSL_CT
+                SSL_CTX_sess_get_cache_size(ssl_ctx));
+ }
+ 
++#if defined(OPENSSL_SYS_WINDOWS)
++static int sv_body(SOCKET s, int stype, int prot, unsigned char *context)
++#else
+ static int sv_body(int s, int stype, int prot, unsigned char *context)
++#endif
+ {
+     char *buf = NULL;
+     fd_set readfds;
+@@ -2924,7 +2940,11 @@ static DH *load_dh_param(const char *dhf
+ }
+ #endif
+ 
++#if defined(OPENSSL_SYS_WINDOWS)
++static int www_body(SOCKET s, int stype, int prot, unsigned char *context)
++#else
+ static int www_body(int s, int stype, int prot, unsigned char *context)
++#endif
+ {
+     char *buf = NULL;
+     int ret = 1;
+@@ -3311,7 +3331,11 @@ static int www_body(int s, int stype, in
+     return ret;
+ }
+ 
++#if defined(OPENSSL_SYS_WINDOWS)
++static int rev_body(SOCKET s, int stype, int prot, unsigned char *context)
++#else
+ static int rev_body(int s, int stype, int prot, unsigned char *context)
++#endif
+ {
+     char *buf = NULL;
+     int i;
+--- openssl-1.1.1/apps/s_socket.c.orig	2018-09-11 08:48:20.000000000 -0400
++++ openssl-1.1.1/apps/s_socket.c	2018-09-19 02:45:32.687924900 -0400
+@@ -59,7 +59,11 @@ BIO_ADDR *ourpeer = NULL;
+  *
+  * Returns 1 on success, 0 on failure.
+  */
++#if defined(OPENSSL_SYS_WINDOWS)
++int init_client(SOCKET *sock, const char *host, const char *port,
++#else
+ int init_client(int *sock, const char *host, const char *port,
++#endif
+                 const char *bindhost, const char *bindport,
+                 int family, int type, int protocol)
+ {
+@@ -203,7 +207,11 @@ out:
+  *
+  * 0 on failure, something other on success.
+  */
++#if defined(OPENSSL_SYS_WINDOWS)
++int do_server(SOCKET *accept_sock, const char *host, const char *port,
++#else
+ int do_server(int *accept_sock, const char *host, const char *port,
++#endif
+               int family, int type, int protocol, do_server_cb cb,
+               unsigned char *context, int naccept, BIO *bio_s_out)
+ {
+--- openssl-1.1.1/apps/s_apps.h.orig	2018-09-11 08:48:20.000000000 -0400
++++ openssl-1.1.1/apps/s_apps.h	2018-09-19 02:45:32.899371900 -0400
+@@ -20,8 +20,14 @@
+ #define PORT            "4433"
+ #define PROTOCOL        "tcp"
+ 
++
++#if defined(OPENSSL_SYS_WINDOWS)
++typedef int (*do_server_cb)(SOCKET s, int stype, int prot, unsigned char *context);
++int do_server(SOCKET *accept_sock, const char *host, const char *port,
++#else
+ typedef int (*do_server_cb)(int s, int stype, int prot, unsigned char *context);
+ int do_server(int *accept_sock, const char *host, const char *port,
++#endif
+               int family, int type, int protocol, do_server_cb cb,
+               unsigned char *context, int naccept, BIO *bio_s_out);
+ #ifdef HEADER_X509_H
+@@ -36,7 +42,11 @@ int ssl_print_point_formats(BIO *out, SS
+ int ssl_print_groups(BIO *out, SSL *s, int noshared);
+ #endif
+ int ssl_print_tmp_key(BIO *out, SSL *s);
++#if defined(OPENSSL_SYS_WINDOWS)
++int init_client(SOCKET *sock, const char *host, const char *port,
++#else
+ int init_client(int *sock, const char *host, const char *port,
++#endif
+                 const char *bindhost, const char *bindport,
+                 int family, int type, int protocol);
+ int should_retry(int i);
+--- openssl-1.1.1/crypto/bio/b_sock.c.orig	2018-09-11 08:48:20.000000000 -0400
++++ openssl-1.1.1/crypto/bio/b_sock.c	2018-09-19 02:45:37.008213800 -0400
+@@ -85,7 +85,11 @@ int BIO_get_port(const char *str, unsign
+ }
+ # endif
+ 
++#if defined(OPENSSL_SYS_WINDOWS)
++int BIO_sock_error(SOCKET sock)
++#else
+ int BIO_sock_error(int sock)
++#endif
+ {
+     int j = 0, i;
+     socklen_t size = sizeof(j);
+@@ -158,7 +162,11 @@ void bio_sock_cleanup_int(void)
+ # endif
+ }
+ 
++#if defined(OPENSSL_SYS_WINDOWS)
++int BIO_socket_ioctl(SOCKET fd, long type, void *arg)
++#else
+ int BIO_socket_ioctl(int fd, long type, void *arg)
++#endif
+ {
+     int i;
+ 
+@@ -197,9 +205,15 @@ int BIO_socket_ioctl(int fd, long type,
+ }
+ 
+ # if OPENSSL_API_COMPAT < 0x10100000L
++#if defined(OPENSSL_SYS_WINDOWS)
++SOCKET BIO_get_accept_socket(char *host, int bind_mode)
++{
++    SOCKET s = INVALID_SOCKET;
++#else
+ int BIO_get_accept_socket(char *host, int bind_mode)
+ {
+     int s = INVALID_SOCKET;
++#endif
+     char *h = NULL, *p = NULL;
+     BIO_ADDRINFO *res = NULL;
+ 
+@@ -232,10 +246,17 @@ int BIO_get_accept_socket(char *host, in
+     return s;
+ }
+ 
++#if defined(OPENSSL_SYS_WINDOWS)
++SOCKET BIO_accept(SOCKET sock, char **ip_port)
++{
++    BIO_ADDR res;
++    SOCKET ret = INVALID_SOCKET;
++#else
+ int BIO_accept(int sock, char **ip_port)
+ {
+     BIO_ADDR res;
+     int ret = -1;
++#endif
+ 
+     ret = BIO_accept_ex(sock, &res, 0);
+     if (ret == (int)INVALID_SOCKET) {
+@@ -274,7 +295,11 @@ int BIO_accept(int sock, char **ip_port)
+ }
+ # endif
+ 
++#if defined(OPENSSL_SYS_WINDOWS)
++int BIO_set_tcp_ndelay(SOCKET s, int on)
++#else
+ int BIO_set_tcp_ndelay(int s, int on)
++#endif
+ {
+     int ret = 0;
+ # if defined(TCP_NODELAY) && (defined(IPPROTO_TCP) || defined(SOL_TCP))
+@@ -293,7 +318,11 @@ int BIO_set_tcp_ndelay(int s, int on)
+     return (ret == 0);
+ }
+ 
++#if defined(OPENSSL_SYS_WINDOWS)
++int BIO_socket_nbio(SOCKET s, int mode)
++#else
+ int BIO_socket_nbio(int s, int mode)
++#endif
+ {
+     int ret = -1;
+     int l;
+@@ -337,7 +366,11 @@ int BIO_socket_nbio(int s, int mode)
+     return (ret == 0);
+ }
+ 
++#if defined(OPENSSL_SYS_WINDOWS)
++int BIO_sock_info(SOCKET sock,
++#else
+ int BIO_sock_info(int sock,
++#endif
+                   enum BIO_sock_info_type type, union BIO_sock_info_u *info)
+ {
+     switch (type) {
+--- openssl-1.1.1/crypto/bio/b_sock2.c.orig	2018-09-11 08:48:20.000000000 -0400
++++ openssl-1.1.1/crypto/bio/b_sock2.c	2018-09-19 02:45:37.016190400 -0400
+@@ -37,7 +37,11 @@
+  * Returns the file descriptor on success or INVALID_SOCKET on failure.  On
+  * failure errno is set, and a status is added to the OpenSSL error stack.
+  */
++#if defined(OPENSSL_SYS_WINDOWS)
++SOCKET BIO_socket(int domain, int socktype, int protocol, int options)
++#else
+ int BIO_socket(int domain, int socktype, int protocol, int options)
++#endif
+ {
+     int sock = -1;
+ 
+@@ -74,7 +78,11 @@ int BIO_socket(int domain, int socktype,
+  * Returns 1 on success or 0 on failure.  On failure errno is set
+  * and an error status is added to the OpenSSL error stack.
+  */
++#if defined(OPENSSL_SYS_WINDOWS)
++int BIO_connect(SOCKET sock, const BIO_ADDR *addr, int options)
++#else
+ int BIO_connect(int sock, const BIO_ADDR *addr, int options)
++#endif
+ {
+     const int on = 1;
+ 
+@@ -131,7 +139,11 @@ int BIO_connect(int sock, const BIO_ADDR
+  * you set to BIO_SOCK_REUSEADDR option it will try to reuse the port anyway.
+  * It's recommended that you use this.
+  */
++#if defined(OPENSSL_SYS_WINDOWS)
++int BIO_bind(SOCKET sock, const BIO_ADDR *addr, int options)
++#else
+ int BIO_bind(int sock, const BIO_ADDR *addr, int options)
++#endif
+ {
+     int on = 1;
+ 
+@@ -201,7 +213,11 @@ int BIO_bind(int sock, const BIO_ADDR *a
+  * you set to BIO_SOCK_REUSEADDR option it will try to reuse the port anyway.
+  * It's recommended that you use this.
+  */
++#if defined(OPENSSL_SYS_WINDOWS)
++int BIO_listen(SOCKET sock, const BIO_ADDR *addr, int options)
++#else
+ int BIO_listen(int sock, const BIO_ADDR *addr, int options)
++#endif
+ {
+     int on = 1;
+     int socktype;
+@@ -276,7 +292,11 @@ int BIO_listen(int sock, const BIO_ADDR
+  * @options: BIO socket options, applied on the accepted socket.
+  *
+  */
++#if defined(OPENSSL_SYS_WINDOWS)
++SOCKET BIO_accept_ex(SOCKET accept_sock, BIO_ADDR *addr_, int options)
++#else
+ int BIO_accept_ex(int accept_sock, BIO_ADDR *addr_, int options)
++#endif
+ {
+     socklen_t len;
+     int accepted_sock;
+@@ -306,7 +326,11 @@ int BIO_accept_ex(int accept_sock, BIO_A
+  * BIO_closesocket - Close a socket
+  * @sock: the socket to close
+  */
++#if defined(OPENSSL_SYS_WINDOWS)
++int BIO_closesocket(SOCKET sock)
++#else
+ int BIO_closesocket(int sock)
++#endif
+ {
+     if (closesocket(sock) < 0)
+         return 0;
+--- openssl-1.1.1/crypto/bio/bio_lcl.h.orig	2018-09-11 08:48:20.000000000 -0400
++++ openssl-1.1.1/crypto/bio/bio_lcl.h	2018-09-19 02:45:37.665464100 -0400
+@@ -11,6 +11,13 @@
+ #include "internal/sockets.h"
+ #include "internal/refcount.h"
+ 
++/*
++ * In Windows, socket-based BIO types are the SOCKET data type instead of int.
++ */
++# if defined(OPENSSL_SYS_WINDOWS)
++#   include <Winsock2.h>
++# endif
++
+ /* BEGIN BIO_ADDRINFO/BIO_ADDR stuff. */
+ 
+ #ifndef OPENSSL_NO_SOCK
+--- openssl-1.1.1/crypto/bio/bss_sock.c.orig	2018-09-11 08:48:20.000000000 -0400
++++ openssl-1.1.1/crypto/bio/bss_sock.c	2018-09-19 02:45:37.679425500 -0400
+@@ -56,7 +56,11 @@ const BIO_METHOD *BIO_s_socket(void)
+     return &methods_sockp;
+ }
+ 
++#if defined(OPENSSL_SYS_WINDOWS)
++BIO *BIO_new_socket(SOCKET fd, int close_flag)
++#else
+ BIO *BIO_new_socket(int fd, int close_flag)
++#endif
+ {
+     BIO *ret;
+ 
+--- openssl-1.1.1/crypto/rand/rand_lib.c.orig	2018-09-11 08:48:21.000000000 -0400
++++ openssl-1.1.1/crypto/rand/rand_lib.c	2018-09-19 02:45:37.720316200 -0400
+@@ -29,7 +29,11 @@ static CRYPTO_ONCE rand_init = CRYPTO_ON
+ int rand_fork_count;
+ 
+ static CRYPTO_RWLOCK *rand_nonce_lock;
++#ifdef _WIN64
++static long long rand_nonce_count;
++#else
+ static int rand_nonce_count;
++#endif
+ 
+ static int rand_cleaning_up = 0;
+ 
+--- openssl-1.1.1/crypto/threads_win.c.orig	2018-09-11 08:48:21.000000000 -0400
++++ openssl-1.1.1/crypto/threads_win.c	2018-09-19 02:45:37.805090200 -0400
+@@ -149,9 +149,15 @@ int CRYPTO_THREAD_compare_id(CRYPTO_THRE
+     return (a == b);
+ }
+ 
++#ifdef _WIN64
++int CRYPTO_atomic_add(long long *val, int amount, int *ret, CRYPTO_RWLOCK *lock)
++{
++    *ret = InterlockedExchangeAdd64(val, amount) + amount;
++#else
+ int CRYPTO_atomic_add(int *val, int amount, int *ret, CRYPTO_RWLOCK *lock)
+ {
+     *ret = InterlockedExchangeAdd(val, amount) + amount;
++#endif
+     return 1;
+ }
+ 
+--- openssl-1.1.1/include/openssl/bio.h.orig	2018-09-11 08:48:23.000000000 -0400
++++ openssl-1.1.1/include/openssl/bio.h	2018-09-19 02:45:37.913823100 -0400
+@@ -24,6 +24,13 @@
+ #  include <openssl/e_os2.h>
+ # endif
+ 
++/*
++ * In Windows, socket-based BIO types are the SOCKET data type instead of int.
++ */
++# if defined(OPENSSL_SYS_WINDOWS)
++#   include <Winsock2.h>
++# endif
++
+ #ifdef  __cplusplus
+ extern "C" {
+ #endif
+@@ -677,20 +684,34 @@ int BIO_lookup(const char *host, const c
+ int BIO_lookup_ex(const char *host, const char *service,
+                   int lookup_type, int family, int socktype, int protocol,
+                   BIO_ADDRINFO **res);
++#if defined(OPENSSL_SYS_WINDOWS)
++int BIO_sock_error(SOCKET sock);
++int BIO_socket_ioctl(SOCKET fd, long type, void *arg);
++int BIO_socket_nbio(SOCKET fd, int mode);
++int BIO_set_tcp_ndelay(SOCKET sock, int turn_on);
++#else
+ int BIO_sock_error(int sock);
+ int BIO_socket_ioctl(int fd, long type, void *arg);
+ int BIO_socket_nbio(int fd, int mode);
++int BIO_set_tcp_ndelay(int sock, int turn_on);
++#endif /* OPENSSL_SYS_WINDOWS */
+ int BIO_sock_init(void);
+ # if OPENSSL_API_COMPAT < 0x10100000L
+ #  define BIO_sock_cleanup() while(0) continue
+ # endif
+-int BIO_set_tcp_ndelay(int sock, int turn_on);
++
+ 
+ DEPRECATEDIN_1_1_0(struct hostent *BIO_gethostbyname(const char *name))
+ DEPRECATEDIN_1_1_0(int BIO_get_port(const char *str, unsigned short *port_ptr))
+ DEPRECATEDIN_1_1_0(int BIO_get_host_ip(const char *str, unsigned char *ip))
++#if defined(OPENSSL_SYS_WINDOWS)
++DEPRECATEDIN_1_1_0(SOCKET BIO_get_accept_socket(char *host_port, int mode))
++DEPRECATEDIN_1_1_0(SOCKET BIO_accept(SOCKET sock, char **ip_port))
++#else
+ DEPRECATEDIN_1_1_0(int BIO_get_accept_socket(char *host_port, int mode))
+ DEPRECATEDIN_1_1_0(int BIO_accept(int sock, char **ip_port))
++#endif  /* OPENSSL_SYS_WINDOWS */
++
+ 
+ union BIO_sock_info_u {
+     BIO_ADDR *addr;
+@@ -698,8 +719,13 @@ union BIO_sock_info_u {
+ enum BIO_sock_info_type {
+     BIO_SOCK_INFO_ADDRESS
+ };
++#if defined(OPENSSL_SYS_WINDOWS)
++int BIO_sock_info(SOCKET sock,
++                  enum BIO_sock_info_type type, union BIO_sock_info_u *info);
++#else
+ int BIO_sock_info(int sock,
+                   enum BIO_sock_info_type type, union BIO_sock_info_u *info);
++#endif /* OPENSSL_SYS_WINDOWS */
+ 
+ #  define BIO_SOCK_REUSEADDR    0x01
+ #  define BIO_SOCK_V6_ONLY      0x02
+@@ -707,6 +733,16 @@ int BIO_sock_info(int sock,
+ #  define BIO_SOCK_NONBLOCK     0x08
+ #  define BIO_SOCK_NODELAY      0x10
+ 
++#if defined(OPENSSL_SYS_WINDOWS)
++SOCKET BIO_socket(int domain, int socktype, int protocol, int options);
++int BIO_connect(SOCKET sock, const BIO_ADDR *addr, int options);
++int BIO_bind(SOCKET sock, const BIO_ADDR *addr, int options);
++int BIO_listen(SOCKET sock, const BIO_ADDR *addr, int options);
++SOCKET BIO_accept_ex(SOCKET accept_sock, BIO_ADDR *addr, int options);
++int BIO_closesocket(SOCKET sock);
++
++BIO *BIO_new_socket(SOCKET sock, int close_flag);
++#else
+ int BIO_socket(int domain, int socktype, int protocol, int options);
+ int BIO_connect(int sock, const BIO_ADDR *addr, int options);
+ int BIO_bind(int sock, const BIO_ADDR *addr, int options);
+@@ -715,6 +751,8 @@ int BIO_accept_ex(int accept_sock, BIO_A
+ int BIO_closesocket(int sock);
+ 
+ BIO *BIO_new_socket(int sock, int close_flag);
++#endif /* OPENSSL_SYS_WINDOWS */
++
+ BIO *BIO_new_connect(const char *host_port);
+ BIO *BIO_new_accept(const char *host_port);
+ # endif /* OPENSSL_NO_SOCK*/
+--- openssl-1.1.1/include/openssl/crypto.h.orig	2018-09-11 08:48:23.000000000 -0400
++++ openssl-1.1.1/include/openssl/crypto.h	2018-09-19 02:45:38.043452900 -0400
+@@ -72,7 +72,11 @@ int CRYPTO_THREAD_write_lock(CRYPTO_RWLO
+ int CRYPTO_THREAD_unlock(CRYPTO_RWLOCK *lock);
+ void CRYPTO_THREAD_lock_free(CRYPTO_RWLOCK *lock);
+ 
++#ifdef _WIN64
++int CRYPTO_atomic_add(long long *val, int amount, int *ret, CRYPTO_RWLOCK *lock);
++#else
+ int CRYPTO_atomic_add(int *val, int amount, int *ret, CRYPTO_RWLOCK *lock);
++#endif
+ 
+ /*
+  * The following can be used to detect memory leaks in the library. If
+
