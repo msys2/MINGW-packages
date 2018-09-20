@@ -3,7 +3,7 @@
 _realname=openssl
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-_ver=1.0.2p
+_ver=1.1.1
 # use a pacman compatible version scheme
 pkgver=${_ver/[a-z]/.${_ver//[0-9.]/}}
 pkgrel=1
@@ -16,20 +16,33 @@ license=('BSD')
 url="https://www.openssl.org"
 noextract=(${_realname}-${_ver}.tar.gz)
 source=(https://www.openssl.org/source/${_realname}-${_ver}.tar.gz{,.asc}
-        'openssl-1.0.0a-ldflags.patch'
-        'openssl-1.0.2a-parallel-build.patch'
-        'openssl-1.0.1-x32.patch'
-        'openssl-0.9.6-x509.patch'
-        'openssl-1.0.1i-relocation.patch')
-sha256sums=('50a98e07b1a89eb8f6a99477f262df71c6fa7bef77df4dc83025a2845c827d00'
+        'openssl-1.1.1-relocation.patch'
+        'win64-fixes.patch')
+sha256sums=('2836875a0f89c03d0fdf483941512613a50cfb421d6fd94b9f41d7279d586a3d'
             'SKIP'
-            '164aa4928b022cc716fac545b4fd69899cb274682aa487100e595abb652adbae'
-            '609d7ca040f7ab26f5e9844e486b3bcc04f3da656ce2db7733fbd65c6d10457a'
-            'f913185a36538315de3ff122ef96fc9a49e068078e65895cfc950bdb4ac4e4f0'
-            'e8ed15b50f749064e89f26d49b7fd85b3f95e5dde22e430c0f6181e5b07146c7'
-            'f8e6233fa4c289fb125586bf3f30cd617923f6be0c6fe8a3289aa3fac7d7e814')
+            '180372a9ef944211323b8de45824f3a9c2d0bf373e6e0bae6ed7de992355a5fc'
+            'bb9ca17579687af263d719621a0e3c32dd79517270d75955e5bd476d469c4d92')
 
 validpgpkeys=('8657ABB260F056B1E5190839D9C4D26D0E604491')
+
+# Helper macros to help make tasks easier #
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying $_patch"
+    patch -Nbp1 -i "${srcdir}/$_patch"
+  done
+}
+
+del_file_exists() {
+  for _fname in "$@"
+  do
+    if [ -f $_fname ]; then
+      rm -rf $_fname
+    fi
+  done
+}
+# =========================================== #
 
 prepare() {
   # Clean up old sources so re-patching doesn't fail.
@@ -37,21 +50,27 @@ prepare() {
   tar -xzvf ${_realname}-${_ver}.tar.gz -C ${srcdir} || true
   cd ${srcdir}/${_realname}-${_ver}
 
-  patch -p1 -i ${srcdir}/openssl-1.0.0a-ldflags.patch
-  patch -p1 -i ${srcdir}/openssl-1.0.2a-parallel-build.patch
-  patch -p1 -i ${srcdir}/openssl-1.0.1-x32.patch
-  patch -p1 -i ${srcdir}/openssl-0.9.6-x509.patch
-  patch -p1 -i ${srcdir}/openssl-1.0.1i-relocation.patch
-
+# openssl-1.0.0a-ldflags.patch
+# openssl-1.0.2a-parallel-build.patch
+# openssl-1.0.1-x32.patch
+#  openssl-0.9.6-x509.patch
+# openssl-1.0.1i-relocation.patch
+  apply_patch_with_msg \
+     openssl-1.1.1-relocation.patch \
+     win64-fixes.patch
 }
 
 build() {
+  rm -rf ${srcdir}/build-${CARCH}
+ 
   # No support for out-of-source builds
   mkdir -p ${srcdir}/build-${CARCH}
-  cp -a ${srcdir}/${_realname}-${_ver}/* ${srcdir}/build-${CARCH}
+#  cp -a ${srcdir}/${_realname}-${_ver}/* ${srcdir}/build-${CARCH}
 
   # Use mingw cflags instead of hardcoded ones
-  sed -i -e '/^"mingw"/ s/-fomit-frame-pointer -O3 -march=i486 -Wall/-O2 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions --param=ssp-buffer-size=4/' ${srcdir}/build-${CARCH}/Configure
+  sed -i -e '/^"mingw"/ s/-fomit-frame-pointer -O3 -Wall/-O2 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions --param=ssp-buffer-size=4/' \
+     ${srcdir}/${_realname}-${_ver}/Configure
+#     ${srcdir}/build-${CARCH}/Configure
 
   _mingw=mingw
   if $(echo ${CARCH} | grep -q x86_64); then
@@ -59,31 +78,47 @@ build() {
   fi
   cd "${srcdir}/build-${CARCH}"
   export MSYS2_ARG_CONV_EXCL="--prefix="
-  ./Configure \
+  ${srcdir}/${_realname}-${_ver}/Configure \
     --prefix=${MINGW_PREFIX} \
+    --openssldir=ssl \
+    --api=1.0.0 \
     ${_mingw} \
     shared \
     zlib-dynamic \
     enable-camellia \
+    enable-capieng \
     enable-idea \
     enable-mdc2 \
-    enable-tlsext \
-    enable-rfc3779
+    enable-rc5  \
+    enable-rfc3779 \
+    -D__MINGW_USE_VC2005_COMPAT \
+    -DOPENSSLBIN=\"\\\"${MINGW_PREFIX}/bin\\\"\"
 
-  make -j1 ZLIB_INCLUDE=-I"${MINGW_PREFIX}"/include depend all
+  make ZLIB_INCLUDE=-I"${MINGW_PREFIX}"/include depend all
+}
+
+check() {
+  cd "${srcdir}/build-${CARCH}"
+  make VERBOSE=1 test
 }
 
 package() {
   cd "${srcdir}/build-${CARCH}"
-  make -j1 INSTALL_PREFIX="${pkgdir}" MANDIR=${MINGW_PREFIX}/share/man MANSUFFIX=ssl install
+  mkdir -p "${pkgdir}${MINGW_PREFIX}"/bin
+  mkdir -p "${pkgdir}${MINGW_PREFIX}"/include/openssl
+  mkdir -p "${pkgdir}${MINGW_PREFIX}"/lib/engines-1_1
+  mkdir -p "${pkgdir}${MINGW_PREFIX}"/lib/pkgconfig
+  mkdir -p "${pkgdir}${MINGW_PREFIX}"/share/licenses/${_realname}
 
-  install -D -m644 LICENSE ${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
+  make -j1 DESTDIR="${pkgdir}" MANDIR=${MINGW_PREFIX}/share/man MANSUFFIX=ssl install
+  install -D -m644 "${srcdir}/${_realname}-${_ver}/LICENSE" \
+         "${pkgdir}${MINGW_PREFIX}"/share/licenses/${_realname}/LICENSE
 
-  chmod -R 755 "${pkgdir}${MINGW_PREFIX}"/bin
-  chmod -R 644 "${pkgdir}${MINGW_PREFIX}"/lib
-  chmod -R 755 "${pkgdir}${MINGW_PREFIX}"/lib/engines
+  chmod -R 777 "${pkgdir}${MINGW_PREFIX}"/bin
+  chmod -R 777 "${pkgdir}${MINGW_PREFIX}"/lib
+  chmod -R 777 "${pkgdir}${MINGW_PREFIX}"/lib/engines-1_1
 
-  install -m644 ms/applink.c "${pkgdir}${MINGW_PREFIX}"/include/openssl/
+  install -m644 "${srcdir}/${_realname}-${_ver}/ms/applink.c" "${pkgdir}${MINGW_PREFIX}"/include/openssl/
   rm -rf "${pkgdir}${MINGW_PREFIX}"/bin/c_rehash
   rm -rf "${pkgdir}${MINGW_PREFIX}"/{ssl/misc,ssl/man}
 }
