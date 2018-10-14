@@ -1,0 +1,73 @@
+--- a/gcc/diagnostic-color.c	2015-01-05 13:33:28.000000000 +0100
++++ b/gcc/diagnostic-color.c	2016-03-05 12:57:08.156905200 +0100
+@@ -264,12 +264,61 @@
+ }
+ 
+ #if defined(_WIN32)
+-bool
+-colorize_init (diagnostic_color_rule_t)
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++#include <winternl.h>
++
++#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
++#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
++#endif
++
++static int
++w_isatty (int num)
+ {
+-  return false;
++  HANDLE fh = (HANDLE)_get_osfhandle (num);
++  if (fh == INVALID_HANDLE_VALUE)
++    return 0;
++
++  DWORD flags;
++  if (GetConsoleMode (fh, &flags))
++    /* Check if console understands terminal escape sequences.  */
++    return SetConsoleMode (fh, flags | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
++
++  HMODULE ntdll = GetModuleHandle ("ntdll.dll");
++  if (!ntdll)
++    return 0;
++
++  typedef NTSTATUS NTAPI func_NtQueryObject (HANDLE, OBJECT_INFORMATION_CLASS,
++                                             PVOID, ULONG, PULONG);
++  func_NtQueryObject *fNtQueryObject =
++    (func_NtQueryObject*) GetProcAddress (ntdll, "NtQueryObject");
++  if (!fNtQueryObject)
++    return 0;
++
++  ULONG s = 0xffff * sizeof (WCHAR);
++  OBJECT_NAME_INFORMATION *oni = (OBJECT_NAME_INFORMATION*) xmalloc (s);
++  ULONG len;
++  int is_a_tty = 0;
++  /* mintty uses a named pipe like "ptyNNNN-to-master".  */
++  if (!fNtQueryObject (fh, ObjectNameInformation, oni, s, &len))
++    {
++      wchar_t namedPipe[] = L"\\Device\\NamedPipe\\";
++      size_t l1 = sizeof (namedPipe) / 2 - 1;
++      wchar_t toMaster[] = L"-to-master";
++      size_t l2 = sizeof (toMaster) / 2 - 1;
++      USHORT name_length = oni->Name.Length / 2;
++      if (name_length > l1 + l2 &&
++          !memcmp (oni->Name.Buffer, namedPipe, l1 * 2) &&
++          !memcmp (oni->Name.Buffer + (name_length - l2), toMaster, l2 * 2))
++          is_a_tty = 1;
++    }
++
++  free (oni);
++
++  return is_a_tty;
+ }
+-#else
++#define isatty w_isatty
++#endif
+ 
+ /* Return true if we should use color when in auto mode, false otherwise. */
+ static bool
+@@ -298,4 +347,3 @@
+       gcc_unreachable ();
+     }
+ }
+-#endif
