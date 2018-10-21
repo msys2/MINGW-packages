@@ -49,6 +49,7 @@ class Tests(unittest.TestCase):
     def test_modules_import(self):
         import sqlite3
         import ssl
+        import ctypes
 
     def test_multiprocessing_queue(self):
         from multiprocessing import Queue
