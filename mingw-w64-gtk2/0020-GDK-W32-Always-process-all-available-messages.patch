@@ -1,0 +1,49 @@
+From bfdac2f70e005b2504cc3f4ebbdab328974d005a Mon Sep 17 00:00:00 2001
+From: Jeremy Tan <jtanx@outlook.com>
+Date: Sat, 17 Sep 2016 17:19:59 +0800
+Subject: [PATCH 06/25] GDK W32: Always process all available messages
+
+The GLib main loop blocks on MsgWaitForMultipleObjectsEx to
+determine if there are any incoming messages while also allowing
+for background tasks to run. If all available messages are not
+processed after MsgWaitForMultipleObjectsEx has signaled that
+there are available, CPU usage will skyrocket.
+
+From my limited understanding (by inspection of profiling
+under Visual Studio):
+Key is pressed - MsgWaitForMultipleObjectsEx unblocks, and
+sends message to GDK's event handler. Some event is now queued.
+
+g_poll unblocks, calls the g_event_dispatch which finally
+resolves to gdk_event_dispatch. This then calls
+_gdk_win32_display_queue_events, but since a message is already
+queued, it fails to call PeekMessage and returns immediately.
+
+At the next iteration, g_poll again calls MsgWaitForMultipleObjectsEx
+which queues yet another event and returns almost immediately, since
+there are events available which haven't been processed by PeekMessage.
+
+The dispatch function is then called and the process repeats.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=771568
+---
+ gdk/win32/gdkevents-win32.c | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/gdk/win32/gdkevents-win32.c b/gdk/win32/gdkevents-win32.c
+index 9b09edd052..e52f21c52e 100644
+--- a/gdk/win32/gdkevents-win32.c
++++ b/gdk/win32/gdkevents-win32.c
+@@ -3622,8 +3622,7 @@ _gdk_events_queue (GdkDisplay *display)
+   if (modal_win32_dialog != NULL)
+     return;
+   
+-  while (!_gdk_event_queue_find_first (display) &&
+-	 PeekMessageW (&msg, NULL, 0, 0, PM_REMOVE))
++  while (PeekMessageW (&msg, NULL, 0, 0, PM_REMOVE))
+     {
+       TranslateMessage (&msg);
+       DispatchMessageW (&msg);
+-- 
+2.19.1
+
