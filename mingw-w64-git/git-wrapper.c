@@ -507,11 +507,7 @@ static void initialize_top_level_path(LPWSTR top_level_path, LPWSTR exepath,
 	}
 }
 
-#ifdef UNICODE
-int wmain(int wargc, const wchar_t **wargv)
-#else
 int main(void)
-#endif
 {
 	int r = 1, wait = 1, prefix_args_len = -1, needs_env_setup = 1,
 		is_git_command = 1, full_path = 1, skip_arguments = 0,
@@ -695,4 +691,9 @@ int main(void)
 	free(cmd);
 
 	ExitProcess(r);
+}
+
+int wmain(int wargc, const wchar_t **wargv)
+{
+	return main();
 }
