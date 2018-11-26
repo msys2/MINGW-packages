@@ -18,11 +18,6 @@ git-bash.exe git-cmd.exe compat-bash.exe: %.exe: %.res
 
 cmd/gitk.exe cmd/git-gui.exe: gitk.res
 
-ifeq (MINGW32,$(MSYSTEM))
-MAINCRTSTARTUPOPT := -Wl,--pic-executable,-e,mainCRTStartup
-BASIC_LDFLAGS := $(filter-out $(MAINCRTSTARTUPOPT),$(BASIC_LDFLAGS))
-endif
-
 git-bash.exe git-cmd.exe compat-bash.exe \
 cmd/git.exe cmd/gitk.exe cmd/git-gui.exe: \
 		%.exe: git-wrapper.o git.res
