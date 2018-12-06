@@ -654,7 +654,11 @@ int main(void)
 		if (show_console) {
 			si.dwFlags |= STARTF_USESHOWWINDOW;
 			si.wShowWindow = SW_SHOW;
+		} else if (allocate_console) {
+			si.dwFlags |= STARTF_USESHOWWINDOW;
+			si.wShowWindow = SW_HIDE;
 		}
+
 		br = CreateProcess(/* module: null means use command line */
 				exep,
 				cmd,  /* modified command line */
