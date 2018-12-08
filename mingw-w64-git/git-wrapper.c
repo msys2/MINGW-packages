@@ -41,6 +41,34 @@ static void print_error(LPCWSTR prefix, DWORD error_number)
 	LocalFree((HLOCAL)buffer);
 }
 
+
+static void find_exe_realpath(LPWSTR exepath, int count) {
+  WCHAR mdexe[MAX_PATH], realexe[MAX_PATH];
+  HANDLE hFile = INVALID_HANDLE_VALUE;
+  DWORD dwlen = 0;
+  /* get the installation location */
+  GetModuleFileNameW(NULL, mdexe, MAX_PATH);
+  hFile = CreateFileW(mdexe,                 // file to open
+                      GENERIC_READ,          // open for reading
+                      FILE_SHARE_READ,       // share for reading
+                      NULL,                  // default security
+                      OPEN_EXISTING,         // existing file only
+                      FILE_ATTRIBUTE_NORMAL, // normal file
+                      NULL);                 // no attr. template
+  if (hFile == INVALID_HANDLE_VALUE) {
+    wcscpy(exepath, mdexe);
+    return;
+  }
+  dwlen = GetFinalPathNameByHandleW(hFile, realexe, MAX_PATH, VOLUME_NAME_DOS);
+  if (dwlen >= MAX_PATH) {
+    wcscpy(exepath, mdexe);
+  } else {
+    wcsncpy(exepath, realexe + 4, dwlen - 4);
+  }
+  CloseHandle(hFile);
+}
+
+
 static void my_path_append(LPWSTR list, LPCWSTR path, size_t alloc)
 {
 	size_t len1 = wcslen(list), len2 = wcslen(path);
@@ -523,7 +551,8 @@ int main(void)
 	*top_level_path = L'\0';
 
 	/* get the installation location */
-	GetModuleFileName(NULL, exepath, MAX_PATH);
+	/* GetModuleFileName(NULL, exepath, MAX_PATH); */
+	find_exe_realpath(exepath, MAX_PATH);
 	if (!PathRemoveFileSpec(exepath)) {
 		fwprintf(stderr, L"Invalid executable path: %s\n", exepath);
 		ExitProcess(1);
