@@ -9,6 +9,7 @@
 #define UNICODE
 #define _UNICODE
 #include <windows.h>
+#include <winioctl.h>
 #include <shlwapi.h>
 #include <shellapi.h>
 #include <stdio.h>
@@ -40,6 +41,199 @@ static void print_error(LPCWSTR prefix, DWORD error_number)
 	fwprintf(stderr, L"%s: %s", prefix, buffer);
 	LocalFree((HLOCAL)buffer);
 }
+
+#ifndef IO_REPARSE_TAG_APPEXECLINK
+#define IO_REPARSE_TAG_APPEXECLINK (0x8000001BL)
+#endif
+
+// https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/content/ntifs/ns-ntifs-_reparse_data_buffer
+
+typedef struct _REPARSE_DATA_BUFFER {
+  ULONG ReparseTag;         // Reparse tag type
+  USHORT ReparseDataLength; // Length of the reparse data
+  USHORT Reserved;          // Used internally by NTFS to store remaining length
+
+  union {
+    // Structure for IO_REPARSE_TAG_SYMLINK
+    // Handled by nt!IoCompleteRequest
+    struct {
+      USHORT SubstituteNameOffset;
+      USHORT SubstituteNameLength;
+      USHORT PrintNameOffset;
+      USHORT PrintNameLength;
+      ULONG Flags;
+      WCHAR PathBuffer[1];
+    } SymbolicLinkReparseBuffer;
+
+    // Structure for IO_REPARSE_TAG_MOUNT_POINT
+    // Handled by nt!IoCompleteRequest
+    struct {
+      USHORT SubstituteNameOffset;
+      USHORT SubstituteNameLength;
+      USHORT PrintNameOffset;
+      USHORT PrintNameLength;
+      WCHAR PathBuffer[1];
+    } MountPointReparseBuffer;
+
+    // Structure for IO_REPARSE_TAG_WIM
+    // Handled by wimmount!FPOpenReparseTarget->wimserv.dll
+    // (wimsrv!ImageExtract)
+    struct {
+      GUID ImageGuid;           // GUID of the mounted VIM image
+      BYTE ImagePathHash[0x14]; // Hash of the path to the file within the image
+    } WimImageReparseBuffer;
+
+    // Structure for IO_REPARSE_TAG_WOF
+    // Handled by FSCTL_GET_EXTERNAL_BACKING, FSCTL_SET_EXTERNAL_BACKING in NTFS
+    // (Windows 10+)
+    struct {
+      //-- WOF_EXTERNAL_INFO --------------------
+      ULONG Wof_Version;  // Should be 1 (WOF_CURRENT_VERSION)
+      ULONG Wof_Provider; // Should be 2 (WOF_PROVIDER_FILE)
+
+      //-- FILE_PROVIDER_EXTERNAL_INFO_V1 --------------------
+      ULONG FileInfo_Version; // Should be 1 (FILE_PROVIDER_CURRENT_VERSION)
+      ULONG
+      FileInfo_Algorithm; // Usually 0 (FILE_PROVIDER_COMPRESSION_XPRESS4K)
+    } WofReparseBuffer;
+
+    // Structure for IO_REPARSE_TAG_APPEXECLINK
+    struct {
+      ULONG StringCount;   // Number of the strings in the StringList, separated
+                           // by '\0'
+      WCHAR StringList[1]; // Multistring (strings separated by '\0', terminated
+                           // by '\0\0')
+    } AppExecLinkReparseBuffer;
+
+    // Dummy structure
+    struct {
+      UCHAR DataBuffer[1];
+    } GenericReparseBuffer;
+  } DUMMYUNIONNAME;
+} REPARSE_DATA_BUFFER, *PREPARSE_DATA_BUFFER;
+
+BOOL win_readlink(LPCWSTR symfile, LPWSTR buf, DWORD maxsize) {
+  HANDLE hFile = INVALID_HANDLE_VALUE;
+  REPARSE_DATA_BUFFER *respbuf = NULL;
+  DWORD dwBytes = 0;
+  LPWSTR wstr = NULL;
+  int wlen = 0;
+  BOOL ret = FALSE;
+  hFile = CreateFileW(
+      symfile, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+      NULL);
+  if (hFile == INVALID_HANDLE_VALUE) {
+    return FALSE;
+  }
+  respbuf = malloc(MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
+  if (DeviceIoControl(hFile, FSCTL_GET_REPARSE_POINT, NULL, 0, respbuf,
+                      MAXIMUM_REPARSE_DATA_BUFFER_SIZE, &dwBytes,
+                      NULL) != TRUE) {
+    CloseHandle(hFile);
+    free(respbuf);
+    return FALSE;
+  }
+  CloseHandle(hFile);
+  switch (respbuf->ReparseTag) {
+  case IO_REPARSE_TAG_SYMLINK: {
+    wstr = respbuf->SymbolicLinkReparseBuffer.PathBuffer +
+           (respbuf->SymbolicLinkReparseBuffer.SubstituteNameOffset /
+            sizeof(WCHAR));
+    wlen =
+        respbuf->SymbolicLinkReparseBuffer.SubstituteNameLength / sizeof(WCHAR);
+    if (wlen >= 4 && wstr[0] == L'\\' && wstr[1] == L'?' && wstr[2] == L'?' &&
+        wstr[3] == L'\\') {
+      /* Starts with \??\ */
+      if (wlen >= 6 &&
+          ((wstr[4] >= L'A' && wstr[4] <= L'Z') ||
+           (wstr[4] >= L'a' && wstr[4] <= L'z')) &&
+          wstr[5] == L':' && (wlen == 6 || wstr[6] == L'\\')) {
+        /* \??\<drive>:\ */
+        wstr += 4;
+        wlen -= 4;
+
+      } else if (wlen >= 8 && (wstr[4] == L'U' || wstr[4] == L'u') &&
+                 (wstr[5] == L'N' || wstr[5] == L'n') &&
+                 (wstr[6] == L'C' || wstr[6] == L'c') && wstr[7] == L'\\') {
+        /* \??\UNC\<server>\<share>\ - make sure the final path looks like */
+        /* \\<server>\<share>\ */
+        wstr += 6;
+        wstr[0] = L'\\';
+        wlen -= 6;
+      }
+    }
+    if (wlen >= maxsize) {
+      break;
+    }
+    wcsncpy(buf, wstr, wlen);
+    ret = TRUE;
+  } break;
+  case IO_REPARSE_TAG_MOUNT_POINT: {
+    wstr =
+        respbuf->MountPointReparseBuffer.PathBuffer +
+        (respbuf->MountPointReparseBuffer.SubstituteNameOffset / sizeof(WCHAR));
+    wlen =
+        respbuf->MountPointReparseBuffer.SubstituteNameLength / sizeof(WCHAR);
+    /* Only treat junctions that look like \??\<drive>:\ as symlink. */
+    /* Junctions can also be used as mount points, like \??\Volume{<guid>}, */
+    /* but that's confusing for programs since they wouldn't be able to */
+    /* actually understand such a path when returned by uv_readlink(). */
+    /* UNC paths are never valid for junctions so we don't care about them. */
+    if (!(wlen >= 6 && wstr[0] == L'\\' && wstr[1] == L'?' && wstr[2] == L'?' &&
+          wstr[3] == L'\\' &&
+          ((wstr[4] >= L'A' && wstr[4] <= L'Z') ||
+           (wstr[4] >= L'a' && wstr[4] <= L'z')) &&
+          wstr[5] == L':' && (wlen == 6 || wstr[6] == L'\\'))) {
+      SetLastError(ERROR_SYMLINK_NOT_SUPPORTED);
+      break;
+    }
+
+    /* Remove leading \??\ */
+    wstr += 4;
+    wlen -= 4;
+    if (wlen >= maxsize) {
+      break;
+    }
+    wcsncpy(buf, wstr, wlen);
+    ret = TRUE;
+  } break;
+  case IO_REPARSE_TAG_APPEXECLINK: {
+    if (respbuf->AppExecLinkReparseBuffer.StringCount != 0) {
+      LPWSTR szString = NULL, szTarget = NULL;
+      szString = (LPWSTR)respbuf->AppExecLinkReparseBuffer.StringList;
+      ULONG i = 0;
+      for (; i < respbuf->AppExecLinkReparseBuffer.StringCount; i++) {
+        if (i == 2) {
+          szTarget = szString;
+        }
+        szString += wcslen(szString) + 1;
+      }
+      if (wlen >= maxsize || szTarget == NULL) {
+        break;
+      }
+      wcsncpy(buf, szTarget, wlen);
+      ret = TRUE;
+    }
+  } break;
+  default:
+    break;
+  }
+  free(respbuf);
+  return ret;
+}
+
+static void find_exe_realpath(LPWSTR exepath, int count) {
+  WCHAR mdexe[MAX_PATH];
+  /* get the installation location */
+  GetModuleFileName(NULL, mdexe, MAX_PATH);
+  if (win_readlink(mdexe, exepath, count)) {
+    return;
+  }
+  wcscpy(exepath, mdexe);
+  return;
+}
+
 
 static void my_path_append(LPWSTR list, LPCWSTR path, size_t alloc)
 {
@@ -523,7 +717,8 @@ int main(void)
 	*top_level_path = L'\0';
 
 	/* get the installation location */
-	GetModuleFileName(NULL, exepath, MAX_PATH);
+	/* GetModuleFileName(NULL, exepath, MAX_PATH); */
+	find_exe_realpath(exepath, MAX_PATH);
 	if (!PathRemoveFileSpec(exepath)) {
 		fwprintf(stderr, L"Invalid executable path: %s\n", exepath);
 		ExitProcess(1);
