@@ -64,7 +64,8 @@ static void find_exe_realpath(LPWSTR exepath, int count) {
 	if (dwlen >= MAX_PATH) {
 		wcscpy(exepath, mdexe);
 	} else {
-		wcsncpy(exepath, realexe + 4, dwlen - 4);
+		size_t offset = wcsncmp(L"\\\\?\\", realexe, 4) ? 0 : 4;
+		wcsncpy(exepath, realexe + offset, dwlen - offset);
 	}
 	CloseHandle(hFile);
 }
