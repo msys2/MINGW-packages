@@ -48,13 +48,13 @@ static void find_exe_realpath(LPWSTR exepath, int count) {
   DWORD dwlen = 0;
   /* get the installation location */
   GetModuleFileNameW(NULL, mdexe, MAX_PATH);
-  hFile = CreateFileW(mdexe,                 // file to open
-                      GENERIC_READ,          // open for reading
-                      FILE_SHARE_READ,       // share for reading
-                      NULL,                  // default security
-                      OPEN_EXISTING,         // existing file only
-                      FILE_ATTRIBUTE_NORMAL, // normal file
-                      NULL);                 // no attr. template
+  hFile = CreateFileW(mdexe,                 /* file to open */
+                      GENERIC_READ,          /* open for reading */
+                      FILE_SHARE_READ,       /* share for reading */
+                      NULL,                  /* default security */
+                      OPEN_EXISTING,         /* existing file only */
+                      FILE_ATTRIBUTE_NORMAL, /* normal file */
+                      NULL);                 /* no attr. template */
   if (hFile == INVALID_HANDLE_VALUE) {
     wcscpy(exepath, mdexe);
     return;
