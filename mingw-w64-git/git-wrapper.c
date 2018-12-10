@@ -364,7 +364,7 @@ static int configure_via_resource(LPWSTR basename, LPWSTR exepath, LPWSTR exep,
 	for (id = 0; ; id++) {
 		minimal_search_path = 0;
 		needs_a_console = 0;
-		no_hide = 0;
+		no_hide = -1;
 		append_quote = 0;
 		app_id = NULL;
 		len = LoadString(NULL, id, buf, BUFSIZE);
@@ -485,8 +485,8 @@ static int configure_via_resource(LPWSTR basename, LPWSTR exepath, LPWSTR exep,
 		*full_path = 0;
 	if (needs_a_console)
 		*allocate_console = 1;
-	if (no_hide)
-		*show_console = 1;
+	if (no_hide >= 0)
+		*show_console = no_hide;
 	if (append_quote)
 		*append_quote_to_cmdline = append_quote == 1;
 	if (app_id)
@@ -540,7 +540,7 @@ int main(void)
 {
 	int r = 1, wait = 1, prefix_args_len = -1, needs_env_setup = 1,
 		is_git_command = 1, full_path = 1, skip_arguments = 0,
-		allocate_console = 0, show_console = 0,
+		allocate_console = 0, show_console = -1,
 		append_quote_to_cmdline = 0;
 	WCHAR exepath[MAX_PATH], exe[MAX_PATH], top_level_path[MAX_PATH];
 	LPWSTR cmd = NULL, exep = exe, prefix_args = NULL, basename;
@@ -681,12 +681,9 @@ int main(void)
 
 			creation_flags |= CREATE_NO_WINDOW;
 		}
-		if (show_console) {
+		if (show_console >= 0) {
 			si.dwFlags |= STARTF_USESHOWWINDOW;
-			si.wShowWindow = SW_SHOW;
-		} else if (allocate_console) {
-			si.dwFlags |= STARTF_USESHOWWINDOW;
-			si.wShowWindow = SW_HIDE;
+			si.wShowWindow = show_console ? SW_SHOW : SW_HIDE;
 		}
 
 		br = CreateProcess(/* module: null means use command line */
