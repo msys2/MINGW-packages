@@ -1,0 +1,144 @@
+From 717ad2fb15c656c44016aef9559291af685e5959 Mon Sep 17 00:00:00 2001
+From: Christoph Reiter <reiter.christoph@gmail.com>
+Date: Thu, 29 Nov 2018 23:19:38 +0100
+Subject: [PATCH 4/4] GDK W32: Always set gtk-font-name to the active UI font.
+ Fixes #1484
+
+This makes apps use "Segoe UI 9" by default instead of whatever matches "Sans 10".
+It also cleans up the code and uses some new pango API while at it.
+
+This was previously disabled in 9e686d1fb5cb20 because it led to a poor glyph coverage
+on certain versions of Windows which don't default to "Segoe UI 9" (Chinese, Korean, ..)
+because the font fallback list was missing in pango.
+
+This is about to get fixed in https://gitlab.gnome.org/GNOME/pango/merge_requests/34
+so enable it again when we detect a new enough pango version.
+---
+ gdk/win32/gdkproperty-win32.c | 94 +++++++++++++++++------------------
+ 1 file changed, 45 insertions(+), 49 deletions(-)
+
+diff --git a/gdk/win32/gdkproperty-win32.c b/gdk/win32/gdkproperty-win32.c
+index b0d432e9d2..fa1d20fef4 100644
+--- a/gdk/win32/gdkproperty-win32.c
++++ b/gdk/win32/gdkproperty-win32.c
+@@ -27,6 +27,7 @@
+ #include <string.h>
+ #include <stdlib.h>
+ #include <glib/gprintf.h>
++#include <pango/pangowin32.h>
+ 
+ #include "gdkscreen.h"
+ #include "gdkproperty.h"
+@@ -239,6 +240,32 @@ _gdk_win32_window_delete_property (GdkWindow *window,
+     }
+ }
+ 
++static gchar*
++_get_system_font_name (HDC hdc)
++{
++  NONCLIENTMETRICSW ncm;
++  PangoFontDescription *font_desc;
++  gchar *result, *font_desc_string;
++  int logpixelsy;
++  gint font_size;
++
++  ncm.cbSize = sizeof(NONCLIENTMETRICSW);
++  if (!SystemParametersInfoW (SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, 0))
++    return NULL;
++
++  logpixelsy = GetDeviceCaps (hdc, LOGPIXELSY);
++  font_desc = pango_win32_font_description_from_logfontw (&ncm.lfMessageFont);
++  font_desc_string = pango_font_description_to_string (font_desc);
++  pango_font_description_free (font_desc);
++
++  /* https://docs.microsoft.com/en-us/windows/desktop/api/wingdi/ns-wingdi-taglogfonta */
++  font_size = -MulDiv (ncm.lfMessageFont.lfHeight, 72, logpixelsy);
++  result = g_strdup_printf ("%s %d", font_desc_string, font_size);
++  g_free (font_desc_string);
++
++  return result;
++}
++
+ /*
+   For reference, from gdk/x11/gdksettings.c:
+ 
+@@ -371,58 +398,27 @@ _gdk_win32_screen_get_setting (GdkScreen   *screen,
+     }
+   else if (strcmp ("gtk-font-name", name) == 0)
+     {
+-      NONCLIENTMETRICS ncm;
+-      CPINFOEX cpinfoex_default, cpinfoex_curr_thread;
+-      OSVERSIONINFO info;
+-      BOOL result_default, result_curr_thread;
+-
+-      info.dwOSVersionInfoSize = sizeof (OSVERSIONINFO);
+-
+-      /* TODO: Fallback to using Pango on Windows 8 and later,
+-       * as this method of handling gtk-font-name does not work
+-       * well there, where garbled text will be displayed for texts
+-       * that are not supported by the default menu font.  Look for
+-       * whether there is a better solution for this on Windows 8 and
+-       * later
+-       */
+-      if (!GetVersionEx (&info) ||
+-          info.dwMajorVersion > 6 ||
+-          (info.dwMajorVersion == 6 && info.dwMinorVersion >= 2))
+-        return FALSE;
+-
+-      /* check whether the system default ANSI codepage matches the
+-       * ANSI code page of the running thread.  If so, continue, otherwise
+-       * fall back to using Pango to handle gtk-font-name
+-       */
+-      result_default = GetCPInfoEx (CP_ACP, 0, &cpinfoex_default);
+-      result_curr_thread = GetCPInfoEx (CP_THREAD_ACP, 0, &cpinfoex_curr_thread);
+-
+-      if (!result_default ||
+-          !result_curr_thread ||
+-          cpinfoex_default.CodePage != cpinfoex_curr_thread.CodePage)
+-        return FALSE;
+-
+-      ncm.cbSize = sizeof(NONCLIENTMETRICS);
+-      if (SystemParametersInfo (SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, FALSE))
++      gchar *font_name = _get_system_font_name (_gdk_display_hdc);
++
++      if (font_name)
+         {
+-          /* Pango finally uses GetDeviceCaps to scale, we use simple
+-	   * approximation here.
+-	   */
+-          int nHeight = (0 > ncm.lfMenuFont.lfHeight ? - 3 * ncm.lfMenuFont.lfHeight / 4 : 10);
+-          if (OUT_STRING_PRECIS == ncm.lfMenuFont.lfOutPrecision)
+-            GDK_NOTE(MISC, g_print("gdk_screen_get_setting(%s) : ignoring bitmap font '%s'\n",
+-                                   name, ncm.lfMenuFont.lfFaceName));
+-          else if (ncm.lfMenuFont.lfFaceName && strlen(ncm.lfMenuFont.lfFaceName) > 0 &&
+-                   /* Avoid issues like those described in bug #135098 */
+-                   g_utf8_validate (ncm.lfMenuFont.lfFaceName, -1, NULL))
++          /* The pango font fallback list got fixed during 1.43, before that
++           * using anything but "Segoe UI" would lead to a poor glyph coverage */
++          if (pango_version_check (1, 43, 0) != NULL &&
++              g_ascii_strncasecmp (font_name, "Segoe UI", strlen ("Segoe UI")) != 0)
+             {
+-              char *s = g_strdup_printf ("%s %d", ncm.lfMenuFont.lfFaceName, nHeight);
+-              GDK_NOTE(MISC, g_print("gdk_screen_get_setting(%s) : %s\n", name, s));
+-              g_value_set_string (value, s);
+-
+-              g_free(s);
+-              return TRUE;
++              g_free (font_name);
++              return FALSE;
+             }
++
++          GDK_NOTE(MISC, g_print("gdk_screen_get_setting(\"%s\") : %s\n", name, font_name));
++          g_value_take_string (value, font_name);
++          return TRUE;
++        }
++      else
++        {
++          g_warning ("gdk_screen_get_setting: Detecting the system font failed");
++          return FALSE;
+         }
+     }
+ 
+-- 
+2.19.2
+
