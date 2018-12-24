@@ -1,0 +1,86 @@
+diff --git a/configure.ac b/configure.ac
+index bca8081..30f0414 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -652,15 +652,22 @@  AC_CHECK_TYPES([struct pollfd],,,
+ dnl Checks for socket stuff
+ VLC_SAVE_FLAGS
+ SOCKET_LIBS=""
+-AC_SEARCH_LIBS(connect, [socket], [
++AC_SEARCH_LIBS(connect, [socket ws2_32], [
+   AS_IF([test "$ac_cv_search_connect" != "none required"], [
+     SOCKET_LIBS="$ac_cv_search_connect"
+   ])
+-], [
+-  AS_IF([test "${SYS}" = "mingw32"], [
+-    SOCKET_LIBS="-lws2_32"
+-  ])
+-])
++],
++dnl on 32-bit Windows, API functions are stdcall, so use the prototype in the API header
++   [ AC_MSG_CHECKING(for connect in 32-bit Windows) ]
++   [ SAVELIBS=${LIBS} ]
++   [ LIBS="${LIBS} -lws2_32" ]
++   [ AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <winsock2.h>],[return connect(0,0,0);])],
++     [ SOCKET_LIBS="-lws2_32" ]
++     [ AC_MSG_RESULT(yes) ],
++     [ AC_MSG_RESULT(no) ]
++   )]
++   [ LIBS=${SAVELIBS} ]
++)
+ 
+ AC_SEARCH_LIBS([inet_pton], [nsl], [
+  AS_IF([test "$ac_cv_search_inet_pton" != "none required"], [
+@@ -670,6 +670,7 @@
+ LIBS="${LIBS} ${SOCKET_LIBS}"
+ AC_LINK_IFELSE([
+     AC_LANG_PROGRAM([#ifdef _WIN32
++        #include <windows.h>
+         # if _WIN32_WINNT < 0x600
+         #  error Needs vista+
+         # endif
+@@ -680,7 +680,29 @@
+         char dst[[sizeof(struct in_addr)]];
+         inet_pton(AF_INET, "127.0.0.1", dst);
+     ])],[AC_DEFINE([HAVE_INET_PTON],[1],[Define to 1 if you have inet_pton function])],[AC_LIBOBJ([inet_pton])])
+-AC_CHECK_FUNCS([if_nameindex if_nametoindex])
++
++AC_SEARCH_LIBS([if_nametoindex], [iphlpapi], [
++  AC_DEFINE(HAVE_IF_NAMETOINDEX, 1, [Define to 1 if if_nametoindex is available.])
++  AS_IF([test "$ac_cv_search_if_nametoindex" != "none required"], [
++    SOCKET_LIBS="$ac_cv_search_if_nametoindex $SOCKET_LIBS"
++  ])
++],
++dnl on 32-bit Windows, API functions are stdcall, so use the prototype in the API header
++   [ AC_MSG_CHECKING(for if_nametoindex in 32-bit Windows) ]
++   [ SAVELIBS=${LIBS} ]
++   [ LIBS="${LIBS} -liphlpapi" ]
++   [ AC_LINK_IFELSE([AC_LANG_PROGRAM([
++   #include <winsock2.h>
++   #include <Iphlpapi.h>],[return if_nametoindex(0);])],
++     [ AC_DEFINE(HAVE_IF_NAMETOINDEX, 1, [Define to 1 if if_nametoindex is available.]) ]
++     [ SOCKET_LIBS="-liphlpapi $SOCKET_LIBS" ]
++     [ AC_MSG_RESULT(yes) ],
++     [ AC_MSG_RESULT(no) ]
++   )]
++   [ LIBS=${SAVELIBS} ]
++)
++
++AC_CHECK_FUNC([if_nameindex])
+ VLC_RESTORE_FLAGS
+ AC_SUBST(SOCKET_LIBS)
+ 
+diff --git a/src/network/udp.c b/src/network/udp.c
+index b2c8a50..46ce470 100644
+--- a/src/network/udp.c
++++ b/src/network/udp.c
+@@ -41,6 +41,9 @@ 
+ #ifdef _WIN32
+ #   undef EAFNOSUPPORT
+ #   define EAFNOSUPPORT WSAEAFNOSUPPORT
++#   ifdef HAVE_IF_NAMETOINDEX
++#       include <iphlpapi.h>
++#   endif
+ #else
+ #   include <unistd.h>
+ #   ifdef HAVE_NET_IF_H
