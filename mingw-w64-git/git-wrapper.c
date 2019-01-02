@@ -65,7 +65,9 @@ static void find_exe_realpath(LPWSTR exepath, int count) {
 		wcscpy(exepath, mdexe);
 	} else {
 		size_t offset = wcsncmp(L"\\\\?\\", realexe, 4) ? 0 : 4;
-		wcsncpy(exepath, realexe + offset, dwlen - offset);
+		size_t length = dwlen - offset;
+		wcsncpy(exepath, realexe + offset, length);
+		exepath[length] = L'\0';
 	}
 	CloseHandle(hFile);
 }
