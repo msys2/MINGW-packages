@@ -13,7 +13,7 @@ If you want to read about using MINGW-packages or developing MINGW-packages your
 ## Using packages
 You have two options if you want to use these packages:
 
-1. Either you can use a **pre-built** binary package from from the MSYS2 MINGW64 repo (which includes the binaries, libraries, headers, man pages), and install it on your machine, and build against those packages/libraries as you are porting/writing your software.
+1. Either you can use a **pre-built** binary package from the MSYS2 MINGW64 repo (which includes the binaries, libraries, headers, man pages), and install it on your machine, and build against those packages/libraries as you are porting/writing your software.
 
  Assuming you have a properly installed MSYS2 environment, you can install the pre-built binary package by using the following command from the bash prompt:
  ```
