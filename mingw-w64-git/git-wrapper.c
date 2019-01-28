@@ -188,12 +188,13 @@ static LPWSTR fixup_commandline(LPWSTR exepath, LPWSTR *exep, int *wait,
 	int wargc = 0;
 	LPWSTR cmd = NULL, cmdline = NULL;
 	LPWSTR *wargv = NULL, p = NULL;
+	size_t alloc;
 
 	cmdline = GetCommandLineW();
 	wargv = CommandLineToArgvW(cmdline, &wargc);
-	cmd = (LPWSTR)malloc(sizeof(WCHAR) *
-		(wcslen(cmdline) + prefix_args_len + 1 + MAX_PATH +
-		 append_quote_to_cmdline));
+	alloc = sizeof(WCHAR) * (wcslen(cmdline) + prefix_args_len + 1
+				 + MAX_PATH + append_quote_to_cmdline);
+	cmd = (LPWSTR)malloc(alloc);
 	if (prefix_args) {
 		if (is_git_command)
 			_swprintf(cmd, L"\"%s\\%s\" %.*s", exepath, L"git.exe",
@@ -221,11 +222,17 @@ static LPWSTR fixup_commandline(LPWSTR exepath, LPWSTR *exep, int *wait,
 			while (*p && !isspace(*p))
 				p++;
 		}
+
+		alloc += sizeof(WCHAR) * wcslen(p);
+		cmd = realloc(cmd, alloc);
 		wcscat(cmd, p);
 	}
 
-	if (append_quote_to_cmdline)
+	if (append_quote_to_cmdline) {
+		alloc += sizeof(WCHAR);
+		cmd = realloc(cmd, alloc);
 		wcscat(cmd, L"\"");
+	}
 
 	if (wargc > 1 && !wcscmp(wargv[1], L"gui"))
 		*wait = 0;
