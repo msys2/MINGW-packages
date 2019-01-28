@@ -209,7 +209,9 @@ static LPWSTR fixup_commandline(LPWSTR exepath, LPWSTR *exep, int *wait,
 	/* skip wargv[0], append the remaining arguments */
 	++skip_arguments;
 	if (skip_arguments < wargc) {
+		LPWSTR space = wcschr(cmd, L' '), quote;
 		int i;
+
 		for (i = 0, p = cmdline; p && *p && i < skip_arguments; i++) {
 			if (i)
 				while (isspace(*p))
@@ -221,6 +223,40 @@ static LPWSTR fixup_commandline(LPWSTR exepath, LPWSTR *exep, int *wait,
 				p++;
 			while (*p && !isspace(*p))
 				p++;
+		}
+
+		if (*p == L' ' && p[1] == L'"' && space - cmd >= 8 &&
+		    !wcsncmp(space - 8, L"\\cmd.exe /K \"", 13)) {
+			/*
+			 * In git-cmd.exe, we automatically prepend a doskey
+			 * definition to disallow git.exe to be picked up from
+			 * the current directory. So the command line has the
+			 * form:
+			 *
+			 * <system32>\cmd.exe /K
+			 *     "doskey git=^"<git>\cmd\git.exe $*^""
+			 *
+			 * That works as long as there is no additional command
+			 * i.e. as long as `git-cmd.exe` is called without an
+			 * argument specifying a command.
+			 *
+			 * When an additional command-line argument is appended,
+			 * it will be mistaken as part of that doskey command.
+			 *
+			 * To fix that, we need to insert a `&&` (to tell
+			 * cmd.exe that the doskey command is done and now
+			 * comes the next command to execute), i.e. the command
+			 * line for `git-cmd.exe <arg>` should look like this:
+			 *
+			 * <system32>\cmd.exe /K
+			 *     "doskey git=^"<git>\cmd\git.exe $*^" && <arg>"
+			 */
+			alloc += sizeof(WCHAR) * 3;
+			cmd = realloc(cmd, alloc);
+			quote = cmd + wcslen(cmd) - 1;
+			if (*quote == L'"')
+				wcscpy(quote, L" && ");
+			p += 2;
 		}
 
 		alloc += sizeof(WCHAR) * wcslen(p);
