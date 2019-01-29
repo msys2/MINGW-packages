@@ -64,8 +64,32 @@ static void find_exe_realpath(LPWSTR exepath, int count) {
 	if (dwlen >= MAX_PATH) {
 		wcscpy(exepath, mdexe);
 	} else {
-		size_t offset = wcsncmp(L"\\\\?\\", realexe, 4) ? 0 : 4;
-		size_t length = dwlen - offset;
+		size_t offset = 0;
+		size_t length = dwlen;
+
+		/*
+		 * Strip the \\?\ prefix (that was added to the "final path
+		 * name" by GetFinalPathNameByHandleW()).
+		 */
+		if (!wcsncmp(realexe, L"\\\\?\\", 4)) {
+			/*
+			 * For network paths, GetFinalPathNameByHandleW()
+			 * actually adds a \\?\UNC prefix (and turns the
+			 * leading double backslash into a single one)...
+			 */
+			if (wcsncmp(realexe + 4, L"UNC\\", 4))
+				offset = 4;
+			else {
+				/*
+				 * Skip \\?\UNC and re-instate the double
+				 * backslash starting the network path.
+				 */
+				offset = 7;
+				*(exepath++) = L'\\';
+			}
+			length -= offset;
+		}
+
 		wcsncpy(exepath, realexe + offset, length);
 		exepath[length] = L'\0';
 	}
