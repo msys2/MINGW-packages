@@ -249,7 +249,7 @@ static LPWSTR fixup_commandline(LPWSTR exepath, LPWSTR *exep, int *wait,
 				p++;
 		}
 
-		if (*p == L' ' && p[1] == L'"' && space - cmd >= 8 &&
+		if (*p == L' ' && p[wcsspn(p, L" ")] == L'"' && space - cmd >= 8 &&
 		    !wcsncmp(space - 8, L"\\cmd.exe /K \"", 13)) {
 			/*
 			 * In git-cmd.exe, we automatically prepend a doskey
@@ -280,7 +280,9 @@ static LPWSTR fixup_commandline(LPWSTR exepath, LPWSTR *exep, int *wait,
 			quote = cmd + wcslen(cmd) - 1;
 			if (*quote == L'"')
 				wcscpy(quote, L" && ");
-			p += 2;
+			while (*p == L' ')
+				p++;
+			p++;
 		}
 
 		alloc += sizeof(WCHAR) * wcslen(p);
