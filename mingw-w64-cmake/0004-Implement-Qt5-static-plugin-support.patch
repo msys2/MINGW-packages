@@ -1,4 +1,4 @@
-From 838e486b12b15ce0b4dd8afbd8c8471ed4da3769 Mon Sep 17 00:00:00 2001
+From 34b900087c505d65b54a429abcba7f7526ce1ba4 Mon Sep 17 00:00:00 2001
 From: Ray Donnelly <mingw.android@gmail.com>
 Date: Mon, 3 Aug 2015 22:00:16 +0100
 Subject: [PATCH 4/8] Implement Qt5 static plugin support
@@ -17,17 +17,19 @@ from [1] are necessary [2], [3] and [4]
 .. and also some more minor ones that aren't strictly related to Qt5 static
 CMake but are necessary for this to work on MinGW-w64 (0040- for example).
 ---
- Source/cmGlobalGenerator.cxx            |  3 +-
- Source/cmQtAutoGeneratorInitializer.cxx | 60 +++++++++++++++++++++++++++++++++
- Source/cmTarget.cxx                     |  1 +
- Source/cmTargetPropertyComputer.cxx     |  1 +
- 4 files changed, 64 insertions(+), 1 deletion(-)
+ Source/cmGlobalGenerator.cxx        |  6 ++--
+ Source/cmQtAutoGen.h                |  3 +-
+ Source/cmQtAutoGenInitializer.cxx   | 65 ++++++++++++++++++++++++++++++++++++-
+ Source/cmQtAutoGenInitializer.h     |  2 ++
+ Source/cmTarget.cxx                 |  1 +
+ Source/cmTargetPropertyComputer.cxx |  1 +
+ 6 files changed, 74 insertions(+), 4 deletions(-)
 
 diff --git a/Source/cmGlobalGenerator.cxx b/Source/cmGlobalGenerator.cxx
-index 05efff317..49dbc10fe 100644
+index c805b98d7..aa50eebc8 100644
 --- a/Source/cmGlobalGenerator.cxx
 +++ b/Source/cmGlobalGenerator.cxx
-@@ -1427,7 +1427,8 @@ cmQtAutoGenDigestUPV cmGlobalGenerator::CreateQtAutoGeneratorsTargets()
+@@ -1493,7 +1493,8 @@ bool cmGlobalGenerator::QtAutoGen()
        const bool mocEnabled = target->GetPropertyAsBool("AUTOMOC");
        const bool uicEnabled = target->GetPropertyAsBool("AUTOUIC");
        const bool rccEnabled = target->GetPropertyAsBool("AUTORCC");
@@ -37,32 +39,99 @@ index 05efff317..49dbc10fe 100644
          continue;
        }
  
-diff --git a/Source/cmQtAutoGeneratorInitializer.cxx b/Source/cmQtAutoGeneratorInitializer.cxx
-index b02d872a4..999b96913 100644
---- a/Source/cmQtAutoGeneratorInitializer.cxx
-+++ b/Source/cmQtAutoGeneratorInitializer.cxx
-@@ -24,6 +24,7 @@
- #include "cmake.h"
- #include "cmsys/FStream.hxx"
+@@ -1529,7 +1530,8 @@ bool cmGlobalGenerator::QtAutoGen()
+       }
  
-+#include <cmGeneratedFileStream.h>
- #include <algorithm>
- #include <array>
- #include <deque>
-@@ -650,6 +651,65 @@ static void SetupAutoTargetRcc(cmQtAutoGenDigest const& digest)
+       autogenInits.emplace_back(cm::make_unique<cmQtAutoGenInitializer>(
+-        target, mocEnabled, uicEnabled, rccEnabled, qtVersion));
++        target, mocEnabled, uicEnabled, rccEnabled, staticPluginsEnabled,
++        qtVersion));
+     }
    }
  
-   cmMakefile* makefile = digest.Target->Target->GetMakefile();
-+  /* in qt5-static/lib/cmake/Qt5Core/Qt5CoreConfig.cmake,
-+   * macro(_populate_Core_plugin_properties ..), we'd have:
-+   * set_property(TARGET PROPERTY AUTOSTATICPLUGINS True) // Not currently need
-+   * as defaults to "ON"
-+   * set_property(TARGET Qt5::Core APPEND PROPERTY STATIC_PLUGINS ${Plugin})
-+   */
-+  cmGeneratorTarget* target = digest.Target;
-+  if (target->GetPropertyAsBool("AUTOSTATICPLUGINS")) {
+diff --git a/Source/cmQtAutoGen.h b/Source/cmQtAutoGen.h
+index 4118dc7..aae5f2f 100644
+--- a/Source/cmQtAutoGen.h
++++ b/Source/cmQtAutoGen.h
+@@ -25,7 +25,8 @@ public:
+     GEN, // General
+     MOC,
+     UIC,
+-    RCC
++    RCC,
++    STATICPLUGINS
+   };
+ 
+   /// @brief Integer version
+diff --git a/Source/cmQtAutoGenInitializer.cxx b/Source/cmQtAutoGenInitializer.cxx
+index 93c78b5bd..9e7349baa 100644
+--- a/Source/cmQtAutoGenInitializer.cxx
++++ b/Source/cmQtAutoGenInitializer.cxx
+@@ -69,6 +69,9 @@ static bool AddToSourceGroup(cmMakefile* makefile, std::string const& fileName,
+         case cmQtAutoGen::GeneratorT::RCC:
+           props[0] = "AUTORCC_SOURCE_GROUP";
+           break;
++        case cmQtAutoGen::GeneratorT::STATICPLUGINS:
++          props[0] = "AUTOSTATICPLUGINS_SOURCE_GROUP";
++          break;
+         default:
+           props[0] = "AUTOGEN_SOURCE_GROUP";
+           break;
+@@ -177,6 +180,7 @@ cmQtAutoGenInitializer::cmQtAutoGenInitializer(cmGeneratorTarget* target,
+                                                bool mocEnabled,
+                                                bool uicEnabled,
+                                                bool rccEnabled,
++                                               bool staticPluginsEnabled,
+                                                IntegerVersion const& qtVersion)
+   : Target(target)
+   , QtVersion(qtVersion)
+@@ -184,6 +188,7 @@ cmQtAutoGenInitializer::cmQtAutoGenInitializer(cmGeneratorTarget* target,
+   Moc.Enabled = mocEnabled;
+   Uic.Enabled = uicEnabled;
+   Rcc.Enabled = rccEnabled;
++  StaticPlugins.Enabled = staticPluginsEnabled;
+ }
+ 
+ bool cmQtAutoGenInitializer::InitCustomTargets()
+@@ -356,7 +361,7 @@ bool cmQtAutoGenInitializer::InitCustomTargets()
+   }
+ 
+   // Create autogen target
+-  if ((this->Moc.Enabled || this->Uic.Enabled) && !this->InitAutogenTarget()) {
++  if ((this->Moc.Enabled || this->Uic.Enabled || this->StaticPlugins.Enabled) && !this->InitAutogenTarget()) {
+     return false;
+   }
+ 
+@@ -836,6 +841,13 @@ bool cmQtAutoGenInitializer::InitAutogenTarget()
+     autogenProvides.push_back(this->Moc.MocsCompilation);
+   }
+ 
++
++  // Add AutoStaticPlugins import to generated files list
++  if (this->StaticPlugins.Enabled) {
++    std::string staticPluginsComp = this->Dir.Build + "/plugin_import.cpp";
++    this->AddGeneratedSource(staticPluginsComp, GeneratorT::STATICPLUGINS);
++  }
++
+   // Compose target comment
+   std::string autogenComment;
+   {
+@@ -1083,6 +1095,59 @@ bool cmQtAutoGenInitializer::SetupCustomTargets()
+     return false;
+   }
+ 
++  // Generate plugin static-link source files
++  if (this->StaticPlugins.Enabled)
++  {
++    /* in qt5-static/lib/cmake/Qt5Core/Qt5CoreConfig.cmake,
++     * macro(_populate_Core_plugin_properties ..), we'd have:
++     * set_property(TARGET PROPERTY AUTOSTATICPLUGINS True) // Not currently needed
++     * as defaults to "ON"
++     * set_property(TARGET Qt5::Core APPEND PROPERTY STATIC_PLUGINS ${Plugin})
++     */
++
 +    std::vector<const cmGeneratorTarget*> libTargets =
-+      target->GetLinkImplementationClosure("");
++      this->Target->GetLinkImplementationClosure("");
 +    std::vector<cmGeneratorTarget const*>::const_iterator li;
 +    std::vector<std::string> staticPlugins;
 +    for (li = libTargets.begin(); li != libTargets.end(); ++li) {
@@ -82,63 +151,81 @@ index b02d872a4..999b96913 100644
 +      }
 +    }
 +
-+    if (staticPlugins.size()) {
-+      std::string static_plugins_output_dir = target->GetSupportDirectory();
-+      cmSystemTools::MakeDirectory(static_plugins_output_dir.c_str());
-+      std::string static_plugins_output_file = static_plugins_output_dir;
-+      static_plugins_output_file +=
-+        "/" + target->GetName() + "_plugin_import.cpp";
-+      cmGeneratedFileStream staticPluginsFileStream(
-+        static_plugins_output_file.c_str());
-+      if (staticPluginsFileStream) {
-+        staticPluginsFileStream << "// This file is autogenerated by cmake. "
-+                                   "It imports static plugin classes for"
++    std::string static_plugins_output_file = this->Dir.Build + "/plugin_import.cpp";
++    cmGeneratedFileStream staticPluginsFileStream(
++      static_plugins_output_file.c_str());
++    if (staticPluginsFileStream) {
++      staticPluginsFileStream << "// This file is autogenerated by cmake. "
++                                 "It imports static plugin classes for"
++                              << std::endl;
++      staticPluginsFileStream
++        << "// static plugins specified using QTPLUGIN and "
++           "QT_PLUGIN_CLASS.<plugin> variables."
++        << std::endl;
++      staticPluginsFileStream << "#include <QtPlugin>" << std::endl;
++      for (std::vector<std::string>::const_iterator spti =
++             staticPlugins.begin();
++           spti != staticPlugins.end(); ++spti) {
++        staticPluginsFileStream << "Q_IMPORT_PLUGIN(" << *spti << ")"
 +                                << std::endl;
-+        staticPluginsFileStream
-+          << "// static plugins specified using QTPLUGIN and "
-+             "QT_PLUGIN_CLASS.<plugin> variables."
-+          << std::endl;
-+        staticPluginsFileStream << "#include <QtPlugin>" << std::endl;
-+        for (std::vector<std::string>::const_iterator spti =
-+               staticPlugins.begin();
-+             spti != staticPlugins.end(); ++spti) {
-+          staticPluginsFileStream << "Q_IMPORT_PLUGIN(" << *spti << ")"
-+                                  << std::endl;
-+        }
-+        staticPluginsFileStream.Close();
-+        makefile->AppendProperty("ADDITIONAL_MAKE_CLEAN_FILES",
-+                                 static_plugins_output_file.c_str(), false);
-+        target->AddSource(static_plugins_output_file);
 +      }
++      staticPluginsFileStream.Close();
 +    }
 +  }
-   AddDefinitionEscaped(makefile, "_qt_rcc_executable",
-                        RccGetExecutable(digest.Target, digest.QtVersionMajor));
-   AddDefinitionEscaped(makefile, "_rcc_files", rccFiles);
++
+   return true;
+ }
+ 
+diff --git a/Source/cmQtAutoGenInitializer.h b/Source/cmQtAutoGenInitializer.h
+index 2a47e46a4..1f21b3476 100644
+--- a/Source/cmQtAutoGenInitializer.h
++++ b/Source/cmQtAutoGenInitializer.h
+@@ -47,7 +47,7 @@ public:
+   static IntegerVersion GetQtVersion(cmGeneratorTarget const* target);
+ 
+   cmQtAutoGenInitializer(cmGeneratorTarget* target, bool mocEnabled,
+-                         bool uicEnabled, bool rccEnabled,
++                         bool uicEnabled, bool rccEnabled, bool staticPluginsEnabled,
+                          IntegerVersion const& qtVersion);
+ 
+   bool InitCustomTargets();
+@@ -151,6 +151,12 @@ private:
+     std::vector<std::string> ListOptions;
+     std::vector<Qrc> Qrcs;
+   } Rcc;
++
++  /// @brief StaticPlugins only variables
++  struct
++  {
++    bool Enabled = false;
++  } StaticPlugins;
+ };
+ 
+ #endif
 diff --git a/Source/cmTarget.cxx b/Source/cmTarget.cxx
-index c6cd5026f..44d584e61 100644
+index cd11c4b14..1b0bfbdcd 100644
 --- a/Source/cmTarget.cxx
 +++ b/Source/cmTarget.cxx
-@@ -244,6 +244,7 @@ cmTarget::cmTarget(std::string const& name, cmStateEnums::TargetType type,
+@@ -238,6 +238,7 @@ cmTarget::cmTarget(std::string const& name, cmStateEnums::TargetType type,
      this->SetPropertyDefault("AUTOMOC", nullptr);
      this->SetPropertyDefault("AUTOUIC", nullptr);
      this->SetPropertyDefault("AUTORCC", nullptr);
 +    this->SetPropertyDefault("AUTOSTATICPLUGINS", nullptr);
+     this->SetPropertyDefault("AUTOGEN_PARALLEL", nullptr);
      this->SetPropertyDefault("AUTOMOC_COMPILER_PREDEFINES", nullptr);
      this->SetPropertyDefault("AUTOMOC_DEPEND_FILTERS", nullptr);
-     this->SetPropertyDefault("AUTOMOC_MACRO_NAMES", nullptr);
 diff --git a/Source/cmTargetPropertyComputer.cxx b/Source/cmTargetPropertyComputer.cxx
-index 1d2520d4b..85a521a5f 100644
+index 06ce0b1e6..0e7ccb34e 100644
 --- a/Source/cmTargetPropertyComputer.cxx
 +++ b/Source/cmTargetPropertyComputer.cxx
-@@ -58,6 +58,7 @@ bool cmTargetPropertyComputer::WhiteListedInterfaceProperty(
-     builtIns.insert("EXPORT_NAME");
+@@ -66,6 +66,7 @@ bool cmTargetPropertyComputer::WhiteListedInterfaceProperty(
      builtIns.insert("IMPORTED");
+     builtIns.insert("IMPORTED_GLOBAL");
      builtIns.insert("NAME");
 +    builtIns.insert("STATIC_PLUGINS");
      builtIns.insert("TYPE");
    }
  
 -- 
-2.11.1.windows.1
+2.16.2.windows.1
 

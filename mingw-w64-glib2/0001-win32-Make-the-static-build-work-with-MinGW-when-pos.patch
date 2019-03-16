@@ -1,0 +1,84 @@
+From cf8d0b69566b5b3bab9aacaeecd9ce465cc33413 Mon Sep 17 00:00:00 2001
+From: Christoph Reiter <reiter.christoph@gmail.com>
+Date: Sat, 6 Jan 2018 22:04:23 +0100
+Subject: [PATCH] win32: Make the static build work with MinGW when posix
+ threads are used
+
+MinGW does not support the use of DllMain() for static builds, but that
+is currently always used on Windows, partly because it is needed for
+handling win32 threads and because there are problems with MSVC
+optimizing constructors away (see 7a29771a743a8b5337).
+
+To make the static build at least work in case mingw+posix threads are used,
+switch to using constructors for that. The g_clock_win32_init() call is
+moved into glib_init(), so it's also called in that case.
+
+If mingw+static+win32 threads are used abort the build early and print
+an error message.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=792297
+---
+ glib/glib-init.c | 15 ++++++++++++---
+ gobject/gtype.c  |  2 +-
+ 2 files changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/glib/glib-init.c b/glib/glib-init.c
+index 5f312113a..cd32e25a5 100644
+--- a/glib/glib-init.c
++++ b/glib/glib-init.c
+@@ -268,19 +268,29 @@ glib_init (void)
+ 
+   glib_inited = TRUE;
+ 
++#ifdef G_OS_WIN32
++  g_clock_win32_init ();
++#endif
+   g_messages_prefixed_init ();
+   g_debug_init ();
+   g_quark_init ();
+ }
+ 
+ #if defined (G_OS_WIN32)
++HMODULE glib_dll;
++#endif
++
++#if defined(__MINGW32__) && defined(GLIB_STATIC_COMPILATION) && !defined(THREADS_POSIX)
++/* MinGW static builds do not work with DllMain, but win32 threads need it atm */
++#error "Static build under MinGW only supported when build with posix threads"
++#endif
++
++#if defined (G_OS_WIN32) && (!defined(__MINGW32__) || defined(DLL_EXPORT))
+ 
+ BOOL WINAPI DllMain (HINSTANCE hinstDLL,
+                      DWORD     fdwReason,
+                      LPVOID    lpvReserved);
+ 
+-HMODULE glib_dll;
+-
+ BOOL WINAPI
+ DllMain (HINSTANCE hinstDLL,
+          DWORD     fdwReason,
+@@ -290,7 +300,6 @@ DllMain (HINSTANCE hinstDLL,
+     {
+     case DLL_PROCESS_ATTACH:
+       glib_dll = hinstDLL;
+-      g_clock_win32_init ();
+ #ifdef THREADS_WIN32
+       g_thread_win32_init ();
+ #endif
+diff --git a/gobject/gtype.c b/gobject/gtype.c
+index 275a8b60b..222b0a2f0 100644
+--- a/gobject/gtype.c
++++ b/gobject/gtype.c
+@@ -4451,7 +4451,7 @@ gobject_init (void)
+   _g_signal_init ();
+ }
+ 
+-#if defined (G_OS_WIN32)
++#if defined (G_OS_WIN32) && (!defined(__MINGW32__) || defined(DLL_EXPORT))
+ 
+ BOOL WINAPI DllMain (HINSTANCE hinstDLL,
+                      DWORD     fdwReason,
+-- 
+2.15.1
+
