@@ -72,11 +72,6 @@ class Tests(unittest.TestCase):
             for res in pool.map(lambda *x: None, range(10000)):
                 pass
 
-    def test_sysconfig(self):
-        import sysconfig
-        # This should be able to execute without exceptions
-        sysconfig.get_config_vars()
-
 
 def suite():
     return unittest.TestLoader().loadTestsFromName(__name__)
