@@ -51,6 +51,14 @@ class Tests(unittest.TestCase):
         import ssl
         import ctypes
 
+    def test_socket_inet_ntop(self):
+        import socket
+        self.assertTrue(hasattr(socket, "inet_ntop"))
+
+    def test_socket_inet_pton(self):
+        import socket
+        self.assertTrue(hasattr(socket, "inet_pton"))
+
     def test_multiprocessing_queue(self):
         from multiprocessing import Queue
         Queue(0)
