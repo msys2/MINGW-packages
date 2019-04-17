@@ -25,30 +25,121 @@ CMake but are necessary for this to work on MinGW-w64 (0040- for example).
  Source/cmTargetPropertyComputer.cxx |  1 +
  6 files changed, 74 insertions(+), 4 deletions(-)
 
-diff --git a/Source/cmGlobalGenerator.cxx b/Source/cmGlobalGenerator.cxx
+diff --git a/Source/cmQtAutoGenGlobalInitializer.cxx b/Source/cmQtAutoGenGlobalInitializer.cxx
 index c805b98d7..aa50eebc8 100644
---- a/Source/cmGlobalGenerator.cxx
-+++ b/Source/cmGlobalGenerator.cxx
-@@ -1493,7 +1493,8 @@ bool cmGlobalGenerator::QtAutoGen()
-       const bool mocEnabled = target->GetPropertyAsBool("AUTOMOC");
-       const bool uicEnabled = target->GetPropertyAsBool("AUTOUIC");
-       const bool rccEnabled = target->GetPropertyAsBool("AUTORCC");
--      if (!mocEnabled && !uicEnabled && !rccEnabled) {
-+      const bool staticPluginsEnabled = target->GetPropertyAsBool("AUTOSTATICPLUGINS");
-+      if (!mocEnabled && !uicEnabled && !rccEnabled && !staticPluginsEnabled) {
-         continue;
-       }
+--- a/Source/cmQtAutoGenGlobalInitializer.cxx
++++ b/Source/cmQtAutoGenGlobalInitializer.cxx
+@@ -77,13 +77,16 @@ cmQtAutoGenGlobalInitializer::cmQtAutoGenGlobalInitializer(
+       bool const moc = target->GetPropertyAsBool("AUTOMOC");
+       bool const uic = target->GetPropertyAsBool("AUTOUIC");
+       bool const rcc = target->GetPropertyAsBool("AUTORCC");
+-      if (moc || uic || rcc) {
++      bool const staticPlugins = target->GetPropertyAsBool("AUTOSTATICPLUGINS");
++      if (moc || uic || rcc || staticPlugins) {
+         std::string const mocExec =
+           target->GetSafeProperty("AUTOMOC_EXECUTABLE");
+         std::string const uicExec =
+           target->GetSafeProperty("AUTOUIC_EXECUTABLE");
+         std::string const rccExec =
+           target->GetSafeProperty("AUTORCC_EXECUTABLE");
++        std::string const staticPluginsExec =
++          target->GetSafeProperty("AUTOSTATICPLUGINS_EXECUTABLE");
  
-@@ -1529,7 +1530,8 @@ bool cmGlobalGenerator::QtAutoGen()
+         // We support Qt4, Qt5 and Qt6
+         auto qtVersion = cmQtAutoGenInitializer::GetQtVersion(target);
+@@ -93,18 +96,21 @@ cmQtAutoGenGlobalInitializer::cmQtAutoGenGlobalInitializer(
+         bool const mocAvailable = (validQt || !mocExec.empty());
+         bool const uicAvailable = (validQt || !uicExec.empty());
+         bool const rccAvailable = (validQt || !rccExec.empty());
++        bool const staticPluginsAvailable = (validQt || !staticPluginsExec.empty());
+         bool const mocIsValid = (moc && mocAvailable);
+         bool const uicIsValid = (uic && uicAvailable);
+         bool const rccIsValid = (rcc && rccAvailable);
++        bool const staticPluginsIsValid = (staticPlugins && staticPluginsAvailable);
+         // Disabled AUTOMOC/UIC/RCC warning
+         bool const mocDisabled = (moc && !mocAvailable);
+         bool const uicDisabled = (uic && !uicAvailable);
+         bool const rccDisabled = (rcc && !rccAvailable);
+-        if (mocDisabled || uicDisabled || rccDisabled) {
++        bool const staticPluginsDisabled = (staticPlugins && !staticPluginsAvailable);
++        if (mocDisabled || uicDisabled || rccDisabled || staticPluginsDisabled) {
+           std::string msg = "AUTOGEN: No valid Qt version found for target ";
+           msg += target->GetName();
+           msg += ". ";
+-          msg += cmQtAutoGen::Tools(mocDisabled, uicDisabled, rccDisabled);
++          msg += cmQtAutoGen::Tools(mocDisabled, uicDisabled, rccDisabled, staticPluginsDisabled);
+           msg += " disabled.  Consider adding:\n";
+           {
+             std::string version = (qtVersion.second == 0)
+@@ -120,10 +126,10 @@ cmQtAutoGenGlobalInitializer::cmQtAutoGenGlobalInitializer(
+           msg += "to your CMakeLists.txt file.";
+           target->Makefile->IssueMessage(MessageType::AUTHOR_WARNING, msg);
+         }
+-        if (mocIsValid || uicIsValid || rccIsValid) {
++        if (mocIsValid || uicIsValid || rccIsValid || staticPluginsIsValid) {
+           // Create autogen target initializer
+           Initializers_.emplace_back(cm::make_unique<cmQtAutoGenInitializer>(
+-            this, target, qtVersion.first, mocIsValid, uicIsValid, rccIsValid,
++            this, target, qtVersion.first, mocIsValid, uicIsValid, rccIsValid, staticPluginsIsValid,
+             globalAutoGenTarget, globalAutoRccTarget));
+         }
        }
+diff --git a/Source/cmQtAutoGen.cxx b/Source/cmQtAutoGen.cxx
+index 653caf75..680f7822 100644
+--- a/Source/cmQtAutoGen.cxx
++++ b/Source/cmQtAutoGen.cxx
+@@ -17,6 +17,7 @@ std::string const genNameGen = "AutoGen";
+ std::string const genNameMoc = "AutoMoc";
+ std::string const genNameUic = "AutoUic";
+ std::string const genNameRcc = "AutoRcc";
++std::string const genNameStaticPlugins = "AutoStaticPlugins";
  
-       autogenInits.emplace_back(cm::make_unique<cmQtAutoGenInitializer>(
--        target, mocEnabled, uicEnabled, rccEnabled, qtVersion));
-+        target, mocEnabled, uicEnabled, rccEnabled, staticPluginsEnabled,
-+        qtVersion));
-     }
+ // - Static functions
+ 
+@@ -91,6 +92,8 @@ std::string const& cmQtAutoGen::GeneratorName(GeneratorT type)
+       return genNameUic;
+     case GeneratorT::RCC:
+       return genNameRcc;
++    case GeneratorT::STATICPLUGINS:
++      return genNameStaticPlugins;
    }
+   return genNameGen;
+ }
+@@ -100,7 +103,7 @@ std::string cmQtAutoGen::GeneratorNameUpper(GeneratorT genType)
+   return cmSystemTools::UpperCase(cmQtAutoGen::GeneratorName(genType));
+ }
  
+-std::string cmQtAutoGen::Tools(bool moc, bool uic, bool rcc)
++std::string cmQtAutoGen::Tools(bool moc, bool uic, bool rcc, bool staticPlugins)
+ {
+   std::string res;
+   std::vector<std::string> lst;
+@@ -113,6 +116,9 @@ std::string cmQtAutoGen::Tools(bool moc, bool uic, bool rcc)
+   if (rcc) {
+     lst.emplace_back("AUTORCC");
+   }
++  if (staticPlugins) {
++    lst.emplace_back("AUTOSTATICPLUGINS");
++  }
+   switch (lst.size()) {
+     case 1:
+       res += lst.at(0);
+@@ -129,6 +135,15 @@ std::string cmQtAutoGen::Tools(bool moc, bool uic, bool rcc)
+       res += " and ";
+       res += lst.at(2);
+       break;
++    case 4:
++      res += lst.at(0);
++      res += ", ";
++      res += lst.at(1);
++      res += ", ";
++      res += lst.at(2);
++      res += " and ";
++      res += lst.at(3);
++      break;
+     default:
+       break;
+   }
 diff --git a/Source/cmQtAutoGen.h b/Source/cmQtAutoGen.h
 index 4118dc7..aae5f2f 100644
 --- a/Source/cmQtAutoGen.h
@@ -63,6 +154,15 @@ index 4118dc7..aae5f2f 100644
    };
  
    /// @brief Integer version
+@@ -61,7 +61,7 @@ public:
+   static std::string GeneratorNameUpper(GeneratorT genType);
+ 
+   /// @brief Returns a string with the requested tool names
+-  static std::string Tools(bool moc, bool uic, bool rcc);
++  static std::string Tools(bool moc, bool uic, bool rcc, bool staticPlugins);
+ 
+   /// @brief Returns the string escaped and enclosed in quotes
+   static std::string Quoted(std::string const& text);
 diff --git a/Source/cmQtAutoGenInitializer.cxx b/Source/cmQtAutoGenInitializer.cxx
 index 93c78b5bd..9e7349baa 100644
 --- a/Source/cmQtAutoGenInitializer.cxx
@@ -77,23 +177,24 @@ index 93c78b5bd..9e7349baa 100644
          default:
            props[0] = "AUTOGEN_SOURCE_GROUP";
            break;
-@@ -177,6 +180,7 @@ cmQtAutoGenInitializer::cmQtAutoGenInitializer(cmGeneratorTarget* target,
-                                                bool mocEnabled,
-                                                bool uicEnabled,
-                                                bool rccEnabled,
-+                                               bool staticPluginsEnabled,
-                                                IntegerVersion const& qtVersion)
-   : Target(target)
+@@ -291,7 +291,7 @@ void cmQtAutoGenInitializer::InfoWriter::WriteNestedLists(
+ cmQtAutoGenInitializer::cmQtAutoGenInitializer(
+   cmQtAutoGenGlobalInitializer* globalInitializer, cmGeneratorTarget* target,
+   IntegerVersion const& qtVersion, bool mocEnabled, bool uicEnabled,
+-  bool rccEnabled, bool globalAutogenTarget, bool globalAutoRccTarget)
++  bool rccEnabled, bool staticPluginsEnabled, bool globalAutogenTarget, bool globalAutoRccTarget)
+   : GlobalInitializer(globalInitializer)
+   , Target(target)
    , QtVersion(qtVersion)
-@@ -184,6 +188,7 @@ cmQtAutoGenInitializer::cmQtAutoGenInitializer(cmGeneratorTarget* target,
+@@ -300,6 +300,7 @@ cmQtAutoGenInitializer::cmQtAutoGenInitializer(
    Moc.Enabled = mocEnabled;
    Uic.Enabled = uicEnabled;
    Rcc.Enabled = rccEnabled;
 +  StaticPlugins.Enabled = staticPluginsEnabled;
+   Rcc.GlobalTarget = globalAutoRccTarget;
  }
  
- bool cmQtAutoGenInitializer::InitCustomTargets()
-@@ -356,7 +361,7 @@ bool cmQtAutoGenInitializer::InitCustomTargets()
+@@ -490,7 +491,7 @@ bool cmQtAutoGenInitializer::InitCustomTargets()
    }
  
    // Create autogen target
@@ -180,13 +281,13 @@ diff --git a/Source/cmQtAutoGenInitializer.h b/Source/cmQtAutoGenInitializer.h
 index 2a47e46a4..1f21b3476 100644
 --- a/Source/cmQtAutoGenInitializer.h
 +++ b/Source/cmQtAutoGenInitializer.h
-@@ -47,7 +47,7 @@ public:
-   static IntegerVersion GetQtVersion(cmGeneratorTarget const* target);
- 
-   cmQtAutoGenInitializer(cmGeneratorTarget* target, bool mocEnabled,
+@@ -81,7 +81,7 @@ public:
+   cmQtAutoGenInitializer(cmQtAutoGenGlobalInitializer* globalInitializer,
+                          cmGeneratorTarget* target,
+                          IntegerVersion const& qtVersion, bool mocEnabled,
 -                         bool uicEnabled, bool rccEnabled,
 +                         bool uicEnabled, bool rccEnabled, bool staticPluginsEnabled,
-                          IntegerVersion const& qtVersion);
+                          bool globalAutogenTarget, bool globalAutoRccTarget);
  
    bool InitCustomTargets();
 @@ -151,6 +151,12 @@ private:
@@ -211,9 +312,9 @@ index cd11c4b14..1b0bfbdcd 100644
      this->SetPropertyDefault("AUTOUIC", nullptr);
      this->SetPropertyDefault("AUTORCC", nullptr);
 +    this->SetPropertyDefault("AUTOSTATICPLUGINS", nullptr);
+     this->SetPropertyDefault("AUTOGEN_ORIGIN_DEPENDS", nullptr);
      this->SetPropertyDefault("AUTOGEN_PARALLEL", nullptr);
      this->SetPropertyDefault("AUTOMOC_COMPILER_PREDEFINES", nullptr);
-     this->SetPropertyDefault("AUTOMOC_DEPEND_FILTERS", nullptr);
 diff --git a/Source/cmTargetPropertyComputer.cxx b/Source/cmTargetPropertyComputer.cxx
 index 06ce0b1e6..0e7ccb34e 100644
 --- a/Source/cmTargetPropertyComputer.cxx
