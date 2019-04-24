@@ -8,12 +8,12 @@ This repository contains package scripts for MinGW-w64 targets to build under MS
 MSYS2 is an independent rewrite of MSYS providing a Unix-like environment and command-line interface for Windows making it possible to port software running on POSIX systems (such as Linux, BSD, and Unix systems) to Windows.
 
 ## Documentation
-If you want to read about using MINGW-packages or developing MINGW-packages yourself, you can start at the [MSYS2 wiki](https://github.com/msys2/msys2/wiki/Creating-Packages)
+See the [MSYS2 wiki](https://github.com/msys2/msys2/wiki).
 
 ## Using packages
 You have two options if you want to use these packages:
 
-1. Either you can use a **pre-built** binary package from from the MSYS2 MINGW64 repo (which includes the binaries, libraries, headers, man pages), and install it on your machine, and build against those packages/libraries as you are porting/writing your software.
+1. Either you can use a **pre-built** binary package from the MSYS2 MINGW64 repo (which includes the binaries, libraries, headers, man pages), and install it on your machine, and build against those packages/libraries as you are porting/writing your software.
 
  Assuming you have a properly installed MSYS2 environment, you can install the pre-built binary package by using the following command from the bash prompt:
  ```
@@ -32,6 +32,6 @@ You have two options if you want to use these packages:
  ```
     pacman -U ${package-name}*.pkg.tar.xz
  ```
-## Creating packages
- TBD
 
+## Creating packages
+See the [MSYS2 wiki](https://github.com/msys2/msys2/wiki/Creating-Packages) for instructions and advice about creating MINGW-packages.

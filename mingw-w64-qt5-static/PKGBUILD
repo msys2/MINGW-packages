@@ -97,11 +97,11 @@ _opengl_for_configure="${_opengl}"
 _realname=qt5${_namesuff}
 pkgbase="mingw-w64-${_realname}"
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-_ver_base=5.11.1
+_ver_base=5.12.3
 # use 5.6.1-1 hot fix : only the archive name was changed from *-5.6.1.tar.xz to *-5.6.1-1.tar.xz
 _hotfix=
 pkgver=${_ver_base//-/}
-pkgrel=3
+pkgrel=1
 arch=('any')
 pkgdesc="A cross-platform application and UI framework (mingw-w64${_namesuff})"
 url='https://www.qt.io/'
@@ -184,10 +184,12 @@ source=(#https://download.qt.io/development_releases/qt/${pkgver%.*}/${_ver_base
         https://download.qt.io/official_releases/qt/${pkgver%.*}/${_ver_base}${_hotfix}/single/${_pkgfqn}${_hotfix}.tar.xz
         #https://download.qt.io/community_releases/${pkgver%.*}/${_ver_base}-final/qtwebkit-opensource-src-${_ver_base}.tar.xz
         #https://download.qt.io/snapshots/qt/${pkgver%.*}/${_ver_base}/2014-05-07_85/src/qt-everywhere-opensource-src-${_ver_base}.tar.xz
+        0000-adjust-qmake-conf-mingw.patch
         0001-Add-link-time-optimization-support-for-Clang-GCC-and.patch
         0001-qt-5.8.0-fix-sql-libraries-mingw.patch
         0002-qt-5.8.0-configure-gcc-before-clang.patch
         0003-qt-5.8.0-autodetect-fontconfig.patch
+        0004-fix-linking-again-different-static-libs.patch
         0005-qt-5.3.0-syncqt-fix.patch
         0006-qt-5.3.0-win_flex-replace.patch
         0007-qt-5.3.0-win32-g-Enable-static-builds.patch
@@ -216,17 +218,20 @@ source=(#https://download.qt.io/development_releases/qt/${pkgver%.*}/${_ver_base
         0042-qt-5.4.0-static-cmake-also-link-plugins-and-plugin-deps.patch
         0043-qt-5.5.0-static-cmake-regex-QT_INSTALL_LIBS-in-QMAKE_PRL_LIBS_FOR_CMAKE.patch
         0044-qt-5.4.0-win32-g++-enable-qtwebengine-build.patch
-        0045-qt-5.4.1-static-use-qminimal-platform-plugin-for-qcollectiongenerator.patch
         0046-qt-5.4.1-Revert-Revert-fix-NTFS-mount-points.patch
         0048-qt-5.4.2-win32-Avoid-platformNativeInterface-segfaults-with-minimal-platform.patch
         0049-qt-5.8.0-win32-do-not-use-fontconfig.patch
         0050-qt-5.5.1-fix-the-trailing-backslash-in-DESTDIR-on-mingw-worka.patch
         0051-qt-5.9.1-disable-qtlocation-mapboxgl-plugin.patch
         0052-qt-5.11-mingw-fix-link-qdoc-with-clang.patch
-        0053-qt-5.11-documents-fix-regression.patch
         0054-win32-dont-need-flatpack-theme.patch
+        0056-qt-5.11-static_icu.patch
+        0057-fix-and-enable-iconv-codec.patch
+        0059-different-libs-search-order-for-static-and-shared.patch
+        0060-activeqt-handle-win64-in-dumpcpp.patch
         0125-qt5-windeployqt-fixes.patch
         0300-qt-5.8.0-cast-errors.patch
+        0301-link-evr.patch
         qml_static_plugins.patch)
 
 # Translates using cygpath according to the ${_make} being used
@@ -244,13 +249,22 @@ path_conv_for_make() {
 # result and then adds delimiter between -I/-L/-l and path - both configure
 # and configure.bat prefer this. Results returned as an array.
 pkg_config_qt5() {
-  local _res=$(pkg-config $*)
+  local _res=$(${MINGW_PREFIX}/bin/pkg-config $*)
   local -a _final=()
   for _part in $(path_conv_for_make "${_res}"); do
       _final+=($(echo -n "${_part}" | sed "s|-\([ILl]\)\(.*\)|-\1|g"))
       _final+=($(echo -n "${_part}" | sed "s|-\([ILl]\)\(.*\)|\2|g"))
   done
   echo "${_final[@]}"
+}
+
+# Helper macros to help make tasks easier #
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
 }
 
 prepare() {
@@ -262,33 +276,26 @@ prepare() {
   # MSYS2 gperf cannot handle \r\n.
   find . -name "*.gperf" -exec dos2unix "{}" \;
 
-  patch -p1 -i ${srcdir}/0001-qt-5.8.0-fix-sql-libraries-mingw.patch
-  patch -p1 -i ${srcdir}/0002-qt-5.8.0-configure-gcc-before-clang.patch
-  patch -p1 -i ${srcdir}/0003-qt-5.8.0-autodetect-fontconfig.patch
-  patch -p1 -i ${srcdir}/0005-qt-5.3.0-syncqt-fix.patch
-  patch -p1 -i ${srcdir}/0006-qt-5.3.0-win_flex-replace.patch
-
-  # Some patches are against qtbase's repository.
-  pushd qtbase > /dev/null
-    patch -p1 -i ${srcdir}/0007-qt-5.3.0-win32-g-Enable-static-builds.patch
-    patch -p1 -i ${srcdir}/0008-qt-5.3.0-win32-g-Add-QMAKE_EXTENSION_IMPORTLIB-defaulting-to-.patch
-    ###patch -p1 -i ${srcdir}/0009-qt-5.3.0-qmlimportscanner-Ensure-the-correct-variant-is-run.patch
-    #patch -p1 -i ${srcdir}/0010-qt-5.3.0-qdoc-increase-stack-size-for-win32-g-too.patch
-    patch -p2 -i ${srcdir}/0011-qt-5.8.0-mingw-dbus-and-pkg-config.patch
-    # The next patch needs some work. It's moving a block of shell script un-necessarily
-    # as the bit: QMAKE_CONFIG="$QMAKE_CONFIG static" before calling compileTest is what
-    # actually made it work. There may be a good reason for not adding static to QMAKE_CONFIG
-    # so it might be necessary to back up the value, do compileTest then restore it after.
-  popd > /dev/null
-
-  patch -p1 -i ${srcdir}/0016-qt-5.8.0-win32-g++-use-qpa-genericunixfontdatabase.patch
-  patch -p1 -i ${srcdir}/0017-qt-5.3.0-fix-examples-building.patch
+  apply_patch_with_msg \
+    0000-adjust-qmake-conf-mingw.patch \
+    0001-qt-5.8.0-fix-sql-libraries-mingw.patch \
+    0002-qt-5.8.0-configure-gcc-before-clang.patch \
+    0003-qt-5.8.0-autodetect-fontconfig.patch \
+    0004-fix-linking-again-different-static-libs.patch \
+    0005-qt-5.3.0-syncqt-fix.patch \
+    0006-qt-5.3.0-win_flex-replace.patch \
+    0007-qt-5.3.0-win32-g-Enable-static-builds.patch \
+    0008-qt-5.3.0-win32-g-Add-QMAKE_EXTENSION_IMPORTLIB-defaulting-to-.patch \
+    0011-qt-5.8.0-mingw-dbus-and-pkg-config.patch \
+    0016-qt-5.8.0-win32-g++-use-qpa-genericunixfontdatabase.patch \
+    0017-qt-5.3.0-fix-examples-building.patch
 
   if [ "${_opengl}" != "desktop" ]; then
     # Hacks to use external ANGLE libraries.
     # These patches needs more work - they're unfinished and break desktop OpenGL
-    patch -p1 -i ${srcdir}/0020-qt-5.3.0-use-external-angle-library.patch
-    patch -p1 -i ${srcdir}/0023-qt-5.3.0-env-set-external-angle.patch
+    apply_patch_with_msg \
+      0020-qt-5.3.0-use-external-angle-library.patch \
+      0023-qt-5.3.0-env-set-external-angle.patch
     if [ "${_configure}" = "./configure" ]; then
       _opengl_for_configure=yes
     fi
@@ -296,55 +303,50 @@ prepare() {
 
   # patch -p1 -i ${srcdir}/0024-qt-5.3.0-icu-add-U_LIB_SUFFIX_C_NAME.patch
   if [ "${_make}" = "make" ]; then
-    patch -p1 -i ${srcdir}/0025-qt-5.8.0-force-using-make-on-msys.patch
+    apply_patch_with_msg \
+      0025-qt-5.8.0-force-using-make-on-msys.patch
   fi
 
-  pushd qtbase > /dev/null
-    # Ossi says we should fix this in qwebkit with a $$(shell_path), but the ' quotes get in the way
-    # due to qtPrepareTool adding them with $$shell_quote
-    patch -p1 -i ${srcdir}/0028-qt-5.8.0-Revert-untangle-use-of-system-vs.-shell-path-list-se.patch
-    patch -p1 -i ${srcdir}/0029-qt-5.8.0-Revert-fix-quoting-and-path-separators-in-qtPrepareT.patch
-    patch -p1 -i ${srcdir}/0030-qt-5.3.1-workaround-ansidecl-h-PTR-define-conflict.patch
-  popd > /dev/null
-
-  patch -p1 -i ${srcdir}/0031-qt-5.5.0-workaround-BOOL-define-conflict.patch
-  patch -p1 -i ${srcdir}/0034-qt-5.3.2-Use-QMAKE_PREFIX_STATICLIB-in-create_cmake-prf.patch
-  patch -p1 -i ${srcdir}/0035-qt-5.3.2-dont-add-resource-files-to-qmake-libs.patch
+  # Ossi says we should fix this in qwebkit with a $$(shell_path), but the ' quotes get in the way
+  # due to qtPrepareTool adding them with $$shell_quote
+  apply_patch_with_msg \
+    0028-qt-5.8.0-Revert-untangle-use-of-system-vs.-shell-path-list-se.patch \
+    0029-qt-5.8.0-Revert-fix-quoting-and-path-separators-in-qtPrepareT.patch \
+    0030-qt-5.3.1-workaround-ansidecl-h-PTR-define-conflict.patch \
+    0031-qt-5.5.0-workaround-BOOL-define-conflict.patch \
+    0034-qt-5.3.2-Use-QMAKE_PREFIX_STATICLIB-in-create_cmake-prf.patch \
+    0035-qt-5.3.2-dont-add-resource-files-to-qmake-libs.patch
 
   # Patches so that qt5-static can be used with cmake.
-  patch -p1 -i ${srcdir}/0036-qt-5.3.2-win32-qt5-static-cmake-link-ws2_32-and--static.patch
-  patch -p1 -i ${srcdir}/0037-qt-5.4.0-Improve-cmake-plugin-detection-as-not-all-are-suffixed-Plugin.patch
-
-  pushd qtbase > /dev/null
-    patch -p1 -i ${srcdir}/0038-qt-5.5.0-cmake-Rearrange-STATIC-vs-INTERFACE-targets.patch
-  popd
-
-  patch -p1 -i ${srcdir}/0039-qt-5.4.0-Make-it-possible-to-use-static-builds-of-Qt-with-CMa.patch
-  patch -p1 -i ${srcdir}/0040-qt-5.4.0-Generate-separated-libraries-in-prl-files-for-CMake.patch
-  patch -p1 -i ${srcdir}/0041-qt-5.4.0-Fix-mingw-create_cmake-prl-file-has-no-lib-prefix.patch
-  patch -p1 -i ${srcdir}/0042-qt-5.4.0-static-cmake-also-link-plugins-and-plugin-deps.patch
-  patch -p1 -i ${srcdir}/0043-qt-5.5.0-static-cmake-regex-QT_INSTALL_LIBS-in-QMAKE_PRL_LIBS_FOR_CMAKE.patch
+  apply_patch_with_msg \
+    0036-qt-5.3.2-win32-qt5-static-cmake-link-ws2_32-and--static.patch \
+    0037-qt-5.4.0-Improve-cmake-plugin-detection-as-not-all-are-suffixed-Plugin.patch \
+    0038-qt-5.5.0-cmake-Rearrange-STATIC-vs-INTERFACE-targets.patch \
+    0039-qt-5.4.0-Make-it-possible-to-use-static-builds-of-Qt-with-CMa.patch \
+    0040-qt-5.4.0-Generate-separated-libraries-in-prl-files-for-CMake.patch \
+    0041-qt-5.4.0-Fix-mingw-create_cmake-prl-file-has-no-lib-prefix.patch \
+    0042-qt-5.4.0-static-cmake-also-link-plugins-and-plugin-deps.patch \
+    0043-qt-5.5.0-static-cmake-regex-QT_INSTALL_LIBS-in-QMAKE_PRL_LIBS_FOR_CMAKE.patch
 
   # More odds and sods.
   # patch -p1 -i ${srcdir}/0044-qt-5.4.0-win32-g++-enable-qtwebengine-build.patch
-  patch -p1 -i ${srcdir}/0045-qt-5.4.1-static-use-qminimal-platform-plugin-for-qcollectiongenerator.patch
 
-  pushd qtbase > /dev/null
-    patch -p1 -i ${srcdir}/0046-qt-5.4.1-Revert-Revert-fix-NTFS-mount-points.patch
-  popd > /dev/null
+  apply_patch_with_msg \
+    0046-qt-5.4.1-Revert-Revert-fix-NTFS-mount-points.patch
 
-  patch -p1 -i ${srcdir}/0048-qt-5.4.2-win32-Avoid-platformNativeInterface-segfaults-with-minimal-platform.patch
-  patch -p1 -i ${srcdir}/0049-qt-5.8.0-win32-do-not-use-fontconfig.patch
-  patch -p1 -i ${srcdir}/0051-qt-5.9.1-disable-qtlocation-mapboxgl-plugin.patch
-  patch -p1 -i ${srcdir}/0052-qt-5.11-mingw-fix-link-qdoc-with-clang.patch
-  patch -p1 -i ${srcdir}/0053-qt-5.11-documents-fix-regression.patch
-  patch -p1 -i ${srcdir}/0054-win32-dont-need-flatpack-theme.patch
-
-  pushd qttools > /dev/null
-    patch -p1 -i ${srcdir}/0125-qt5-windeployqt-fixes.patch
-  popd
-  
-  patch -p1 -i ${srcdir}/0300-qt-5.8.0-cast-errors.patch
+  apply_patch_with_msg \
+    0048-qt-5.4.2-win32-Avoid-platformNativeInterface-segfaults-with-minimal-platform.patch \
+    0049-qt-5.8.0-win32-do-not-use-fontconfig.patch \
+    0051-qt-5.9.1-disable-qtlocation-mapboxgl-plugin.patch \
+    0052-qt-5.11-mingw-fix-link-qdoc-with-clang.patch \
+    0054-win32-dont-need-flatpack-theme.patch \
+    0056-qt-5.11-static_icu.patch \
+    0057-fix-and-enable-iconv-codec.patch \
+    0059-different-libs-search-order-for-static-and-shared.patch \
+    0060-activeqt-handle-win64-in-dumpcpp.patch \
+    0125-qt5-windeployqt-fixes.patch \
+    0300-qt-5.8.0-cast-errors.patch \
+    0301-link-evr.patch
 
   # See: https://bugreports.qt.io/browse/QTBUG-37902
   # _ver_num=${_ver_base%%-*}
@@ -412,7 +414,12 @@ build() {
     _freetype2_pkgconf="freetype2"
   fi
 
-  local -a _extra_incpaths=($(pkg_config_qt5 --cflags-only-I dbus-1 libxml-2.0 ${_freetype2_pkgconf}))
+  local _libxml2_pkgconf=""
+  if [ "${_variant}" = "-shared" ]; then
+    _libxml2_pkgconf="libxml-2.0"
+  fi
+
+  #local -a _extra_incpaths=($(pkg_config_qt5 --cflags-only-I dbus-1 ${_libxml2_pkgconf} ${_freetype2_pkgconf}))
   if [ "${_opengl}" != "desktop" ]; then
     export EXTERNAL_ANGLE=1
     _extra_incpaths+=("-I")
@@ -432,11 +439,11 @@ build() {
   export FORCE_MINGW_QDOC_BUILD=1
   export QDOC_USE_STATIC_LIBCLANG=1
 
-  if [ "${_variant}" = "-shared" ]; then
+  #if [ "${_variant}" = "-shared" ]; then
     # This export breaks the static library build in 5.9.0;
     # Causes the DBUS_LIBS setting passed to configure to be ignored.
-    export PKG_CONFIG="${MINGW_PREFIX}/bin/pkg-config.exe"
-  fi
+    #export PKG_CONFIG="${MINGW_PREFIX}/bin/pkg-config.exe"
+  #fi
 
   # Workaround for building QtWebkit
   #pushd ${srcdir}/${CARCH}/qtwebkit > /dev/null
@@ -475,12 +482,11 @@ build() {
     _sql_config+=("-plugin-sql-psql")
     _sql_config+=("-plugin-sql-mysql")
     _sql_config+=("-plugin-sql-odbc")
-    _variant_CPATH=${MINGW_PREFIX}/include/mariadb:
   fi
 
-  if [ "${_variant}" = "-static" ]; then
-    export OPENSSL_LIBS="-lssl -lcrypto -lcrypt32 -lgdi32"
-  fi
+  #if [ "${_variant}" = "-static" ]; then
+  #  export OPENSSL_LIBS="-lssl -lcrypto -lws2_32 -lcrypt32 -lgdi32"
+  #fi
 
   # Qt manages the compiler flags for release / debug configs separately, so having our own values (-O2) is harmful here ..
   unset CFLAGS
@@ -496,10 +502,10 @@ build() {
 
   if [ "${_variant}" = "-static" ]; then
     configure_opts+=("-static")
-    configure_opts+=("-D" "DBUS_STATIC_BUILD")
+    #configure_opts+=("-D" "DBUS_STATIC_BUILD")
     configure_opts+=("-D" "JAS_DLL=0")
     if [ "$_with_dbus" == "yes" ]; then
-      configure_opts+=("-dbus-linked" "DBUS_LIBS=-ldbus-1 -lws2_32 -liphlpapi")
+      configure_opts+=("-dbus-linked") #"DBUS_LIBS=-ldbus-1 -lws2_32 -liphlpapi"
     else
       configure_opts+=("-no-dbus")
     fi
@@ -633,8 +639,12 @@ package() {
     make install_qch_docs
   fi
 
-  install -D -m644 LGPL_EXCEPTION.txt \
-    "${pkgdir}${_qt5_prefix}"/share/licenses/qt5/LGPL_EXCEPTION.txt
+  install -D -m644 LICENSE.FDL     "${pkgdir}${_qt5_prefix}"/share/licenses/qt5/LICENSE.FDL
+  install -D -m644 LICENSE.GPLv2   "${pkgdir}${_qt5_prefix}"/share/licenses/qt5/LICENSE.GPLv2
+  install -D -m644 LICENSE.GPLv3   "${pkgdir}${_qt5_prefix}"/share/licenses/qt5/LICENSE.GPLv3
+  install -D -m644 LICENSE.LGPLv21  "${pkgdir}${_qt5_prefix}"/share/licenses/qt5/LICENSE.LGPLv21
+  install -D -m644 LICENSE.LGPLv3  "${pkgdir}${_qt5_prefix}"/share/licenses/qt5/LICENSE.LGPLv3
+  install -D -m644 LICENSE.QT-LICENSE-AGREEMENT-4.0  "${pkgdir}${_qt5_prefix}"/share/licenses/qt5/LICENSE.QT-LICENSE-AGREEMENT-4.0
 
   # Remove dlls from lib/
   rm -f "${pkgdir}${_qt5_prefix}/lib"/*.dll
@@ -654,10 +664,22 @@ package() {
 
   # Fix paths in qconfig.pri and qmodule.pri:
   #   $(cygpath -m ${MINGW_PREFIX}) -> $(cygpath -m ${pkgdir}${MINGW_PREFIX})
-  MINGW_PREFIX_WIN=$(cygpath -m ${_qt5_prefix})
-  PKGDIR_MINGW_PREFIX_WIN=$(cygpath -m ${pkgdir}${_qt5_prefix})
-  find "${pkgdir}${_qt5_prefix}/share/qt5" -type f -name '*.pri' \
-    -exec sed -i -e "s|${MINGW_PREFIX_WIN}|${PKGDIR_MINGW_PREFIX_WIN}|g" {} \;
+  QT_PREFIX_WIN=$(cygpath -m ${_qt5_prefix})
+  PKGDIR_QT_PREFIX_WIN=$(cygpath -m ${pkgdir}${_qt5_prefix})
+  find "${pkgdir}${_qt5_prefix}/share/qt5" -type f \( -name '*.pri' -o -name '*.prl' \) \
+    -exec sed -i -e "s|${QT_PREFIX_WIN}|${PKGDIR_QT_PREFIX_WIN}|g" {} \;
+
+  find "${pkgdir}${_qt5_prefix}/lib" -type f \( -name '*.pri' -o -name '*.prl' \) \
+    -exec sed -i -e "s|${QT_PREFIX_WIN}|${PKGDIR_QT_PREFIX_WIN}|g" {} \;
+
+  if [ "${_variant}" = "-static" ]; then
+    MINGW_PREFIX_WIN=$(cygpath -m ${MINGW_PREFIX})
+    find "${pkgdir}${_qt5_prefix}/share/qt5" -type f \( -name '*.pri' -o -name '*.prl' \) \
+      -exec sed -i -e "s|${MINGW_PREFIX_WIN}|${PKGDIR_QT_PREFIX_WIN}/..|g" {} \;  
+    
+    find "${pkgdir}${_qt5_prefix}/lib" -type f \( -name '*.pri' -o -name '*.prl' \) \
+      -exec sed -i -e "s|${MINGW_PREFIX_WIN}|${PKGDIR_QT_PREFIX_WIN}/..|g" {} \;
+  fi
 
   # https://github.com/Alexpux/MINGW-packages/issues/1942
   if [ "${_variant}" = "-static" ]; then
@@ -708,48 +730,53 @@ package() {
 # export PKG_CONFIG_PATH=/mingw32/lib/pkgconfig
 # E:/m2/repo/mingw-w64-qt5/src/i686/qtbase/bin/qmake.exe -o Makefile qml.pro
 
-sha256sums=('39602cb08f9c96867910c375d783eed00fc4a244bffaa93b801225d17950fb2b'
+sha256sums=('6462ac74c00ff466487d8ef8d0922971aa5b1d5b33c0753308ec9d57711f5a42'
+            '973b4778ce72eac6a9e587031a72c850cedf044f36f126fe12a24c062b4ccf18'
             '7363ae7695af2f5278e9d91f6e52b3533dea4139ef252284bb82abfd025630d9'
-            '70938426942058ad66c1b9b304b12cfe7a85947712729a9b7235c86397cfc265'
-            '52a8c1ac8511643a10eb9b3b80b6881ecb3d08d4b5b9b730d16da461a40c4aa6'
-            'e6c514784e6de3fb0ef26ad262ddc0f410eba540563fe61a480f938a8da4b395'
+            'e14d5e6a0ac3592db24ea18f94e2ba9513ffa5cbb951ca38bf2d0b03402a5515'
+            '999a3779e58eb68eea1633ac1ea5606a9645c255cc1eeb808ec8c1143e1c6716'
+            '889639154b2346f6446c8838f651305c0566656b25a9667be2cb5574d15bca7c'
+            '16eeb423bb5ee50355db18d86ebc89df1f5883ffb9908da11cbfa468ea52ffdf'
             '334e8f84b892e1bda5d71ec078d6e2a325d979f0d3ab454fe348594d1c039f84'
             '1b615ac7425fb7dc81d072f4c48e96d6fe0df5dcdeced61341aa3ca44c365e2b'
-            '1146aa95aac1b7e3c1136af5f518ac0065e94976bad3c3788ad618b20996c563'
-            '95cffa4e6425557fbebb9756a7acf51c0d3b873de2f1e76f0a6cee7de2c34b81'
-            '3dd3ca4cb60adbc6af636151460f1c51da8535d37a8f6c32948afca7858986b2'
-            '8ce3f884cce4cf0b00fbb149d3acf73a664c9ef330325ba95d15846ef18f9aa2'
-            '66b6c6dac6b3c208d5930d12602e0d4a714d72fb881a5792bf966c0c46ab5aa9'
+            '5a16a3ca18fb1fe990b4131f3c2c6d2f845e62db45225d9a0db58cf92e46bad9'
+            '3d466c34c5251f2378dd465ead7822a35f1f1da2e32c919a470b4e9d3a90d9b2'
+            '310db3f07db047d3303c2cff3106501a5aa242c56207af49fd06056d9bb8c880'
+            '2f650101081cee4901f3a8e1116ec446062077bb7a0fa9b5a7f643a59dcbc932'
+            'f8b4581805ba95a1a4a44f55dab9303ba856b9c6ac33c5367265f7ff4f54980d'
             '138c46ef95921a0f3a43912d95268675b0dc671410d8099c3fcc3badabbbdb5b'
-            'e24f642a18a8dc547caa3029f39a562405aac88bc573d3cd5ef502a423486067'
-            'e0e029c97ebe41abdcbb2beec779b75657c1ecc15e0211d5db69111a3750268d'
+            '0829de00eaf63f1da83f734062639070e5ee3f522abef8823991a2d87782f4f8'
+            'b18f2fe88401b140073615c12be1a17f447c2325b8a17a2e56ccbea898c0b4bd'
             'd0dbe4b5f8a9291a02f9e9c6e59a0ff038e5dc521f79eb2da7a5fcaa681479bb'
             'd7c228df3cc680793a6c858e1fac01092c0877071c075804b7e93f6b3a481eae'
             '493c081dd06836baa28cac1f38b2d87b2f402670e442b8a163530d3f965cc5e1'
-            '4cad37e9cf4d0777fe614b37c799cbeb9b953cd6a6bc38c5b52a2557614aaf39'
-            '42e5ebc4bc785bfa50262047ae5078bc123f56e9129a1df0b2f84491f75d886c'
-            '6893c83e4d26643a1cf5607a1a367401d27fec98440fa1d3685a8cf1478ddf92'
+            '4130d55caba2a1761fe37c998c6b56409066edfd3a145e3cec8049fb883ce343'
+            '6126c7559e9af1dec4cd66a31e9ff5db35e4c7c0fdb3ae0776feab6566167f7e'
+            'a4721e46c10dc24d2ec91fb5aedffd940f444f227a20ecb6454565c4f76340c6'
             '7f5e092a5062db776a96ab32758ff175c3689b79902f5d9656f31029c33f66dd'
             '1ada266bc6cd033d770bc40ad879527db222563fc20cf98cf2848b84b2a0e503'
-            '27e9d402126d313ff647066207038578c26a3cf0f60833ae5d76157d53712eae'
+            '532d4c28a3574bd98af712eaf2fbb9768ea12cd2f597ac485d85aa5ccd0bf2e0'
             '799af493e184e2e3a070e80bedf62417ff617de8f02e18b9fa20c7563dd9d93c'
             'c114d2df071b66e47f4bd43d335d48868fd5bcf9670f276b557edacd53fa92c0'
-            'b9939efea7792a960cdc9404a515c6f0a1cd42ffbdb018d52f2b0206fffe17f5'
+            'cc250953ee8b79c03fbaf3d1797a188413d2ea9323769e49d8124a17af7852c8'
             '3ae9d64fb683036b3b1f91036378791e1ec4a10205c59e78761d22d8479c0540'
             'd720ac76035d56caea1f045dfb468a25865f9d4b22016cec5414f1c639a7697a'
             '914051840e01bf453e3db710d4471e6758e39e2cb87f8ffe3072fb90218c9f83'
-            '5cebf00614f3bc101642ea3a2f8d14644ab75ea5168f63c2b0f5f090adc61f8a'
+            'a6c9ce0df1e378ef92e5fbab2891c5b0e4783498406ac3e33c3aea68a06d810d'
             '29ed4566d4c1853b70a5173c6391ed90f123c5121b5836f2d16f8478f6354f0a'
             '7d7a99ff45c6ae4f39be663d52bafc125970787f364e84593117e6a7d79f7eae'
-            '72e46178f2f694d8408f22684d1a7d39394056cb574fc4855c1f38c9d51e7e6c'
-            '57730800c740c0609739c141283494748b34643b1af0504bf5ba8767b8655557'
+            '7cf96e82099d8be12fb71102a6ee85c614fe6510c88e4e5d16165af63d69494c'
             'e142c1b385cf375eca4797dd8dd864f28a7c02fe8d7fae86be326d7775d0a1df'
             'f1ea27aa8b1febe7b806e775a928e2b03edc9a7045f6c03da3a7f57563b05e56'
             '234d1b207eb9ea11839f941799daf613028f33dbc89bebdf78b9a2dd4dd84dd2'
             '227940744aa3d87f51d9ea9d2fff0bfc11cda5f5055687bceb1c93ade5d5cdf6'
-            '354c8af7302f2df99607da35f2668a18b0b447c4f4dd21fd1dabed0b0f4cee2d'
-            '55f69d212533ddb8402936c37c69b84d88472cb95769f07c0227a6373598a7a0'
-            'de8d7f88ee987ed376226793350918a2a618a093cc3f56c37e1b3b9bf3e23d84'
-            '353afa72d5f659213625d1af02653308ead2a74292023cc960b55f04d6a098af'
+            'c0e4b9371a36a3bfabd48a998a5fa099cc933d79cfcca7e6877adb5abbebdb8b'
+            '09346761413824d20da9570a8615facebcb6d2930b609ddc259e61063ee2d9bd'
+            'f414ceb01d4057147538f66b03f184be66a96d5b06f3dfd5aa086cd4de57ae0d'
+            '56800bd49c141db5bd3e1a7fa9d9dc0fd04434fb419b9f8a1a41fbb00edfb021'
+            '1c60ed8709e9c3e53b12dbb139255d0942b5e07a40180dc620197fc4b0436bdc'
+            'e0b968bb8b3b15d1a118fcdcd5dc9b74236fcc709e17aca51d5ba990e92cdcf3'
+            'bdc64610c6bc4a1ea58208d414b819432f4f7149a7ba00e79a94ed0177600e7e'
             'b38c912a1a0e94ea1a4f3706d84b5a6b2a46b72a9b3b5e6a821b123794fd5e07'
+            'a771e39d82eaa280ddb256b0097b36803dad248cb3999159bc1880305367d239'
             '670161ba661ea3dccd883473e39aaecb683a3c92da73502dc6939d496507532c')

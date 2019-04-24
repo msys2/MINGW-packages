@@ -5,14 +5,15 @@ _realname=gobject-introspection
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
          "${MINGW_PACKAGE_PREFIX}-${_realname}-runtime")
-pkgver=1.58.0
-pkgrel=1
+pkgver=1.60.1
+pkgrel=2
 arch=('any')
 url="https://live.gnome.org/GObjectIntrospection"
 license=("LGPL")
 makedepends=("${MINGW_PACKAGE_PREFIX}-gcc"
              "${MINGW_PACKAGE_PREFIX}-cairo"
              "${MINGW_PACKAGE_PREFIX}-glib2"
+             "${MINGW_PACKAGE_PREFIX}-meson"
              "${MINGW_PACKAGE_PREFIX}-pkg-config"
              "${MINGW_PACKAGE_PREFIX}-python3"
              "${MINGW_PACKAGE_PREFIX}-python3-mako"
@@ -20,47 +21,48 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-gcc"
              "${MINGW_PACKAGE_PREFIX}-python3-setuptools"
              "autoconf-archive")
 source=(https://download.gnome.org/sources/gobject-introspection/${pkgver%.*}/${_realname}-${pkgver}.tar.xz
-        0021-tests-no-undefined.patch
+        0001-meson-fix-default-cairo-DLL-name-on-Windows.patch
+        0002-relocate-tools.patch
+        0003-scanner-Fix-error-on-Windows-in-case-source-files-ar.patch
         0022-change-pkg-config-invocations.mingw.patch
         0024-Support-passing-arguments-to-g-ir-scanner-through-a-.all.patch
         0026-giscanner-assertions-and-waits.patch
         0027-wait-for-xml-parse-too.patch
         pyscript2exe.py)
 
-sha256sums=('27c1590a32749de0a5481ce897772547043e94bccba4bc0a7edb3d8513e401ec'
-            '79ec6c7f845d65eacafdcb8380441b85ab17afd5ef6cf7d374f2370431135fd5'
+sha256sums=('d844d1499ecd36f3ec8a3573616186d36626ec0c9a7981939e99aa02e9c824b3'
+            'bd65fefb45b09516d71ede5c6803e73c4f3be1cc00fb787a028d2e47b95e0203'
+            '6a8752bfb285629977acb99eb04e6b9fef0d6c3e776ce497b8f4ea4defdfd496'
+            '403ddc1f19c7d5b47efd913ced82e203bc13ae5c822826b625d8a768015b1fd8'
             'bb5f48047613216a6c3c652e0ef65c099475ffdddbea4a835b5a51279d7755ac'
-            '548242ff213afacb0c8192bfbc82ef80fc4d4d5832bbd7130a32c44f0bde1bf8'
+            '7a256fe30eb5db3e2216ae7862b4f20c6691e7a01de4c480091f03d1e4e9f4ba'
             '19ca830262339c4ac9f21bfb8d669ee8e126a949a4237d55656e00c5ae81c451'
             '3f38bdd0dd43d9cf626cbca7c2abd22a7ed0213e6756252c6d467d470d9c5948'
             'f68b24932b3365c4098c04eeaeaf87275ceec29694b3f0597c431bbcf4f913a3')
 
 prepare() {
   cd ${srcdir}/${_realname}-${pkgver}
-  patch -p1 -i "${srcdir}"/0021-tests-no-undefined.patch
+
+  patch -p1 -i "${srcdir}"/0001-meson-fix-default-cairo-DLL-name-on-Windows.patch
+  patch -p1 -i "${srcdir}"/0002-relocate-tools.patch
+  patch -p1 -i "${srcdir}"/0003-scanner-Fix-error-on-Windows-in-case-source-files-ar.patch
   patch -p1 -i "${srcdir}"/0022-change-pkg-config-invocations.mingw.patch
-  # Source for this patch is:
-  # https://bazaar.launchpad.net/~lrn1986/stupidbuild/trunk/view/head:/src/mingw/gobject-introspection-1.0-1.44.0-2/patches/0024-Support-passing-arguments-to-g-ir-scanner-through-a-.all.patch
   patch -p1 -i "${srcdir}"/0024-Support-passing-arguments-to-g-ir-scanner-through-a-.all.patch
   patch -p1 -i "${srcdir}"/0026-giscanner-assertions-and-waits.patch
   patch -p1 -i "${srcdir}"/0027-wait-for-xml-parse-too.patch
-
-  autoreconf -fi
 }
 
 build() {
-  export PYTHON=${MINGW_PREFIX}/bin/python3
   [[ -d "${srcdir}/build-${MINGW_CHOST}" ]] && rm -rf "${srcdir}/build-${MINGW_CHOST}"
-  mkdir -p "${srcdir}/build-${MINGW_CHOST}"
-  cd "${srcdir}/build-${MINGW_CHOST}"
-  ../${_realname}-${pkgver}/configure \
-    --prefix=${MINGW_PREFIX} \
-    --build=${MINGW_CHOST} \
-    --host=${MINGW_CHOST} \
-    --disable-silent-rules \
-    --enable-doctool
+  mkdir -p "${srcdir}/build-${MINGW_CHOST}" && cd "${srcdir}/build-${MINGW_CHOST}"
 
-  make
+  meson \
+    --buildtype=plain \
+    -Ddoctool=true \
+    -Dcairo=true \
+    "../${_realname}-${pkgver}"
+
+  ninja
 }
 
 package_gobject-introspection() {
@@ -72,13 +74,21 @@ package_gobject-introspection() {
   options=('!emptydirs')
 
   cd "${srcdir}/build-${MINGW_CHOST}"
-  make -j1 DESTDIR="${pkgdir}" install
-  make -j1 DESTDIR="${pkgdir}" uninstall-libLTLIBRARIES uninstall-typelibsDATA
+
+  DESTDIR="${pkgdir}${MINGW_PREFIX}" ninja install
 
   for name in g-ir-scanner g-ir-doc-tool g-ir-annotation-tool; do
     ${MINGW_PREFIX}/bin/python3 \
       "${srcdir}/pyscript2exe.py" "${pkgdir}${MINGW_PREFIX}/bin/${name}"
   done
+
+  for pcfile in  "${pkgdir}${MINGW_PREFIX}"/lib/pkgconfig/*.pc; do
+    sed -s "s|$(cygpath -m ${MINGW_PREFIX})|${MINGW_PREFIX}|g" -i "${pcfile}"
+  done
+
+  rm "${pkgdir}${MINGW_PREFIX}/bin/libgirepository"*.dll
+  rm "${pkgdir}${MINGW_PREFIX}/lib/libgirepository"*.a
+  rm -R "${pkgdir}${MINGW_PREFIX}/lib/girepository-1.0"
 }
 
 package_gobject-introspection-runtime() {
@@ -86,7 +96,13 @@ package_gobject-introspection-runtime() {
   depends=("${MINGW_PACKAGE_PREFIX}-glib2")
 
   cd "${srcdir}/build-${MINGW_CHOST}"
-  make -j1 DESTDIR="${pkgdir}" install-libLTLIBRARIES install-typelibsDATA
+  local tmp_install="$(pwd)/_temp"
+
+  DESTDIR="${tmp_install}" ninja install
+
+  install -Dt "${pkgdir}${MINGW_PREFIX}/bin" "${tmp_install}/bin/libgirepository"*.dll
+  install -Dt "${pkgdir}${MINGW_PREFIX}/lib" "${tmp_install}/lib/libgirepository"*.a
+  install -Dt "${pkgdir}${MINGW_PREFIX}/lib/girepository-1.0" "${tmp_install}/lib/girepository-1.0/"*.typelib
 }
 
 package_mingw-w64-i686-gobject-introspection()
