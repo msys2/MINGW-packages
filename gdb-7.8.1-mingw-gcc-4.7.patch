@@ -1,0 +1,144 @@
+@@ -, +, @@ 
+ gdb/eval.c      |  7 +++++++
+ gdb/i386-tdep.c | 39 ++++++++++++++++++++++++++++++++++++++-
+ gdb/infcall.c   | 23 +++++++++++++++++++++++
+ 3 files changed, 68 insertions(+), 1 deletion(-)
+--- a/gdb/eval.c	
++++ a/gdb/eval.c	
+@@ -49,6 +49,10 @@ 
+ /* This is defined in valops.c */
+ extern int overload_resolution;
+ 
++/* this variable is to notify i386_push_dummy_call that an 
++  function is static member function, it is a hack */
++extern int i386_windows_static_memfun; 
++
+ /* Prototypes for local functions.  */
+ 
+ static struct value *evaluate_subexp_for_sizeof (struct expression *, int *);
+@@ -1668,7 +1672,10 @@ evaluate_subexp_standard (struct type *expect_type,
+ 	      argvec[1] = argvec[0];
+ 	      nargs--;
+ 	      argvec++;
++	      i386_windows_static_memfun = 1;
+ 	    }
++          else
++            i386_windows_static_memfun = 0;
+ 	}
+       else if (op == STRUCTOP_MEMBER || op == STRUCTOP_MPTR)
+ 	{
+--- a/gdb/i386-tdep.c	
++++ a/gdb/i386-tdep.c	
+@@ -2396,6 +2396,15 @@ i386_push_dummy_code (struct gdbarch *gdbarch, CORE_ADDR sp, CORE_ADDR funaddr,
+   /* Keep the stack aligned.  */
+   return sp - 16;
+ }
++/* This is the hack to handle the non-static member function to thiscall 
++   calling convention mode, this variable is updated in eval.c of the 
++   static member function check */
++int i386_windows_static_memfun = 0; 
++
++/* This is the hack to determine which version of gcc is used to generate
++   the function, if it is greater than 4.6, this use thiscall for member
++   function. */
++int i386_windows_build_gt_gcc46 = 0;
+ 
+ static CORE_ADDR
+ i386_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
+@@ -2408,6 +2417,28 @@ i386_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
+   int i;
+   int write_pass;
+   int args_space = 0;
++  struct type *func_type = value_type (function);
++  int i386_windows_thiscall = 0;
++
++  if (func_type)
++    {
++      func_type = check_typedef (func_type);
++      
++      if (TYPE_CODE (func_type) == TYPE_CODE_PTR)
++        func_type = check_typedef (TYPE_TARGET_TYPE (func_type));
++      
++      if( (TYPE_CODE (func_type) == TYPE_CODE_METHOD)
++         && i386_windows_build_gt_gcc46 == 1
++         && (nargs > 0) 
++         && i386_windows_static_memfun == 0 )
++        {
++         /* a.f(5,6);
++            args[0] = this pointer;
++            args[1] = 5;
++            args[2] = 6; */
++         i386_windows_thiscall = 1;
++        }
++    }
+ 
+   /* Determine the total space required for arguments and struct
+      return address in a first pass (allowing for 16-byte-aligned
+@@ -2430,7 +2461,7 @@ i386_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
+ 	    args_space += 4;
+ 	}
+ 
+-      for (i = 0; i < nargs; i++)
++      for (i = i386_windows_thiscall; i < nargs; i++)
+ 	{
+ 	  int len = TYPE_LENGTH (value_enclosing_type (args[i]));
+ 
+@@ -2482,6 +2513,12 @@ i386_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
+   /* ...and fake a frame pointer.  */
+   regcache_cooked_write (regcache, I386_EBP_REGNUM, buf);
+ 
++  if (i386_windows_thiscall)
++    {
++      /* args[0] refer to the last argument which is the this pointer */
++      regcache_cooked_write (regcache, I386_ECX_REGNUM, value_contents_all(args[0]));
++    }
++
+   /* MarkK wrote: This "+ 8" is all over the place:
+      (i386_frame_this_id, i386_sigtramp_frame_this_id,
+      i386_dummy_id).  It's there, since all frame unwinders for
+--- a/gdb/infcall.c	
++++ a/gdb/infcall.c	
+@@ -38,6 +38,12 @@
+ #include "gdbthread.h"
+ #include "exceptions.h"
+ #include "event-top.h"
++#include "utils.h"
++
++/* this value is defined in i386-tdep.c, and we set this value here
++   if the dummy call function is build from gcc 4.7 and later, we 
++   should set this value to 1, other wise, set it to 0 */
++extern int i386_windows_build_gt_gcc46;
+ 
+ /* If we can't find a function's name from its address,
+    we print this instead.  */
+@@ -498,6 +504,8 @@
+   ptid_t call_thread_ptid;
+   struct gdb_exception e;
+   char name_buf[RAW_FUNCTION_ADDRESS_SIZE];
++  struct symtab *sym;
++  int gcc_minor;
+ 
+   if (TYPE_CODE (ftype) == TYPE_CODE_PTR)
+     ftype = check_typedef (TYPE_TARGET_TYPE (ftype));
+@@ -763,6 +771,21 @@
+     }
+   else
+     args_cleanup = make_cleanup (null_cleanup, NULL);
++    
++  /* before we push the dummy call, we need to use the real_pc to determine 
++     what gcc producer is used to generate this function, so it will notify
++     this information to i386-tdep.c */
++     sym = find_pc_symtab(real_pc);
++     if (sym != NULL && sym->producer != NULL)
++     {
++        gcc_minor = producer_is_gcc_ge_4(sym->producer);
++        if (gcc_minor>6)
++            i386_windows_build_gt_gcc46 = 1;
++        else
++            i386_windows_build_gt_gcc46 = 0;
++     }
++     else
++        i386_windows_build_gt_gcc46 = 0;
+ 
+   /* Create the dummy stack frame.  Pass in the call dummy address as,
+      presumably, the ABI code knows where, in the call dummy, the
