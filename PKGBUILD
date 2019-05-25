@@ -91,7 +91,7 @@ build() {
     --with-zlib \
     --with-lzma \
     --enable-tui \
-	--enable-source-highlight=no
+    --enable-source-highlight=no
 
   make
 }
