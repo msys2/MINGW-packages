@@ -1,0 +1,303 @@
+From 33235a5dd881e08016bd5e90f2a298f1ac52e09f Mon Sep 17 00:00:00 2001
+From: Patrick Storz <eduard.braun2@gmx.de>
+Date: Thu, 4 Apr 2019 20:27:04 +0200
+Subject: [PATCH] Add and use g_get_console_charset
+
+Queries the charset used by the associated console, which does not
+necessarily match the charset of the current locale as returned by
+g_get_charset.
+
+See https://gitlab.gnome.org/GNOME/glib/issues/1270
+---
+ docs/reference/glib/glib-sections.txt |   1 +
+ glib/gcharset.c                       | 113 +++++++++++++++++++++++++-
+ glib/gcharset.h                       |   2 +
+ glib/gmessages.c                      |   6 +-
+ glib/gstrfuncs.c                      |   4 +-
+ glib/tests/utils.c                    |  40 +++++++++
+ 6 files changed, 160 insertions(+), 6 deletions(-)
+
+diff --git a/docs/reference/glib/glib-sections.txt b/docs/reference/glib/glib-sections.txt
+index 0f5d88142..882ce1e25 100644
+--- a/docs/reference/glib/glib-sections.txt
++++ b/docs/reference/glib/glib-sections.txt
+@@ -2946,6 +2946,7 @@ GConvertError
+ <SUBSECTION>
+ g_get_charset
+ g_get_codeset
++g_get_console_charset
+ 
+ <SUBSECTION Private>
+ g_convert_error_quark
+diff --git a/glib/gcharset.c b/glib/gcharset.c
+index 8f4f03946..7bce2a15a 100644
+--- a/glib/gcharset.c
++++ b/glib/gcharset.c
+@@ -36,6 +36,10 @@
+ 
+ #include <string.h>
+ #include <stdio.h>
++#ifdef G_OS_WIN32
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++#endif
+ 
+ G_LOCK_DEFINE_STATIC (aliases);
+ 
+@@ -194,7 +198,7 @@ g_get_charset (const char **charset)
+   raw = _g_locale_charset_raw ();
+   G_UNLOCK (aliases);
+ 
+-  if (!(cache->raw && strcmp (cache->raw, raw) == 0))
++  if (cache->raw == NULL || strcmp (cache->raw, raw) != 0)
+     {
+       const gchar *new_charset;
+ 
+@@ -229,6 +233,113 @@ g_get_codeset (void)
+   return g_strdup (charset);
+ }
+ 
++/**
++ * g_get_console_charset:
++ * @charset: (out) (optional) (transfer none): return location for character set
++ *   name, or %NULL.
++ *
++ * Obtains the character set used by the console attached to the process,
++ * which is suitable for printing output to the terminal.
++ *
++ * Usually this matches the result returned by g_get_charset(), but in
++ * environments where the locale's character set does not match the encoding
++ * of the console this function tries to guess a more suitable value instead.
++ *
++ * On Windows the character set returned by this function is the
++ * output code page used by the console associated with the calling process.
++ * If the codepage can't be determined (for example because there is no
++ * console attached) UTF-8 is assumed.
++ *
++ * The return value is %TRUE if the locale's encoding is UTF-8, in that
++ * case you can perhaps avoid calling g_convert().
++ *
++ * The string returned in @charset is not allocated, and should not be
++ * freed.
++ *
++ * Returns: %TRUE if the returned charset is UTF-8
++ *
++ * Since: 2.62
++ */
++gboolean
++g_get_console_charset (const char **charset)
++{
++#ifdef G_OS_WIN32
++  static GPrivate cache_private = G_PRIVATE_INIT (charset_cache_free);
++  GCharsetCache *cache = g_private_get (&cache_private);
++  const gchar *locale;
++  unsigned int cp;
++  char buf[2 + 20 + 1]; /* "CP" + G_MAXUINT64 (to be safe) in decimal form (20 bytes) + "\0" */
++  const gchar *raw = NULL;
++
++  if (!cache)
++    cache = g_private_set_alloc0 (&cache_private, sizeof (GCharsetCache));
++
++  /* first try to query $LANG (works for Cygwin/MSYS/MSYS2 and others using mintty) */
++  locale = g_getenv ("LANG");
++  if (locale != NULL && locale[0] != '\0')
++    {
++      /* If the locale name contains an encoding after the dot, return it.  */
++      const char *dot = strchr (locale, '.');
++
++      if (dot != NULL)
++        {
++          const char *modifier;
++
++          dot++;
++          /* Look for the possible @... trailer and remove it, if any.  */
++          modifier = strchr (dot, '@');
++          if (modifier == NULL)
++            raw = dot;
++          else if (modifier - dot < sizeof (buf))
++            {
++              memcpy (buf, dot, modifier - dot);
++              buf[modifier - dot] = '\0';
++              raw = buf;
++            }
++        }
++    }
++  /* next try querying console codepage using native win32 API */
++  if (raw == NULL)
++    {
++      cp = GetConsoleOutputCP ();
++      if (cp)
++        {
++          sprintf (buf, "CP%u", cp);
++          raw = buf;
++        }
++      else if (GetLastError () != ERROR_INVALID_HANDLE)
++        {
++          gchar *emsg = g_win32_error_message (GetLastError ());
++          g_warning ("Failed to determine console output code page: %s. "
++                     "Falling back to UTF-8", emsg);
++          g_free (emsg);
++        }
++    }
++  /* fall-back to UTF-8 if the rest failed (it's a sane and universal default) */
++  if (raw == NULL)
++    raw = "UTF-8";
++
++  if (cache->raw == NULL || strcmp (cache->raw, raw) != 0)
++    {
++      const gchar *new_charset;
++
++      g_free (cache->raw);
++      g_free (cache->charset);
++      cache->raw = g_strdup (raw);
++      cache->is_utf8 = g_utf8_get_charset_internal (raw, &new_charset);
++      cache->charset = g_strdup (new_charset);
++    }
++
++  if (charset)
++    *charset = cache->charset;
++
++  return cache->is_utf8;
++#else
++  /* assume the locale settings match the console encoding on non-Windows OSs */
++  return g_get_charset (charset);
++#endif
++}
++
+ #ifndef G_OS_WIN32
+ 
+ /* read an alias file for the locales */
+diff --git a/glib/gcharset.h b/glib/gcharset.h
+index bb20f5d43..82020f604 100644
+--- a/glib/gcharset.h
++++ b/glib/gcharset.h
+@@ -31,6 +31,8 @@ GLIB_AVAILABLE_IN_ALL
+ gboolean              g_get_charset         (const char **charset);
+ GLIB_AVAILABLE_IN_ALL
+ gchar *               g_get_codeset         (void);
++GLIB_AVAILABLE_IN_2_60
++gboolean              g_get_console_charset (const char **charset);
+ 
+ GLIB_AVAILABLE_IN_ALL
+ const gchar * const * g_get_language_names  (void);
+diff --git a/glib/gmessages.c b/glib/gmessages.c
+index 0210b7a8e..591185605 100644
+--- a/glib/gmessages.c
++++ b/glib/gmessages.c
+@@ -2291,7 +2291,7 @@ g_log_writer_format_fields (GLogLevelFlags   log_level,
+       msg = g_string_new (message);
+       escape_string (msg);
+ 
+-      if (g_get_charset (&charset))
++      if (g_get_console_charset (&charset))
+         {
+           /* charset is UTF-8 already */
+           g_string_append (gstring, msg->str);
+@@ -3186,7 +3186,7 @@ g_print (const gchar *format,
+     {
+       const gchar *charset;
+ 
+-      if (g_get_charset (&charset))
++      if (g_get_console_charset (&charset))
+         fputs (string, stdout); /* charset is UTF-8 already */
+       else
+         {
+@@ -3265,7 +3265,7 @@ g_printerr (const gchar *format,
+     {
+       const gchar *charset;
+ 
+-      if (g_get_charset (&charset))
++      if (g_get_console_charset (&charset))
+         fputs (string, stderr); /* charset is UTF-8 already */
+       else
+         {
+diff --git a/glib/gstrfuncs.c b/glib/gstrfuncs.c
+index 99ceb15c7..17e10a72d 100644
+--- a/glib/gstrfuncs.c
++++ b/glib/gstrfuncs.c
+@@ -1302,7 +1302,7 @@ g_strerror (gint errnum)
+       g_strlcpy (buf, strerror (errnum), sizeof (buf));
+       msg = buf;
+ #endif
+-      if (!g_get_charset (NULL))
++      if (!g_get_console_charset (NULL))
+         {
+           msg = g_locale_to_utf8 (msg, -1, NULL, NULL, &error);
+           if (error)
+@@ -1342,7 +1342,7 @@ g_strsignal (gint signum)
+ 
+ #ifdef HAVE_STRSIGNAL
+   msg = strsignal (signum);
+-  if (!g_get_charset (NULL))
++  if (!g_get_console_charset (NULL))
+     msg = tofree = g_locale_to_utf8 (msg, -1, NULL, NULL, NULL);
+ #endif
+ 
+diff --git a/glib/tests/utils.c b/glib/tests/utils.c
+index 421a70560..d1ca0b633 100644
+--- a/glib/tests/utils.c
++++ b/glib/tests/utils.c
+@@ -29,6 +29,9 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <stdarg.h>
++#ifdef G_OS_WIN32
++#include <windows.h>
++#endif
+ 
+ static gboolean
+ strv_check (const gchar * const *strv, ...)
+@@ -335,6 +338,42 @@ test_codeset2 (void)
+   g_test_trap_assert_passed ();
+ }
+ 
++static void
++test_console_charset (void)
++{
++  const gchar *c1;
++  const gchar *c2;
++
++#ifdef G_OS_WIN32
++  /* store current environment and unset $LANG to make sure it does not interfere */
++  const unsigned int initial_cp = GetConsoleOutputCP ();
++  gchar *initial_lang = g_strdup (g_getenv ("LANG"));
++  g_unsetenv ("LANG");
++
++  /* set console output codepage to something specific (ISO-8859-1 aka CP28591) and query it */
++  SetConsoleOutputCP (28591);
++  g_get_console_charset (&c1);
++  g_assert_cmpstr (c1, ==, "ISO-8859-1");
++
++  /* set $LANG to something specific (should override the console output codepage) and query it */
++  g_setenv ("LANG", "de_DE.ISO-8859-15@euro", TRUE);
++  g_get_console_charset (&c2);
++  g_assert_cmpstr (c2, ==, "ISO-8859-15");
++
++  /* reset environment */
++  if (initial_cp)
++    SetConsoleOutputCP (initial_cp);
++  if (initial_lang)
++    g_setenv ("LANG", initial_lang, TRUE);
++  g_free (initial_lang);
++#else
++  g_get_charset (&c1);
++  g_get_console_charset (&c2);
++
++  g_assert_cmpstr (c1, ==, c2);
++#endif
++}
++
+ static void
+ test_basename (void)
+ {
+@@ -717,6 +756,7 @@ main (int   argc,
+   g_test_add_func ("/utils/debug", test_debug);
+   g_test_add_func ("/utils/codeset", test_codeset);
+   g_test_add_func ("/utils/codeset2", test_codeset2);
++  g_test_add_func ("/utils/console-charset", test_console_charset);
+   g_test_add_func ("/utils/basename", test_basename);
+   g_test_add_func ("/utils/gettext", test_gettext);
+   g_test_add_func ("/utils/username", test_username);
+-- 
+2.20.1.windows.1
+
