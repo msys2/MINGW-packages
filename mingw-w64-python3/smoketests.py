@@ -51,6 +51,14 @@ class Tests(unittest.TestCase):
         import ssl
         import ctypes
 
+    def test_socket_inet_ntop(self):
+        import socket
+        self.assertTrue(hasattr(socket, "inet_ntop"))
+
+    def test_socket_inet_pton(self):
+        import socket
+        self.assertTrue(hasattr(socket, "inet_pton"))
+
     def test_multiprocessing_queue(self):
         from multiprocessing import Queue
         Queue(0)
@@ -71,6 +79,11 @@ class Tests(unittest.TestCase):
         with ThreadPoolExecutor(1) as pool:
             for res in pool.map(lambda *x: None, range(10000)):
                 pass
+
+    def test_sysconfig(self):
+        import sysconfig
+        # This should be able to execute without exceptions
+        sysconfig.get_config_vars()
 
 
 def suite():
