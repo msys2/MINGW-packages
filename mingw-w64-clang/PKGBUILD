@@ -29,7 +29,7 @@ pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
          "${MINGW_PACKAGE_PREFIX}-llvm"
          "${MINGW_PACKAGE_PREFIX}-polly")
 pkgver=8.0.0
-pkgrel=3
+pkgrel=4
 pkgdesc="C language family frontend for LLVM (mingw-w64)"
 arch=('any')
 url="https://llvm.org/"
@@ -38,8 +38,10 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cmake>=3.4.3"
              "${MINGW_PACKAGE_PREFIX}-z3"
              "${MINGW_PACKAGE_PREFIX}-libffi"
              "${MINGW_PACKAGE_PREFIX}-pkg-config"
+             "${MINGW_PACKAGE_PREFIX}-python2-setuptools"
+             "${MINGW_PACKAGE_PREFIX}-python3-setuptools"
              "${MINGW_PACKAGE_PREFIX}-python3-sphinx"
-             "${MINGW_PACKAGE_PREFIX}-python2"
+             "${MINGW_PACKAGE_PREFIX}-python3-recommonmark"
              "${MINGW_PACKAGE_PREFIX}-swig"
              "tar"
              "groff"
@@ -245,6 +247,17 @@ prepare() {
   #mv "${srcdir}/testsuite-${pkgver}.src"         projects/test-suite
 }
 
+_python2_optimize() {
+  ${MINGW_PREFIX}/bin/python2 -m compileall "$@"
+  ${MINGW_PREFIX}/bin/python2 -O -m compileall "$@"
+}
+
+_python3_optimize() {
+  ${MINGW_PREFIX}/bin/python3 -m compileall "$@"
+  ${MINGW_PREFIX}/bin/python3 -O -m compileall "$@"
+  ${MINGW_PREFIX}/bin/python3 -OO -m compileall "$@"
+}
+
 build() {
   cd "${srcdir}"
 
@@ -336,6 +349,20 @@ package_clang() {
   # Install static libraries
   install -Dm644 ../build-${CARCH}/lib/libclang.a ${pkgdir}${MINGW_PREFIX}/lib/libclang.a
   install -Dm644 ../build-${CARCH}/lib/libclang.a ${pkgdir}${MINGW_PREFIX}/lib/libclang_static.a
+
+  # Install Python bindings
+  for _py in 2.7 3.7; do
+    install -d "$pkgdir${MINGW_PREFIX}/lib/python$_py/site-packages"
+    cp -a ${srcdir}/llvm-${pkgver}.src/tools/clang/bindings/python/clang "$pkgdir${MINGW_PREFIX}/lib/python$_py/site-packages/"
+    _python${_py%%.*}_optimize "$pkgdir${MINGW_PREFIX}/lib/python$_py"
+  done
+
+  # Fix shebang in Python 2 script
+#  sed -i '1s|${MINGW_PREFIX}/bin/env python$|&2|' \
+#    "$pkgdir"${MINGW_PREFIX}/share/clang/run-find-all-symbols.py
+  # Compile Python scripts
+  _python2_optimize "$pkgdir${MINGW_PREFIX}/share/clang"
+  _python3_optimize "$pkgdir${MINGW_PREFIX}/share" -x 'clang-include-fixer|run-find-all-symbols'
 }
 
 package_clang-analyzer() {
@@ -351,12 +378,11 @@ package_clang-analyzer() {
   # Use Python 2
   sed -i \
     -e 's|env python$|&2|' \
-    -e 's|/usr/bin/python$|&2|' \
     "${pkgdir}"${MINGW_PREFIX}/bin/scan-view
 
   # Compile Python scripts
-  python2 -m compileall "${pkgdir}"${MINGW_PREFIX}/bin/clang-analyzer
-  python2 -O -m compileall "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer
+  ${MINGW_PREFIX}/bin/python2 -m compileall "${pkgdir}"${MINGW_PREFIX}/bin/clang-analyzer
+  ${MINGW_PREFIX}/bin/python2 -O -m compileall "${pkgdir}"${MINGW_PREFIX}/lib/clang-analyzer
   install -Dm644 LICENSE.TXT "${pkgdir}"${MINGW_PREFIX}/share/licenses/clang-analyzer/LICENSE
 }
 
@@ -366,6 +392,11 @@ package_clang-tools-extra() {
 
   cd "${srcdir}/llvm-${pkgver}.src"
   ${_make_cmd} -C ../build-${CARCH}/tools/clang/tools/extra -j1 DESTDIR="${pkgdir}" install
+
+  # Fix shebang in Python 2 script
+  sed -i '1s|usr/bin/env python$|&2|' \
+    "$pkgdir"${MINGW_PREFIX}/share/clang/run-find-all-symbols.py
+
 }
 
 package_compiler-rt() {
@@ -425,8 +456,8 @@ package_lldb() {
   ${_make_cmd} -C ../build-${CARCH}/tools/lldb DESTDIR="${pkgdir}" install
 
   # Compile Python scripts
-  python2 -m compileall "${pkgdir}${MINGW_PREFIX}/lib/python2.7/site-packages/lldb"
-  python2 -O -m compileall "${pkgdir}${MINGW_PREFIX}/lib/python2.7/site-packages/lldb"
+  ${MINGW_PREFIX}/bin/python2 -m compileall "${pkgdir}${MINGW_PREFIX}/lib/python2.7/site-packages/lldb"
+  ${MINGW_PREFIX}/bin/python2 -O -m compileall "${pkgdir}${MINGW_PREFIX}/lib/python2.7/site-packages/lldb"
 
   install -Dm644 tools/lldb/LICENSE.TXT "${pkgdir}${MINGW_PREFIX}/share/licenses/lldb/LICENSE"
 }
@@ -435,6 +466,9 @@ package_llvm() {
   pkgdesc="Low Level Virtual Machine (mingw-w64)"
   depends=("${MINGW_PACKAGE_PREFIX}-libffi"
            "${MINGW_PACKAGE_PREFIX}-gcc-libs") # "compiler-rt"
+  optdepends=("${MINGW_PACKAGE_PREFIX}-python2 - for python2 version of lit"
+              "${MINGW_PACKAGE_PREFIX}-python3 - for python2 version of lit")
+  install=llvm-${CARCH}.install
 
   cd "${srcdir}"/llvm-${pkgver}.src
 
@@ -442,6 +476,31 @@ package_llvm() {
 
   # TODO: why CMake haven't included it?
   cp ../build-${CARCH}/lib/libLLVM.dll.a "${pkgdir}/${MINGW_PREFIX}/lib/"
+
+  # Include lit for running lit-based tests in other projects
+  pushd "${srcdir}"/llvm-${pkgver}.src/utils/lit
+    local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
+    for pver in {2,3}; do
+      msg "Python ${pver} build for ${CARCH}"
+      MSYS2_ARG_CONV_EXCL="--prefix=;--install-scripts=;--install-platlib=" \
+        ${MINGW_PREFIX}/bin/python${pver} setup.py install --prefix=${MINGW_PREFIX}  --root="$pkgdir" -O1
+      # fix python command in files
+      for _f in "${pkgdir}${MINGW_PREFIX}"/bin/*.py; do
+        sed -e "s|/usr/bin/env |${MINGW_PREFIX}|g" \
+          -e "s|${PREFIX_WIN}|${MINGW_PREFIX}|g" -i ${_f}
+      done
+      if [ "$pver" -eq "2" ];then
+        for f in lit; do
+          mv "${pkgdir}${MINGW_PREFIX}"/bin/${f}{,2}.exe
+          if [ -f "${pkgdir}${MINGW_PREFIX}"/bin/${f}.exe.manifest ]; then
+            mv "${pkgdir}${MINGW_PREFIX}"/bin/${f}{,2}.exe.manifest
+            sed -e "s|${f}|${f}2|g" -i "${pkgdir}${MINGW_PREFIX}"/bin/${f}2.exe.manifest
+          fi
+          mv "${pkgdir}${MINGW_PREFIX}"/bin/${f}{,2}-script.py
+        done
+      fi
+    done
+  popd
 
   install -Dm644 LICENSE.TXT "${pkgdir}${MINGW_PREFIX}/share/licenses/llvm/LICENSE"
 
