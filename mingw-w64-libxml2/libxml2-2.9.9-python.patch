@@ -1,0 +1,125 @@
+diff -ur libxml2-2.9.2.old/python/setup.py libxml2-2.9.2/python/setup.py
+--- libxml2-2.9.2.old/python/setup.py	2014-10-16 09:35:22.000000000 +0100
++++ libxml2-2.9.2/python/setup.py	2015-01-22 12:23:18.804795900 +0000
+@@ -123,7 +123,7 @@
+ 
+ with_xslt=0
+ if missing("libxslt-py.c") or missing("libxslt.py"):
+-    if missing("xsltgenerator.py") or missing("libxslt-api.xml"):
++    if missing("xsltgenerator.py") or missing("libxslt-python-api.xml"):
+         print("libxslt stub generator not found, libxslt not built")
+     else:
+         try:
+@@ -192,7 +192,6 @@
+     includes.append(xslt_includes)
+     modules.append('libxslt')
+ 
+-
+ extens=[Extension('libxml2mod', c_files, include_dirs=includes,
+                   library_dirs=libdirs,
+                   libraries=libs, define_macros=macros)]
+diff -ur libxml2-2.9.2.old/python/setup.py.in libxml2-2.9.2/python/setup.py.in
+--- libxml2-2.9.2.old/python/setup.py.in	2014-10-16 05:46:36.000000000 +0100
++++ libxml2-2.9.2/python/setup.py.in	2015-01-22 12:24:13.423100400 +0000
+@@ -123,7 +123,7 @@
+ 
+ with_xslt=0
+ if missing("libxslt-py.c") or missing("libxslt.py"):
+-    if missing("xsltgenerator.py") or missing("libxslt-api.xml"):
++    if missing("xsltgenerator.py") or missing("libxslt-python-api.xml"):
+         print("libxslt stub generator not found, libxslt not built")
+     else:
+         try:
+diff -ur libxml2-2.9.9/python/types.c.orig libxml2-2.9.9/python/types.c
+--- libxml2-2.9.9/python/types.c.orig	2018-03-05 10:29:58.000000000 -0500
++++ libxml2-2.9.9/python/types.c	2019-06-09 02:48:44.150466800 -0400
+@@ -26,14 +26,20 @@
+ 
+ FILE *
+ libxml_PyFileGet(PyObject *f) {
+-    int fd, flags;
++    int fd;
+     FILE *res;
+     const char *mode;
++#ifdef _WIN32
++    PyObject *modeObj, *modeBytes;
++#else
++    int flags;
++#endif
+ 
+     fd = PyObject_AsFileDescriptor(f);
+     /*
+      * Get the flags on the fd to understand how it was opened
+      */
++#ifndef _WIN32
+     flags = fcntl(fd, F_GETFL, 0);
+     switch (flags & O_ACCMODE) {
+         case O_RDWR:
+@@ -76,6 +82,67 @@ libxml_PyFileGet(PyObject *f) {
+ 	return(NULL);
+     }
+     return(res);
++#else
++    /*
++     * The mode sniffing above isn't possible on windows - 
++     * the CRT simply doesn't expose an interface for 
++     * retreiving the mode of the fd (even though it supports 
++     * the same POSIX set at creation).
++     *
++     * So instead, we look for a .mode attribute on f.
++     *
++     * Python 3's open() always sets a .mode attribute 
++     * before returning a value (even when a custom opener
++     * is provided), so this covers the majority of cases.
++     *
++     * This won't work for callers passing other file-like 
++     * objects that don't implement .mode; they will just
++     * have to implement it somehow (hopefully they are
++     * just wrapping something that does know the mode).
++     */
++
++    modeObj = PyObject_GetAttrString(f, "mode");
++    if (!modeObj) {
++        return(NULL);
++    }
++
++    if (PyUnicode_Check(modeObj)) {
++        modeBytes = PyObject_CallMethod(
++            modeObj, "encode", "s", "ascii");
++        if (!modeBytes) {
++            Py_DECREF(modeObj);
++            return(NULL);
++        }
++        mode = PyBytes_AsString(modeBytes);
++        if (!mode) {
++            Py_DECREF(modeObj);
++            return(NULL);
++        }
++        Py_DECREF(modeBytes);
++    } else if (PyBytes_Check(modeObj)) {
++        mode = PyBytes_AsString(modeObj);
++        if (!mode) {
++            Py_DECREF(modeObj);
++            return(NULL);
++        }
++    } else {
++        Py_DECREF(modeObj);
++        return(NULL);
++    }
++
++    Py_DECREF(modeObj);
++
++    fd = _dup(fd);
++    if (fd == -1) {
++        return(NULL);
++    }
++    res = _fdopen(fd, mode);
++    if (res == NULL) {
++        _close(fd);
++	return(NULL);
++    }
++    return(res);
++#endif
+ }
+ 
+ void libxml_PyFileRelease(FILE *f) {
