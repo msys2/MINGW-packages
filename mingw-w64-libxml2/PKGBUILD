@@ -1,11 +1,12 @@
 # Maintainer: Alexey Pavlov <alexpux@gmail.com>
 # Contributor: Renato Silva <br.renatosilva@gmail.com>
 
+# Notation:  python3 patch is based upon: https://gist.github.com/novocaine/09d5c00e67fd0aa13cfc
 _realname=libxml2
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 pkgver=2.9.9
-pkgrel=1
+pkgrel=2
 arch=('any')
 pkgdesc="XML parsing library, version 2 (mingw-w64)"
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
@@ -18,6 +19,7 @@ license=(MIT)
 url="http://www.xmlsoft.org/"
 install=${_realname}-${CARCH}.install
 source=("http://xmlsoft.org/sources/${_realname}-${pkgver}.tar.gz"
+        https://www.w3.org/XML/Test/xmlts20130923.tar.gz
         0015-fix-unused-parameters-warning.all.patch
         0016-WARNING-to-be-fixed.all.patch
         0017-fix-const-warning.all.patch
@@ -27,8 +29,10 @@ source=("http://xmlsoft.org/sources/${_realname}-${pkgver}.tar.gz"
         0023-fix-sitedir-detection.mingw.patch
         0024-shrext-pyd.mingw.patch
         0025-mingw-python-dont-remove-dot.patch
-        0026-mingw-relocate.patch)
+        0026-mingw-relocate.patch
+        libxml2-2.9.9-python.patch)
 sha256sums=('94fb70890143e3c6549f265cee93ec064c80a84c42ad0f23e85ee1fd6540a871'
+            '9b61db9f5dbffa545f4b8d78422167083a8568c59bd1129f94138f936cf6fc1f'
             'a9457b1a5e7d9499270ccfdeabbf0ca75b0e4643c111a42a5da0d113bae485c5'
             '81811dc3a497025b1f7c8fe78b7510ab080be558a646c26b89b281a9348ad195'
             'd8f81b074420a5082a2f64fda613974ffc43a04867d521dccdda9b6ddeb3422b'
@@ -38,7 +42,8 @@ sha256sums=('94fb70890143e3c6549f265cee93ec064c80a84c42ad0f23e85ee1fd6540a871'
             'e93902af20bee41ca7708280f30a1d087ab8c6f86d18939bdd56789cd1a73531'
             'bc182ef5108f0d317543e7d3ca309bbe2fc1faf832a49b3f56acc2795de2b626'
             '2d177b78b348be6466e545ef2df533c860983bf0811d1d14cdd04e1f3afef83f'
-            'b66fcd4feccf6995289353d78f967be598928e66a8bc6fa910bf331402c53dc0')
+            'b66fcd4feccf6995289353d78f967be598928e66a8bc6fa910bf331402c53dc0'
+            '7b9bc59b174da93a547429b2f751047c758657953f6e2fb398e73b5ebf0f55e3')
 
 # Helper macros to help make tasks easier #
 apply_patch_with_msg() {
@@ -60,8 +65,7 @@ del_file_exists() {
 # =========================================== #
 
 prepare() {
-  cd "${srcdir}/${_realname}-${pkgver}"
-
+  cd ${_realname}-${pkgver}
   del_file_exists pathtools.c pathtools.h
 
   apply_patch_with_msg \
@@ -74,7 +78,8 @@ prepare() {
     0023-fix-sitedir-detection.mingw.patch \
     0024-shrext-pyd.mingw.patch \
     0025-mingw-python-dont-remove-dot.patch \
-    0026-mingw-relocate.patch
+    0026-mingw-relocate.patch \
+    libxml2-2.9.9-python.patch
 
   libtoolize --copy --force
   aclocal
@@ -82,9 +87,30 @@ prepare() {
   autoconf
 }
 
+_setup_shared() {
+  msg2 "Building shared for Python $1 ${CARCH}"
+  [[ -d "${srcdir}"/build-shared-${CARCH}-py$1 ]] && rm -rf "${srcdir}"/build-shared-${CARCH}-py$1
+  mkdir -p ${srcdir}/build-shared-${CARCH}-py$1 && cd ${srcdir}/build-shared-${CARCH}-py$1
+  ../${_realname}-${pkgver}/configure \
+    --prefix=${MINGW_PREFIX} \
+    --host=${MINGW_CHOST} \
+    --target=${MINGW_CHOST} \
+    --build="${MINGW_CHOST}" \
+    --with-python=${MINGW_PREFIX}/bin/python$1 \
+    --with-modules \
+    --disable-static \
+    --enable-shared \
+    --with-threads=win32
+
+  # Hack for mingw python
+  local PREFIX_DEPS=$(cygpath -am ${MINGW_PREFIX})
+  find . -type f -name "Makefile" -exec sed -i "s|${PREFIX_DEPS}|${MINGW_PREFIX}|g" {} \;
+}
+
 build() {
   
   # Static build
+  msg2 "Building static for ${CARCH}"
   mkdir -p ${srcdir}/build-static-${CARCH} && cd ${srcdir}/build-static-${CARCH}
   ../${_realname}-${pkgver}/configure \
     --prefix=${MINGW_PREFIX} \
@@ -100,29 +126,27 @@ build() {
   make
 
   # Shared build
-  mkdir -p ${srcdir}/build-shared-${CARCH} && cd ${srcdir}/build-shared-${CARCH}
-  ../${_realname}-${pkgver}/configure \
-    --prefix=${MINGW_PREFIX} \
-    --host=${MINGW_CHOST} \
-    --target=${MINGW_CHOST} \
-    --build="${MINGW_CHOST}" \
-    --with-python=${MINGW_PREFIX}/bin/python2 \
-    --with-modules \
-    --disable-static \
-    --enable-shared \
-    --with-threads=win32
-
-  # Hack for mingw python
-  local PREFIX_DEPS=$(cygpath -am ${MINGW_PREFIX})
-  find . -type f -name "Makefile" -exec sed -i "s|${PREFIX_DEPS}|${MINGW_PREFIX}|g" {} \;
+  _setup_shared 2
   make
+  # A little trick from Cygwin because we only want the Python3 bindings
+  _setup_shared 3
+  make -C python top_builddir=${srcdir}/build-shared-${CARCH}-py2
+}
+
+check() {
+  cd ${srcdir}/build-shared-${CARCH}-py2
+  cp -r ../xmlconf .
+  make check
 }
 
 package() {
   # First install shared
-  cd ${srcdir}/build-shared-${CARCH}
+  cd ${srcdir}/build-shared-${CARCH}-py2
 
   make install DESTDIR="${pkgdir}"
+
+  # Then install python bindings for Python3
+  make -C "${srcdir}/build-shared-${CARCH}-py3/python" DESTDIR="$pkgdir" install
 
   # then manually install static
   cd ${srcdir}/build-static-${CARCH}
