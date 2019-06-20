@@ -153,8 +153,8 @@ depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
               "${MINGW_PACKAGE_PREFIX}-icu" \
               "${MINGW_PACKAGE_PREFIX}-icu-debug-libs")
         )
-optdepends=("${MINGW_PACKAGE_PREFIX}-clang: Needed for qdoc utility"
-            $([[ "$_variant" == "-shared" ]] && echo \
+optdepends=($([[ "$_variant" == "-shared" ]] && echo \
+              "${MINGW_PACKAGE_PREFIX}-clang" \
               "${MINGW_PACKAGE_PREFIX}-libmariadbclient" \
               "${MINGW_PACKAGE_PREFIX}-firebird2" \
               "${MINGW_PACKAGE_PREFIX}-postgresql")
@@ -232,6 +232,7 @@ source=(#https://download.qt.io/development_releases/qt/${pkgver%.*}/${_ver_base
         0125-qt5-windeployqt-fixes.patch
         0300-qt-5.8.0-cast-errors.patch
         0301-link-evr.patch
+        0302-ugly-hack-disable-qdoc-build.patch
         qml_static_plugins.patch)
 
 # Translates using cygpath according to the ${_make} being used
@@ -413,26 +414,14 @@ build() {
     _libxml2_pkgconf="libxml-2.0"
   fi
 
-  #local -a _extra_incpaths=($(pkg_config_qt5 --cflags-only-I dbus-1 ${_libxml2_pkgconf} ${_freetype2_pkgconf}))
-  #if [ "${_opengl}" != "desktop" ]; then
-  #  export EXTERNAL_ANGLE=1
-  #  _extra_incpaths+=("-I")
-  #  _extra_incpaths+=("${MINGW_PREFIX}/include/GLSLANG")
-  #fi
   _extra_incpaths+=("-I")
   _extra_incpaths+=("${MINGW_PREFIX}/include/mariadb")
 
-# This *could* be used but we'd have to make sure it's correct for all variants first.
-#  local -a _extra_libpaths=($(pkg_config_qt5 --libs-only-L dbus-1 libxml-2.0 freetype2))
-#  local -a _extra_libs=($(pkg_config_qt5 --libs-only-l dbus-1 libxml-2.0 freetype2))
+  # This *could* be used but we'd have to make sure it's correct for all variants first.
+  #  local -a _extra_libpaths=($(pkg_config_qt5 --libs-only-L dbus-1 libxml-2.0 freetype2))
+  #  local -a _extra_libs=($(pkg_config_qt5 --libs-only-l dbus-1 libxml-2.0 freetype2))
   local -a _extra_libpaths=()
   local -a _extra_libs=()
-
-  export PATH="${srcdir}/${CARCH}/qtbase/bin:${srcdir}/${CARCH}/qtbase/lib:${PATH}"
-  export LLVM_INSTALL_DIR=${MINGW_PREFIX}
-  export FORCE_MINGW_QDOC_BUILD=1
-  #export QDOC_USE_STATIC_LIBCLANG=1
-  export VULKAN_SDK=${MINGW_PREFIX}
 
   #if [ "${_variant}" = "-shared" ]; then
     # This export breaks the static library build in 5.9.0;
@@ -452,6 +441,7 @@ build() {
 
   # Set other config stuff that's configure-script-type dependent.
   local -a _extra_config
+
   if [ "${_configure}" = "./configure" ]; then
     _extra_config+=("-no-glib")
   else
@@ -491,9 +481,22 @@ build() {
   unset XQMAKESPEC
   unset QMAKEPATH
   unset QMAKEFEATURES
-# export NINJA_PATH=${MINGW_PREFIX}/bin/ninja.exe
+  # export NINJA_PATH=${MINGW_PREFIX}/bin/ninja.exe
 
   local -a configure_opts
+
+  export PATH="${srcdir}/${CARCH}/qtbase/bin:${srcdir}/${CARCH}/qtbase/lib:${PATH}"
+  export LLVM_INSTALL_DIR=${MINGW_PREFIX}
+  #export FORCE_MINGW_QDOC_BUILD=1
+  export VULKAN_SDK=${MINGW_PREFIX}
+
+  # Dont build qdoc utility for static package because of linking problems with clang
+  if [ "${_variant}" = "-static" ]; then
+    export QDOC_USE_STATIC_LIBCLANG=1
+    # Hack to disable building qdoc
+    patch -p1 -i ${srcdir}/0302-ugly-hack-disable-qdoc-build.patch
+    export QDOC_SKIP_BUILD=1
+  fi
 
   if [ "${_variant}" = "-static" ]; then
     configure_opts+=("-static")
@@ -658,9 +661,11 @@ package() {
   export PATH=${pkgdir}${_qt5_prefix}/bin:${srcdir}/${CARCH}/qtbase/bin:${srcdir}/${CARCH}/qtbase/lib:${PATH}
 
   ${_make} install
-  if [ "$_make_docs" == "yes" ]; then
-    make docs
-    make install_qch_docs
+  if [ "$_build_tools" == "yes" ]; then
+    if [ "$_make_docs" == "yes" ]; then
+      make docs
+      make install_qch_docs
+    fi
   fi
 
   install -D -m644 LICENSE.FDL     "${pkgdir}${_qt5_prefix}"/share/licenses/qt5/LICENSE.FDL
@@ -690,14 +695,21 @@ package() {
   #   $(cygpath -m ${MINGW_PREFIX}) -> $(cygpath -m ${pkgdir}${MINGW_PREFIX})
   QT_PREFIX_WIN=$(cygpath -m ${_qt5_prefix})
   PKGDIR_QT_PREFIX_WIN=$(cygpath -m ${pkgdir}${_qt5_prefix})
+  MINGW_PREFIX_WIN=$(cygpath -m ${MINGW_PREFIX})
+
   find "${pkgdir}${_qt5_prefix}/share/qt5" -type f \( -name '*.pri' -o -name '*.prl' \) \
-    -exec sed -i -e "s|${QT_PREFIX_WIN}|${PKGDIR_QT_PREFIX_WIN}|g" {} \;
+      -exec sed -i -e "s|${QT_PREFIX_WIN}|${PKGDIR_QT_PREFIX_WIN}|g" {} \;
 
   find "${pkgdir}${_qt5_prefix}/lib" -type f \( -name '*.pri' -o -name '*.prl' \) \
-    -exec sed -i -e "s|${QT_PREFIX_WIN}|${PKGDIR_QT_PREFIX_WIN}|g" {} \;
+      -exec sed -i -e "s|${QT_PREFIX_WIN}|${PKGDIR_QT_PREFIX_WIN}|g" {} \;
+
+  find "${pkgdir}${_qt5_prefix}/lib" -type f -name '*.cmake' \
+      -exec sed -i -e "s|${QT_PREFIX_WIN}|${PKGDIR_QT_PREFIX_WIN}|g" {} \;
 
   if [ "${_variant}" = "-static" ]; then
-    MINGW_PREFIX_WIN=$(cygpath -m ${MINGW_PREFIX})
+    find "${pkgdir}${_qt5_prefix}/lib" -type f -name '*.cmake' \
+      -exec sed -i -e "s|${MINGW_PREFIX_WIN}|${PKGDIR_QT_PREFIX_WIN}/..|g" {} \;
+    
     find "${pkgdir}${_qt5_prefix}/share/qt5" -type f \( -name '*.pri' -o -name '*.prl' \) \
       -exec sed -i -e "s|${MINGW_PREFIX_WIN}|${PKGDIR_QT_PREFIX_WIN}/..|g" {} \;  
     
@@ -795,4 +807,5 @@ sha256sums=('85da5e0ee498759990180d5b8192efaa6060a313c5018b772f57d446bdd425e1'
             '553b16d40fcc6eb083893a9d75cf39815d4ab545106106346a39fcf5a36bc8f7'
             '9ea7aeb486023f3aebf1af44603ebd9266009aaeaf91e52c37c8c5154ea3900c'
             '4f2375373829b6764a4552d4183bccd43b8c308e4dee1e2f95d06298de47afaa'
+            '7e57ce20b6707bc3b4a727da3287cadda13a74317d86515358b2535bc15244c7'
             '670161ba661ea3dccd883473e39aaecb683a3c92da73502dc6939d496507532c')
