@@ -1,12 +1,18 @@
 # Maintainer: Alexey Pavlov <alexpux@gmail.com>
 
 _realname=make
+# NOTE: The name of the target executable (_prog_name) MUST remain unchanged
+#       when installed, otherwise GNU make's dll load feature in connection
+#       with the target executable breaks.  The reason is that the executable
+#       name is part of the import library (libgnumake-1.dll.a) used to link
+#       customized dll's.
+#       General information at https://www.gnu.org/software/make/manual/html_node/Loading-Objects.html#Loading-Objects.
 _autotools=yes
-_libgnumake_api_version=1
+_prog_name=mingw32-make
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
 pkgver=4.2.1
-pkgrel=3
+pkgrel=4
 pkgdesc="GNU make utility to maintain groups of programs (mingw-w64)"
 arch=('any')
 url="https://www.gnu.org/software/make"
@@ -17,47 +23,103 @@ makedepends=('wget')
 source=("https://ftp.gnu.org/gnu/${_realname}/${_realname}-${pkgver}.tar.bz2"
         'make-getopt.patch'
         'make-linebuf-mingw.patch'
-        'make-4.2.1-Makefile.am-gcc-only-link-libgnumake-1.dll.a.patch')
+        'make-4.2.1-Makefile.am-gcc-only-link-libgnumake-1.dll.a.patch'
+        'make-check-load-feature.mak'
+        'mk_temp.c')
 sha256sums=('d6e262bf3601b42d2b1e4ef8310029e1dcf20083c5446b4b7aa67081fdffc589'
             '15a86d5143c9ec6337bdd69fecb7c33c36e4fd925528dc1498b0bc4fbd31b0bb'
             'cbb8c0a1bdd6e8174febce01946bd42da26dfcb73a7338c0a1df89ac6b8e157b'
-            'd46b0a8cacc95e2e88c6a71c7246fd84f5fb0dea3d6c5774baaaebbfb2603ee7')
+            '85f8c3c555079026f3debab350c9ee27a717cdd08eca3f8bf9ac58e78544d21d'
+            'f4b92323f5df81fd83f6bd0beddf85b1acff0fe4a8648fb57b8e72f12e9123a5'
+            '61d4f57c311cf2e27ccf4d1da847216730f304cf17c5c386721182ffe2d4b1aa')
 
 prepare() {
   cd ${srcdir}/${_realname}-${pkgver}
+
   patch -p1 -i ${srcdir}/make-getopt.patch
   patch -p1 -i ${srcdir}/make-linebuf-mingw.patch
   patch -p1 -i ${srcdir}/make-4.2.1-Makefile.am-gcc-only-link-libgnumake-1.dll.a.patch
+
+  # 1 - The import library libgnumake-1.dll.a contains the name of the program to be
+  #     installed.  This requires autotools to be informed about the installed program
+  #     name in case it is different from the standard name 'make' hardcoded in the GNU
+  #     Make package.
+  # 2 - automake requires hardcoded program names in any Makefile.am, i.e. in the
+  #     variable bin_PROGRAMS and the induced variables derived from the program
+  #     name.  We use sed to change the program name from 'make' to the customized
+  #     name in Makefile.am, if different from 'make'.
+  # 3 - After packaging we run a test if the dll load feature for the installed
+  #     program works.  See function 'package()'.
+  if test ${_prog_name} != make; then
+    msg2 "Changing the program name from 'make' to '${_prog_name}' in Makefile.am."
+    test -f Makefile.am.orig || mv Makefile.am Makefile.am.orig
+    local _prog_name_am=${_prog_name//[^a-zA-Z0-9@]/_}
+    sed -e "/bin_PROGRAMS/ { s:\bmake\b:${_prog_name}:g };
+            s:\bmake_\(SOURCES\|LDADD\|LDFLAGS\)\b:${_prog_name_am}_\1:g ;
+            s:\bEXTRA_make_\([A-Z]\+\):EXTRA_${_prog_name_am}_\1:g ;" \
+          Makefile.am.orig > Makefile.am
+    # log the changes made to Makefile.am by sed
+    diff -u Makefile.am.orig Makefile.am > Makefile.am.diff || true
+    cat Makefile.am.diff
+  fi
+
   test "${_autotools}" = "yes" && autoreconf -vfi
 }
 
 build() {
   if [[ "${_autotools}" = "yes" ]]; then
-    [[ -d build-${MINGW_CHOST} ]] && rm -rf build-${MINGW_CHOST}
-    mkdir -p build-${MINGW_CHOST} && cd build-${MINGW_CHOST}
+    mkdir -vp build-${MINGW_CHOST}
+    cd build-${MINGW_CHOST}
     ../${_realname}-${pkgver}/configure \
+      -C \
       --prefix=${MINGW_PREFIX} \
       --host=${MINGW_CHOST} \
       --without-libintl-prefix \
       --without-libiconv-prefix \
+      CPPFLAGS=-DMAKE_LOAD \
+      CFLAGS=-mthreads \
       ac_cv_dos_paths=yes
+    # Create _prog_name and associated import library libgnumake-1.dll.a.
     make -j1
   else
+    [[ -d build-${MINGW_CHOST} ]] && rm -rf build-${MINGW_CHOST}
+    mkdir -p build-${MINGW_CHOST} && cd build-${MINGW_CHOST}
+    # Create gnumake.exe and associated import library libgnumake-1.dll.a.
     cmd /c 'build_w32.bat --without-guile gcc'
   fi
 }
 
 package() {
-  mkdir -p ${pkgdir}${MINGW_PREFIX}/{bin,lib,include}
-  if [[ "${_autotools}" = "yes" ]]; then
-    cd ${srcdir}/build-${MINGW_CHOST}
-    cp -f make.exe ${pkgdir}${MINGW_PREFIX}/bin/mingw32-make.exe
-    cp -f libgnumake-${_libgnumake_api_version}.dll.a ${pkgdir}${MINGW_PREFIX}/lib/
-    cp -f ${srcdir}/${_realname}-${pkgver}/gnumake.h ${pkgdir}${MINGW_PREFIX}/include/
+  local _exe_name
+  local _exe_dir
+  if test ${_autotools} = yes; then
+    # Built with autotools.
+    _exe_dir=${srcdir}/build-${MINGW_CHOST}
+    _exe_name=${_prog_name}.exe
   else
-    cd ${srcdir}/${_realname}-${pkgver}
-    cp -f gnumake.exe ${pkgdir}${MINGW_PREFIX}/bin/mingw32-make.exe
-    cp -f libgnumake-${_libgnumake_api_version}.dll.a ${pkgdir}${MINGW_PREFIX}/lib/
-    cp -f gnumake.h ${pkgdir}${MINGW_PREFIX}/include/
+    # Built by running build_w32.bat.
+    # NOTE: If the name of the installed executable is NOT 'gnumake.exe', the dll
+    #       load feature should not work and the test below is expected to fail.
+    _exe_dir=${srcdir}/${_realname}-${pkgver}/GccRel
+    _exe_name=gnumake.exe
+  fi
+  mkdir -pv ${pkgdir}${MINGW_PREFIX}/{bin,lib,include}
+  cp -fv ${_exe_dir}/${_exe_name}                     ${pkgdir}${MINGW_PREFIX}/bin/
+  cp -fv ${_exe_dir}/libgnumake-1.dll.a               ${pkgdir}${MINGW_PREFIX}/lib/
+  cp -fv ${srcdir}/${_realname}-${pkgver}/gnumake.h   ${pkgdir}${MINGW_PREFIX}/include/
+
+  # Run check on packaged program and import library:
+  msg "Checking if GNU Make's dll loading feature we compiled into ${_prog_name}.exe works ..."
+  rm -fv ${srcdir}/*.dll
+  if ${pkgdir}${MINGW_PREFIX}/bin/${_prog_name}.exe \
+      -C ${srcdir} \
+      -f make-check-load-feature.mak \
+      --debug=v \
+      LIBS="${pkgdir}${MINGW_PREFIX}/lib/libgnumake-1.dll.a"
+  then
+    msg2 "PASSED"
+  else
+    error "FAILED"
+    exit 1
   fi
 }
