@@ -1,0 +1,135 @@
+--- audaspace-1.3.0/CMakeLists.txt.orig	2019-08-02 08:32:35.510699000 +0300
++++ audaspace-1.3.0/CMakeLists.txt	2019-08-02 09:41:42.487481800 +0300
+@@ -292,9 +292,12 @@
+ 	set(PACKAGE_OPTION REQUIRED)
+ endif()
+ 
+-if(WIN32)
++if(MSVC)
+ 	set(DEFAULT_PLUGIN_PATH "." CACHE STRING "Default plugin installation and loading path.")
+ 	set(DOCUMENTATION_INSTALL_PATH "doc" CACHE PATH "Path where the documentation is installed.")
++elseif(MINGW)
++	set(DEFAULT_PLUGIN_PATH "lib/audaspace" CACHE STRING "Default plugin installation and loading path.")
++	set(DOCUMENTATION_INSTALL_PATH "share/doc/audaspace" CACHE PATH "Path where the documentation is installed.")
+ else()
+ 	set(DEFAULT_PLUGIN_PATH "${CMAKE_INSTALL_PREFIX}/share/audaspace/plugins" CACHE STRING "Default plugin installation and loading path.")
+ 	set(DOCUMENTATION_INSTALL_PATH "share/doc/audaspace" CACHE PATH "Path where the documentation is installed.")
+@@ -605,6 +608,11 @@
+ 	endif()
+ endif()
+ 
++add_definitions(-DWITH_CONVOLUTION)
++if (MINGW)
++	list(APPEND LIBRARIES -lshlwapi)
++endif()
++
+ # library configuration
+ 
+ if(SHARED_LIBRARY)
+@@ -652,7 +659,7 @@
+ 
+ # install configuration
+ 
+-if(WIN32)
++if(MSVC)
+ 	set(BIN_DESTINATION ".")
+ else()
+ 	set(BIN_DESTINATION "bin")
+@@ -676,7 +683,7 @@
+ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/Audaspace.h DESTINATION include/audaspace)
+ 
+ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/packages/pkgconfig/audaspace.pc.in ${CMAKE_CURRENT_BINARY_DIR}/audaspace.pc @ONLY)
+-if(NOT WIN32 AND NOT APPLE)
++if(NOT MSVC AND NOT APPLE)
+ 	install(FILES ${CMAKE_CURRENT_BINARY_DIR}/audaspace.pc DESTINATION "lib${LIB_SUFFIX}/pkgconfig")
+ endif()
+ 
+@@ -733,7 +740,7 @@
+ 
+ # dlls
+ 
+-if(WIN32)
++if(MSVC)
+ 	if(DLLS)
+ 		install(FILES ${DLLS} DESTINATION ${BIN_DESTINATION})
+ 	endif()
+@@ -856,7 +863,7 @@
+ 
+ 		if(APPLE)
+ 			add_custom_command(OUTPUT build COMMAND MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET} ${PYTHON_EXECUTABLE} setup.py build DEPENDS ${PYTHON_SRC} ${PYTHON_HDR})
+-		elseif(WIN32)
++		elseif(MSVC)
+ 			set(ENV{VS100COMNTOOLS} $ENV{VS120COMNTOOLS})
+ 			add_custom_command(OUTPUT build COMMAND ${PYTHON_EXECUTABLE} setup.py build DEPENDS ${PYTHON_SRC} ${PYTHON_HDR})
+ 		else()
+--- audaspace-1.3.0/src/plugin/PluginManagerWindows.cpp.in.orig	2019-08-02 08:39:36.094244200 +0300
++++ audaspace-1.3.0/src/plugin/PluginManagerWindows.cpp.in	2019-08-02 09:39:21.400834000 +0300
+@@ -17,6 +17,13 @@
+ #include "plugin/PluginManager.h"
+ 
+ #include <windows.h>
++#ifdef __MINGW32__
++#include <shlwapi.h>
++#endif
++
++namespace {
++	char dummyChar;
++}
+ 
+ AUD_NAMESPACE_BEGIN
+ 
+@@ -29,7 +36,7 @@
+ 
+ void *PluginManager::lookupLibrary(void *handle, const std::string &name)
+ {
+-	return GetProcAddress(reinterpret_cast<HMODULE>(handle), name.c_str());
++	return reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(handle), name.c_str()));
+ }
+ 
+ void PluginManager::closeLibrary(void *handle)
+@@ -74,6 +81,28 @@
+ 	if(path == "")
+ 		readpath = "@DEFAULT_PLUGIN_PATH@";
+ 
++#ifdef __MINGW32__
++	char modPath[MAX_PATH];
++	HMODULE hm = NULL;
++
++	if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | 
++		GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++		(LPCSTR) &dummyChar, &hm))
++	{
++		if (GetModuleFileNameA(hm, modPath, sizeof(modPath)))
++		{
++			PathRemoveFileSpecA(modPath);
++			std::string dllPath;
++			dllPath.append(modPath);
++			readpath = dllPath + "/../" + readpath;
++		} else {
++			int ret = GetLastError();
++		}
++	} else {
++		int ret = GetLastError();
++	}
++#endif
++
+ 	WIN32_FIND_DATA entry;
+ 	bool found_file = true;
+ 	std::string search = readpath + "\\*";
+--- audaspace-1.3.0/bindings/python/setup.py.in.orig	2019-08-02 09:49:04.186804600 +0300
++++ audaspace-1.3.0/bindings/python/setup.py.in	2019-08-02 09:51:46.304689500 +0300
+@@ -31,8 +31,12 @@
+ extra_args = []
+ 
+ if sys.platform == 'win32':
+-    extra_args.append('/EHsc')
+-    extra_args.append('/DAUD_BUILD_SHARED_LIBRARY')
++    if 'GCC' in sys.version:
++        extra_args.append('-std=c++11')
++        extra_args.append('-DAUD_BUILD_SHARED_LIBRARY')
++    else:
++        extra_args.append('/EHsc')
++        extra_args.append('/DAUD_BUILD_SHARED_LIBRARY')
+ else:
+     extra_args.append('-std=c++11')
+ 
