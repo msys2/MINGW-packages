@@ -1,0 +1,158 @@
+Index: lld/trunk/COFF/InputFiles.cpp
+===================================================================
+--- lld/trunk/COFF/InputFiles.cpp
++++ lld/trunk/COFF/InputFiles.cpp
+@@ -288,6 +288,8 @@
+   if (SC && SC->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE) {
+     StringRef Name;
+     COFFObj->getSymbolName(Sym, Name);
++    if (getMachineType() == I386)
++      Name.consume_front("_");
+     PrevailingSectionMap[Name] = SectionNumber;
+   }
+ }
+@@ -297,9 +299,10 @@
+     const DenseMap<StringRef, uint32_t> &PrevailingSectionMap) {
+   StringRef Name;
+   COFFObj->getSymbolName(Sym, Name);
+-  if (Name.consume_front(".pdata$") || Name.consume_front(".xdata$")) {
+-    // For MinGW, treat .[px]data$<func> as implicitly associative to
+-    // the symbol <func>.
++  if (Name.consume_front(".pdata$") || Name.consume_front(".xdata$") ||
++      Name.consume_front(".eh_frame$")) {
++    // For MinGW, treat .[px]data$<func> and .eh_frame$<func> as implicitly
++    // associative to the symbol <func>.
+     auto ParentSym = PrevailingSectionMap.find(Name);
+     if (ParentSym != PrevailingSectionMap.end())
+       readAssociativeDefinition(Sym, Def, ParentSym->second);
+Index: lld/trunk/test/COFF/associative-comdat-mingw-i386.s
+===================================================================
+--- lld/trunk/test/COFF/associative-comdat-mingw-i386.s
++++ lld/trunk/test/COFF/associative-comdat-mingw-i386.s
+@@ -0,0 +1,37 @@
++# REQUIRES: x86
++
++# RUN: llvm-mc -triple=i686-windows-gnu %s -filetype=obj -o %t.obj
++
++# RUN: lld-link -lldmingw -entry:main %t.obj -out:%t.exe
++# RUN: llvm-objdump -s %t.exe | FileCheck %s
++
++# Check that the .eh_frame comdat was included, even if it had no symbols,
++# due to associativity with the symbol _foo.
++
++# CHECK: Contents of section .eh_fram:
++# CHECK:  403000 42
++
++        .text
++        .def            _main;
++        .scl            2;
++        .type           32;
++        .endef
++        .globl          _main
++        .p2align        4, 0x90
++_main:
++        call            _foo
++        ret
++
++        .section        .eh_frame$foo,"dr"
++        .linkonce       discard
++        .byte           0x42
++
++        .def            _foo;
++        .scl            2;
++        .type           32;
++        .endef
++        .section        .text$foo,"xr",discard,foo
++        .globl          _foo
++        .p2align        4
++_foo:
++        ret
+Index: lld/trunk/COFF/Writer.cpp
+===================================================================
+--- lld/trunk/COFF/Writer.cpp
++++ lld/trunk/COFF/Writer.cpp
+@@ -688,6 +688,28 @@
+     IATSize += C->getSize();
+ }
+ 
++// Return whether a SectionChunk's suffix (the dollar and any trailing
++// suffix) should be removed and sorted into the main suffixless
++// PartialSection.
++static bool shouldStripSectionSuffix(SectionChunk *SC, StringRef Name) {
++  // On MinGW, comdat groups are formed by putting the comdat group name
++  // after the '$' in the section name. For .eh_frame$<symbol>, that must
++  // still be sorted before the .eh_frame trailer from crtend.o, thus just
++  // strip the section name trailer. For other sections, such as
++  // .tls$$<symbol> (where non-comdat .tls symbols are otherwise stored in
++  // ".tls$"), they must be strictly sorted after .tls. And for the
++  // hypothetical case of comdat .CRT$XCU, we definitely need to keep the
++  // suffix for sorting. Thus, to play it safe, only strip the suffix for
++  // the standard sections.
++  if (!Config->MinGW)
++    return false;
++  if (!SC || !SC->isCOMDAT())
++    return false;
++  return Name.startswith(".text$") || Name.startswith(".data$") ||
++         Name.startswith(".rdata$") || Name.startswith(".pdata$") ||
++         Name.startswith(".xdata$") || Name.startswith(".eh_frame$");
++}
++
+ // Create output section objects and add them to OutputSections.
+ void Writer::createSections() {
+   // First, create the builtin sections.
+@@ -733,7 +755,10 @@
+         SC->printDiscardedMessage();
+       continue;
+     }
+-    Map[{C->getSectionName(), C->getOutputCharacteristics()}].push_back(C);
++    StringRef Name = C->getSectionName();
++    if (shouldStripSectionSuffix(SC, Name))
++      Name = Name.split('$').first;
++    Map[{Name, C->getOutputCharacteristics()}].push_back(C);
+   }
+ 
+   // Even in non MinGW cases, we might need to link against GNU import
+Index: lld/trunk/test/COFF/eh_frame_suffix_sorting.s
+===================================================================
+--- lld/trunk/test/COFF/eh_frame_suffix_sorting.s
++++ lld/trunk/test/COFF/eh_frame_suffix_sorting.s
+@@ -0,0 +1,39 @@
++# REQUIRES: x86
++
++# RUN: llvm-mc -triple=i686-windows-gnu %s -filetype=obj -o %t.main.o
++# RUN: llvm-mc -filetype=obj -triple=i686-windows-gnu \
++# RUN:   %p/Inputs/eh_frame_terminator-crtend.s -o %t.crtend.o
++
++# RUN: lld-link -lldmingw -entry:main %t.main.o %t.crtend.o -out:%t.exe
++# RUN: llvm-objdump -s %t.exe | FileCheck %s
++
++# Check that the contents of .eh_frame$foo was placed before .eh_frame from
++# crtend.o, even if the former had a section name suffix.
++
++# CHECK: Contents of section .eh_fram:
++# CHECK:  403000 4203
++
++        .text
++        .def            _main;
++        .scl            2;
++        .type           32;
++        .endef
++        .globl          _main
++        .p2align        4, 0x90
++_main:
++        call            _foo
++        ret
++
++        .section        .eh_frame$foo,"dr"
++        .linkonce       discard
++        .byte           0x42
++
++        .def            _foo;
++        .scl            2;
++        .type           32;
++        .endef
++        .section        .text$foo,"xr",discard,foo
++        .globl          _foo
++        .p2align        4
++_foo:
++        ret

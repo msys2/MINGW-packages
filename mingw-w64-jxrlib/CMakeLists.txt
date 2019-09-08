@@ -55,7 +55,7 @@ add_library(jxr_obj OBJECT ${jxrglue_SRC} ${jxrglue_HDR})
 
 add_library(jxrglue SHARED $<TARGET_OBJECTS:jxr_obj>)
 set_target_properties(jxrglue PROPERTIES VERSION ${JXRLIB_LIB_VERSION} SOVERSION ${JXRLIB_SO_VERSION})
-target_link_libraries(jxrglue jpegxr m)
+target_link_libraries(jxrglue PRIVATE jpegxr m)
 
 add_library(jxrglue_static STATIC $<TARGET_OBJECTS:jxr_obj>)
 set_target_properties(jxrglue_static PROPERTIES VERSION ${JXRLIB_LIB_VERSION} SOVERSION ${JXRLIB_SO_VERSION} OUTPUT_NAME jxrglue RUNTIME_OUTPUT_NAME jxrglue ARCHIVE_OUTPUT_NAME jxrglue)
