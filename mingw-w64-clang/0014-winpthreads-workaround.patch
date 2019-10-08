@@ -1,0 +1,76 @@
+From 776b4ba841b3b31c973d96fde12fc15d870f5ba3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Martin=20Storsj=C3=B6?= <martin@martin.st>
+Date: Wed, 30 Jan 2019 12:03:17 +0200
+Subject: [PATCH] [Support] Call notify on condition variables while keeping
+ the corresponding mutex locked
+
+This is a workaround for a bug [1] in mingw-w64's winpthreads
+library.
+
+[1] https://sourceforge.net/p/mingw-w64/bugs/774/
+---
+ lib/Support/Parallel.cpp   |  4 ++--
+ lib/Support/ThreadPool.cpp | 10 +++++-----
+ 2 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/lib/Support/Parallel.cpp b/lib/Support/Parallel.cpp
+index d40fce67e9a..daffa29dc0f 100644
+--- a/lib/Support/Parallel.cpp
++++ b/lib/Support/Parallel.cpp
+@@ -77,16 +77,16 @@ class ThreadPoolExecutor : public Executor {
+   ~ThreadPoolExecutor() override {
+     std::unique_lock<std::mutex> Lock(Mutex);
+     Stop = true;
+-    Lock.unlock();
+     Cond.notify_all();
++    Lock.unlock();
+     // Wait for ~Latch.
+   }
+ 
+   void add(std::function<void()> F) override {
+     std::unique_lock<std::mutex> Lock(Mutex);
+     WorkStack.push(F);
+-    Lock.unlock();
+     Cond.notify_one();
++    Lock.unlock();
+   }
+ 
+ private:
+diff --git a/lib/Support/ThreadPool.cpp b/lib/Support/ThreadPool.cpp
+index 40982d77791..157e971a06f 100644
+--- a/lib/Support/ThreadPool.cpp
++++ b/lib/Support/ThreadPool.cpp
+@@ -59,10 +59,10 @@ ThreadPool::ThreadPool(unsigned ThreadCount)
+           // Adjust `ActiveThreads`, in case someone waits on ThreadPool::wait()
+           std::unique_lock<std::mutex> LockGuard(CompletionLock);
+           --ActiveThreads;
+-        }
+ 
+-        // Notify task completion, in case someone waits on ThreadPool::wait()
+-        CompletionCondition.notify_all();
++          // Notify task completion, in case someone waits on ThreadPool::wait()
++          CompletionCondition.notify_all();
++        }
+       }
+     });
+   }
+@@ -90,8 +90,8 @@ std::shared_future<void> ThreadPool::asyncImpl(TaskTy Task) {
+     assert(EnableFlag && "Queuing a thread during ThreadPool destruction");
+ 
+     Tasks.push(std::move(PackagedTask));
++    QueueCondition.notify_one();
+   }
+-  QueueCondition.notify_one();
+   return Future.share();
+ }
+ 
+@@ -100,8 +100,8 @@ ThreadPool::~ThreadPool() {
+   {
+     std::unique_lock<std::mutex> LockGuard(QueueLock);
+     EnableFlag = false;
++    QueueCondition.notify_all();
+   }
+-  QueueCondition.notify_all();
+   for (auto &Worker : Threads)
+     Worker.join();
+ }

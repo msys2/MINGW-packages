@@ -3,18 +3,25 @@
 _realname=z3
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-pkgver=4.6.0
+pkgver=4.8.6
 pkgrel=1
 pkgdesc="Z3 is a high-performance theorem prover being developed at Microsoft Research (mingw-w64)"
 arch=('any')
 url="https://github.com/Z3Prover/z3"
 license=('MIT')
-makedepends=("${MINGW_PACKAGE_PREFIX}-cmake" "python3")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-python2")
 options=('strip' 'staticlibs')
 source=("${_realname}-${pkgver}.tar.gz"::"https://github.com/Z3Prover/z3/archive/z3-${pkgver}.tar.gz"
-        mingw-fixes.patch)
-sha256sums=('511da31d1f985cf0c79b2de05bda4e057371ba519769d1546ff71e1304fe53c9'
-            '5ad322bbaff39ebae94d5092f495c89e35ff6b53da88a86a2c1c6d972ac66b5b')
+        001-mingw-fixes.patch
+        002-fix-dll-destination.patch
+        003-fix-dll-exports.patch
+        004-fix-python-bindings-install.patch)
+sha256sums=('37922fa5085170cad6504498d9758fb63c61d5cb5b68689c11a6c5e84f0311b3'
+            '78554202e1071d5686aed96336ad1020d6249f6d9080c2a7862cb7f72b51379c'
+            '9f36b8be5965aef006900f70366a87628e80c12899f7f8621f127c4bab0b5a0a'
+            'a1d35c28dae7df017d457260bf75dbe87b3232819565aa1de84d8e9459c4fb0f'
+            '7c73e0b6afac99948ca383a709668ae753b8034139332503c8f2d0e310382ac6')
 
 apply_patch_with_msg() {
   for _fname in "$@"
@@ -26,34 +33,64 @@ apply_patch_with_msg() {
 
 prepare() {
   cd "${srcdir}"/${_realname}-${_realname}-${pkgver}
-  apply_patch_with_msg mingw-fixes.patch
+  apply_patch_with_msg \
+    001-mingw-fixes.patch \
+    002-fix-dll-destination.patch \
+    003-fix-dll-exports.patch \
+    004-fix-python-bindings-install.patch
 }
 
 build() {
+  local -a extra_config
+
+  if check_option "debug" "y"; then
+    extra_config+=(-DCMAKE_BUILD_TYPE=Debug)
+    VERBOSE="VERBOSE=1"
+  else
+    extra_config+=(-DCMAKE_BUILD_TYPE=Release)
+  fi
+
+  [[ -d "${srcdir}"/build-${CARCH}-static ]] && rm -rf "${srcdir}"/build-${CARCH}-static
+  mkdir -p "${srcdir}"/build-${CARCH}-static && cd "${srcdir}"/build-${CARCH}-static
+
+  msg "Build static z3"
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake.exe \
+    -G"MSYS Makefiles" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DBUILD_LIBZ3_SHARED=OFF \
+    "${extra_config[@]}" \
+    ../${_realname}-${_realname}-${pkgver}
+
+  make
+
   [[ -d "${srcdir}"/build-${CARCH}-shared ]] && rm -rf "${srcdir}"/build-${CARCH}-shared
-  cp -rf "${srcdir}"/${_realname}-${_realname}-${pkgver} "${srcdir}"/build-${CARCH}-shared
+  mkdir -p "${srcdir}"/build-${CARCH}-shared && cd "${srcdir}"/build-${CARCH}-shared
 
-  cd "${srcdir}"/build-${CARCH}-shared
+  msg "Build shared z3"
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake.exe \
+    -G"MSYS Makefiles" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DBUILD_LIBZ3_SHARED=ON \
+    -DBUILD_PYTHON_BINDINGS=ON \
+    "${extra_config[@]}" \
+    ../${_realname}-${_realname}-${pkgver}
 
-  CXX=${MINGW_PREFIX}/bin/g++ CC=${MINGW_PREFIX}/bin/gcc \
-  AR=${MINGW_PREFIX}/bin/gcc-ar \
-  /usr/bin/python3 scripts/mk_make.py \
-      --prefix=${MINGW_PREFIX} \
-      --staticlib \
-      --staticbin
-
-  cd build
   make
 }
 
 check() {
-   cd "${srcdir}"/build-${CARCH}-shared/build
-   make test
+ cd "${srcdir}"/build-${CARCH}-shared
+ make test-z3 || true
 }
 
 package() {
-   cd "${srcdir}"/build-${CARCH}-shared/build
-   make install DESTDIR="${pkgdir}"
-   mv ${pkgdir}/${MINGW_PREFIX}/{lib,bin}/libz3.dll
-   cp "${srcdir}"/build-${CARCH}-shared/build/libz3.dll.a ${pkgdir}/${MINGW_PREFIX}/lib
+  cd "${srcdir}"/build-${CARCH}-static
+  make install DESTDIR="${pkgdir}"
+
+  cd "${srcdir}"/build-${CARCH}-shared
+  make install DESTDIR="${pkgdir}"
+
+  install -Dm644 ${srcdir}/${_realname}-${_realname}-${pkgver}/LICENSE.txt ${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE.txt
 }

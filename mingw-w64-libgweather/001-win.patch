@@ -1,18 +1,8 @@
---- ./libgweather/Makefile.am.orig	2014-09-07 18:29:45.795392300 +0200
-+++ ./libgweather/Makefile.am	2014-09-07 18:29:16.289735000 +0200
-@@ -87,6 +87,7 @@
- INTROSPECTION_GIRS =
- INTROSPECTION_SCANNER_ARGS = --warn-all --add-include-path=$(srcdir) --c-include=libgweather/gweather.h
- INTROSPECTION_COMPILER_ARGS = --includedir=$(srcdir)
-+INTROSPECTION_SCANNER_ENV = CC="$(CC)"
-
- if HAVE_INTROSPECTION
- introspection_sources = 	\
 --- ./libgweather/weather-iwin.c.orig	2014-09-07 17:25:15.852668400 +0200
 +++ ./libgweather/weather-iwin.c	2014-09-07 17:26:07.678605100 +0200
 @@ -364,7 +364,14 @@
      gchar latstr[G_ASCII_DTOSTR_BUF_SIZE], lonstr[G_ASCII_DTOSTR_BUF_SIZE];
-
+ 
      now = time (NULL);
 +#ifndef G_OS_WIN32
      localtime_r (&now, &tm);
@@ -22,7 +12,7 @@
 +	g_date_to_struct_tm (gdate, &tm);
 +	g_date_free (gdate);
 +#endif
-
+ 
      g_ascii_dtostr (latstr, sizeof(latstr), RADIANS_TO_DEGREES (loc->latitude));
      g_ascii_dtostr (lonstr, sizeof(lonstr), RADIANS_TO_DEGREES (loc->longitude));
 --- ./libgweather/weather-metar.c.orig	2014-09-07 17:23:43.223452300 +0200
@@ -30,7 +20,7 @@
 @@ -47,7 +47,14 @@
      const time_t now = time (NULL);
      struct tm tm;
-
+ 
 +#ifndef G_OS_WIN32
      localtime_r (&now, &tm);
 +#else
@@ -39,7 +29,7 @@
 +	g_date_to_struct_tm (gdate, &tm);
 +	g_date_free (gdate);
 +#endif
-
+ 
      /* If last reading took place just before midnight UTC on the
       * first, adjust the date downward to allow for the month
 --- ./libgweather/weather-owm.c.orig	2014-03-08 19:38:42.000000000 +0100
@@ -49,19 +39,19 @@
  #include <time.h>
  #include <unistd.h>
 -#include <langinfo.h>
-
+ 
  #include <libxml/parser.h>
  #include <libxml/xpath.h>
 @@ -38,6 +37,10 @@
  #define GWEATHER_I_KNOW_THIS_IS_UNSTABLE
  #include "weather-priv.h"
-
+ 
 +#ifndef G_OS_WIN32
 +#include <langinfo.h>
 +#endif
 +
  #define XC(t) ((const xmlChar *)(t))
-
+ 
  /* Reference for symbols at http://bugs.openweathermap.org/projects/api/wiki/Weather_Condition_Codes */
 @@ -133,16 +136,39 @@
      GTimeZone *tz;
@@ -74,7 +64,7 @@
 -	g_warning ("Cannot parse date string \"%s\"", str);
 -	return 0;
 -    }
-
+ 
 -    if (*after == 'Z')
 -	tzid = "UTC";
 +#ifndef G_OS_WIN32
@@ -109,14 +99,14 @@
 +	if (*gctz == 'Z')
 +		tzid = "UTC";
 +#endif
-
+ 
      tz = g_time_zone_new (tzid);
      dt = g_date_time_new (tz,
 --- ./libgweather/weather-sun.c.orig	2014-09-07 17:53:39.134081200 +0200
 +++ ./libgweather/weather-sun.c	2014-09-07 17:54:30.044591900 +0200
 @@ -322,7 +322,14 @@
      _gweather_info_ensure_sun (info);
-
+ 
      /* Determine when the next local midnight occurs */
 +#ifndef G_OS_WIN32
      (void) localtime_r (&now, &ltm);
@@ -129,63 +119,6 @@
      ltm.tm_sec = 0;
      ltm.tm_min = 0;
      ltm.tm_hour = 0;
---- ./libgweather/weather-yahoo.c.orig	2014-03-08 19:38:42.000000000 +0100
-+++ ./libgweather/weather-yahoo.c	2014-09-07 18:25:56.929726100 +0200
-@@ -151,10 +151,54 @@
- {
-     struct tm time = { 0 };
-
-+#ifndef G_OS_WIN32
-     if (!strptime ((const char*) str, "%d %b %Y", &time)) {
- 	g_warning ("Cannot parse date string \"%s\"", str);
- 	return 0;
-     }
-+#else
-+	int day;
-+	char *month;
-+	int year;
-+	int i;
-+	GDateTime *gdt;
-+	GDateTime *gdt_now;
-+	GDateTime *gdt_tmp;
-+	int parsed = scanf ((const char*) str, "%d %s %d",
-+	                    &day, &month, &year);
-+	if (parsed != 3) {
-+		g_warning ("Cannot parse date string \"%s\"", str);
-+		return 0;
-+	}
-+	time.tm_year = year + 1900;
-+
-+	gdt_now = g_date_time_new_now_local ();
-+	gdt = g_date_time_new_local (g_date_time_get_year (gdt_now), 1, 1, 0, 0, 0);
-+	for (i = 0; i < 12; i++)
-+		{
-+			gdt_tmp = g_date_time_add_months (gdt, i);
-+			if (g_strcmp0 (g_date_time_format (gdt_tmp, "%b"), month) == 0)
-+				{
-+					time.tm_mon = g_date_time_get_month (gdt) + 1;
-+					break;
-+				}
-+			else if (g_strcmp0 (g_date_time_format (gdt_tmp, "%B"), month) == 0)
-+				{
-+					time.tm_mon = g_date_time_get_month (gdt) + 1;
-+					break;
-+				}
-+			g_date_time_unref (gdt_tmp);
-+		}
-+	if (time.tm_mon == 0) {
-+		g_warning ("Cannot parse date string \"%s\"", str);
-+		return 0;
-+	}
-+
-+	time.tm_mday = day;
-+
-+	g_date_time_unref (gdt_now);
-+	g_date_time_unref (gdt);
-+#endif
-
-     return mktime(&time);
- }
 --- ./libgweather/weather-yrno.c.orig	2014-09-07 17:34:08.504436200 +0200
 +++ ./libgweather/weather-yrno.c	2014-09-07 17:58:24.358807100 +0200
 @@ -94,16 +94,39 @@
@@ -193,7 +126,7 @@
      GDateTime *dt;
      time_t rval;
 -    char *after;
-
+ 
 -    after = strptime ((const char*) str, "%Y-%m-%dT%T", &time);
 -    if (after == NULL) {
 -	g_warning ("Cannot parse date string \"%s\"", str);
@@ -234,7 +167,7 @@
 +	if (*gctz == 'Z')
 +		tzid = "UTC";
 +#endif
-
+ 
      tz = g_time_zone_new (tzid);
      dt = g_date_time_new (tz,
 --- ./libgweather/gweather-weather.c.orig	2014-09-07 17:18:05.621641500 +0200
@@ -245,11 +178,11 @@
  #include <unistd.h>
 -#include <langinfo.h>
  #include <errno.h>
-
+ 
  #include <gtk/gtk.h>
  #include <gdk-pixbuf/gdk-pixbuf.h>
  #include <glib.h>
-
+ 
 +#ifndef G_OS_WIN32
 +#include <langinfo.h>
 +#endif

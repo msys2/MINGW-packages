@@ -1,0 +1,2760 @@
+From eda88e06651c9293012212b665ca592c85bef645 Mon Sep 17 00:00:00 2001
+From: Liu Hao <lh_mouse@126.com>
+Date: Sat, 26 Jan 2019 15:14:38 +0800
+Subject: [PATCH] Backport patches for std::filesystem from master.
+
+This is done by running the following commands on `gcc-8-branch`:
+
+  git cherry-pick 861db1097d3f 2fd48392d0a4 70fea18e0bbb d4fd5c4964cf
+  git checkout master -- libstdc++-v3/src/filesystem/  \
+    libstdc++-v3/include/bits/fs_\* libstdc++-v3/include/std/filesystem
+
+Testsuites and change logs were discarded to reduce the amount of
+modification.
+
+Signed-off-by: Liu Hao <lh_mouse@126.com>
+---
+ libstdc++-v3/config.h.in                      |  12 +
+ libstdc++-v3/config/io/basic_file_stdio.cc    |  33 ++
+ libstdc++-v3/config/io/basic_file_stdio.h     |   5 +
+ libstdc++-v3/configure                        |  35 ++
+ libstdc++-v3/configure.ac                     |   2 +
+ libstdc++-v3/crossconfig.m4                   |   1 +
+ libstdc++-v3/include/bits/fs_dir.h            |  14 +-
+ libstdc++-v3/include/bits/fs_path.h           | 250 +++++++-------
+ libstdc++-v3/include/bits/fstream.tcc         |  36 ++
+ .../include/experimental/bits/fs_path.h       |  74 ++--
+ libstdc++-v3/include/std/fstream              | 119 +++++++
+ libstdc++-v3/src/filesystem/dir-common.h      |  56 ++-
+ libstdc++-v3/src/filesystem/dir.cc            |   5 +-
+ libstdc++-v3/src/filesystem/ops-common.h      | 105 +++++-
+ libstdc++-v3/src/filesystem/ops.cc            | 186 +++++-----
+ libstdc++-v3/src/filesystem/path.cc           |  24 +-
+ libstdc++-v3/src/filesystem/std-dir.cc        |   5 +-
+ libstdc++-v3/src/filesystem/std-ops.cc        | 318 ++++++++++--------
+ libstdc++-v3/src/filesystem/std-path.cc       | 123 ++++---
+ 19 files changed, 942 insertions(+), 461 deletions(-)
+
+diff --git a/libstdc++-v3/config.h.in b/libstdc++-v3/config.h.in
+index 765cedc6edf..3fb685ce9aa 100644
+--- a/libstdc++-v3/config.h.in
++++ b/libstdc++-v3/config.h.in
+@@ -264,6 +264,9 @@
+ /* Only used in build directory testsuite_hooks.h. */
+ #undef HAVE_LIMIT_VMEM
+ 
++/* Define to 1 if you have the `link' function. */
++#undef HAVE_LINK
++
+ /* Define if futex syscall is available. */
+ #undef HAVE_LINUX_FUTEX
+ 
+@@ -339,6 +342,9 @@
+ /* Define to 1 if you have the `quick_exit' function. */
+ #undef HAVE_QUICK_EXIT
+ 
++/* Define to 1 if you have the `readlink' function. */
++#undef HAVE_READLINK
++
+ /* Define to 1 if you have the `setenv' function. */
+ #undef HAVE_SETENV
+ 
+@@ -408,6 +414,9 @@
+ /* Define if strxfrm_l is available in <string.h>. */
+ #undef HAVE_STRXFRM_L
+ 
++/* Define to 1 if you have the `symlink' function. */
++#undef HAVE_SYMLINK
++
+ /* Define to 1 if the target runtime linker supports binding the same symbol
+    to different versions. */
+ #undef HAVE_SYMVER_SYMBOL_RENAMING_RUNTIME_SUPPORT
+@@ -706,6 +715,9 @@
+ /* Define to 1 if you have the `_tanl' function. */
+ #undef HAVE__TANL
+ 
++/* Define to 1 if you have the `_wfopen' function. */
++#undef HAVE__WFOPEN
++
+ /* Define to 1 if you have the `__cxa_thread_atexit' function. */
+ #undef HAVE___CXA_THREAD_ATEXIT
+ 
+diff --git a/libstdc++-v3/config/io/basic_file_stdio.cc b/libstdc++-v3/config/io/basic_file_stdio.cc
+index a46814802cd..09ccd6a4788 100644
+--- a/libstdc++-v3/config/io/basic_file_stdio.cc
++++ b/libstdc++-v3/config/io/basic_file_stdio.cc
+@@ -249,6 +249,39 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+     return __ret;
+   }
+ 
++#if _GLIBCXX_HAVE__WFOPEN && _GLIBCXX_USE_WCHAR_T
++  __basic_file<char>*
++  __basic_file<char>::open(const wchar_t* __name, ios_base::openmode __mode)
++  {
++    __basic_file* __ret = NULL;
++    const char* __c_mode = fopen_mode(__mode);
++    if (__c_mode && !this->is_open())
++      {
++	wchar_t __wc_mode[4] = { };
++	int __i = 0;
++	do
++	  {
++	    switch(__c_mode[__i]) {
++	    case 'a': __wc_mode[__i] = L'a'; break;
++	    case 'b': __wc_mode[__i] = L'b'; break;
++	    case 'r': __wc_mode[__i] = L'r'; break;
++	    case 'w': __wc_mode[__i] = L'w'; break;
++	    case '+': __wc_mode[__i] = L'+'; break;
++	    default: return __ret;
++	    }
++	  }
++	while (__c_mode[++__i]);
++
++	if ((_M_cfile = _wfopen(__name, __wc_mode)))
++	  {
++	    _M_cfile_created = true;
++	    __ret = this;
++	  }
++      }
++    return __ret;
++  }
++#endif
++
+   bool
+   __basic_file<char>::is_open() const throw ()
+   { return _M_cfile != 0; }
+diff --git a/libstdc++-v3/config/io/basic_file_stdio.h b/libstdc++-v3/config/io/basic_file_stdio.h
+index 58f24f670f6..3c857272c57 100644
+--- a/libstdc++-v3/config/io/basic_file_stdio.h
++++ b/libstdc++-v3/config/io/basic_file_stdio.h
+@@ -84,6 +84,11 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+       __basic_file*
+       open(const char* __name, ios_base::openmode __mode, int __prot = 0664);
+ 
++#if _GLIBCXX_HAVE__WFOPEN && _GLIBCXX_USE_WCHAR_T
++      __basic_file*
++      open(const wchar_t* __name, ios_base::openmode __mode);
++#endif
++
+       __basic_file*
+       sys_open(__c_file* __file, ios_base::openmode);
+ 
+diff --git a/libstdc++-v3/configure b/libstdc++-v3/configure
+index 5535bfa2b5a..b9883d413f6 100755
+--- a/libstdc++-v3/configure
++++ b/libstdc++-v3/configure
+@@ -28127,6 +28127,17 @@ eval as_val=\$$as_ac_var
+ #define `$as_echo "HAVE_$ac_func" | $as_tr_cpp` 1
+ _ACEOF
+ 
++fi
++done
++
++  for ac_func in _wfopen
++do :
++  ac_fn_c_check_func "$LINENO" "_wfopen" "ac_cv_func__wfopen"
++if test "x$ac_cv_func__wfopen" = x""yes; then :
++  cat >>confdefs.h <<_ACEOF
++#define HAVE__WFOPEN 1
++_ACEOF
++
+ fi
+ done
+ 
+@@ -66122,6 +66133,17 @@ eval as_val=\$$as_ac_var
+ #define `$as_echo "HAVE_$ac_func" | $as_tr_cpp` 1
+ _ACEOF
+ 
++fi
++done
++
++    for ac_func in _wfopen
++do :
++  ac_fn_c_check_func "$LINENO" "_wfopen" "ac_cv_func__wfopen"
++if test "x$ac_cv_func__wfopen" = x""yes; then :
++  cat >>confdefs.h <<_ACEOF
++#define HAVE__WFOPEN 1
++_ACEOF
++
+ fi
+ done
+ 
+@@ -80025,6 +80047,19 @@ _ACEOF
+ 
+ fi
+ 
++done
++
++for ac_func in link readlink symlink
++do :
++  as_ac_var=`$as_echo "ac_cv_func_$ac_func" | $as_tr_sh`
++ac_fn_c_check_func "$LINENO" "$ac_func" "$as_ac_var"
++eval as_val=\$$as_ac_var
++   if test "x$as_val" = x""yes; then :
++  cat >>confdefs.h <<_ACEOF
++#define `$as_echo "HAVE_$ac_func" | $as_tr_cpp` 1
++_ACEOF
++
++fi
+ done
+ 
+ 
+diff --git a/libstdc++-v3/configure.ac b/libstdc++-v3/configure.ac
+index 0ef96270c9c..dde1c4da944 100644
+--- a/libstdc++-v3/configure.ac
++++ b/libstdc++-v3/configure.ac
+@@ -263,6 +263,7 @@ if $GLIBCXX_IS_NATIVE; then
+ 
+   AC_CHECK_FUNCS(__cxa_thread_atexit_impl __cxa_thread_atexit)
+   AC_CHECK_FUNCS(aligned_alloc posix_memalign memalign _aligned_malloc)
++  AC_CHECK_FUNCS(_wfopen)
+ 
+   # For iconv support.
+   AM_ICONV
+@@ -419,6 +420,7 @@ GLIBCXX_CHECK_GTHREADS
+ 
+ # For Filesystem TS.
+ AC_CHECK_HEADERS([fcntl.h dirent.h sys/statvfs.h utime.h])
++AC_CHECK_FUNCS(link readlink symlink)
+ GLIBCXX_ENABLE_FILESYSTEM_TS
+ GLIBCXX_CHECK_FILESYSTEM_DEPS
+ 
+diff --git a/libstdc++-v3/crossconfig.m4 b/libstdc++-v3/crossconfig.m4
+index cb6e3afff3d..669d87f7602 100644
+--- a/libstdc++-v3/crossconfig.m4
++++ b/libstdc++-v3/crossconfig.m4
+@@ -199,6 +199,7 @@ case "${host}" in
+     GLIBCXX_CHECK_MATH_SUPPORT
+     GLIBCXX_CHECK_STDLIB_SUPPORT
+     AC_CHECK_FUNCS(aligned_alloc posix_memalign memalign _aligned_malloc)
++    AC_CHECK_FUNCS(_wfopen)
+     ;;
+   *-netbsd*)
+     SECTION_FLAGS='-ffunction-sections -fdata-sections'
+diff --git a/libstdc++-v3/include/bits/fs_dir.h b/libstdc++-v3/include/bits/fs_dir.h
+index 9ee1cb66b61..6b332e171cf 100644
+--- a/libstdc++-v3/include/bits/fs_dir.h
++++ b/libstdc++-v3/include/bits/fs_dir.h
+@@ -138,13 +138,8 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+       refresh(__ec);
+     }
+ 
+-    void
+-    refresh()
+-    { _M_type = symlink_status().type(); }
+-
+-    void
+-    refresh(error_code& __ec) noexcept
+-    { _M_type = symlink_status(__ec).type(); }
++    void refresh() { _M_type = symlink_status().type(); }
++    void refresh(error_code& __ec) { _M_type = symlink_status(__ec).type(); }
+ 
+     // observers
+     const filesystem::path& path() const noexcept { return _M_path; }
+@@ -318,10 +313,7 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     _M_file_type(error_code& __ec) const noexcept
+     {
+       if (_M_type != file_type::none && _M_type != file_type::symlink)
+-	{
+-	  __ec.clear();
+-	  return _M_type;
+-	}
++	return _M_type;
+       return status(__ec).type();
+     }
+ 
+diff --git a/libstdc++-v3/include/bits/fs_path.h b/libstdc++-v3/include/bits/fs_path.h
+index fb85d489fd8..e3938d06d59 100644
+--- a/libstdc++-v3/include/bits/fs_path.h
++++ b/libstdc++-v3/include/bits/fs_path.h
+@@ -37,11 +37,11 @@
+ #include <vector>
+ #include <locale>
+ #include <iosfwd>
++#include <iomanip>
+ #include <codecvt>
+ #include <string_view>
+ #include <system_error>
+ #include <bits/stl_algobase.h>
+-#include <bits/quoted_string.h>
+ #include <bits/locale_conv.h>
+ 
+ #if defined(_WIN32) && !defined(__CYGWIN__)
+@@ -65,8 +65,10 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+   /// A filesystem path.
+   class path
+   {
+-    template<typename _CharT>
+-      struct __is_encoded_char : std::false_type { };
++    template<typename _CharT, typename _Ch = remove_const_t<_CharT>>
++      using __is_encoded_char
++	= __or_<is_same<_Ch, char>, is_same<_Ch, wchar_t>,
++		is_same<_Ch, char16_t>, is_same<_Ch, char32_t>>;
+ 
+     template<typename _Iter,
+ 	     typename _Iter_traits = std::iterator_traits<_Iter>>
+@@ -106,8 +108,7 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+ 
+     template<typename _Tp1, typename _Tp2 = void>
+       using _Path = typename
+-	std::enable_if<__and_<__not_<is_same<remove_cv_t<_Tp1>, path>>,
+-			      __not_<is_void<_Tp1>>,
++	std::enable_if<__and_<__not_<is_same<_Tp1, path>>,
+ 			      __constructible_from<_Tp1, _Tp2>>::value,
+ 		       path>::type;
+ 
+@@ -145,7 +146,7 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+ 	     typename _Iter = decltype(_S_range_begin(std::declval<_Tp>())),
+ 	     typename _Val = typename std::iterator_traits<_Iter>::value_type>
+       using __value_type_is_char
+-	= typename std::enable_if<std::is_same<_Val, char>::value>::type;
++	= std::enable_if_t<std::is_same_v<std::remove_const_t<_Val>, char>>;
+ 
+   public:
+ #ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+@@ -231,37 +232,7 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+ 
+     // appends
+ 
+-    path& operator/=(const path& __p)
+-    {
+-#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+-      if (__p.is_absolute()
+-	  || (__p.has_root_name() && __p.root_name() != root_name()))
+-	operator=(__p);
+-      else
+-	{
+-	  string_type __pathname;
+-	  if (__p.has_root_directory())
+-	    __pathname = root_name().native();
+-	  else if (has_filename() || (!has_root_directory() && is_absolute()))
+-	    __pathname = _M_pathname + preferred_separator;
+-	  __pathname += __p.relative_path().native(); // XXX is this right?
+-	  _M_pathname.swap(__pathname);
+-	  _M_split_cmpts();
+-	}
+-#else
+-      // Much simpler, as any path with root-name or root-dir is absolute.
+-      if (__p.is_absolute())
+-	operator=(__p);
+-      else
+-	{
+-	  if (has_filename() || (_M_type == _Type::_Root_name))
+-	    _M_pathname += preferred_separator;
+-	  _M_pathname += __p.native();
+-	  _M_split_cmpts();
+-	}
+-#endif
+-      return *this;
+-    }
++    path& operator/=(const path& __p);
+ 
+     template <class _Source>
+       _Path<_Source>&
+@@ -377,7 +348,7 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     bool has_filename() const;
+     bool has_stem() const;
+     bool has_extension() const;
+-    bool is_absolute() const { return has_root_directory(); }
++    bool is_absolute() const;
+     bool is_relative() const { return !is_absolute(); }
+ 
+     // generation
+@@ -392,6 +363,40 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     iterator begin() const;
+     iterator end() const;
+ 
++    /// Write a path to a stream
++    template<typename _CharT, typename _Traits>
++      friend std::basic_ostream<_CharT, _Traits>&
++      operator<<(std::basic_ostream<_CharT, _Traits>& __os, const path& __p)
++      {
++	__os << std::quoted(__p.string<_CharT, _Traits>());
++	return __os;
++      }
++
++    /// Read a path from a stream
++    template<typename _CharT, typename _Traits>
++      friend std::basic_istream<_CharT, _Traits>&
++      operator>>(std::basic_istream<_CharT, _Traits>& __is, path& __p)
++      {
++	std::basic_string<_CharT, _Traits> __tmp;
++	if (__is >> std::quoted(__tmp))
++	  __p = std::move(__tmp);
++	return __is;
++      }
++
++    // Create a basic_string by reading until a null character.
++    template<typename _InputIterator,
++	     typename _Traits = std::iterator_traits<_InputIterator>,
++	     typename _CharT
++	       = typename std::remove_cv_t<typename _Traits::value_type>>
++      static std::basic_string<_CharT>
++      _S_string_from_iter(_InputIterator __source)
++      {
++	std::basic_string<_CharT> __str;
++	for (_CharT __ch = *__source; __ch != _CharT(); __ch = *++__source)
++	  __str.push_back(__ch);
++	return __str;
++      }
++
+   private:
+     enum class _Type : unsigned char {
+ 	_Multi, _Root_name, _Root_dir, _Filename
+@@ -404,19 +409,7 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+ 
+     enum class _Split { _Stem, _Extension };
+ 
+-    path&
+-    _M_append(path __p)
+-    {
+-      if (__p.is_absolute())
+-	operator=(std::move(__p));
+-#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+-      else if (__p.has_root_name() && __p.root_name() != root_name())
+-	operator=(std::move(__p));
+-#endif
+-      else
+-	operator/=(const_cast<const path&>(__p));
+-      return *this;
+-    }
++    path& _M_append(path __p);
+ 
+     pair<const string_type*, size_t> _M_find_extension() const;
+ 
+@@ -444,11 +437,8 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+       static string_type
+       _S_convert(_InputIterator __src, __null_terminated)
+       {
+-	using _Tp = typename std::iterator_traits<_InputIterator>::value_type;
+-	std::basic_string<typename remove_cv<_Tp>::type> __tmp;
+-	for (; *__src != _Tp{}; ++__src)
+-	  __tmp.push_back(*__src);
+-	return _S_convert(__tmp.c_str(), __tmp.c_str() + __tmp.size());
++	auto __s = _S_string_from_iter(__src);
++	return _S_convert(__s.c_str(), __s.c_str() + __s.size());
+       }
+ 
+     static string_type
+@@ -468,10 +458,8 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+       _S_convert_loc(_InputIterator __src, __null_terminated,
+ 		     const std::locale& __loc)
+       {
+-	std::string __tmp;
+-	while (*__src != '\0')
+-	  __tmp.push_back(*__src++);
+-	return _S_convert_loc(__tmp.data(), __tmp.data()+__tmp.size(), __loc);
++	std::string __s = _S_string_from_iter(__src);
++	return _S_convert_loc(__s.data(), __s.data() + __s.size(), __loc);
+       }
+ 
+     template<typename _CharT, typename _Traits, typename _Allocator>
+@@ -501,25 +489,6 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     _Type _M_type = _Type::_Filename;
+   };
+ 
+-  template<>
+-    struct path::__is_encoded_char<char> : std::true_type
+-    { using value_type = char; };
+-
+-  template<>
+-    struct path::__is_encoded_char<wchar_t> : std::true_type
+-    { using value_type = wchar_t; };
+-
+-  template<>
+-    struct path::__is_encoded_char<char16_t> : std::true_type
+-    { using value_type = char16_t; };
+-
+-  template<>
+-    struct path::__is_encoded_char<char32_t> : std::true_type
+-    { using value_type = char32_t; };
+-
+-  template<typename _Tp>
+-    struct path::__is_encoded_char<const _Tp> : __is_encoded_char<_Tp> { };
+-
+   inline void swap(path& __lhs, path& __rhs) noexcept { __lhs.swap(__rhs); }
+ 
+   size_t hash_value(const path& __p) noexcept;
+@@ -556,58 +525,50 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     return __result;
+   }
+ 
+-  /// Write a path to a stream
+-  template<typename _CharT, typename _Traits>
+-    basic_ostream<_CharT, _Traits>&
+-    operator<<(basic_ostream<_CharT, _Traits>& __os, const path& __p)
+-    {
+-      auto __tmp = __p.string<_CharT, _Traits>();
+-      using __quoted_string
+-	= std::__detail::_Quoted_string<decltype(__tmp)&, _CharT>;
+-      __os << __quoted_string{__tmp, '"', '\\'};
+-      return __os;
+-    }
+-
+-  /// Read a path from a stream
+-  template<typename _CharT, typename _Traits>
+-    basic_istream<_CharT, _Traits>&
+-    operator>>(basic_istream<_CharT, _Traits>& __is, path& __p)
+-    {
+-      basic_string<_CharT, _Traits> __tmp;
+-      using __quoted_string
+-	= std::__detail::_Quoted_string<decltype(__tmp)&, _CharT>;
+-      if (__is >> __quoted_string{ __tmp, '"', '\\' })
+-	__p = std::move(__tmp);
+-      return __is;
+-    }
+-
+-  template<typename _Source>
++  template<typename _InputIterator>
+     inline auto
+-    u8path(const _Source& __source)
+-    -> decltype(filesystem::path(__source, std::locale::classic()))
++    u8path(_InputIterator __first, _InputIterator __last)
++    -> decltype(filesystem::path(__first, __last, std::locale::classic()))
+     {
+ #ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+-      const std::string __u8str{__source};
+-      return std::filesystem::u8path(__u8str.begin(), __u8str.end());
++      codecvt_utf8<path::value_type> __cvt;
++      path::string_type __tmp;
++      if constexpr (is_pointer_v<_InputIterator>)
++	{
++	  if (__str_codecvt_in(__first, __last, __tmp, __cvt))
++	    return path{ __tmp };
++	}
++      else
++	{
++	  const std::string __u8str{__first, __last};
++	  const char* const __ptr = __u8str.data();
++	  if (__str_codecvt_in(__ptr, __ptr + __u8str.size(), __tmp, __cvt))
++	    return path{ __tmp };
++	}
++      return {};
+ #else
+-      return path{ __source };
++      return path{ __first, __last };
+ #endif
+     }
+ 
+-  template<typename _InputIterator>
++  template<typename _Source>
+     inline auto
+-    u8path(_InputIterator __first, _InputIterator __last)
+-    -> decltype(filesystem::path(__first, __last, std::locale::classic()))
++    u8path(const _Source& __source)
++    -> decltype(filesystem::path(__source, std::locale::classic()))
+     {
+ #ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+-      codecvt_utf8<value_type> __cvt;
+-      string_type __tmp;
+-      if (__str_codecvt_in(__first, __last, __tmp, __cvt))
+-	return path{ __tmp };
++      if constexpr (is_convertible_v<const _Source&, std::string_view>)
++	{
++	  const std::string_view __s = __source;
++	  return filesystem::u8path(__s.data(), __s.data() + __s.size());
++	}
+       else
+-	return {};
++	{
++	  std::string __s = path::_S_string_from_iter(__source);
++	  return filesystem::u8path(__s.data(), __s.data() + __s.size());
++	}
+ #else
+-      return path{ __first, __last };
++      return path{ __source };
+ #endif
+     }
+ 
+@@ -916,11 +877,16 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     path::string(const _Allocator& __a) const
+     {
+       if constexpr (is_same_v<_CharT, value_type>)
++	{
+ #if _GLIBCXX_USE_CXX11_ABI
+-	return { _M_pathname, __a };
++	  return { _M_pathname, __a };
+ #else
+-	return { _M_pathname, string_type::size_type(0), __a };
++	  if constexpr (is_same_v<_Allocator, string_type::allocator_type>)
++	    return _M_pathname;
++	  else
++	    return { _M_pathname, string_type::size_type(0), __a };
+ #endif
++	}
+       else
+ 	return _S_str_convert<_CharT, _Traits>(_M_pathname, __a);
+     }
+@@ -1072,6 +1038,16 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     return ext.first && ext.second != string_type::npos;
+   }
+ 
++  inline bool
++  path::is_absolute() const
++  {
++#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
++    return has_root_name() && has_root_directory();
++#else
++    return has_root_directory();
++#endif
++  }
++
+   inline path::iterator
+   path::begin() const
+   {
+@@ -1088,6 +1064,38 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     return iterator(this, true);
+   }
+ 
++#ifndef _GLIBCXX_FILESYSTEM_IS_WINDOWS
++  inline path& path::operator/=(const path& __p)
++  {
++    // Much simpler than the specification in the standard,
++    // as any path with root-name or root-dir is absolute.
++    if (__p.is_absolute())
++      operator=(__p);
++    else
++      {
++	if (has_filename() || (_M_type == _Type::_Root_name))
++	  _M_pathname += preferred_separator;
++	_M_pathname += __p.native();
++	_M_split_cmpts();
++      }
++    return *this;
++  }
++#endif
++
++  inline path&
++  path::_M_append(path __p)
++  {
++    if (__p.is_absolute())
++      operator=(std::move(__p));
++#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
++    else if (__p.has_root_name() && __p.root_name() != root_name())
++      operator=(std::move(__p));
++#endif
++    else
++      operator/=(const_cast<const path&>(__p));
++    return *this;
++  }
++
+   inline path::iterator&
+   path::iterator::operator++()
+   {
+diff --git a/libstdc++-v3/include/bits/fstream.tcc b/libstdc++-v3/include/bits/fstream.tcc
+index f23ff7af4eb..d9eff00823a 100644
+--- a/libstdc++-v3/include/bits/fstream.tcc
++++ b/libstdc++-v3/include/bits/fstream.tcc
+@@ -207,6 +207,42 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+       return __ret;
+     }
+ 
++#if _GLIBCXX_HAVE__WFOPEN && _GLIBCXX_USE_WCHAR_T
++  template<typename _CharT, typename _Traits>
++    basic_filebuf<_CharT, _Traits>*
++    basic_filebuf<_CharT, _Traits>::
++    open(const wchar_t* __s, ios_base::openmode __mode)
++    {
++      __filebuf_type *__ret = 0;
++      if (!this->is_open())
++	{
++	  _M_file.open(__s, __mode);
++	  if (this->is_open())
++	    {
++	      _M_allocate_internal_buffer();
++	      _M_mode = __mode;
++
++	      // Setup initial buffer to 'uncommitted' mode.
++	      _M_reading = false;
++	      _M_writing = false;
++	      _M_set_buffer(-1);
++
++	      // Reset to initial state.
++	      _M_state_last = _M_state_cur = _M_state_beg;
++
++	      // 27.8.1.3,4
++	      if ((__mode & ios_base::ate)
++		  && this->seekoff(0, ios_base::end, __mode)
++		  == pos_type(off_type(-1)))
++		this->close();
++	      else
++		__ret = this;
++	    }
++	}
++      return __ret;
++    }
++#endif // HAVE__WFOPEN && USE_WCHAR_T
++
+   template<typename _CharT, typename _Traits>
+     typename basic_filebuf<_CharT, _Traits>::__filebuf_type*
+     basic_filebuf<_CharT, _Traits>::
+diff --git a/libstdc++-v3/include/experimental/bits/fs_path.h b/libstdc++-v3/include/experimental/bits/fs_path.h
+index 088d62f8f43..340cc59d541 100644
+--- a/libstdc++-v3/include/experimental/bits/fs_path.h
++++ b/libstdc++-v3/include/experimental/bits/fs_path.h
+@@ -79,8 +79,11 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+   /// A filesystem path.
+   class path
+   {
+-    template<typename _CharT>
+-      struct __is_encoded_char : std::false_type { };
++    template<typename _CharT,
++	     typename _Ch = typename remove_const<_CharT>::type>
++      using __is_encoded_char
++	= __or_<is_same<_Ch, char>, is_same<_Ch, wchar_t>,
++		is_same<_Ch, char16_t>, is_same<_Ch, char32_t>>;
+ 
+     template<typename _Iter,
+ 	     typename _Iter_traits = std::iterator_traits<_Iter>>
+@@ -163,8 +166,9 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     template<typename _Tp,
+ 	     typename _Iter = decltype(_S_range_begin(std::declval<_Tp>())),
+ 	     typename _Val = typename std::iterator_traits<_Iter>::value_type>
+-      using __value_type_is_char
+-	= typename std::enable_if<std::is_same<_Val, char>::value>::type;
++      using __value_type_is_char = typename std::enable_if<
++	std::is_same<typename std::remove_const<_Val>::type, char>::value
++	>::type;
+ 
+   public:
+ #ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+@@ -370,7 +374,7 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     bool has_filename() const;
+     bool has_stem() const;
+     bool has_extension() const;
+-    bool is_absolute() const { return has_root_directory(); }
++    bool is_absolute() const;
+     bool is_relative() const { return !is_absolute(); }
+ 
+     // iterators
+@@ -380,6 +384,20 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     iterator begin() const;
+     iterator end() const;
+ 
++    // Create a basic_string by reading until a null character.
++    template<typename _InputIterator,
++	     typename _Traits = std::iterator_traits<_InputIterator>,
++	     typename _CharT
++	       = typename std::remove_cv<typename _Traits::value_type>::type>
++      static std::basic_string<_CharT>
++      _S_string_from_iter(_InputIterator __source)
++      {
++	std::basic_string<_CharT> __str;
++	for (_CharT __ch = *__source; __ch != _CharT(); __ch = *++__source)
++	  __str.push_back(__ch);
++	return __str;
++      }
++
+   private:
+     enum class _Type : unsigned char {
+ 	_Multi, _Root_name, _Root_dir, _Filename
+@@ -429,11 +447,8 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+       static string_type
+       _S_convert(_InputIterator __src, __null_terminated)
+       {
+-	using _Tp = typename std::iterator_traits<_InputIterator>::value_type;
+-	std::basic_string<typename remove_cv<_Tp>::type> __tmp;
+-	for (; *__src != _Tp{}; ++__src)
+-	  __tmp.push_back(*__src);
+-	return _S_convert(__tmp.c_str(), __tmp.c_str() + __tmp.size());
++	auto __s = _S_string_from_iter(__src);
++	return _S_convert(__s.c_str(), __s.c_str() + __s.size());
+       }
+ 
+     static string_type
+@@ -453,10 +468,8 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+       _S_convert_loc(_InputIterator __src, __null_terminated,
+ 		     const std::locale& __loc)
+       {
+-	std::string __tmp;
+-	while (*__src != '\0')
+-	  __tmp.push_back(*__src++);
+-	return _S_convert_loc(__tmp.data(), __tmp.data()+__tmp.size(), __loc);
++	std::string __s = _S_string_from_iter(__src);
++	return _S_convert_loc(__s.data(), __s.data() + __s.size(), __loc);
+       }
+ 
+     bool _S_is_dir_sep(value_type __ch)
+@@ -526,7 +539,7 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+       auto __tmp = __p.string<_CharT, _Traits>();
+       using __quoted_string
+ 	= std::__detail::_Quoted_string<decltype(__tmp)&, _CharT>;
+-      __os << __quoted_string{__tmp, '"', '\\'};
++      __os << __quoted_string{__tmp, _CharT('"'), _CharT('\\')};
+       return __os;
+     }
+ 
+@@ -538,7 +551,7 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+       basic_string<_CharT, _Traits> __tmp;
+       using __quoted_string
+ 	= std::__detail::_Quoted_string<decltype(__tmp)&, _CharT>;
+-      if (__is >> __quoted_string{ __tmp, '"', '\\' })
++      if (__is >> __quoted_string{ __tmp, _CharT('"'), _CharT('\\') })
+ 	__p = std::move(__tmp);
+       return __is;
+     }
+@@ -596,25 +609,6 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     std::string _M_what = _M_gen_what();
+   };
+ 
+-  template<>
+-    struct path::__is_encoded_char<char> : std::true_type
+-    { using value_type = char; };
+-
+-  template<>
+-    struct path::__is_encoded_char<wchar_t> : std::true_type
+-    { using value_type = wchar_t; };
+-
+-  template<>
+-    struct path::__is_encoded_char<char16_t> : std::true_type
+-    { using value_type = char16_t; };
+-
+-  template<>
+-    struct path::__is_encoded_char<char32_t> : std::true_type
+-    { using value_type = char32_t; };
+-
+-  template<typename _Tp>
+-    struct path::__is_encoded_char<const _Tp> : __is_encoded_char<_Tp> { };
+-
+   struct path::_Cmpt : path
+   {
+     _Cmpt(string_type __s, _Type __t, size_t __pos)
+@@ -1001,6 +995,16 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+     return ext.first && ext.second != string_type::npos;
+   }
+ 
++  inline bool
++  path::is_absolute() const
++  {
++#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
++    return has_root_name() && has_root_directory();
++#else
++    return has_root_directory();
++#endif
++  }
++
+   inline path::iterator
+   path::begin() const
+   {
+diff --git a/libstdc++-v3/include/std/fstream b/libstdc++-v3/include/std/fstream
+index 3a5895d68b0..740d12d3bb6 100644
+--- a/libstdc++-v3/include/std/fstream
++++ b/libstdc++-v3/include/std/fstream
+@@ -304,6 +304,17 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+       __filebuf_type*
+       open(const char* __s, ios_base::openmode __mode);
+ 
++#if _GLIBCXX_HAVE__WFOPEN && _GLIBCXX_USE_WCHAR_T
++      /**
++       *  @brief  Opens an external file.
++       *  @param  __s  The name of the file, as a wide character string.
++       *  @param  __mode  The open mode flags.
++       *  @return  @c this on success, NULL on failure
++       */
++      __filebuf_type*
++      open(const wchar_t* __s, ios_base::openmode __mode);
++#endif
++
+ #if __cplusplus >= 201103L
+       /**
+        *  @brief  Opens an external file.
+@@ -517,6 +528,23 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+ 	this->open(__s, __mode);
+       }
+ 
++#if _GLIBCXX_HAVE__WFOPEN && _GLIBCXX_USE_WCHAR_T
++      /**
++       *  @param  Create an input file stream.
++       *  @param  __s  Wide string specifying the filename.
++       *  @param  __mode  Open file in specified mode (see std::ios_base).
++       *
++       *  @c ios_base::in is automatically included in @a __mode.
++       */
++      basic_ifstream(const wchar_t* __s,
++		     ios_base::openmode __mode = ios_base::in)
++      : __istream_type(), _M_filebuf()
++      {
++	this->init(&_M_filebuf);
++	this->open(__s, __mode);
++      }
++#endif
++
+ #if __cplusplus >= 201103L
+       /**
+        *  @brief  Create an input file stream.
+@@ -632,6 +660,25 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+ 	  this->clear();
+       }
+ 
++#if _GLIBCXX_HAVE__WFOPEN && _GLIBCXX_USE_WCHAR_T
++      /**
++       *  @brief  Opens an external file.
++       *  @param  __s  The name of the file, as a wide character string.
++       *  @param  __mode  The open mode flags.
++       *
++       *  Calls @c std::basic_filebuf::open(__s,__mode|in).  If that function
++       *  fails, @c failbit is set in the stream's error state.
++       */
++      void
++      open(const wchar_t* __s, ios_base::openmode __mode = ios_base::in)
++      {
++	if (!_M_filebuf.open(__s, __mode | ios_base::in))
++	  this->setstate(ios_base::failbit);
++	else
++	  this->clear();
++      }
++#endif
++
+ #if __cplusplus >= 201103L
+       /**
+        *  @brief  Opens an external file.
+@@ -743,6 +790,24 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+ 	this->open(__s, __mode);
+       }
+ 
++#if _GLIBCXX_HAVE__WFOPEN && _GLIBCXX_USE_WCHAR_T
++      /**
++       *  @param  Create an output file stream.
++       *  @param  __s  Wide string specifying the filename.
++       *  @param  __mode  Open file in specified mode (see std::ios_base).
++       *
++       *  @c ios_base::out | @c ios_base::trunc is automatically included in
++       *  @a __mode.
++       */
++      basic_ofstream(const wchar_t* __s,
++		     ios_base::openmode __mode = ios_base::out|ios_base::trunc)
++      : __ostream_type(), _M_filebuf()
++      {
++	this->init(&_M_filebuf);
++	this->open(__s, __mode);
++      }
++#endif
++
+ #if __cplusplus >= 201103L
+       /**
+        *  @brief  Create an output file stream.
+@@ -858,6 +923,25 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+ 	  this->clear();
+       }
+ 
++#if _GLIBCXX_HAVE__WFOPEN && _GLIBCXX_USE_WCHAR_T
++      /**
++       *  @brief  Opens an external file.
++       *  @param  __s  The name of the file.
++       *  @param  __mode  The open mode flags.
++       *
++       *  Calls @c std::basic_filebuf::open(__s,__mode|out).  If that
++       *  function fails, @c failbit is set in the stream's error state.
++       */
++      void
++      open(const wchar_t* __s, ios_base::openmode __mode = ios_base::out)
++      {
++	if (!_M_filebuf.open(__s, __mode | ios_base::out))
++	  this->setstate(ios_base::failbit);
++	else
++	  this->clear();
++      }
++#endif
++
+ #if __cplusplus >= 201103L
+       /**
+        *  @brief  Opens an external file.
+@@ -969,6 +1053,21 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+ 	this->open(__s, __mode);
+       }
+ 
++#if _GLIBCXX_HAVE__WFOPEN && _GLIBCXX_USE_WCHAR_T
++      /**
++       *  @param  Create an input/output file stream.
++       *  @param  __s  Wide string specifying the filename.
++       *  @param  __mode  Open file in specified mode (see std::ios_base).
++       */
++      basic_fstream(const wchar_t* __s,
++		    ios_base::openmode __mode = ios_base::in | ios_base::out)
++      : __iostream_type(0), _M_filebuf()
++      {
++	this->init(&_M_filebuf);
++	this->open(__s, __mode);
++      }
++#endif
++
+ #if __cplusplus >= 201103L
+       /**
+        *  @brief  Create an input/output file stream.
+@@ -1081,6 +1180,26 @@ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+ 	  this->clear();
+       }
+ 
++#if _GLIBCXX_HAVE__WFOPEN && _GLIBCXX_USE_WCHAR_T
++      /**
++       *  @brief  Opens an external file.
++       *  @param  __s  The name of the file.
++       *  @param  __mode  The open mode flags.
++       *
++       *  Calls @c std::basic_filebuf::open(__s,__mode).  If that
++       *  function fails, @c failbit is set in the stream's error state.
++       */
++      void
++      open(const wchar_t* __s,
++	   ios_base::openmode __mode = ios_base::in | ios_base::out)
++      {
++	if (!_M_filebuf.open(__s, __mode))
++	  this->setstate(ios_base::failbit);
++	else
++	  this->clear();
++      }
++#endif
++
+ #if __cplusplus >= 201103L
+       /**
+        *  @brief  Opens an external file.
+diff --git a/libstdc++-v3/src/filesystem/dir-common.h b/libstdc++-v3/src/filesystem/dir-common.h
+index 21ba01ca970..03875819d04 100644
+--- a/libstdc++-v3/src/filesystem/dir-common.h
++++ b/libstdc++-v3/src/filesystem/dir-common.h
+@@ -26,6 +26,9 @@
+ #define _GLIBCXX_DIR_COMMON_H 1
+ 
+ #include <string.h>  // strcmp
++#if _GLIBCXX_FILESYSTEM_IS_WINDOWS
++#include <wchar.h>  // wcscmp
++#endif
+ #ifdef _GLIBCXX_HAVE_DIRENT_H
+ # ifdef _GLIBCXX_HAVE_SYS_TYPES_H
+ #  include <sys/types.h>
+@@ -35,26 +38,42 @@
+ # error "the <dirent.h> header is needed to build the Filesystem TS"
+ #endif
+ 
+-#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+-# undef opendir
+-# define opendir _wopendir
+-#endif
+-
+ namespace std _GLIBCXX_VISIBILITY(default)
+ {
+ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+ namespace filesystem
+ {
++namespace __gnu_posix
++{
++#if _GLIBCXX_FILESYSTEM_IS_WINDOWS
++// Adapt the Windows _wxxx functions to look like POSIX xxx, but for wchar_t*.
++using char_type = wchar_t;
++using DIR = ::_WDIR;
++using dirent = _wdirent;
++inline DIR* opendir(const wchar_t* path) { return ::_wopendir(path); }
++inline dirent* readdir(DIR* dir) { return ::_wreaddir(dir); }
++inline int closedir(DIR* dir) { return ::_wclosedir(dir); }
++#else
++using char_type = char;
++using DIR = ::DIR;
++typedef struct ::dirent dirent;
++using ::opendir;
++using ::readdir;
++using ::closedir;
++#endif
++} // namespace __gnu_posix
++
++namespace posix = __gnu_posix;
+ 
+ struct _Dir_base
+ {
+-  _Dir_base(DIR* dirp = nullptr) : dirp(dirp) { }
++  _Dir_base(posix::DIR* dirp = nullptr) : dirp(dirp) { }
+ 
+   // If no error occurs then dirp is non-null,
+   // otherwise null (whether error ignored or not).
+-  _Dir_base(const char* p, bool skip_permission_denied,
++  _Dir_base(const posix::char_type* pathname, bool skip_permission_denied,
+ 	    error_code& ec) noexcept
+-  : dirp(::opendir(p))
++  : dirp(posix::opendir(pathname))
+   {
+     if (dirp)
+       ec.clear();
+@@ -72,22 +91,22 @@ struct _Dir_base
+ 
+   _Dir_base& operator=(_Dir_base&&) = delete;
+ 
+-  ~_Dir_base() { if (dirp) ::closedir(dirp); }
++  ~_Dir_base() { if (dirp) posix::closedir(dirp); }
+ 
+-  const struct ::dirent*
++  const posix::dirent*
+   advance(bool skip_permission_denied, error_code& ec) noexcept
+   {
+     ec.clear();
+ 
+     int err = std::exchange(errno, 0);
+-    const struct ::dirent* entp = readdir(dirp);
++    const posix::dirent* entp = posix::readdir(dirp);
+     // std::swap cannot be used with Bionic's errno
+     err = std::exchange(errno, err);
+ 
+     if (entp)
+       {
+ 	// skip past dot and dot-dot
+-	if (!strcmp(entp->d_name, ".") || !strcmp(entp->d_name, ".."))
++	if (is_dot_or_dotdot(entp->d_name))
+ 	  return advance(skip_permission_denied, ec);
+ 	return entp;
+       }
+@@ -105,15 +124,24 @@ struct _Dir_base
+       }
+   }
+ 
+-  DIR*	dirp;
++  static bool is_dot_or_dotdot(const char* s) noexcept
++  { return !strcmp(s, ".") || !strcmp(s, ".."); }
++
++#if _GLIBCXX_FILESYSTEM_IS_WINDOWS
++  static bool is_dot_or_dotdot(const wchar_t* s) noexcept
++  { return !wcscmp(s, L".") || !wcscmp(s, L".."); }
++#endif
++
++  posix::DIR*	dirp;
+ };
+ 
+ } // namespace filesystem
+ 
+ // BEGIN/END macros must be defined before including this file.
+ _GLIBCXX_BEGIN_NAMESPACE_FILESYSTEM
++
+ inline file_type
+-get_file_type(const ::dirent& d __attribute__((__unused__)))
++get_file_type(const std::filesystem::__gnu_posix::dirent& d [[gnu::unused]])
+ {
+ #ifdef _GLIBCXX_HAVE_STRUCT_DIRENT_D_TYPE
+   switch (d.d_type)
+diff --git a/libstdc++-v3/src/filesystem/dir.cc b/libstdc++-v3/src/filesystem/dir.cc
+index 7e712c553c3..01c3decaba6 100644
+--- a/libstdc++-v3/src/filesystem/dir.cc
++++ b/libstdc++-v3/src/filesystem/dir.cc
+@@ -37,6 +37,7 @@
+ #include "dir-common.h"
+ 
+ namespace fs = std::experimental::filesystem;
++namespace posix = std::filesystem::__gnu_posix;
+ 
+ struct fs::_Dir : std::filesystem::_Dir_base
+ {
+@@ -47,7 +48,7 @@ struct fs::_Dir : std::filesystem::_Dir_base
+       path = p;
+   }
+ 
+-  _Dir(DIR* dirp, const path& p) : _Dir_base(dirp), path(p) { }
++  _Dir(posix::DIR* dirp, const path& p) : _Dir_base(dirp), path(p) { }
+ 
+   _Dir(_Dir&&) = default;
+ 
+@@ -185,7 +186,7 @@ recursive_directory_iterator(const path& p, directory_options options,
+ {
+   if (ec)
+     ec->clear();
+-  if (DIR* dirp = ::opendir(p.c_str()))
++  if (posix::DIR* dirp = posix::opendir(p.c_str()))
+     {
+       auto sp = std::make_shared<_Dir_stack>();
+       sp->push(_Dir{ dirp, p });
+diff --git a/libstdc++-v3/src/filesystem/ops-common.h b/libstdc++-v3/src/filesystem/ops-common.h
+index bc186836bd4..c1b817189a9 100644
+--- a/libstdc++-v3/src/filesystem/ops-common.h
++++ b/libstdc++-v3/src/filesystem/ops-common.h
+@@ -34,12 +34,103 @@
+ #  include <sys/stat.h>
+ # endif
+ #endif
++#if !_GLIBCXX_USE_UTIMENSAT && _GLIBCXX_HAVE_UTIME_H
++# include <utime.h> // utime
++#endif
++
++#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
++# include <wchar.h>
++#endif
+ 
+ namespace std _GLIBCXX_VISIBILITY(default)
+ {
+ _GLIBCXX_BEGIN_NAMESPACE_VERSION
+ namespace filesystem
+ {
++namespace __gnu_posix
++{
++#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
++// Adapt the Windows _wxxx functions to look like POSIX xxx, but for wchar_t*.
++  inline int open(const wchar_t* path, int flags)
++  { return ::_wopen(path, flags); }
++
++  inline int open(const wchar_t* path, int flags, int mode)
++  { return ::_wopen(path, flags, mode); }
++
++  inline int close(int fd)
++  { return ::_close(fd); }
++
++  typedef struct ::_stat stat_type;
++
++  inline int stat(const wchar_t* path, stat_type* buffer)
++  { return ::_wstat(path, buffer); }
++
++  inline lstat(const wchar_t* path, stat_type* buffer)
++  {
++    // TODO symlinks not currently supported
++    return stat(path, buffer);
++  }
++
++  using ::mode_t;
++
++  inline int chmod(const wchar_t* path, mode_t mode)
++  { return ::_wchmod(path, mode); }
++
++  inline int mkdir(const wchar_t* path, mode_t)
++  { return ::_wmkdir(path); }
++
++  inline wchar_t* getcwd(wchar_t* buf, size_t size)
++  { return ::_wgetcwd(buf, size > (size_t)INT_MAX ? INT_MAX : (int)size); }
++
++  inline int chdir(const wchar_t* path)
++  { return ::_wchdir(path); }
++
++#if !_GLIBCXX_USE_UTIMENSAT && _GLIBCXX_HAVE_UTIME_H
++  using utimbuf = _utimbuf;
++
++  inline int utime(const wchar_t* path, utimbuf* times)
++  { return ::_wutime(path, times); }
++#endif
++
++  inline int rename(const wchar_t* oldname, const wchar_t* newname)
++  { return _wrename(oldname, newname); }
++
++  inline int truncate(const wchar_t* path, _off64_t length)
++  {
++    const int fd = ::_wopen(path, _O_BINARY|_O_RDWR);
++    if (fd == -1)
++      return fd;
++    const int ret = ::ftruncate64(fd, length);
++    int err;
++    ::_get_errno(&err);
++    ::_close(fd);
++    ::_set_errno(err);
++    return ret;
++  }
++  using char_type = wchar_t;
++#else // _GLIBCXX_FILESYSTEM_IS_WINDOWS
++  using ::open;
++  using ::close;
++#ifdef _GLIBCXX_HAVE_SYS_STAT_H
++  typedef struct ::stat stat_type;
++  using ::stat;
++  using ::lstat;
++#endif
++  using ::mode_t;
++  using ::chmod;
++  using ::mkdir;
++  using ::getcwd;
++  using ::chdir;
++#if !_GLIBCXX_USE_UTIMENSAT && _GLIBCXX_HAVE_UTIME_H
++  using ::utimbuf;
++  using ::utime;
++#endif
++  using ::rename;
++  using ::truncate;
++  using char_type = char;
++#endif // _GLIBCXX_FILESYSTEM_IS_WINDOWS
++} // namespace __gnu_posix
++
+   template<typename Bitmask>
+     inline bool is_set(Bitmask obj, Bitmask bits)
+     {
+@@ -53,7 +144,7 @@ namespace filesystem
+   }
+ 
+ #ifdef _GLIBCXX_HAVE_SYS_STAT_H
+-  typedef struct ::stat stat_type;
++  using __gnu_posix::stat_type;
+ 
+   inline std::chrono::system_clock::time_point
+   file_time(const stat_type& st, std::error_code& ec) noexcept
+@@ -82,11 +173,17 @@ namespace filesystem
+   };
+ 
+   bool
+-  do_copy_file(const char* from, const char* to,
++  do_copy_file(const __gnu_posix::char_type* from,
++	       const __gnu_posix::char_type* to,
+ 	       copy_options_existing_file options,
+ 	       stat_type* from_st, stat_type* to_st,
+ 	       std::error_code& ec) noexcept;
+ 
++  void
++  do_space(const __gnu_posix::char_type* pathname,
++	   uintmax_t& capacity, uintmax_t& free, uintmax_t& available,
++	   std::error_code&);
++
+ #endif // _GLIBCXX_HAVE_SYS_STAT_H
+ 
+ } // namespace filesystem
+@@ -95,7 +192,7 @@ namespace filesystem
+ _GLIBCXX_BEGIN_NAMESPACE_FILESYSTEM
+ 
+ #ifdef _GLIBCXX_HAVE_SYS_STAT_H
+-  typedef struct ::stat stat_type;
++  using std::filesystem::__gnu_posix::stat_type;
+ 
+   inline file_type
+   make_file_type(const stat_type& st) noexcept
+@@ -111,8 +208,10 @@ _GLIBCXX_BEGIN_NAMESPACE_FILESYSTEM
+       return file_type::block;
+     else if (S_ISFIFO(st.st_mode))
+       return file_type::fifo;
++#ifdef S_ISLNK // not present in mingw
+     else if (S_ISLNK(st.st_mode))
+       return file_type::symlink;
++#endif
+ #ifdef S_ISSOCK // not present until POSIX:2001
+     else if (S_ISSOCK(st.st_mode))
+       return file_type::socket;
+diff --git a/libstdc++-v3/src/filesystem/ops.cc b/libstdc++-v3/src/filesystem/ops.cc
+index de290625e54..40cadbf6270 100644
+--- a/libstdc++-v3/src/filesystem/ops.cc
++++ b/libstdc++-v3/src/filesystem/ops.cc
+@@ -47,20 +47,17 @@
+ #if !_GLIBCXX_USE_UTIMENSAT && _GLIBCXX_HAVE_UTIME_H
+ # include <utime.h> // utime
+ #endif
++#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
++# include <windows.h>
++#endif
+ 
+ #define _GLIBCXX_BEGIN_NAMESPACE_FILESYSTEM \
+   namespace experimental { namespace filesystem {
+ #define _GLIBCXX_END_NAMESPACE_FILESYSTEM } }
+ #include "ops-common.h"
+ 
+-#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+-# undef utime
+-# define utime _wutime
+-# undef chmod
+-# define chmod _wchmod
+-#endif
+-
+ namespace fs = std::experimental::filesystem;
++namespace posix = std::filesystem::__gnu_posix;
+ 
+ fs::path
+ fs::absolute(const path& p, const path& base)
+@@ -109,7 +106,7 @@ namespace
+     void operator()(void* p) const { ::free(p); }
+   };
+ 
+-  using char_ptr = std::unique_ptr<char[], free_as_in_malloc>;
++  using char_ptr = std::unique_ptr<fs::path::value_type[], free_as_in_malloc>;
+ }
+ 
+ fs::path
+@@ -122,7 +119,8 @@ fs::canonical(const path& p, const path& base, error_code& ec)
+   char_ptr buf{ nullptr };
+ # if _XOPEN_VERSION < 700
+   // Not safe to call realpath(path, NULL)
+-  buf.reset( (char*)::malloc(PATH_MAX) );
++  using char_type = fs::path::value_type;
++  buf.reset( (char_type*)::malloc(PATH_MAX * sizeof(char_type)) );
+ # endif
+   if (char* rp = ::realpath(pa.c_str(), buf.get()))
+     {
+@@ -241,12 +239,13 @@ namespace
+   using std::filesystem::is_set;
+ 
+ #ifdef _GLIBCXX_HAVE_SYS_STAT_H
+-  typedef struct ::stat stat_type;
++  using posix::stat_type;
+ 
+   using std::filesystem::is_not_found_errno;
+   using std::filesystem::file_time;
+   using std::filesystem::do_copy_file;
+ #endif // _GLIBCXX_HAVE_SYS_STAT_H
++
+ } // namespace
+ 
+ void
+@@ -263,15 +262,15 @@ fs::copy(const path& from, const path& to, copy_options options,
+   // _GLIBCXX_RESOLVE_LIB_DEFECTS
+   // 2681. filesystem::copy() cannot copy symlinks
+   if (use_lstat || copy_symlinks
+-      ? ::lstat(from.c_str(), &from_st)
+-      : ::stat(from.c_str(), &from_st))
++      ? posix::lstat(from.c_str(), &from_st)
++      : posix::stat(from.c_str(), &from_st))
+     {
+       ec.assign(errno, std::generic_category());
+       return;
+     }
+   if (use_lstat
+-      ? ::lstat(to.c_str(), &to_st)
+-      : ::stat(to.c_str(), &to_st))
++      ? posix::lstat(to.c_str(), &to_st)
++      : posix::stat(to.c_str(), &to_st))
+     {
+       if (!is_not_found_errno(errno))
+ 	{
+@@ -424,19 +423,6 @@ fs::create_directories(const path& p, error_code& ec) noexcept
+       ec = std::make_error_code(errc::invalid_argument);
+       return false;
+     }
+-
+-  file_status st = symlink_status(p, ec);
+-  if (is_directory(st))
+-    return false;
+-  else if (ec && !status_known(st))
+-    return false;
+-  else if (exists(st))
+-    {
+-      if (!ec)
+-	ec = std::make_error_code(std::errc::not_a_directory);
+-      return false;
+-    }
+-
+   std::stack<path> missing;
+   path pp = p;
+ 
+@@ -445,29 +431,24 @@ fs::create_directories(const path& p, error_code& ec) noexcept
+       ec.clear();
+       const auto& filename = pp.filename();
+       if (!is_dot(filename) && !is_dotdot(filename))
+-	{
+-	  missing.push(std::move(pp));
+-	  pp = missing.top().parent_path();
+-	}
+-      else
+-	pp = pp.parent_path();
++	missing.push(pp);
++      pp.remove_filename();
+     }
+ 
+   if (ec || missing.empty())
+     return false;
+ 
+-  bool created;
+   do
+     {
+       const path& top = missing.top();
+-      created = create_directory(top, ec);
+-      if (ec)
+-	return false;
++      create_directory(top, ec);
++      if (ec && is_directory(top))
++	ec.clear();
+       missing.pop();
+     }
+-  while (!missing.empty());
++  while (!missing.empty() && !ec);
+ 
+-  return created;
++  return missing.empty();
+ }
+ 
+ namespace
+@@ -477,8 +458,8 @@ namespace
+   {
+     bool created = false;
+ #ifdef _GLIBCXX_HAVE_SYS_STAT_H
+-    ::mode_t mode = static_cast<std::underlying_type_t<fs::perms>>(perm);
+-    if (::mkdir(p.c_str(), mode))
++    posix::mode_t mode = static_cast<std::underlying_type_t<fs::perms>>(perm);
++    if (posix::mkdir(p.c_str(), mode))
+       {
+ 	const int err = errno;
+ 	if (err != EEXIST || !is_directory(p, ec))
+@@ -531,7 +512,7 @@ fs::create_directory(const path& p, const path& attributes,
+ {
+ #ifdef _GLIBCXX_HAVE_SYS_STAT_H
+   stat_type st;
+-  if (::stat(attributes.c_str(), &st))
++  if (posix::stat(attributes.c_str(), &st))
+     {
+       ec.assign(errno, std::generic_category());
+       return false;
+@@ -580,11 +561,16 @@ void
+ fs::create_hard_link(const path& to, const path& new_hard_link,
+ 		     error_code& ec) noexcept
+ {
+-#ifdef _GLIBCXX_HAVE_UNISTD_H
++#ifdef _GLIBCXX_HAVE_LINK
+   if (::link(to.c_str(), new_hard_link.c_str()))
+     ec.assign(errno, std::generic_category());
+   else
+     ec.clear();
++#elif defined _GLIBCXX_FILESYSTEM_IS_WINDOWS
++  if (CreateHardLinkW(new_hard_link.c_str(), to.c_str(), NULL))
++    ec.clear();
++  else
++    ec.assign((int)GetLastError(), generic_category());
+ #else
+   ec = std::make_error_code(std::errc::not_supported);
+ #endif
+@@ -604,7 +590,7 @@ void
+ fs::create_symlink(const path& to, const path& new_symlink,
+ 		   error_code& ec) noexcept
+ {
+-#ifdef _GLIBCXX_HAVE_UNISTD_H
++#ifdef _GLIBCXX_HAVE_SYMLINK
+   if (::symlink(to.c_str(), new_symlink.c_str()))
+     ec.assign(errno, std::generic_category());
+   else
+@@ -614,7 +600,6 @@ fs::create_symlink(const path& to, const path& new_symlink,
+ #endif
+ }
+ 
+-
+ fs::path
+ fs::current_path()
+ {
+@@ -630,8 +615,8 @@ fs::current_path(error_code& ec)
+ {
+   path p;
+ #ifdef _GLIBCXX_HAVE_UNISTD_H
+-#ifdef __GLIBC__
+-  if (char_ptr cwd = char_ptr{::getcwd(nullptr, 0)})
++#if defined __GLIBC__ || defined _GLIBCXX_FILESYSTEM_IS_WINDOWS
++  if (char_ptr cwd = char_ptr{posix::getcwd(nullptr, 0)})
+     {
+       p.assign(cwd.get());
+       ec.clear();
+@@ -639,6 +624,7 @@ fs::current_path(error_code& ec)
+   else
+     ec.assign(errno, std::generic_category());
+ #else
++#ifdef _PC_PATH_MAX
+   long path_max = pathconf(".", _PC_PATH_MAX);
+   size_t size;
+   if (path_max == -1)
+@@ -647,9 +633,15 @@ fs::current_path(error_code& ec)
+       size = 10240;
+   else
+       size = path_max;
++#elif defined(PATH_MAX)
++  size_t size = PATH_MAX;
++#else
++  size_t size = 1024;
++#endif
+   for (char_ptr buf; p.empty(); size *= 2)
+     {
+-      buf.reset((char*)malloc(size));
++      using char_type = fs::path::value_type;
++      buf.reset((char_type*)malloc(size * sizeof(char_type)));
+       if (buf)
+ 	{
+ 	  if (getcwd(buf.get(), size))
+@@ -689,7 +681,7 @@ void
+ fs::current_path(const path& p, error_code& ec) noexcept
+ {
+ #ifdef _GLIBCXX_HAVE_UNISTD_H
+-  if (::chdir(p.c_str()))
++  if (posix::chdir(p.c_str()))
+     ec.assign(errno, std::generic_category());
+   else
+     ec.clear();
+@@ -716,14 +708,14 @@ fs::equivalent(const path& p1, const path& p2, error_code& ec) noexcept
+   int err = 0;
+   file_status s1, s2;
+   stat_type st1, st2;
+-  if (::stat(p1.c_str(), &st1) == 0)
++  if (posix::stat(p1.c_str(), &st1) == 0)
+     s1 = make_file_status(st1);
+   else if (is_not_found_errno(errno))
+     s1.type(file_type::not_found);
+   else
+     err = errno;
+ 
+-  if (::stat(p2.c_str(), &st2) == 0)
++  if (posix::stat(p2.c_str(), &st2) == 0)
+     s2 = make_file_status(st2);
+   else if (is_not_found_errno(errno))
+     s2.type(file_type::not_found);
+@@ -773,7 +765,7 @@ namespace
+     {
+ #ifdef _GLIBCXX_HAVE_SYS_STAT_H
+       stat_type st;
+-      if (::stat(p.c_str(), &st))
++      if (posix::stat(p.c_str(), &st))
+ 	{
+ 	  ec.assign(errno, std::generic_category());
+ 	  return deflt;
+@@ -823,7 +815,7 @@ fs::hard_link_count(const path& p)
+ std::uintmax_t
+ fs::hard_link_count(const path& p, error_code& ec) noexcept
+ {
+-  return do_stat(p, ec, std::mem_fn(&stat::st_nlink),
++  return do_stat(p, ec, std::mem_fn(&stat_type::st_nlink),
+ 		 static_cast<uintmax_t>(-1));
+ }
+ 
+@@ -899,11 +891,11 @@ fs::last_write_time(const path& p __attribute__((__unused__)),
+   else
+     ec.clear();
+ #elif _GLIBCXX_HAVE_UTIME_H
+-  ::utimbuf times;
++  posix::utimbuf times;
+   times.modtime = s.count();
+   times.actime = do_stat(p, ec, [](const auto& st) { return st.st_atime; },
+ 			 times.modtime);
+-  if (::utime(p.c_str(), &times))
++  if (posix::utime(p.c_str(), &times))
+     ec.assign(errno, std::generic_category());
+   else
+     ec.clear();
+@@ -956,7 +948,7 @@ fs::permissions(const path& p, perms prms, error_code& ec) noexcept
+ #else
+   if (nofollow && is_symlink(st))
+     ec = std::make_error_code(std::errc::operation_not_supported);
+-  else if (::chmod(p.c_str(), static_cast<mode_t>(prms)))
++  else if (posix::chmod(p.c_str(), static_cast<mode_t>(prms)))
+     err = errno;
+ #endif
+ 
+@@ -976,10 +968,10 @@ fs::read_symlink(const path& p)
+   return tgt;
+ }
+ 
+-fs::path fs::read_symlink(const path& p, error_code& ec)
++fs::path fs::read_symlink(const path& p [[gnu::unused]], error_code& ec)
+ {
+   path result;
+-#ifdef _GLIBCXX_HAVE_SYS_STAT_H
++#if defined(_GLIBCXX_HAVE_READLINK) && defined(_GLIBCXX_HAVE_SYS_STAT_H)
+   stat_type st;
+   if (::lstat(p.c_str(), &st))
+     {
+@@ -1033,6 +1025,19 @@ fs::remove(const path& p)
+ bool
+ fs::remove(const path& p, error_code& ec) noexcept
+ {
++#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
++  if (exists(symlink_status(p, ec)))
++    {
++      if ((is_directory(p, ec) && RemoveDirectoryW(p.c_str()))
++	  || DeleteFileW(p.c_str()))
++	{
++	  ec.clear();
++	  return true;
++	}
++      else if (!ec)
++	ec.assign((int)GetLastError(), generic_category());
++    }
++#else
+   if (::remove(p.c_str()) == 0)
+     {
+       ec.clear();
+@@ -1042,6 +1047,7 @@ fs::remove(const path& p, error_code& ec) noexcept
+     ec.clear();
+   else
+     ec.assign(errno, std::generic_category());
++#endif
+   return false;
+ }
+ 
+@@ -1095,7 +1101,7 @@ fs::rename(const path& from, const path& to)
+ void
+ fs::rename(const path& from, const path& to, error_code& ec) noexcept
+ {
+-  if (::rename(from.c_str(), to.c_str()))
++  if (posix::rename(from.c_str(), to.c_str()))
+     ec.assign(errno, std::generic_category());
+   else
+     ec.clear();
+@@ -1116,7 +1122,7 @@ fs::resize_file(const path& p, uintmax_t size, error_code& ec) noexcept
+ #ifdef _GLIBCXX_HAVE_UNISTD_H
+   if (size > static_cast<uintmax_t>(std::numeric_limits<off_t>::max()))
+     ec.assign(EINVAL, std::generic_category());
+-  else if (::truncate(p.c_str(), size))
++  else if (posix::truncate(p.c_str(), size))
+     ec.assign(errno, std::generic_category());
+   else
+     ec.clear();
+@@ -1144,23 +1150,14 @@ fs::space(const path& p, error_code& ec) noexcept
+     static_cast<uintmax_t>(-1),
+     static_cast<uintmax_t>(-1)
+   };
+-#ifdef _GLIBCXX_HAVE_SYS_STATVFS_H
+-  struct ::statvfs f;
+-  if (::statvfs(p.c_str(), &f))
+-      ec.assign(errno, std::generic_category());
+-  else
+-    {
+-      uintmax_t fragment_size = f.f_frsize;
+-      info = space_info{
+-	f.f_blocks * fragment_size,
+-	f.f_bfree * fragment_size,
+-	f.f_bavail * fragment_size
+-      };
+-      ec.clear();
+-    }
++#if _GLIBCXX_FILESYSTEM_IS_WINDOWS
++  path dir = absolute(p);
++  dir.remove_filename();
++  auto str = dir.c_str();
+ #else
+-  ec = std::make_error_code(std::errc::not_supported);
++  auto str = p.c_str();
+ #endif
++  std::filesystem::do_space(str, info.capacity, info.free, info.available, ec);
+   return info;
+ }
+ 
+@@ -1170,7 +1167,7 @@ fs::status(const fs::path& p, error_code& ec) noexcept
+ {
+   file_status status;
+   stat_type st;
+-  if (::stat(p.c_str(), &st))
++  if (posix::stat(p.c_str(), &st))
+     {
+       int err = errno;
+       ec.assign(err, std::generic_category());
+@@ -1194,7 +1191,7 @@ fs::symlink_status(const fs::path& p, std::error_code& ec) noexcept
+ {
+   file_status status;
+   stat_type st;
+-  if (::lstat(p.c_str(), &st))
++  if (posix::lstat(p.c_str(), &st))
+     {
+       int err = errno;
+       ec.assign(err, std::generic_category());
+@@ -1269,27 +1266,38 @@ fs::path fs::temp_directory_path()
+ 
+ fs::path fs::temp_directory_path(error_code& ec)
+ {
++  path p;
+ #ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+-  ec = std::make_error_code(std::errc::not_supported);
+-  return {}; // TODO
++  unsigned len = 1024;
++  std::wstring buf;
++  do
++    {
++      buf.resize(len);
++      len = GetTempPathW(buf.size(), buf.data());
++    } while (len > buf.size());
++
++  if (len == 0)
++    {
++      ec.assign((int)GetLastError(), std::system_category());
++      return p;
++    }
++  buf.resize(len);
++  p = std::move(buf);
+ #else
+   const char* tmpdir = nullptr;
+   const char* env[] = { "TMPDIR", "TMP", "TEMP", "TEMPDIR", nullptr };
+   for (auto e = env; tmpdir == nullptr && *e != nullptr; ++e)
+     tmpdir = ::getenv(*e);
+-  path p = tmpdir ? tmpdir : "/tmp";
++  p = tmpdir ? tmpdir : "/tmp";
+   auto st = status(p, ec);
+-  if (!ec)
++  if (ec)
++    p.clear();
++  else if (!is_directory(st))
+     {
+-      if (is_directory(st))
+-	{
+-	  ec.clear();
+-	  return p;
+-	}
+-      else
+-	ec = std::make_error_code(std::errc::not_a_directory);
++      p.clear();
++      ec = std::make_error_code(std::errc::not_a_directory);
+     }
+-  return {};
+ #endif
++  return p;
+ }
+ 
+diff --git a/libstdc++-v3/src/filesystem/path.cc b/libstdc++-v3/src/filesystem/path.cc
+index 899d94e0067..fb70d30fdca 100644
+--- a/libstdc++-v3/src/filesystem/path.cc
++++ b/libstdc++-v3/src/filesystem/path.cc
+@@ -61,6 +61,12 @@ path::replace_filename(const path& replacement)
+   return *this;
+ }
+ 
++#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
++const fs::path::value_type dot = L'.';
++#else
++const fs::path::value_type dot = '.';
++#endif
++
+ path&
+ path::replace_extension(const path& replacement)
+ {
+@@ -78,8 +84,8 @@ path::replace_extension(const path& replacement)
+ 	  _M_pathname.erase(back._M_pos + ext.second);
+ 	}
+     }
+-  if (!replacement.empty() && replacement.native()[0] != '.')
+-    _M_pathname += '.';
++  if (!replacement.empty() && replacement.native()[0] != dot)
++    _M_pathname += dot;
+   _M_pathname += replacement.native();
+   _M_split_cmpts();
+   return *this;
+@@ -297,7 +303,7 @@ path::has_filename() const
+ std::pair<const path::string_type*, std::size_t>
+ path::_M_find_extension() const
+ {
+-  const std::string* s = nullptr;
++  const string_type* s = nullptr;
+ 
+   if (_M_type != _Type::_Multi)
+     s = &_M_pathname;
+@@ -312,14 +318,14 @@ path::_M_find_extension() const
+     {
+       if (auto sz = s->size())
+ 	{
+-	  if (sz <= 2 && (*s)[0] == '.')
++	  if (sz <= 2 && (*s)[0] == dot)
+ 	    {
+-	      if (sz == 1 || (*s)[1] == '.')  // filename is "." or ".."
++	      if (sz == 1 || (*s)[1] == dot)  // filename is "." or ".."
+ 		return { s, string_type::npos };
+ 	      else
+ 		return { s, 0 };  // filename is like ".?"
+ 	    }
+-	  return { s, s->rfind('.') };
++	  return { s, s->rfind(dot) };
+ 	}
+     }
+   return {};
+@@ -405,7 +411,7 @@ path::_M_split_cmpts()
+ 	{
+ 	  const auto& last = _M_cmpts.back();
+ 	  pos = last._M_pos + last._M_pathname.size();
+-	  _M_cmpts.emplace_back(string_type(1, '.'), _Type::_Filename, pos);
++	  _M_cmpts.emplace_back(string_type(1, dot), _Type::_Filename, pos);
+ 	}
+     }
+ 
+@@ -495,8 +501,8 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+   std::string filesystem_error::_M_gen_what()
+   {
+     using std::filesystem::fs_err_concat;
+-    return fs_err_concat(system_error::what(), _M_path1.native(),
+-			 _M_path2.native());
++    return fs_err_concat(system_error::what(), _M_path1.u8string(),
++			 _M_path2.u8string());
+   }
+ 
+ _GLIBCXX_END_NAMESPACE_CXX11
+diff --git a/libstdc++-v3/src/filesystem/std-dir.cc b/libstdc++-v3/src/filesystem/std-dir.cc
+index 98eb22ab920..4c9a287ad80 100644
+--- a/libstdc++-v3/src/filesystem/std-dir.cc
++++ b/libstdc++-v3/src/filesystem/std-dir.cc
+@@ -37,6 +37,7 @@
+ #include "dir-common.h"
+ 
+ namespace fs = std::filesystem;
++namespace posix = std::filesystem::__gnu_posix;
+ 
+ struct fs::_Dir : _Dir_base
+ {
+@@ -47,7 +48,7 @@ struct fs::_Dir : _Dir_base
+       path = p;
+   }
+ 
+-  _Dir(DIR* dirp, const path& p) : _Dir_base(dirp), path(p) { }
++  _Dir(posix::DIR* dirp, const path& p) : _Dir_base(dirp), path(p) { }
+ 
+   _Dir(_Dir&&) = default;
+ 
+@@ -180,7 +181,7 @@ recursive_directory_iterator(const path& p, directory_options options,
+                              error_code* ecptr)
+ : _M_options(options), _M_pending(true)
+ {
+-  if (DIR* dirp = ::opendir(p.c_str()))
++  if (posix::DIR* dirp = posix::opendir(p.c_str()))
+     {
+       if (ecptr)
+ 	ecptr->clear();
+diff --git a/libstdc++-v3/src/filesystem/std-ops.cc b/libstdc++-v3/src/filesystem/std-ops.cc
+index c0742d73b5c..e266fa6d3f8 100644
+--- a/libstdc++-v3/src/filesystem/std-ops.cc
++++ b/libstdc++-v3/src/filesystem/std-ops.cc
+@@ -25,6 +25,7 @@
+ #ifndef _GLIBCXX_USE_CXX11_ABI
+ # define _GLIBCXX_USE_CXX11_ABI 1
+ # define NEED_DO_COPY_FILE
++# define NEED_DO_SPACE
+ #endif
+ 
+ #include <filesystem>
+@@ -52,19 +53,16 @@
+ #if !_GLIBCXX_USE_UTIMENSAT && _GLIBCXX_HAVE_UTIME_H
+ # include <utime.h> // utime
+ #endif
++#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
++# include <windows.h>
++#endif
+ 
+ #define _GLIBCXX_BEGIN_NAMESPACE_FILESYSTEM namespace filesystem {
+ #define _GLIBCXX_END_NAMESPACE_FILESYSTEM }
+ #include "ops-common.h"
+ 
+-#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+-# undef utime
+-# define utime _wutime
+-# undef chmod
+-# define chmod _wchmod
+-#endif
+-
+ namespace fs = std::filesystem;
++namespace posix = std::filesystem::__gnu_posix;
+ 
+ fs::path
+ fs::absolute(const path& p)
+@@ -74,7 +72,7 @@ fs::absolute(const path& p)
+   path ret = absolute(p, ec);
+   if (ec)
+     _GLIBCXX_THROW_OR_ABORT(filesystem_error("cannot make absolute path", p,
+-	std::make_error_code(errc::not_supported)));
++					     ec));
+   return ret;
+ #else
+   return current_path() / p;
+@@ -90,17 +88,28 @@ fs::absolute(const path& p, error_code& ec)
+       ec = make_error_code(std::errc::no_such_file_or_directory);
+       return ret;
+     }
+-  if (p.is_absolute())
++#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
++  const wstring& s = p.native();
++  uint32_t len = 1024;
++  wstring buf;
++  do
+     {
+-      ec.clear();
+-      ret = p;
+-      return ret;
++      buf.resize(len);
++      len = GetFullPathNameW(s.c_str(), len, buf.data(), nullptr);
+     }
++  while (len > buf.size());
+ 
+-#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+-  ec = std::make_error_code(errc::not_supported);
++  if (len == 0)
++    ec.assign((int)GetLastError(), std::system_category());
++  else
++    {
++      ec.clear();
++      buf.resize(len);
++      ret = std::move(buf);
++    }
+ #else
+-  ret = current_path(ec);
++  ec.clear();
++  ret = current_path();
+   ret /= p;
+ #endif
+   return ret;
+@@ -131,7 +140,7 @@ namespace
+     void operator()(void* p) const { ::free(p); }
+   };
+ 
+-  using char_ptr = std::unique_ptr<char[], free_as_in_malloc>;
++  using char_ptr = std::unique_ptr<fs::path::value_type[], free_as_in_malloc>;
+ }
+ 
+ fs::path
+@@ -146,7 +155,8 @@ fs::canonical(const path& p, error_code& ec)
+   char_ptr buf{ nullptr };
+ # if _XOPEN_VERSION < 700
+   // Not safe to call realpath(path, NULL)
+-  buf.reset( (char*)::malloc(PATH_MAX) );
++  using char_type = fs::path::value_type;
++  buf.reset( (char_type*)::malloc(PATH_MAX * sizeof(char_type)) );
+ # endif
+   if (char* rp = ::realpath(pa.c_str(), buf.get()))
+     {
+@@ -267,7 +277,7 @@ namespace std::filesystem
+ #ifdef _GLIBCXX_HAVE_SYS_STAT_H
+ #ifdef NEED_DO_COPY_FILE
+ bool
+-fs::do_copy_file(const char* from, const char* to,
++fs::do_copy_file(const path::value_type* from, const path::value_type* to,
+ 		 copy_options_existing_file options,
+ 		 stat_type* from_st, stat_type* to_st,
+ 		 std::error_code& ec) noexcept
+@@ -277,7 +287,7 @@ fs::do_copy_file(const char* from, const char* to,
+ 
+   if (to_st == nullptr)
+     {
+-      if (::stat(to, &st1))
++      if (posix::stat(to, &st1))
+ 	{
+ 	  const int err = errno;
+ 	  if (!is_not_found_errno(err))
+@@ -299,7 +309,7 @@ fs::do_copy_file(const char* from, const char* to,
+ 
+   if (from_st == nullptr)
+     {
+-      if (::stat(from, &st2))
++      if (posix::stat(from, &st2))
+ 	{
+ 	  ec.assign(errno, std::generic_category());
+ 	  return false;
+@@ -357,12 +367,12 @@ fs::do_copy_file(const char* from, const char* to,
+     }
+ 
+   struct CloseFD {
+-    ~CloseFD() { if (fd != -1) ::close(fd); }
+-    bool close() { return ::close(std::exchange(fd, -1)) == 0; }
++    ~CloseFD() { if (fd != -1) posix::close(fd); }
++    bool close() { return posix::close(std::exchange(fd, -1)) == 0; }
+     int fd;
+   };
+ 
+-  CloseFD in = { ::open(from, O_RDONLY) };
++  CloseFD in = { posix::open(from, O_RDONLY) };
+   if (in.fd == -1)
+     {
+       ec.assign(errno, std::generic_category());
+@@ -373,7 +383,7 @@ fs::do_copy_file(const char* from, const char* to,
+     oflag |= O_TRUNC;
+   else
+     oflag |= O_EXCL;
+-  CloseFD out = { ::open(to, oflag, S_IWUSR) };
++  CloseFD out = { posix::open(to, oflag, S_IWUSR) };
+   if (out.fd == -1)
+     {
+       if (errno == EEXIST && options.skip)
+@@ -383,12 +393,12 @@ fs::do_copy_file(const char* from, const char* to,
+       return false;
+     }
+ 
+-#ifdef _GLIBCXX_USE_FCHMOD
++#if defined _GLIBCXX_USE_FCHMOD && ! defined _GLIBCXX_FILESYSTEM_IS_WINDOWS
+   if (::fchmod(out.fd, from_st->st_mode))
+-#elif defined _GLIBCXX_USE_FCHMODAT
++#elif defined _GLIBCXX_USE_FCHMODAT && ! defined _GLIBCXX_FILESYSTEM_IS_WINDOWS
+   if (::fchmodat(AT_FDCWD, to, from_st->st_mode, 0))
+ #else
+-  if (::chmod(to, from_st->st_mode))
++  if (posix::chmod(to, from_st->st_mode))
+ #endif
+     {
+       ec.assign(errno, std::generic_category());
+@@ -396,7 +406,7 @@ fs::do_copy_file(const char* from, const char* to,
+     }
+ 
+   size_t count = from_st->st_size;
+-#ifdef _GLIBCXX_USE_SENDFILE
++#if defined _GLIBCXX_USE_SENDFILE && ! defined _GLIBCXX_FILESYSTEM_IS_WINDOWS
+   off_t offset = 0;
+   ssize_t n = ::sendfile(out.fd, in.fd, &offset, count);
+   if (n < 0 && errno != ENOSYS && errno != EINVAL)
+@@ -475,15 +485,15 @@ fs::copy(const path& from, const path& to, copy_options options,
+   // _GLIBCXX_RESOLVE_LIB_DEFECTS
+   // 2681. filesystem::copy() cannot copy symlinks
+   if (use_lstat || copy_symlinks
+-      ? ::lstat(from.c_str(), &from_st)
+-      : ::stat(from.c_str(), &from_st))
++      ? posix::lstat(from.c_str(), &from_st)
++      : posix::stat(from.c_str(), &from_st))
+     {
+       ec.assign(errno, std::generic_category());
+       return;
+     }
+   if (use_lstat
+-      ? ::lstat(to.c_str(), &to_st)
+-      : ::stat(to.c_str(), &to_st))
++      ? posix::lstat(to.c_str(), &to_st)
++      : posix::stat(to.c_str(), &to_st))
+     {
+       if (!is_not_found_errno(errno))
+ 	{
+@@ -636,74 +646,38 @@ fs::create_directories(const path& p, error_code& ec)
+       ec = std::make_error_code(errc::invalid_argument);
+       return false;
+     }
+-
+-  file_status st = symlink_status(p, ec);
+-  if (is_directory(st))
+-    return false;
+-  else if (ec && !status_known(st))
+-    return false;
+-  else if (exists(st))
+-    {
+-      if (!ec)
+-	ec = std::make_error_code(std::errc::not_a_directory);
+-      return false;
+-    }
+-
+   std::stack<path> missing;
+   path pp = p;
+ 
+-  // Strip any trailing slash
+-  if (pp.has_relative_path() && !pp.has_filename())
+-    pp = pp.parent_path();
+-
+-  do
++  while (pp.has_filename() && status(pp, ec).type() == file_type::not_found)
+     {
++      ec.clear();
+       const auto& filename = pp.filename();
+-      if (is_dot(filename) || is_dotdot(filename))
+-	pp = pp.parent_path();
+-      else
+-	{
+-	  missing.push(std::move(pp));
+-	  if (missing.size() > 1000) // sanity check
+-	    {
+-	      ec = std::make_error_code(std::errc::filename_too_long);
+-	      return false;
+-	    }
+-	  pp = missing.top().parent_path();
+-	}
++      if (!is_dot(filename) && !is_dotdot(filename))
++	missing.push(pp);
++      pp = pp.parent_path();
+ 
+-      if (pp.empty())
+-	break;
+-
+-      st = status(pp, ec);
+-      if (exists(st))
++      if (missing.size() > 1000) // sanity check
+ 	{
+-	  if (ec)
+-	    return false;
+-	  if (!is_directory(st))
+-	    {
+-	      ec = std::make_error_code(std::errc::not_a_directory);
+-	      return false;
+-	    }
++	  ec = std::make_error_code(std::errc::filename_too_long);
++	  return false;
+ 	}
+-
+-      if (ec && exists(st))
+-	return false;
+     }
+-  while (st.type() == file_type::not_found);
+ 
+-  bool created;
++  if (ec || missing.empty())
++    return false;
++
+   do
+     {
+       const path& top = missing.top();
+-      created = create_directory(top, ec);
+-      if (ec)
+-	return false;
++      create_directory(top, ec);
++      if (ec && is_directory(top))
++	ec.clear();
+       missing.pop();
+     }
+-  while (!missing.empty());
++  while (!missing.empty() && !ec);
+ 
+-  return created;
++  return missing.empty();
+ }
+ 
+ namespace
+@@ -713,8 +687,9 @@ namespace
+   {
+     bool created = false;
+ #ifdef _GLIBCXX_HAVE_SYS_STAT_H
+-    ::mode_t mode = static_cast<std::underlying_type_t<fs::perms>>(perm);
+-    if (::mkdir(p.c_str(), mode))
++    posix::mode_t mode
++      = static_cast<std::underlying_type_t<fs::perms>>(perm);
++    if (posix::mkdir(p.c_str(), mode))
+       {
+ 	const int err = errno;
+ 	if (err != EEXIST || !is_directory(p, ec))
+@@ -767,7 +742,7 @@ fs::create_directory(const path& p, const path& attributes,
+ {
+ #ifdef _GLIBCXX_HAVE_SYS_STAT_H
+   stat_type st;
+-  if (::stat(attributes.c_str(), &st))
++  if (posix::stat(attributes.c_str(), &st))
+     {
+       ec.assign(errno, std::generic_category());
+       return false;
+@@ -809,18 +784,23 @@ fs::create_hard_link(const path& to, const path& new_hard_link)
+   create_hard_link(to, new_hard_link, ec);
+   if (ec)
+     _GLIBCXX_THROW_OR_ABORT(filesystem_error("cannot create hard link",
+-	  to, new_hard_link, ec));
++					     to, new_hard_link, ec));
+ }
+ 
+ void
+ fs::create_hard_link(const path& to, const path& new_hard_link,
+ 		     error_code& ec) noexcept
+ {
+-#ifdef _GLIBCXX_HAVE_UNISTD_H
++#ifdef _GLIBCXX_HAVE_LINK
+   if (::link(to.c_str(), new_hard_link.c_str()))
+     ec.assign(errno, std::generic_category());
+   else
+     ec.clear();
++#elif defined _GLIBCXX_FILESYSTEM_IS_WINDOWS
++  if (CreateHardLinkW(new_hard_link.c_str(), to.c_str(), NULL))
++    ec.clear();
++  else
++    ec.assign((int)GetLastError(), generic_category());
+ #else
+   ec = std::make_error_code(std::errc::not_supported);
+ #endif
+@@ -840,7 +820,7 @@ void
+ fs::create_symlink(const path& to, const path& new_symlink,
+ 		   error_code& ec) noexcept
+ {
+-#ifdef _GLIBCXX_HAVE_UNISTD_H
++#ifdef _GLIBCXX_HAVE_SYMLINK
+   if (::symlink(to.c_str(), new_symlink.c_str()))
+     ec.assign(errno, std::generic_category());
+   else
+@@ -866,8 +846,8 @@ fs::current_path(error_code& ec)
+ {
+   path p;
+ #ifdef _GLIBCXX_HAVE_UNISTD_H
+-#ifdef __GLIBC__
+-  if (char_ptr cwd = char_ptr{::getcwd(nullptr, 0)})
++#if defined __GLIBC__ || defined _GLIBCXX_FILESYSTEM_IS_WINDOWS
++  if (char_ptr cwd = char_ptr{posix::getcwd(nullptr, 0)})
+     {
+       p.assign(cwd.get());
+       ec.clear();
+@@ -875,6 +855,7 @@ fs::current_path(error_code& ec)
+   else
+     ec.assign(errno, std::generic_category());
+ #else
++#ifdef _PC_PATH_MAX
+   long path_max = pathconf(".", _PC_PATH_MAX);
+   size_t size;
+   if (path_max == -1)
+@@ -883,9 +864,15 @@ fs::current_path(error_code& ec)
+       size = 10240;
+   else
+       size = path_max;
++#elif defined(PATH_MAX)
++  size_t size = PATH_MAX;
++#else
++  size_t size = 1024;
++#endif
+   for (char_ptr buf; p.empty(); size *= 2)
+     {
+-      buf.reset((char*)malloc(size));
++      using char_type = fs::path::value_type;
++      buf.reset((char_type*)malloc(size * sizeof(char_type)));
+       if (buf)
+ 	{
+ 	  if (getcwd(buf.get(), size))
+@@ -925,7 +912,7 @@ void
+ fs::current_path(const path& p, error_code& ec) noexcept
+ {
+ #ifdef _GLIBCXX_HAVE_UNISTD_H
+-  if (::chdir(p.c_str()))
++  if (posix::chdir(p.c_str()))
+     ec.assign(errno, std::generic_category());
+   else
+     ec.clear();
+@@ -952,14 +939,14 @@ fs::equivalent(const path& p1, const path& p2, error_code& ec) noexcept
+   int err = 0;
+   file_status s1, s2;
+   stat_type st1, st2;
+-  if (::stat(p1.c_str(), &st1) == 0)
++  if (posix::stat(p1.c_str(), &st1) == 0)
+     s1 = make_file_status(st1);
+   else if (is_not_found_errno(errno))
+     s1.type(file_type::not_found);
+   else
+     err = errno;
+ 
+-  if (::stat(p2.c_str(), &st2) == 0)
++  if (posix::stat(p2.c_str(), &st2) == 0)
+     s2 = make_file_status(st2);
+   else if (is_not_found_errno(errno))
+     s2.type(file_type::not_found);
+@@ -1008,8 +995,8 @@ namespace
+     do_stat(const fs::path& p, std::error_code& ec, Accessor f, T deflt)
+     {
+ #ifdef _GLIBCXX_HAVE_SYS_STAT_H
+-      fs::stat_type st;
+-      if (::stat(p.c_str(), &st))
++      posix::stat_type st;
++      if (posix::stat(p.c_str(), &st))
+ 	{
+ 	  ec.assign(errno, std::generic_category());
+ 	  return deflt;
+@@ -1059,7 +1046,7 @@ fs::hard_link_count(const path& p)
+ std::uintmax_t
+ fs::hard_link_count(const path& p, error_code& ec) noexcept
+ {
+-  return do_stat(p, ec, std::mem_fn(&stat::st_nlink),
++  return do_stat(p, ec, std::mem_fn(&stat_type::st_nlink),
+ 		 static_cast<uintmax_t>(-1));
+ }
+ 
+@@ -1135,11 +1122,11 @@ fs::last_write_time(const path& p __attribute__((__unused__)),
+   else
+     ec.clear();
+ #elif _GLIBCXX_HAVE_UTIME_H
+-  ::utimbuf times;
++  posix::utimbuf times;
+   times.modtime = s.count();
+   times.actime = do_stat(p, ec, [](const auto& st) { return st.st_atime; },
+ 			 times.modtime);
+-  if (::utime(p.c_str(), &times))
++  if (posix::utime(p.c_str(), &times))
+     ec.assign(errno, std::generic_category());
+   else
+     ec.clear();
+@@ -1194,7 +1181,7 @@ fs::permissions(const path& p, perms prms, perm_options opts,
+ #else
+   if (nofollow && is_symlink(st))
+     ec = std::make_error_code(std::errc::operation_not_supported);
+-  else if (::chmod(p.c_str(), static_cast<mode_t>(prms)))
++  else if (posix::chmod(p.c_str(), static_cast<mode_t>(prms)))
+     err = errno;
+ #endif
+ 
+@@ -1234,10 +1221,10 @@ fs::read_symlink(const path& p)
+   return tgt;
+ }
+ 
+-fs::path fs::read_symlink(const path& p, error_code& ec)
++fs::path fs::read_symlink(const path& p [[gnu::unused]], error_code& ec)
+ {
+   path result;
+-#ifdef _GLIBCXX_HAVE_SYS_STAT_H
++#if defined(_GLIBCXX_HAVE_READLINK) && defined(_GLIBCXX_HAVE_SYS_STAT_H)
+   stat_type st;
+   if (::lstat(p.c_str(), &st))
+     {
+@@ -1310,6 +1297,19 @@ fs::remove(const path& p)
+ bool
+ fs::remove(const path& p, error_code& ec) noexcept
+ {
++#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
++  if (exists(symlink_status(p, ec)))
++    {
++      if ((is_directory(p, ec) && RemoveDirectoryW(p.c_str()))
++	  || DeleteFileW(p.c_str()))
++	{
++	  ec.clear();
++	  return true;
++	}
++      else if (!ec)
++	ec.assign((int)GetLastError(), generic_category());
++    }
++#else
+   if (::remove(p.c_str()) == 0)
+     {
+       ec.clear();
+@@ -1319,6 +1319,7 @@ fs::remove(const path& p, error_code& ec) noexcept
+     ec.clear();
+   else
+     ec.assign(errno, std::generic_category());
++#endif
+   return false;
+ }
+ 
+@@ -1372,7 +1373,7 @@ fs::rename(const path& from, const path& to)
+ void
+ fs::rename(const path& from, const path& to, error_code& ec) noexcept
+ {
+-  if (::rename(from.c_str(), to.c_str()))
++  if (posix::rename(from.c_str(), to.c_str()))
+     ec.assign(errno, std::generic_category());
+   else
+     ec.clear();
+@@ -1393,7 +1394,7 @@ fs::resize_file(const path& p, uintmax_t size, error_code& ec) noexcept
+ #ifdef _GLIBCXX_HAVE_UNISTD_H
+   if (size > static_cast<uintmax_t>(std::numeric_limits<off_t>::max()))
+     ec.assign(EINVAL, std::generic_category());
+-  else if (::truncate(p.c_str(), size))
++  else if (posix::truncate(p.c_str(), size))
+     ec.assign(errno, std::generic_category());
+   else
+     ec.clear();
+@@ -1413,31 +1414,67 @@ fs::space(const path& p)
+   return s;
+ }
+ 
+-fs::space_info
+-fs::space(const path& p, error_code& ec) noexcept
++#ifdef NEED_DO_SPACE
++void
++fs::do_space(const __gnu_posix::char_type* pathname,
++	 uintmax_t& capacity, uintmax_t& free, uintmax_t& available,
++	 std::error_code& ec)
+ {
+-  space_info info = {
+-    static_cast<uintmax_t>(-1),
+-    static_cast<uintmax_t>(-1),
+-    static_cast<uintmax_t>(-1)
+-  };
+ #ifdef _GLIBCXX_HAVE_SYS_STATVFS_H
+   struct ::statvfs f;
+-  if (::statvfs(p.c_str(), &f))
++  if (::statvfs(pathname, &f))
+       ec.assign(errno, std::generic_category());
+   else
+     {
+-      uintmax_t fragment_size = f.f_frsize;
+-      info = space_info{
+-	f.f_blocks * fragment_size,
+-	f.f_bfree * fragment_size,
+-	f.f_bavail * fragment_size
+-      };
++      if (f.f_frsize != (unsigned long)-1)
++	{
++	  const uintmax_t fragment_size = f.f_frsize;
++	  const fsblkcnt_t unknown = -1;
++	  if (f.f_blocks != unknown)
++	    capacity = f.f_blocks * fragment_size;
++	  if (f.f_bfree != unknown)
++	    free = f.f_bfree * fragment_size;
++	  if (f.f_bavail != unknown)
++	    available = f.f_bavail * fragment_size;
++	}
+       ec.clear();
+     }
++#elif _GLIBCXX_FILESYSTEM_IS_WINDOWS
++  ULARGE_INTEGER bytes_avail = {}, bytes_total = {}, bytes_free = {};
++  if (GetDiskFreeSpaceExW(pathname, &bytes_avail, &bytes_total, &bytes_free))
++    {
++      if (bytes_total.QuadPart != 0)
++	capacity = bytes_total.QuadPart;
++      if (bytes_free.QuadPart != 0)
++	free = bytes_free.QuadPart;
++      if (bytes_avail.QuadPart != 0)
++	available = bytes_avail.QuadPart;
++      ec.clear();
++    }
++  else
++    ec.assign((int)GetLastError(), std::system_category());
+ #else
+   ec = std::make_error_code(std::errc::not_supported);
+ #endif
++}
++#endif // NEED_DO_SPACE
++
++fs::space_info
++fs::space(const path& p, error_code& ec) noexcept
++{
++  space_info info = {
++    static_cast<uintmax_t>(-1),
++    static_cast<uintmax_t>(-1),
++    static_cast<uintmax_t>(-1)
++  };
++#if _GLIBCXX_FILESYSTEM_IS_WINDOWS
++  path dir = absolute(p);
++  dir.remove_filename();
++  auto str = dir.c_str();
++#else
++  auto str = p.c_str();
++#endif
++  do_space(str, info.capacity, info.free, info.available, ec);
+   return info;
+ }
+ 
+@@ -1447,7 +1484,7 @@ fs::status(const fs::path& p, error_code& ec) noexcept
+ {
+   file_status status;
+   stat_type st;
+-  if (::stat(p.c_str(), &st))
++  if (posix::stat(p.c_str(), &st))
+     {
+       int err = errno;
+       ec.assign(err, std::generic_category());
+@@ -1471,7 +1508,7 @@ fs::symlink_status(const fs::path& p, std::error_code& ec) noexcept
+ {
+   file_status status;
+   stat_type st;
+-  if (::lstat(p.c_str(), &st))
++  if (posix::lstat(p.c_str(), &st))
+     {
+       int err = errno;
+       ec.assign(err, std::generic_category());
+@@ -1518,28 +1555,39 @@ fs::path fs::temp_directory_path()
+ 
+ fs::path fs::temp_directory_path(error_code& ec)
+ {
++  path p;
+ #ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+-  ec = std::make_error_code(std::errc::not_supported);
+-  return {}; // TODO
++  unsigned len = 1024;
++  std::wstring buf;
++  do
++    {
++      buf.resize(len);
++      len = GetTempPathW(buf.size(), buf.data());
++    } while (len > buf.size());
++
++  if (len == 0)
++    {
++      ec.assign((int)GetLastError(), std::system_category());
++      return p;
++    }
++  buf.resize(len);
++  p = std::move(buf);
+ #else
+   const char* tmpdir = nullptr;
+   const char* env[] = { "TMPDIR", "TMP", "TEMP", "TEMPDIR", nullptr };
+   for (auto e = env; tmpdir == nullptr && *e != nullptr; ++e)
+     tmpdir = ::getenv(*e);
+-  path p = tmpdir ? tmpdir : "/tmp";
++  p = tmpdir ? tmpdir : "/tmp";
++#endif
+   auto st = status(p, ec);
+-  if (!ec)
++  if (ec)
++    p.clear();
++  else if (!is_directory(st))
+     {
+-      if (is_directory(st))
+-	{
+-	  ec.clear();
+-	  return p;
+-	}
+-      else
+-	ec = std::make_error_code(std::errc::not_a_directory);
++      p.clear();
++      ec = std::make_error_code(std::errc::not_a_directory);
+     }
+-  return {};
+-#endif
++  return p;
+ }
+ 
+ fs::path
+diff --git a/libstdc++-v3/src/filesystem/std-path.cc b/libstdc++-v3/src/filesystem/std-path.cc
+index c5bf8099036..f6c0b8bb0f6 100644
+--- a/libstdc++-v3/src/filesystem/std-path.cc
++++ b/libstdc++-v3/src/filesystem/std-path.cc
+@@ -38,6 +38,66 @@ fs::filesystem_error::~filesystem_error() = default;
+ 
+ constexpr path::value_type path::preferred_separator;
+ 
++#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
++path&
++path::operator/=(const path& __p)
++{
++  if (__p.is_absolute()
++      || (__p.has_root_name() && __p.root_name() != root_name()))
++    return operator=(__p);
++
++  basic_string_view<value_type> __lhs = _M_pathname;
++  bool __add_sep = false;
++
++  if (__p.has_root_directory())
++    {
++      // Remove any root directory and relative path
++      if (_M_type != _Type::_Root_name)
++	{
++	  if (!_M_cmpts.empty()
++	      && _M_cmpts.front()._M_type == _Type::_Root_name)
++	    __lhs = _M_cmpts.front()._M_pathname;
++	  else
++	    __lhs = {};
++	}
++    }
++  else if (has_filename() || (!has_root_directory() && is_absolute()))
++    __add_sep = true;
++
++  basic_string_view<value_type> __rhs = __p._M_pathname;
++  // Omit any root-name from the generic format pathname:
++  if (__p._M_type == _Type::_Root_name)
++    __rhs = {};
++  else if (!__p._M_cmpts.empty()
++      && __p._M_cmpts.front()._M_type == _Type::_Root_name)
++    __rhs.remove_prefix(__p._M_cmpts.front()._M_pathname.size());
++
++  const size_t __len = __lhs.size() + (int)__add_sep + __rhs.size();
++  const size_t __maxcmpts = _M_cmpts.size() + __p._M_cmpts.size();
++  if (_M_pathname.capacity() < __len || _M_cmpts.capacity() < __maxcmpts)
++    {
++      // Construct new path and swap (strong exception-safety guarantee).
++      string_type __tmp;
++      __tmp.reserve(__len);
++      __tmp = __lhs;
++      if (__add_sep)
++	__tmp += preferred_separator;
++      __tmp += __rhs;
++      path __newp = std::move(__tmp);
++      swap(__newp);
++    }
++  else
++    {
++      _M_pathname = __lhs;
++      if (__add_sep)
++	_M_pathname += preferred_separator;
++      _M_pathname += __rhs;
++      _M_split_cmpts();
++    }
++  return *this;
++}
++#endif
++
+ path&
+ path::remove_filename()
+ {
+@@ -74,6 +134,12 @@ path::replace_filename(const path& replacement)
+   return *this;
+ }
+ 
++#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
++const fs::path::value_type dot = L'.';
++#else
++const fs::path::value_type dot = '.';
++#endif
++
+ path&
+ path::replace_extension(const path& replacement)
+ {
+@@ -85,18 +151,17 @@ path::replace_extension(const path& replacement)
+ 	_M_pathname.erase(ext.second);
+       else
+ 	{
+-	  auto& back = _M_cmpts.back();
++	  const auto& back = _M_cmpts.back();
+ 	  if (ext.first != &back._M_pathname)
+ 	    _GLIBCXX_THROW_OR_ABORT(
+ 		std::logic_error("path::replace_extension failed"));
+-	  back._M_pathname.erase(ext.second);
+ 	  _M_pathname.erase(back._M_pos + ext.second);
+ 	}
+     }
+    // If replacement is not empty and does not begin with a dot character,
+    // a dot character is appended
+-  if (!replacement.empty() && replacement.native()[0] != '.')
+-    _M_pathname += '.';
++  if (!replacement.empty() && replacement.native()[0] != dot)
++    _M_pathname += dot;
+   operator+=(replacement);
+   return *this;
+ }
+@@ -333,11 +398,7 @@ path::has_filename() const
+ 
+ namespace
+ {
+-#ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+-  inline bool is_dot(wchar_t c) { return c == L'.'; }
+-#else
+-  inline bool is_dot(char c) { return c == '.'; }
+-#endif
++  inline bool is_dot(fs::path::value_type c) { return c == dot; }
+ 
+   inline bool is_dot(const fs::path& path)
+   {
+@@ -377,7 +438,7 @@ path::lexically_normal() const
+     {
+ #ifdef _GLIBCXX_FILESYSTEM_IS_WINDOWS
+       // Replace each slash character in the root-name
+-      if (p._M_type == _Type::_Root_name || p._M_type == _Type::_Root_dir)
++      if (p._M_type == _Type::_Root_name)
+ 	{
+ 	  string_type s = p.native();
+ 	  std::replace(s.begin(), s.end(), L'/', L'\\');
+@@ -397,8 +458,7 @@ path::lexically_normal() const
+ 	    }
+ 	  else if (!ret.has_relative_path())
+ 	    {
+-	      // remove a dot-dot filename immediately after root-directory
+-	      if (!ret.has_root_directory())
++	      if (!ret.is_absolute())
+ 		ret /= p;
+ 	    }
+ 	  else
+@@ -406,30 +466,15 @@ path::lexically_normal() const
+ 	      // Got a path with a relative path (i.e. at least one non-root
+ 	      // element) and no filename at the end (i.e. empty last element),
+ 	      // so must have a trailing slash. See what is before it.
+-	      auto elem = ret._M_cmpts.end() - 2;
++	      auto elem = std::prev(ret.end(), 2);
+ 	      if (elem->has_filename() && !is_dotdot(*elem))
+ 		{
+ 		  // Remove the filename before the trailing slash
+ 		  // (equiv. to ret = ret.parent_path().remove_filename())
+-
+-		  if (elem == ret._M_cmpts.begin())
+-		    ret.clear();
+-		  else
+-		    {
+-		      ret._M_pathname.erase(elem->_M_pos);
+-		      // Remove empty filename at the end:
+-		      ret._M_cmpts.pop_back();
+-		      // If we still have a trailing non-root dir separator
+-		      // then leave an empty filename at the end:
+-		      if (std::prev(elem)->_M_type == _Type::_Filename)
+-			elem->clear();
+-		      else // remove the component completely:
+-			ret._M_cmpts.pop_back();
+-		    }
++		  ret._M_pathname.erase(elem._M_cur->_M_pos);
++		  ret._M_cmpts.erase(elem._M_cur, ret._M_cmpts.end());
+ 		}
+-	      else
+-		// Append the ".." to something ending in "../" which happens
+-		// when normalising paths like ".././.." and "../a/../.."
++	      else // ???
+ 		ret /= p;
+ 	    }
+ 	}
+@@ -475,12 +520,10 @@ path::lexically_relative(const path& base) const
+       const path& p = *b;
+       if (is_dotdot(p))
+ 	--n;
+-      else if (!p.empty() && !is_dot(p))
++      else if (!is_dot(p))
+ 	++n;
+     }
+-    if (n == 0 && (a == end() || a->empty()))
+-      ret = ".";
+-    else if (n >= 0)
++    if (n >= 0)
+     {
+       const path dotdot("..");
+       while (n--)
+@@ -504,7 +547,7 @@ path::lexically_proximate(const path& base) const
+ std::pair<const path::string_type*, std::size_t>
+ path::_M_find_extension() const
+ {
+-  const std::string* s = nullptr;
++  const string_type* s = nullptr;
+ 
+   if (_M_type == _Type::_Filename)
+     s = &_M_pathname;
+@@ -519,9 +562,9 @@ path::_M_find_extension() const
+     {
+       if (auto sz = s->size())
+ 	{
+-	  if (sz <= 2 && (*s)[0] == '.')
++	  if (sz <= 2 && (*s)[0] == dot)
+ 	    return { s, string_type::npos };
+-	  const auto pos = s->rfind('.');
++	  const auto pos = s->rfind(dot);
+ 	  return { s, pos ? pos : string_type::npos };
+ 	}
+     }
+@@ -722,8 +765,8 @@ _GLIBCXX_BEGIN_NAMESPACE_CXX11
+ 
+   std::string filesystem_error::_M_gen_what()
+   {
+-    return fs_err_concat(system_error::what(), _M_path1.native(),
+-			 _M_path2.native());
++    return fs_err_concat(system_error::what(), _M_path1.u8string(),
++			 _M_path2.u8string());
+   }
+ 
+ _GLIBCXX_END_NAMESPACE_CXX11
+-- 
+2.20.1
+

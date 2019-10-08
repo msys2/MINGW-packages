@@ -1,0 +1,178 @@
+From dca776addb62897ab5956d0302a25ae3f8a0ae6d Mon Sep 17 00:00:00 2001
+From: Tom Schoonjans <Tom.Schoonjans@diamond.ac.uk>
+Date: Tue, 27 Feb 2018 15:46:36 +0000
+Subject: [PATCH 1/3] Fix implicit function declaration warning
+
+---
+ src/H5Dprivate.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/H5Dprivate.h b/src/H5Dprivate.h
+index ed13467883..4d2c4a1797 100644
+--- a/src/H5Dprivate.h
++++ b/src/H5Dprivate.h
+@@ -206,5 +206,6 @@ H5_DLL herr_t H5D_virtual_free_parsed_name(H5O_storage_virtual_name_seg_t *name_
+ H5_DLL herr_t H5D_btree_debug(H5F_t *f, hid_t dxpl_id, haddr_t addr, FILE * stream,
+     int indent, int fwidth, unsigned ndims, const uint32_t *dim);
+ 
++H5_DLL herr_t H5D__layout_set_version(H5F_t *f, H5O_layout_t *layout);
+ #endif /* _H5Dprivate_H */
+ 
+-- 
+2.15.1
+
+
+From 04a3ec7ee7a629c6e6309537faab83bfd76e13fe Mon Sep 17 00:00:00 2001
+From: Tom Schoonjans <Tom.Schoonjans@diamond.ac.uk>
+Date: Tue, 27 Feb 2018 15:49:30 +0000
+Subject: [PATCH 2/3] Restore MSYS/MINGW support
+
+---
+ src/H5system.c                  | 4 ++++
+ src/H5win32defs.h               | 7 ++++++-
+ test/testframe.c                | 7 +++++++
+ tools/test/h5repack/Makefile.am | 4 ++++
+ 4 files changed, 43 insertions(+), 1 deletion(-)
+
+diff --git a/src/H5system.c b/src/H5system.c
+index 719b7e0ad7..3ac5281ac6 100644
+--- a/src/H5system.c
++++ b/src/H5system.c
+@@ -799,6 +799,10 @@ Wgettimeofday(struct timeval *tv, struct timezone *tz)
+  *
+  *-------------------------------------------------------------------------
+  */
++#ifdef H5_HAVE_MINGW
++// definition of getenv_s is currently missing in MinGW, appears to be a bug
++_CRTIMP errno_t __cdecl getenv_s(size_t *pReturnValue, char *buffer, size_t numberOfElements, const char *varname);
++#endif
+ int
+ Wsetenv(const char *name, const char *value, int overwrite)
+ {
+diff --git a/src/H5win32defs.h b/src/H5win32defs.h
+index 45222280ba..82a2e93a44 100644
+--- a/src/H5win32defs.h
++++ b/src/H5win32defs.h
+@@ -54,7 +54,12 @@ typedef __int64             h5_stat_size_t;
+  * Also note that the variadic macro is using a VC++ extension
+  * where the comma is dropped if nothing is passed to the ellipsis.
+  */
+-#define HDopen(S,F,...)       _open(S, F | _O_BINARY, __VA_ARGS__)
++#ifdef H5_HAVE_MINGW
++  /* GCC/MINGW uses a different extension to handle unused ellipses */
++  #define HDopen(S,F,...)       _open(S, F | _O_BINARY, ##__VA_ARGS__)
++#else
++  #define HDopen(S,F,...)       _open(S, F | _O_BINARY, __VA_ARGS__)
++#endif
+ #define HDread(F,M,Z)       _read(F,M,Z)
+ #define HDrmdir(S)          _rmdir(S)
+ #define HDsetvbuf(F,S,M,Z)  setvbuf(F,S,M,(Z>1?Z:2))
+diff --git a/test/testframe.c b/test/testframe.c
+index 21f9ea3d94..56b232fcca 100644
+--- a/test/testframe.c
++++ b/test/testframe.c
+@@ -19,6 +19,13 @@
+  *
+  */
+ 
++
++#include "H5pubconf.h"
++#ifdef H5_HAVE_MINGW
++  #define _POSIX
++  #define __USE_MINGW_ALARM
++  #include <io.h>
++#endif
+ #include "testhdf5.h"
+ 
+ /*
+-- 
+2.15.1
+
+
+From e9762862abb255e68f40b62579892a1572fe9294 Mon Sep 17 00:00:00 2001
+From: Tom Schoonjans <Tom.Schoonjans@diamond.ac.uk>
+Date: Tue, 27 Feb 2018 16:49:02 +0000
+Subject: [PATCH 3/3] Windows: Add support for UTF8 encoded filenames
+
+This patch changes the way files will be created and opened on the
+Windows platform.
+
+Until now, filenames passed to functions such as H5Fcreate would work
+only if they were encoded in the current codepage. This would not work
+however, for example in the case when trying to open a filename
+containing japanese characters on a system with the italian codepage.
+
+A possible workaround would be through the use of GetShortPathName, but
+this function does not work on all filesystems.
+
+The only permanent solution involves the use of the wide character API,
+as recommended by Microsoft (codepages are actively discouraged). For
+this, the user needs to pass a Unicode UTF-8 filename to HDopen, which
+is then fed to _wopen, after performing the conversion of the filename
+to the corresponding wide character string (UTF-16).
+---
+ src/H5FDwindows.c | 22 +++++++++++++++++++++-
+ src/H5win32defs.h |  5 +++--
+ 2 files changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/src/H5FDwindows.c b/src/H5FDwindows.c
+index 76c4f18af3..501e307fd5 100644
+--- a/src/H5FDwindows.c
++++ b/src/H5FDwindows.c
+@@ -22,9 +22,29 @@
+ #include "H5MMprivate.h"    /* Memory management        */
+ #include "H5Pprivate.h"     /* Property lists           */
+ 
++#include <stdio.h>
++
+ #ifdef H5_HAVE_WINDOWS
+ 
+-
++int _open_utf8(const char *name, int oflag, ...)
++{
++    va_list args;
++    int fd = -1;
++    int name_len = MultiByteToWideChar(CP_UTF8, 0, name, -1, NULL, 0);
++    wchar_t* wname = malloc(sizeof(wchar_t)*(name_len + 1));
++    MultiByteToWideChar(CP_UTF8, 0, name, -1, wname, name_len + 1);
++    if (oflag & _O_CREAT) {
++        va_start(args, oflag);
++        fd = _wopen(wname, oflag, va_arg(args, int));
++        va_end(args);
++    }
++    else {
++        fd = _wopen(wname, oflag);
++    }
++    free(wname);
++    return fd;
++}
++
+ /*-------------------------------------------------------------------------
+  * Function:    H5Pset_fapl_windows
+  *
+diff --git a/src/H5win32defs.h b/src/H5win32defs.h
+index 82a2e93a44..f08cb283ef 100644
+--- a/src/H5win32defs.h
++++ b/src/H5win32defs.h
+@@ -56,9 +56,9 @@ typedef __int64             h5_stat_size_t;
+  */
+ #ifdef H5_HAVE_MINGW
+   /* GCC/MINGW uses a different extension to handle unused ellipses */
+-  #define HDopen(S,F,...)       _open(S, F | _O_BINARY, ##__VA_ARGS__)
++  #define HDopen(S,F,...)     _open_utf8(S, F | _O_BINARY, ##__VA_ARGS__)
+ #else
+-  #define HDopen(S,F,...)       _open(S, F | _O_BINARY, __VA_ARGS__)
++  #define HDopen(S,F,...)     _open_utf8(S, F | _O_BINARY, __VA_ARGS__)
+ #endif
+ #define HDread(F,M,Z)       _read(F,M,Z)
+ #define HDrmdir(S)          _rmdir(S)
+@@ -137,6 +137,7 @@ extern "C" {
+     H5_DLL long Wlroundf(float arg);
+     H5_DLL double Wround(double arg);
+     H5_DLL float Wroundf(float arg);
++    H5_DLL int _open_utf8(const char *name, int oflag, ...);
+ #ifdef __cplusplus
+ }
+ #endif /* __cplusplus */
+-- 
+2.15.1

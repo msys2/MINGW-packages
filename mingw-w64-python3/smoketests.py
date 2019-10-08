@@ -49,10 +49,41 @@ class Tests(unittest.TestCase):
     def test_modules_import(self):
         import sqlite3
         import ssl
+        import ctypes
+
+    def test_socket_inet_ntop(self):
+        import socket
+        self.assertTrue(hasattr(socket, "inet_ntop"))
+
+    def test_socket_inet_pton(self):
+        import socket
+        self.assertTrue(hasattr(socket, "inet_pton"))
 
     def test_multiprocessing_queue(self):
         from multiprocessing import Queue
         Queue(0)
+
+    def test_socket_timout_normal_error(self):
+        import urllib.request
+        from urllib.error import URLError
+
+        try:
+            urllib.request.urlopen(
+                'http://localhost', timeout=0.0001).close()
+        except URLError:
+            pass
+
+    def test_threads(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(1) as pool:
+            for res in pool.map(lambda *x: None, range(10000)):
+                pass
+
+    def test_sysconfig(self):
+        import sysconfig
+        # This should be able to execute without exceptions
+        sysconfig.get_config_vars()
 
 
 def suite():

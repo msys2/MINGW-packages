@@ -1,10 +1,10 @@
 # Maintainer: Peter Budai <peterbudai@hotmail.com>
 
 _realname=dlib
-pkgbase=mingw-w64-${_realname}
-pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-pkgver=19.9
-pkgrel=1
+pkgbase=("mingw-w64-${_realname}" "mingw-w64-python-${_realname}")
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}" "${MINGW_PACKAGE_PREFIX}-python2-${_realname}" "${MINGW_PACKAGE_PREFIX}-python3-${_realname}")
+pkgver=19.17
+pkgrel=2
 pkgdesc="A toolkit for making real world machine learning and data analysis applications in C++ (mingw-w64)"
 arch=('any')
 url='http://dlib.net/'
@@ -16,20 +16,31 @@ depends=("${MINGW_PACKAGE_PREFIX}-lapack"
   "${MINGW_PACKAGE_PREFIX}-openblas"
   "${MINGW_PACKAGE_PREFIX}-lapack"
   "${MINGW_PACKAGE_PREFIX}-fftw"
-  "${MINGW_PACKAGE_PREFIX}-sqlite3"
-  )
-
-makedepends=("${MINGW_PACKAGE_PREFIX}-cmake")
+  "${MINGW_PACKAGE_PREFIX}-sqlite3")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-python3"
+             "${MINGW_PACKAGE_PREFIX}-python2"
+             "${MINGW_PACKAGE_PREFIX}-python3-setuptools"
+             "${MINGW_PACKAGE_PREFIX}-python2-setuptools")
 options=('strip')
 source=(${_realname}-${pkgver}.tar.gz::"https://github.com/davisking/${_realname}/archive/v${pkgver}.tar.gz"
-  "01-dlib-MINGW.patch")
-sha256sums=('794508a58b6122be114e08ac6d951684963155444ff5173d3934d1e1b75b0b91'
-            '288bd35b05add622809a68398c2ab55476d07e5b4b7b351f66218d52b9cdeb69')
+        "001-python-binding.patch")
+sha256sums=('9d2a158b2adad6acba2346f90d929558a691151aa076a0b409ee685534118692'
+            'd40f90a70da30689343071a7194ddcff73e225a6fff49ef6389b3dd861ac586f')
 
 
 prepare() {
   cd "$srcdir"/${_realname}-${pkgver}
-  patch -p1 -i ${srcdir}/01-dlib-MINGW.patch
+  patch -Np1 -i "${srcdir}/001-python-binding.patch"
+
+  cd "${srcdir}"
+  for builddir in python{2,3}-build-${CARCH}; do
+    rm -rf ${builddir} | true
+    cp -r "${_realname}-${pkgver}" "${builddir}"
+  done
+
+  # Set version for setuptools_scm
+  export SETUPTOOLS_SCM_PRETEND_VERSION=$pkgver
 }
 
 build() {
@@ -41,7 +52,7 @@ build() {
     ${MINGW_PREFIX}/bin/cmake \
       -G'MSYS Makefiles' \
       -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
-      -USE_AVX_INSTRUCTIONS=ON \
+      -DUSE_AVX_INSTRUCTIONS=ON \
       -DDLIB_ISO_CPP_ONLY=OFF \
       -DDLIB_IN_PROJECT_BUILD=OFF \
       -DDLIB_USE_CUDA=OFF \
@@ -50,9 +61,25 @@ build() {
       -DDLIB_GIF_SUPPORT=ON \
       -DDLIB_LINK_WITH_SQLITE3=ON \
       -DDLIB_USE_FFTW=ON \
+      -DBUILD_SHARED_LIBS=ON \
       ../${_realname}-${pkgver}
-
   cmake --build . --config Release
+
+  for pver in {2,3}; do  
+    msg "Python ${pver} build for ${CARCH}"  
+    cd "${srcdir}/python${pver}-build-${CARCH}"
+    ${MINGW_PREFIX}/bin/python${pver} setup.py build -G "MSYS Makefiles" \
+      --set CMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+      --set USE_AVX_INSTRUCTIONS=ON \
+      --set DLIB_ISO_CPP_ONLY=OFF \
+      --set DLIB_IN_PROJECT_BUILD=ON \
+      --set DLIB_USE_CUDA=OFF \
+      --set DLIB_JPEG_SUPPORT=ON \
+      --set DLIB_PNG_SUPPORT=ON \
+      --set DLIB_GIF_SUPPORT=ON \
+      --set DLIB_LINK_WITH_SQLITE3=ON \
+      --set DLIB_USE_FFTW=ON
+  done  
 }
 
 #check() {
@@ -60,7 +87,50 @@ build() {
   #make check
 #}
 
-package() {
+package_dlib() {
+  optdepends=("${MINGW_PACKAGE_PREFIX}-python2-dlib"
+              "${MINGW_PACKAGE_PREFIX}-python3-dlib")
   cd "${srcdir}"/build-${CARCH}
   make install DESTDIR="${pkgdir}"
+
+  # Remove hard coded library path from cmake files
+  local PREFIX_DEPS=$(cygpath -am ${MINGW_PREFIX})
+  pushd "${pkgdir}${MINGW_PREFIX}/lib/cmake/dlib" > /dev/null
+  sed -s "s|${PREFIX_DEPS}/include||g" -i ./dlibConfig.cmake
+  sed -s -e "s|${PREFIX_DEPS}/lib/||g" -e "s|${PREFIX_DEPS}/include||g" -i ./dlib.cmake
+  popd > /dev/null
+}
+
+package_python-dlib() {
+  depends=("${MINGW_PACKAGE_PREFIX}-dlib"
+           "${MINGW_PACKAGE_PREFIX}-python${1}")
+  optdepends=("${MINGW_PACKAGE_PREFIX}-python${1}-numpy: Python ${1}.x interface")
+
+  cd "${srcdir}/python${1}-build-${CARCH}"
+  MSYS2_ARG_CONV_EXCL="--prefix=;--install-scripts=;--install-platlib=" \
+    ${MINGW_PREFIX}/bin/python${1} setup.py install --prefix=${MINGW_PREFIX} --root="${pkgdir}" --optimize=1 --skip-build
+}
+
+package_mingw-w64-i686-dlib() {
+  package_dlib
+}
+
+package_mingw-w64-x86_64-dlib() {
+  package_dlib
+}
+
+package_mingw-w64-i686-python2-dlib() {
+  package_python-dlib 2
+}
+
+package_mingw-w64-i686-python3-dlib() {
+  package_python-dlib 3
+}
+
+package_mingw-w64-x86_64-python2-dlib() {
+  package_python-dlib 2
+}
+
+package_mingw-w64-x86_64-python3-dlib() {
+  package_python-dlib 3
 }
