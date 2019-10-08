@@ -13,8 +13,11 @@ BuildFlavour = perf
 # As above but build GHC using the LLVM backend
 #BuildFlavour = perf-llvm
 
-# Perf build configured for a cross-compiler
+# Perf build configured for a cross-compiler (using the LLVM backend)
 #BuildFlavour = perf-cross
+
+# Perf build configured for a cross-compiler (using the NCG backend)
+#BuildFlavour = perf-cross-ncg
 
 # Fast build with optimised libraries, no profiling (RECOMMENDED):
 #BuildFlavour = quick
@@ -22,16 +25,23 @@ BuildFlavour = perf
 # Fast build with optimised libraries, no profiling, with LLVM:
 #BuildFlavour = quick-llvm
 
-# Fast build configured for a cross compiler
-#BuildFlavour  = quick-cross
+# Fast build configured for a cross compiler (using the LLVM backend)
+#BuildFlavour = quick-cross
+
+# Fast build configured for a cross compiler (using the NCG backend)
+#BuildFlavour = quick-cross-ncg
 
 # Even faster build.  NOT RECOMMENDED: the libraries will be
 # completely unoptimised, so any code built with this compiler
-# (including stage2) will run very slowly:
+# (including stage2) will run very slowly, and many GHC tests
+# will fail with this profile (see Trac #12141):
 #BuildFlavour = quickest
 
 # Profile the stage2 compiler:
 #BuildFlavour = prof
+
+# Profile the stage2 compiler (LLVM backend):
+#BuildFlavour = prof-llvm
 
 # A development build, working on the stage 1 compiler:
 #BuildFlavour = devel1
@@ -47,8 +57,11 @@ BuildFlavour = perf
 # As above but build GHC using the LLVM backend
 #BuildFlavour = bench-llvm
 
-# Bench build configured for a cross-compiler
+# Bench build configured for a cross-compiler (using the LLVM backend)
 #BuildFlavour = bench-cross
+
+# Bench build configured for a cross-compiler (using the NCG backend)
+#BuildFlavour = bench-cross-ncg
 
 # Use the same settings as validate.
 #BuildFlavour = validate
@@ -75,20 +88,27 @@ V=0
 # working on stage 2 and want to freeze stage 1 and the libraries for
 # a while.
 
+# Enable these if you would like DWARF debugging symbols for your libraries.
+# This is necessary, for instance, to get DWARF stack traces out of programs
+# built by the produced compiler. You must also pass --enable-dwarf-unwind to
+# `configure` to enable the runtime system's builtin unwinding support.
+#GhcLibHcOpts += -g3
+#GhcRtsHcOpts += -g3
+
 # Build the "extra" packages (see ./packages). This enables more tests. See:
 # https://ghc.haskell.org/trac/ghc/wiki/Building/RunningTests/Running#AdditionalPackages
-BUILD_EXTRA_PKGS=YES
+#BUILD_EXTRA_PKGS=YES
 
 # Uncomment the following line to enable building DPH
 #BUILD_DPH=YES
 
-# Uncomment the following to force `integer-gmp` to use the in-tree GMP 5.0.4
+# Uncomment the following to force `integer-gmp` to use the in-tree GMP 6.1.2
 # (other sometimes useful configure-options: `--with-gmp-{includes,libraries}`)
 #libraries/integer-gmp_CONFIGURE_OPTS += --configure-option=--with-intree-gmp
 
 # Enable pretty hyperlinked sources
 #HADDOCK_DOCS = YES
-#EXTRA_HADDOCK_OPTS += --hyperlinked-source
+#EXTRA_HADDOCK_OPTS += --quickjump --hyperlinked-source
 
 # Don't strip debug and other unneeded symbols from libraries and executables.
 STRIP_CMD = :

@@ -1,0 +1,121 @@
+diff -urN binutils-2.31_orig/gold/plugin.cc binutils-2.31/gold/plugin.cc
+--- binutils-2.31_orig/gold/plugin.cc	2018-06-24 21:38:57.000000000 +0300
++++ binutils-2.31/gold/plugin.cc	2018-07-16 20:11:40.006832100 +0300
+@@ -502,6 +502,117 @@
+   FILE* logfile_;
+ };
+ 
++/* Use the widest available unsigned type if uint64_t is not
++   available.  The algorithm below extracts a number less than 62**6
++   (approximately 2**35.725) from uint64_t, so ancient hosts where
++   uintmax_t is only 32 bits lose about 3.725 bits of randomness,
++   which is better than not having mkstemp at all.  */
++#if !defined UINT64_MAX && !defined uint64_t
++# define uint64_t uintmax_t
++#endif
++
++/* These are the characters used in temporary filenames.  */
++static const char letters[] =
++"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
++
++/* Generate a temporary file name based on TMPL.  TMPL must match the
++   rules for mk[s]temp (i.e. end in "XXXXXX").  The name constructed
++   does not exist at the time of the call to __gen_tempname.  TMPL is
++   overwritten with the result.
++
++   KIND is:
++   __GT_DIR:            create a directory, which will be mode 0700.
++
++   We use a clever algorithm to get hard-to-predict names. */
++static int
++gen_tempname (char *tmpl)
++{
++  int len;
++  char *XXXXXX;
++  static uint64_t value;
++  uint64_t random_time_bits;
++  int count, fd = -1;
++  int save_errno = errno;
++
++  len = (int) strlen(tmpl);
++  if (len < 6 || strcmp (&tmpl[len - 6], "XXXXXX"))
++    {
++      errno = EINVAL;
++      return -1;
++    }
++
++  /* This is where the Xs start.  */
++  XXXXXX = &tmpl[len - 6];
++
++/* Get some more or less random data.  */
++  {
++    SYSTEMTIME      stNow;
++    FILETIME ftNow;
++
++    // get system time
++    GetSystemTime(&stNow);
++    stNow.wMilliseconds = 500;
++    if (!SystemTimeToFileTime(&stNow, &ftNow))
++    {
++        errno = -1;
++        return -1;
++    }
++
++    random_time_bits = (((uint64_t)ftNow.dwHighDateTime << 32)
++                        | (uint64_t)ftNow.dwLowDateTime);
++  }
++  value += (random_time_bits << 8) ^ getpid ();
++
++  for (count = 0; count < TMP_MAX; value += 7777, ++count)
++    {
++      uint64_t v = value;
++
++      /* Fill in the random bits.  */
++      XXXXXX[0] = letters[v % 62];
++      v /= 62;
++      XXXXXX[1] = letters[v % 62];
++      v /= 62;
++      XXXXXX[2] = letters[v % 62];
++      v /= 62;
++      XXXXXX[3] = letters[v % 62];
++      v /= 62;
++      XXXXXX[4] = letters[v % 62];
++      v /= 62;
++      XXXXXX[5] = letters[v % 62];
++
++      fd = mkdir (tmpl);
++
++      if (fd >= 0)
++	{
++	  errno = save_errno;
++	  return fd;
++	}
++      else if (errno != EEXIST)
++	return -1;
++    }
++
++  /* We got out of the loop because we ran out of combinations to try.  */
++  errno = EEXIST;
++  return -1;
++}
++
++/* Generate a unique temporary directory from TEMPLATE.
++   The last six characters of TEMPLATE must be "XXXXXX";
++   they are replaced with a string that makes the filename unique.
++   The directory is created, mode 700, and its name is returned.
++   (This function comes from OpenBSD.) */
++char *
++mkdtemp (char *Template)
++#ifdef __cplusplus
++	throw()
++#endif
++{
++  if (gen_tempname (Template))
++    return NULL;
++  else
++    return Template;
++}
++
+ bool
+ Plugin_recorder::init()
+ {
