@@ -164,7 +164,7 @@ macx:!static:CONFIG(qt_framework, qt_framework|qt_no_framework) {
 
 ######################################################################
 # Create and install pc files for pkg-config
-# See http://www.freedesktop.org/wiki/Software/pkg-config/
+# See https://www.freedesktop.org/wiki/Software/pkg-config/
 ######################################################################
 
 unix {

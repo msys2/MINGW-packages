@@ -16,9 +16,10 @@
 _realname=python3
 pkgbase="mingw-w64-${_realname}"
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+conflicts=("${MINGW_PACKAGE_PREFIX}-python2<2.7.16-7")
 _pybasever=3.7
-pkgver=${_pybasever}.3
-pkgrel=4
+pkgver=${_pybasever}.4
+pkgrel=8
 pkgdesc="A high-level scripting language (mingw-w64)"
 arch=('any')
 license=('PSF')
@@ -28,14 +29,13 @@ depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-bzip2"
          "${MINGW_PACKAGE_PREFIX}-libffi"
          "${MINGW_PACKAGE_PREFIX}-mpdecimal"
-         "${MINGW_PACKAGE_PREFIX}-pdcurses"
+         "${MINGW_PACKAGE_PREFIX}-ncurses"
          "${MINGW_PACKAGE_PREFIX}-openssl"
+         "${MINGW_PACKAGE_PREFIX}-sqlite3"
          "${MINGW_PACKAGE_PREFIX}-tcl"
          "${MINGW_PACKAGE_PREFIX}-tk"
          "${MINGW_PACKAGE_PREFIX}-zlib"
-         "${MINGW_PACKAGE_PREFIX}-xz"
-         "${MINGW_PACKAGE_PREFIX}-sqlite3"
-        )
+         "${MINGW_PACKAGE_PREFIX}-xz")
 makedepends=("${MINGW_PACKAGE_PREFIX}-gcc" "${MINGW_PACKAGE_PREFIX}-pkg-config")
 options=('makeflags') # 'debug' '!strip' )
 source=("https://www.python.org/ftp/python/${pkgver%rc?}/Python-${pkgver}.tar.xz"
@@ -128,6 +128,12 @@ source=("https://www.python.org/ftp/python/${pkgver%rc?}/Python-${pkgver}.tar.xz
         2010-configure-have-inet-pton.patch
         2020-use-_wcsnicmp-instead-wcsncasecmp.patch
         2030-fix-msvc9-import.patch
+        2040-make-default-python.patch
+        2050-undo-venv-redirector.patch
+        2051-set-venv-activate-path-unix.patch
+        2052-venv-remove-msys-from-env-and-add-exe-prefix.patch
+        2060-pass-gen-profile-ldflags.patch
+        2070-distutils-add-windmc-to-cygwinccompiler.patch
         smoketests.py)
 
 # Helper macros to help make tasks easier #
@@ -280,7 +286,8 @@ prepare() {
     1830-mingw-implement-setenv-for-PY_COERCE_C_LOCALE.patch \
     1850-disable-readline.patch \
     1860-fix-isselectable.patch \
-    2020-use-_wcsnicmp-instead-wcsncasecmp.patch
+    2020-use-_wcsnicmp-instead-wcsncasecmp.patch \
+    2040-make-default-python.patch
 
   apply_patch_with_msg 2000-warnings-fixes.patch
 
@@ -292,6 +299,15 @@ prepare() {
 
   # https://github.com/msys2/MINGW-packages/issues/5155
   apply_patch_with_msg 2030-fix-msvc9-import.patch
+
+  # https://github.com/msys2/MINGW-packages/issues/5001
+  apply_patch_with_msg 2050-undo-venv-redirector.patch
+  apply_patch_with_msg 2051-set-venv-activate-path-unix.patch
+  apply_patch_with_msg 2052-venv-remove-msys-from-env-and-add-exe-prefix.patch
+
+  apply_patch_with_msg 2060-pass-gen-profile-ldflags.patch
+  
+  apply_patch_with_msg 2070-distutils-add-windmc-to-cygwinccompiler.patch
 
   autoreconf -vfi
 
@@ -331,7 +347,7 @@ build() {
 
   CFLAGS+=" -fwrapv -D__USE_MINGW_ANSI_STDIO=1 -D_WIN32_WINNT=0x0601"
   CXXFLAGS+=" -fwrapv -D__USE_MINGW_ANSI_STDIO=1 -D_WIN32_WINNT=0x0601"
-  CPPFLAGS+=" -I${PREFIX_WIN}/include/pdcurses "
+  CPPFLAGS+=" -I${PREFIX_WIN}/include/ncurses "
 
   declare -a _extra_config
   if check_option "strip" "y"; then
@@ -340,6 +356,8 @@ build() {
   if check_option "debug" "n"; then
     CFLAGS+=" -DNDEBUG "
     CXXFLAGS+=" -DNDEBUG "
+    _extra_config+=("--enable-optimizations")
+    _extra_config+=("--with-lto")
   else
     plain " -DDEBUG -DPy_DEBUG -D_DEBUG does not work unfortunately .."
     #    CFLAGS+=" -DDEBUG -DPy_DEBUG -D_DEBUG "
@@ -351,6 +369,19 @@ build() {
 
   # Workaround for conftest error on 64-bit builds
   export ac_cv_working_tzset=no
+
+  # Workaround for when dlfcn exists on Windows, which causes
+  # some conftests to succeed when they shouldn't (we don't use dlfcn).
+  export ac_cv_header_dlfcn_h=no
+  export ac_cv_lib_dl_dlopen=no
+  export ac_cv_have_decl_RTLD_GLOBAL=no
+  export ac_cv_have_decl_RTLD_LAZY=no
+  export ac_cv_have_decl_RTLD_LOCAL=no
+  export ac_cv_have_decl_RTLD_NOW=no
+  export ac_cv_have_decl_RTLD_DEEPBIND=no
+  export ac_cv_have_decl_RTLD_MEMBER=no
+  export ac_cv_have_decl_RTLD_NODELETE=no
+  export ac_cv_have_decl_RTLD_NOLOAD=no
 
   [[ -d "${srcdir}/build-${CARCH}" ]] && rm -rf "${srcdir}/build-${CARCH}"
   mkdir -p "${srcdir}/build-${CARCH}" && cd "${srcdir}/build-${CARCH}"
@@ -368,7 +399,21 @@ build() {
     "${_extra_config[@]}" \
     OPT=""
 
-  make
+  # Tests to run for the PGO build (see --enable-optimizations)
+  # Backported from 3.8, so we can drop it with 3.8:
+  # https://github.com/python/cpython/pull/14910
+  local PROFILE_TASK='-m test.regrtest --pgo \
+    test_array test_base64 test_binascii test_binop test_bisect test_bytes \
+    test_cmath test_codecs test_collections test_complex test_dataclasses \
+    test_datetime test_decimal test_difflib test_embed test_float \
+    test_fstring test_functools test_generators test_hashlib test_heapq \
+    test_int test_itertools test_json test_long test_math test_memoryview \
+    test_operator test_ordered_dict test_pickle test_pprint test_re test_set \
+    test_statistics test_struct test_tabnanny test_time test_unicode \
+    test_xml_etree test_xml_etree_c'
+
+  make \
+    PROFILE_TASK="${PROFILE_TASK}"
 }
 
 package() {
@@ -413,8 +458,13 @@ package() {
   sed -i "s#${srcdir}/Python-${pkgver}:##" "${pkgdir}${MINGW_PREFIX}"/lib/python${_pybasever}/config-${VERABI}/Makefile
 
   for fscripts in 2to3-${_pybasever} idle3 idle${_pybasever} pydoc3 pydoc${_pybasever} pyvenv pyvenv-${_pybasever}; do
-    sed -e "s|${PREFIX_WIN}/bin/python${_pybasever}.exe|/usr/bin/env python${_pybasever}.exe|g" -i "${pkgdir}${MINGW_PREFIX}"/bin/${fscripts}
+    sed -i "s|$(cygpath -w ${MINGW_PREFIX} | sed 's|\\|\\\\|g')/bin/python${_pybasever}.exe|/usr/bin/env python${_pybasever}.exe|g" "${pkgdir}${MINGW_PREFIX}"/bin/${fscripts}
   done
+
+  # Default names are aliases for Python3 now
+  cp "${pkgdir}${MINGW_PREFIX}"/bin/idle3 "${pkgdir}${MINGW_PREFIX}"/bin/idle
+  cp "${pkgdir}${MINGW_PREFIX}"/bin/pydoc3 "${pkgdir}${MINGW_PREFIX}"/bin/pydoc
+  cp "${pkgdir}${MINGW_PREFIX}"/bin/2to3-3.7 "${pkgdir}${MINGW_PREFIX}"/bin/2to3
 
   sed -i "s|#!${pkgdir}${MINGW_PREFIX}/bin/python${VERABI}.exe|#!/usr/bin/env python${_pybasever}.exe|" "${pkgdir}${MINGW_PREFIX}"/lib/python${_pybasever}/config-${VERABI}/python-config.py
 
@@ -425,7 +475,8 @@ package() {
   sed -e "s|${MINGW_PREFIX}|${PREFIX_WIN}|" \
     -i "${pkgdir}${MINGW_PREFIX}"/bin/python${VERABI}-config \
     -i "${pkgdir}${MINGW_PREFIX}"/bin/python${_pybasever}-config \
-    -i "${pkgdir}${MINGW_PREFIX}"/bin/python3-config
+    -i "${pkgdir}${MINGW_PREFIX}"/bin/python3-config \
+    -i "${pkgdir}${MINGW_PREFIX}"/bin/python-config
 
   # replace paths in sysconfig
   sed -i "s|${pkgdir}${MINGW_PREFIX}|${MINGW_PREFIX}|g" \
@@ -434,7 +485,7 @@ package() {
 
 }
 
-sha256sums=('da60b54064d4cfcd9c26576f6df2690e62085123826cff2e667e72a91952d318'
+sha256sums=('fb799134b868199930b75f26678f18932214042639cd52b16da7fd134cd9b13f'
             'a2e92cf57985b93bb6203b26c84140610378bd1eb57e8ab8f00e0c0f9afb7b75'
             '8b2c7d6b3d0efec48f44c1e46be25fcfb4ba6711ca49b93cf9fa40fb4f0966b6'
             'b2111d31e812b33e5cec85f6505bd730975dd242f8eb138307f71ffe0d7fdf6b'
@@ -443,7 +494,7 @@ sha256sums=('da60b54064d4cfcd9c26576f6df2690e62085123826cff2e667e72a91952d318'
             'cac9b0ec37bd5fb6e21fa6b4708242b160b60de1e7cdfaa7a843b4f5e1a0e498'
             '3028e28ce3c76e2cde223c39ef903b789015773834b69260b4116adb22b31e7b'
             'e05770b5fc8126141ee21ccb252a126d366c4249253ab7a2aeafafbd2e1d4f54'
-            '2556db898b65b642455161839e9682d07a3910359a8367db6b73b8abd3a02047'
+            '850052f215e0bcaec7723689233dc0e6dbf4b3dc1d97e02b7727bfaa22378296'
             '8946c6ee9dab5ed24c083a82e71d74013a3690afc7e98f58d239d2afb1fbef70'
             'b026d5fa0eddeda532d4a3352b4d6f5506593cef0aae4c361be791faedd45bd7'
             '578e395e45ce69445639b0bb1ad9c09934acfa6090d4bca96d0955a4b325ace8'
@@ -460,7 +511,7 @@ sha256sums=('da60b54064d4cfcd9c26576f6df2690e62085123826cff2e667e72a91952d318'
             'c629be9a191948eff146f07dcb09c760ab55acfd08639dfc94dc1bc43160012f'
             '92d106d0dbc273cb08cb52759ba8467e16e6d61019eeb3464397822b991ed861'
             '8e2ae92f24ca52b16215612a57fe5076d5b0ea1cc0923d5ab9bd7395b6330816'
-            'b21b63eb077c4ed9380034957034d9fc726992e34abd9185d9f57080e088b4e8'
+            '430340435a7e1ab01c372e88008c45e7fef938fb547f5c95464ca69010184d5c'
             '4f28511452f8c56aadc79e6e1079531aad94392778f9a62090e9c423487baf4c'
             'd555fac5000a86ade7a1c191d3eb09bdb8aa46d0beb73e54e6243731fae35e8f'
             '4fb0f33a99784b2f397adc013591c64bdbdbb8e7a4f839880a8fc4678ee2b435'
@@ -471,7 +522,7 @@ sha256sums=('da60b54064d4cfcd9c26576f6df2690e62085123826cff2e667e72a91952d318'
             'a14d40567e6bf6d08fab55e95a56495eb6fcdfc9d06d80b959b487df26481190'
             'a8b2096f3b4a26d32a325e778ed47cd921d40a1ef481a0387a5ff3592d5d9c77'
             'c0fa618b89fd43b27862f4c765926f19cf5679a46e8af3d8eb918a648e33429b'
-            '4802eceab9a147fc1cddaadf84917839edfca0b3dcd33d3be92e4c2edde3c726'
+            'a562224902cb31ffbc31f868c34faf5db05444bebfdf502649fe8a29cd679c2d'
             'f0d20525f42387153cf82e2d4a3139a7b7a39a7408833c8b02e9c072a9967674'
             '8bd4dddfda38e8dae700eca868693cba3b2fb766088b46a52a4ac475e9e6b25e'
             'a88ed0a61dcb0a860286ab1d6bf489b272a670625687924943713a58c6068a94'
@@ -524,4 +575,10 @@ sha256sums=('da60b54064d4cfcd9c26576f6df2690e62085123826cff2e667e72a91952d318'
             '150dc7a5c59ef82b0bf258a2cd4233f2975fb89818849de39c185ce368a124ab'
             '2d6605515648ef3ffe53e417719d4d51a7a2a79566e26e920733422dfd3751cb'
             '6c4b0c469f3c04e5586553b7e4e8e30e8e36163f30d4139605b7c0eddf994347'
+            '0f6c62a8b11198216e42b88f294e01150d255a6da72fb75c6677f64cc7a4a092'
+            '1497d664aa746cd6b0995d5518c7e0de2f80a08d125b472c81aabc99a484d445'
+            '6ee9095eb78c88c205e225c0e8a0b169f5498c62d6531a2d3199450d0fe895e5'
+            '09c9f8e14c1f54a1242f4db21af4a014d414fd72b3a92241842965f550f75472'
+            '180fd0a8f4d24ed7e50eb7916548f7fe398811a76063b043efdf7ab18602c55b'
+            'f6aa23ec8031f24fb38330e9f150e82781a3802321b038906d083d7b0269bcfa'
             '821402ddaef92140c70041b007bcf15e1cd5fe0fdb9f4f612da868382cc24585')

@@ -1,6 +1,5 @@
 MINGW-packages
 ==============
-[![TeaCI status](https://tea-ci.org/api/badges/Alexpux/MINGW-packages/status.svg)](https://tea-ci.org/Alexpux/MINGW-packages)
 [![AppVeyor status](https://ci.appveyor.com/api/projects/status/github/Alexpux/mingw-packages?branch=master&svg=true)](https://ci.appveyor.com/project/Alexpux/mingw-packages)
 
 This repository contains package scripts for MinGW-w64 targets to build under MSYS2.
