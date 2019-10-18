@@ -1,1 +1,1 @@
-@"%~dp0tclsh.exe" "%~dp0..\share\tests\all.tcl"
+@"%~dp0tclsh.exe" "%~dp0..\share\tests\all.tcl" %*
