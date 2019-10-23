@@ -52,6 +52,17 @@ int main(int argc, char** argv, char** envp) {
 			envp[i] = env;
 			continue;
 		}
+#if 0
+		#define T "PATH="
+		if(strncmp(T, envp[i], strlen(T)) == 0) {
+			char* env = malloc(BUFFER_SIZE*sizeof(char)); assert(env);
+			strcpy(buffer, &envp[i][strlen(T)]);
+			snprintf(env, BUFFER_SIZE, "%s%s;%s", T, root, buffer);
+			envp[i] = env;
+			printf("%s", env);
+			continue;
+		}
+#endif
 	}
 	// Path remover executable
 	char* rmpath = malloc(BUFFER_SIZE*sizeof(char)); assert(rmpath);
@@ -72,6 +83,7 @@ int main(int argc, char** argv, char** envp) {
 		args[i++] = argv[argvi];
 	}
 	args[i] = NULL;
+  SetDllDirectory(root);
 	// Execute tests
 	int c = _spawnve(_P_WAIT, tclsh, args, envp);
 	// Fire up cleaning process
