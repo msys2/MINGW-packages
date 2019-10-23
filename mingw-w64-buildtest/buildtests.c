@@ -23,40 +23,6 @@ uint32_t hash( uint32_t a) {
     return a;
 }
 
-#if 0
-int main(int argc, char** argv) {
-	int i = strlen(_pgmptr)-1;
-	while(_pgmptr[i] != '\\') --i;
-	char* root = calloc(i+1, sizeof(char)); assert(root);
-	strncpy(root, _pgmptr, i);
-	char* stage = calloc(BUFFER_SIZE, sizeof(char)); assert(stage);
-	char* temp = calloc(BUFFER_SIZE, sizeof(char)); assert(temp);
-	GetTempPath(BUFFER_SIZE-1, temp);
-	srand((unsigned)time(NULL));
-	do {snprintf(stage, BUFFER_SIZE, "%swhpc%d", temp, (unsigned short)hash(rand()));} while(!CreateDirectory(stage, NULL));
-	SetEnvironmentVariable("TMP", stage);
-	SetEnvironmentVariable("TEMP", stage);
-	char* tclsh = calloc(BUFFER_SIZE, sizeof(char)); assert(tclsh);
-	snprintf(tclsh, BUFFER_SIZE, "\"%s\\tclkit.exe\"", root);
-	char* init_tcl = calloc(BUFFER_SIZE, sizeof(char)); assert(init_tcl);
-	snprintf(init_tcl, BUFFER_SIZE, "\"%s\\share\\tests\\all.tcl\"", root);
-	char* root_dir = calloc(BUFFER_SIZE, sizeof(char)); assert(root_dir);
-	snprintf(root_dir, BUFFER_SIZE, "\"%s\"", root);
-	char* stage_dir = calloc(BUFFER_SIZE, sizeof(char)); assert(stage_dir);
-	snprintf(stage_dir, BUFFER_SIZE, "\"%s\"", stage);
-	_spawnlp(_P_WAIT, "cmd.exe", "/c", "title", "WHPC"BIT" self check test", "&&", tclsh, whpctest, BIT, root_dir, stage_dir, NULL);
-	char** files = {stage, NULL};
-	SHFILEOPSTRUCT op;
-	op.hwnd = NULL;
-	op.wFunc = FO_DELETE;
-	op.pFrom = files;
-	op.pTo = NULL;
-	op.fFlags = FOF_NOCONFIRMATION|FOF_SILENT;
-	do {Sleep(3000);} while(SHFileOperation(&op));
-}
-#endif
-
-
 int main(int argc, char** argv, char** envp) {
 	int i = strlen(_pgmptr)-1;
 	while(_pgmptr[i] != '\\') --i; /* Wipe executable name from path, c:\dir\a.exe --> c:\dir\ */
