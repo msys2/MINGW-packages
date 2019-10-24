@@ -26,17 +26,17 @@ import os.path
 import re
 import sys
 import textwrap
-import urllib.request, urllib.parse, urllib.error
+import urllib
 import subprocess
 
 objects = []
 
 def printable_serial(obj):
-  return ".".join([str(x) for x in obj['CKA_SERIAL_NUMBER']])
+  return ".".join(map(lambda x:str(ord(x)), obj['CKA_SERIAL_NUMBER']))
 
 # Dirty file parser.
 in_data, in_multiline, in_obj = False, False, False
-field, ftype, value, binval, obj = None, None, None, bytearray(), dict()
+field, type, value, obj = None, None, None, dict()
 for line in open('certdata.txt', 'r'):
     # Ignore the file header.
     if not in_data:
@@ -56,36 +56,33 @@ for line in open('certdata.txt', 'r'):
         continue
     if in_multiline:
         if not line.startswith('END'):
-            if ftype == 'MULTILINE_OCTAL':
+            if type == 'MULTILINE_OCTAL':
                 line = line.strip()
                 for i in re.finditer(r'\\([0-3][0-7][0-7])', line):
-                    integ = int(i.group(1), 8)
-                    binval.extend((integ).to_bytes(1, sys.byteorder))
-                obj[field] = binval
+                    value += chr(int(i.group(1), 8))
             else:
                 value += line
-                obj[field] = value
             continue
+        obj[field] = value
         in_multiline = False
         continue
     if line.startswith('CKA_CLASS'):
         in_obj = True
     line_parts = line.strip().split(' ', 2)
     if len(line_parts) > 2:
-        field, ftype = line_parts[0:2]
+        field, type = line_parts[0:2]
         value = ' '.join(line_parts[2:])
     elif len(line_parts) == 2:
-        field, ftype = line_parts
+        field, type = line_parts
         value = None
     else:
         raise NotImplementedError('line_parts < 2 not supported.\n' + line)
-    if ftype == 'MULTILINE_OCTAL':
+    if type == 'MULTILINE_OCTAL':
         in_multiline = True
         value = ""
-        binval = bytearray()
         continue
     obj[field] = value
-if len(list(obj.items())) > 0:
+if len(obj.items()) > 0:
     objects.append(obj)
 
 # Build up trust database.
@@ -95,7 +92,7 @@ for obj in objects:
         continue
     key = obj['CKA_LABEL'] + printable_serial(obj)
     trustmap[key] = obj
-    print(" added trust", key)
+    print " added trust", key
 
 # Build up cert database.
 certmap = dict()
@@ -104,29 +101,19 @@ for obj in objects:
         continue
     key = obj['CKA_LABEL'] + printable_serial(obj)
     certmap[key] = obj
-    print(" added cert", key)
+    print " added cert", key
 
 def obj_to_filename(obj):
     label = obj['CKA_LABEL'][1:-1]
     label = label.replace('/', '_')\
         .replace(' ', '_')\
+        .replace(':', '_')\
         .replace('(', '=')\
         .replace(')', '=')\
         .replace(',', '_')
-    labelbytes = bytearray()
-    i = 0
-    imax = len(label)
-    while i < imax:
-        if i < imax-3 and label[i] == '\\' and label[i+1] == 'x':
-            labelbytes.extend(bytes.fromhex(label[i+2:i+4]))
-            i += 4
-            continue
-        labelbytes.extend(str.encode(label[i]))
-        i = i+1
-        continue
-    label = labelbytes.decode('utf-8')
+    label = re.sub(r'\\x[0-9a-fA-F]{2}', lambda m:chr(int(m.group(0)[2:], 16)), label)
     serial = printable_serial(obj)
-    return label + ":" + serial
+    return label + "_" + serial
 
 def write_cert_ext_to_file(f, oid, value, public_key):
     f.write("[p11-kit-object-v1]\n")
@@ -180,31 +167,31 @@ openssl_trust = {
 for tobj in objects:
     if tobj['CKA_CLASS'] == 'CKO_NSS_TRUST':
         key = tobj['CKA_LABEL'] + printable_serial(tobj)
-        print("producing trust for " + key)
+        print "producing trust for " + key
         trustbits = []
         distrustbits = []
         openssl_trustflags = []
         openssl_distrustflags = []
         legacy_trustbits = []
         legacy_openssl_trustflags = []
-        for t in list(trust_types.keys()):
-            if t in tobj and tobj[t] == 'CKT_NSS_TRUSTED_DELEGATOR':
+        for t in trust_types.keys():
+            if tobj.has_key(t) and tobj[t] == 'CKT_NSS_TRUSTED_DELEGATOR':
                 trustbits.append(t)
                 if t in openssl_trust:
                     openssl_trustflags.append(openssl_trust[t])
-            if t in tobj and tobj[t] == 'CKT_NSS_NOT_TRUSTED':
+            if tobj.has_key(t) and tobj[t] == 'CKT_NSS_NOT_TRUSTED':
                 distrustbits.append(t)
                 if t in openssl_trust:
                     openssl_distrustflags.append(openssl_trust[t])
 
-        for t in list(legacy_trust_types.keys()):
-            if t in tobj and tobj[t] == 'CKT_NSS_TRUSTED_DELEGATOR':
+        for t in legacy_trust_types.keys():
+            if tobj.has_key(t) and tobj[t] == 'CKT_NSS_TRUSTED_DELEGATOR':
                 real_t = legacy_to_real_trust_types[t]
                 legacy_trustbits.append(real_t)
                 if real_t in openssl_trust:
                     legacy_openssl_trustflags.append(openssl_trust[real_t])
-            if t in tobj and tobj[t] == 'CKT_NSS_NOT_TRUSTED':
-                raise NotImplementedError('legacy distrust not supported.\n' + line)
+            if tobj.has_key(t) and tobj[t] == 'CKT_NSS_NOT_TRUSTED':
+                raise NotImplementedError, 'legacy distrust not supported.\n' + line
 
         fname = obj_to_filename(tobj)
         try:
@@ -220,10 +207,10 @@ for tobj in objects:
         #dumpf.close();
 
         is_legacy = 0
-        if 'LEGACY_CKA_TRUST_SERVER_AUTH' in tobj or 'LEGACY_CKA_TRUST_EMAIL_PROTECTION' in tobj or 'LEGACY_CKA_TRUST_CODE_SIGNING' in tobj:
+        if tobj.has_key('LEGACY_CKA_TRUST_SERVER_AUTH') or tobj.has_key('LEGACY_CKA_TRUST_EMAIL_PROTECTION') or tobj.has_key('LEGACY_CKA_TRUST_CODE_SIGNING'):
             is_legacy = 1
             if obj == None:
-                raise NotImplementedError('found legacy trust without certificate.\n' + line)
+                raise NotImplementedError, 'found legacy trust without certificate.\n' + line
 
             legacy_fname = "legacy-default/" + fname + ".crt"
             f = open(legacy_fname, 'w')
@@ -232,13 +219,11 @@ for tobj in objects:
             if legacy_openssl_trustflags:
                 f.write("# openssl-trust=" + " ".join(legacy_openssl_trustflags) + "\n")
             f.write("-----BEGIN CERTIFICATE-----\n")
-            temp_encoded_b64 = base64.b64encode(obj['CKA_VALUE'])
-            temp_wrapped = textwrap.wrap(temp_encoded_b64.decode(), 64)
-            f.write("\n".join(temp_wrapped))
+            f.write("\n".join(textwrap.wrap(base64.b64encode(obj['CKA_VALUE']), 64)))
             f.write("\n-----END CERTIFICATE-----\n")
             f.close()
 
-            if 'CKA_TRUST_SERVER_AUTH' in tobj or 'CKA_TRUST_EMAIL_PROTECTION' in tobj or 'CKA_TRUST_CODE_SIGNING' in tobj:
+            if tobj.has_key('CKA_TRUST_SERVER_AUTH') or tobj.has_key('CKA_TRUST_EMAIL_PROTECTION') or tobj.has_key('CKA_TRUST_CODE_SIGNING'):
                 legacy_fname = "legacy-disable/" + fname + ".crt"
                 f = open(legacy_fname, 'w')
                 f.write("# alias=%s\n"%tobj['CKA_LABEL'])
@@ -260,9 +245,7 @@ for tobj in objects:
             cert_fname = "cert-" + fname
             fc = open(cert_fname, 'w')
             fc.write("-----BEGIN CERTIFICATE-----\n")
-            temp_encoded_b64 = base64.b64encode(obj['CKA_VALUE'])
-            temp_wrapped = textwrap.wrap(temp_encoded_b64.decode(), 64)
-            fc.write("\n".join(temp_wrapped))
+            fc.write("\n".join(textwrap.wrap(base64.b64encode(obj['CKA_VALUE']), 64)))
             fc.write("\n-----END CERTIFICATE-----\n")
             fc.close();
             pk_fname = "pubkey-" + fname
@@ -280,7 +263,7 @@ for tobj in objects:
             fcout.close()
             sed_command = ["sed", "--in-place", "s/^/#/", comment_fname]
             subprocess.call(sed_command)
-            with open (comment_fname, "r", errors = 'replace') as myfile:
+            with open (comment_fname, "r") as myfile:
                 cert_comment=myfile.read()
 
         fname += ".tmp-p11-kit"
@@ -292,19 +275,19 @@ for tobj in objects:
             has_email_trust = False
             has_code_trust = False
 
-            if 'CKA_TRUST_SERVER_AUTH' in tobj:
+            if tobj.has_key('CKA_TRUST_SERVER_AUTH'):
                 if tobj['CKA_TRUST_SERVER_AUTH'] == 'CKT_NSS_NOT_TRUSTED':
                     is_distrusted = True
                 elif tobj['CKA_TRUST_SERVER_AUTH'] == 'CKT_NSS_TRUSTED_DELEGATOR':
                     has_server_trust = True
 
-            if 'CKA_TRUST_EMAIL_PROTECTION' in tobj:
+            if tobj.has_key('CKA_TRUST_EMAIL_PROTECTION'):
                 if tobj['CKA_TRUST_EMAIL_PROTECTION'] == 'CKT_NSS_NOT_TRUSTED':
                     is_distrusted = True
                 elif tobj['CKA_TRUST_EMAIL_PROTECTION'] == 'CKT_NSS_TRUSTED_DELEGATOR':
                     has_email_trust = True
 
-            if 'CKA_TRUST_CODE_SIGNING' in tobj:
+            if tobj.has_key('CKA_TRUST_CODE_SIGNING'):
                 if tobj['CKA_TRUST_CODE_SIGNING'] == 'CKT_NSS_NOT_TRUSTED':
                     is_distrusted = True
                 elif tobj['CKA_TRUST_CODE_SIGNING'] == 'CKT_NSS_TRUSTED_DELEGATOR':
@@ -370,9 +353,7 @@ for tobj in objects:
             f.write("modifiable: false\n");
 
             f.write("-----BEGIN CERTIFICATE-----\n")
-            temp_encoded_b64 = base64.b64encode(obj['CKA_VALUE'])
-            temp_wrapped = textwrap.wrap(temp_encoded_b64.decode(), 64)
-            f.write("\n".join(temp_wrapped))
+            f.write("\n".join(textwrap.wrap(base64.b64encode(obj['CKA_VALUE']), 64)))
             f.write("\n-----END CERTIFICATE-----\n")
             f.write(cert_comment)
             f.write("\n")
@@ -386,13 +367,13 @@ for tobj in objects:
             f.write("certificate-type: x-509\n")
             f.write("modifiable: false\n");
             f.write("issuer: \"");
-            f.write(urllib.parse.quote(tobj['CKA_ISSUER']));
+            f.write(urllib.quote(tobj['CKA_ISSUER']));
             f.write("\"\n")
             f.write("serial-number: \"");
-            f.write(urllib.parse.quote(tobj['CKA_SERIAL_NUMBER']));
+            f.write(urllib.quote(tobj['CKA_SERIAL_NUMBER']));
             f.write("\"\n")
             if (tobj['CKA_TRUST_SERVER_AUTH'] == 'CKT_NSS_NOT_TRUSTED') or (tobj['CKA_TRUST_EMAIL_PROTECTION'] == 'CKT_NSS_NOT_TRUSTED') or (tobj['CKA_TRUST_CODE_SIGNING'] == 'CKT_NSS_NOT_TRUSTED'):
               f.write("x-distrusted: true\n")
             f.write("\n\n")
         f.close()
-        print(" -> written as '%s', trust = %s, openssl-trust = %s, distrust = %s, openssl-distrust = %s" % (fname, trustbits, openssl_trustflags, distrustbits, openssl_distrustflags))
+        print " -> written as '%s', trust = %s, openssl-trust = %s, distrust = %s, openssl-distrust = %s" % (fname, trustbits, openssl_trustflags, distrustbits, openssl_distrustflags)
