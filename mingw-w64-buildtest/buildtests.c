@@ -54,14 +54,14 @@ int main(int argc, char** argv, char** envp) {
 		}
 #if 1
 		// Augment Windows-specific Path variable with root directory
-		// When run from within the MSYS2's MingGW shell the PATH variable is augmented automatically
+		// When run from within the MSYS2's MingGW shell the PATH variable gets updated automatically
+		#undef T
 		#define T "Path="
 		if(strncmp(T, envp[i], strlen(T)) == 0) {
 			char* env = malloc(BUFFER_SIZE*sizeof(char)); assert(env);
 			strcpy(buffer, &envp[i][strlen(T)]);
 			snprintf(env, BUFFER_SIZE, "%s%s;%s", T, root, buffer);
 			envp[i] = env;
-			printf("%s", env);
 			continue;
 		}
 #endif
