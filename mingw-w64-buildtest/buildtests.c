@@ -6,7 +6,7 @@
 #include <shellapi.h>
 #include <inttypes.h>
 
-#define BUFFER_SIZE 32767
+#define BUFFER_SIZE 4096
 
 static uint32_t hash( uint32_t a) {
     a = (a ^ 61) ^ (a >> 16);
@@ -82,7 +82,7 @@ int main(int argc, char** argv, char** envp) {
 		#define T "PATH="
 		if(strncmp(T, envp[ii], strlen(T)) == 0) {
 			char* env = malloc(BUFFER_SIZE*sizeof(char)); assert(env);
-			strncpy(buffer, BUFFER_SIZE, &envp[i][strlen(T)]);
+			strncpy(buffer, envp[i] + strlen(T), BUFFER_SIZE);
 			snprintf(env, BUFFER_SIZE, "%s%s;%s", T, root, buffer);
 			envs[i++] = env;
 			continue;
@@ -91,7 +91,7 @@ int main(int argc, char** argv, char** envp) {
 		#define T "Path="
 		if(strncmp(T, envp[ii], strlen(T)) == 0) {
 			char* env = malloc(BUFFER_SIZE*sizeof(char)); assert(env);
-			strncpy(buffer, BUFFER_SIZE, &envp[i][strlen(T)]);
+			strncpy(buffer, envp[i] + strlen(T), BUFFER_SIZE);
 			snprintf(env, BUFFER_SIZE, "%s%s;%s", T, root, buffer);
 			envs[i++] = env;
 			continue;
