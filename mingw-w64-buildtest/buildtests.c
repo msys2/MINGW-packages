@@ -20,7 +20,7 @@ static uint32_t hash( uint32_t a) {
 int main(int argc, char** argv, char** envp) {
 	int i = strlen(_pgmptr)-1;
 	while(_pgmptr[i] != '\\') --i; /* Wipe executable name from path, c:\dir\a.exe --> c:\dir\ */
-	char* root = calloc(i+1, sizeof(char)); assert(root);
+	char* root = malloc(BUFFER_SIZE*sizeof(char)); assert(root);
 	strncpy(root, _pgmptr, i);
 	char* tmpdir = malloc(BUFFER_SIZE*sizeof(char)); assert(tmpdir);
 	char* buffer = malloc(BUFFER_SIZE*sizeof(char)); assert(buffer);
@@ -42,10 +42,10 @@ int main(int argc, char** argv, char** envp) {
 	char* all_tcl = malloc(BUFFER_SIZE*sizeof(char)); assert(all_tcl);
 	snprintf(all_tcl, BUFFER_SIZE, "%s\\..\\share\\tests\\all.tcl", root);
 	args[i++] = all_tcl;
-	int cleanup = 1; // Should staging directory be deleted after the tests execution.
+	int cleanup = 1; // Should staging directory be deleted after the tests execution
 	// Copy remaining args
 	for(int ii = 1; ii < argc; ++ii) {
-		// Detect and remove flags meaningless to the tcltest.
+		// Detect and remove flags meaningless to the tcltest
 		if(strcmp("-nocleanup", argv[ii]) == 0) {
 #ifndef NDEBUG
 			printf("*** Staging directory cleanup disabled with -nocleanup command-line option\n");
@@ -56,7 +56,7 @@ int main(int argc, char** argv, char** envp) {
 		args[i++] = argv[ii];
 	}
 	args[i] = NULL;
-	// Filter environment to set to new temp & path.
+	// Filter environment to set to new temp & path
 	i = 0;
 	char** envs = malloc(BUFFER_SIZE*sizeof(char*)); assert(envs);
 	for(int ii = 0; envp[ii]; ++ii) {
@@ -76,8 +76,8 @@ int main(int argc, char** argv, char** envp) {
 			envs[i++] = env;
 			continue;
 		}
-		// Native Windows cmd and MinGW shell set different path variables.
-		// Augment whatever path variable found.
+		// Native Windows cmd and MinGW shell set different path variables
+		// Augment whatever path variable found
 		#undef T
 		#define T "PATH="
 		if(strncmp(T, envp[ii], strlen(T)) == 0) {
@@ -113,9 +113,9 @@ int main(int argc, char** argv, char** envp) {
 	puts("\n");
 	fflush(stdout);
 #endif
-	// Execute tests.
+	// Execute tests
 	int c = _spawnve(_P_WAIT, tclsh, args, envs);
-	// Fire up cleaning process.
+	// Fire up cleaning process
 	if(cleanup) {
 #ifndef NDEBUG
 		printf("\n_spawn(_P_NOWAIT): %s %s\n", rmpath, tmpdir);
