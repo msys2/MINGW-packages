@@ -10,7 +10,7 @@
 	#define E "MPICXX"
 #elif defined(FC)
 	#define C "gfortran.exe"
-	#define E "MPIFC"
+	#define E "MPIFORT"
 #else
 	#error
 #endif
@@ -32,10 +32,13 @@ int main(int argc, char** argv) {
 	int i = 0;
 	args[i++] = GetEnvironmentVariable(E, comp, SZ) > 0 ? comp : C;
 	args[i++] = ipath;
+#if 0
+// Not needed for anymore MS-MPI 10+
 #ifdef FC
 	args[i++] = "-fno-range-check";
 #else	
 	args[i++] = "-include"; args[i++] = "inttypes.h";
+#endif
 #endif
 	if(!show) for(int x = 1; x < argc; ++x) args[i++] = argv[x];
 	args[i++] = lpath;
@@ -47,11 +50,6 @@ int main(int argc, char** argv) {
 		fflush(stdout);
 		return 0;
 	} else {
-		/*if(GetEnvironmentVariable("MSMPIDRVFLAGS", comp, SZ) > 0 && strcmp(comp, "-v") == 0) {
-			for(int x = 0; args[x]; ++x) printf("%s ", args[x]);
-			printf("\n");
-			fflush(stdout);
-		}*/
 		return _spawnvp(_P_WAIT, args[0], args);
 	}
 };
