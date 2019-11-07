@@ -37,7 +37,7 @@ def printable_serial(obj):
 # Dirty file parser.
 in_data, in_multiline, in_obj = False, False, False
 field, ftype, value, binval, obj = None, None, None, bytearray(), dict()
-for line in open('certdata.txt', 'r'):
+for line in open('certdata.txt', 'r', encoding='utf8'):
     # Ignore the file header.
     if not in_data:
         if line.startswith('BEGINDATA'):
