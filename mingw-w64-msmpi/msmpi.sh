@@ -26,7 +26,8 @@ if [[ ! -f "$msmpi" ]]; then
 	exit 1
 fi
 /mingw64/bin/gendef "$msmpi" 2> /dev/null
-mv msmpi.def msmpi.def.x86_64
+cat msmpi.def | tr -d '\015' > msmpi.def.x86_64
+rm msmpi.def
 
 # x32
 msmpi=`cygpath -m "$WINDIR/syswow64/msmpi.dll"`
@@ -35,9 +36,10 @@ if [[ ! -f "$msmpi" ]]; then
 	exit 1
 fi
 /mingw32/bin/gendef "$msmpi" 2> /dev/null
-cp msmpi.def msmpi.def.i686
-ruby -n -e '$_.strip!; puts "#{$1}@0=#{$1}\n" if ($_ != $_.upcase) && ($_ != $_.downcase) && /^([a-zA-Z0-9_]*)$/.match($_)' msmpi.def >> msmpi.def.i686
-rm msmpi.def
+cp msmpi.def msmpi.def~
+ruby -n -e '$_.strip!; puts "#{$1}@0=#{$1}\n" if ($_ != $_.upcase) && ($_ != $_.downcase) && /^([a-zA-Z0-9_]*)$/.match($_)' msmpi.def >> msmpi.def~
+cat msmpi.def~ | tr -d '\015' > msmpi.def.i686
+rm msmpi.def msmpi.def~
 
 rootdir=`pwd`
 
@@ -47,9 +49,11 @@ rootdir=`pwd`
 		echo "ERROR: \$MSMPI_INC directory does not exist or contains no mpi.h file. Is MS-MPI SDK installed?"
 		exit 1
 	fi
-	cp mpi.h mpif.h mpi.f90 "$rootdir"
-	cp x64/mpifptr.h "$rootdir/mpifptr.h.x86_64"
-	cp x86/mpifptr.h "$rootdir/mpifptr.h.i686"
+	for f in mpi.h mpif.h mpi.f90; do
+		cat $f | tr -d '\015' > "$rootdir/$f"
+	done
+	cat x64/mpifptr.h | tr -d '\015' > "$rootdir/mpifptr.h.x86_64"
+	cat x86/mpifptr.h | tr -d '\015' > "$rootdir/mpifptr.h.i686"
 )
 
 # Export file signatures to be embed into PKGBUILD in order to ensure build integrity
