@@ -39,6 +39,16 @@ class Tests(unittest.TestCase):
     def test_sep(self):
         self.assertEqual(os.sep, SEP)
 
+    def test_module_file_path(self):
+        import asyncio
+        import zlib
+        self.assertEqual(zlib.__file__, os.path.normpath(zlib.__file__))
+        self.assertEqual(asyncio.__file__, os.path.normpath(asyncio.__file__))
+
+    def test_importlib_frozen_path_sep(self):
+        import importlib._bootstrap_external
+        self.assertEqual(importlib._bootstrap_external.path_sep, SEP)
+
     def test_os_commonpath(self):
         self.assertEqual(
             os.path.commonpath(
