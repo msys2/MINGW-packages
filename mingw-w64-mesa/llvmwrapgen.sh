@@ -12,14 +12,6 @@ fi
 llvmlibs="${llvmlibs//.a/}"
 llvmlibs=\'"${llvmlibs// /\', \'}"\'
 
-# Get MSYS2 Mingw-w64 runtime location
-mesasrc=${PWD}
-cd ${MINGW_PREFIX}
-msysloc=$(${MINGW_PREFIX}/bin/python3 -c "import os;print(os.getcwd())")
-msysloc=${msysloc//\"/}
-msysloc=${msysloc//\\/\/}
-cd ${mesasrc}
-
 # Generate a Meson wrap file for LLVM
 mkdir -p ./subprojects/llvm
 FILE="./subprojects/llvm/meson.build"
@@ -29,17 +21,17 @@ project('llvm', ['cpp'])
 cpp = meson.get_compiler('cpp')
 
 _deps = []
-_search = '${msysloc}/lib'
+_search = '$(cygpath -m ${MINGW_PREFIX})/lib'
 foreach d : [${llvmlibs}]
   _deps += cpp.find_library(d, dirs : _search)
 endforeach
 
 dep_llvm = declare_dependency(
-  include_directories : include_directories('${msysloc}/include'),
+  include_directories : include_directories('$(cygpath -m ${MINGW_PREFIX})/include'),
   dependencies : _deps,
   version : '$(${MINGW_PREFIX}/bin/llvm-config --version)',
 )
 
 has_rtti = ${rtti}
-irbuilder_h = files('${msysloc}/include/llvm/IR/IRBuilder.h')
+irbuilder_h = files('$(cygpath -m ${MINGW_PREFIX})/include/llvm/IR/IRBuilder.h')
 EOM
