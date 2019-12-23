@@ -56,6 +56,12 @@ class Tests(unittest.TestCase):
                  os.path.join("C:", os.sep, "foo")]),
                  os.path.join("C:", os.sep, "foo"))
 
+    def test_pathlib(self):
+        import pathlib
+
+        p = pathlib.Path("foo") / pathlib.Path("foo")
+        self.assertEqual(str(p), os.path.normpath(p))
+
     def test_modules_import(self):
         import sqlite3
         import ssl
