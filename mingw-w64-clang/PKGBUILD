@@ -30,9 +30,10 @@ pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
          "${MINGW_PACKAGE_PREFIX}-lld"
          "${MINGW_PACKAGE_PREFIX}-lldb"
          "${MINGW_PACKAGE_PREFIX}-llvm"
+         "${MINGW_PACKAGE_PREFIX}-openmp"
          "${MINGW_PACKAGE_PREFIX}-polly")
 pkgver=9.0.0
-pkgrel=2
+pkgrel=3
 pkgdesc="C language family frontend for LLVM (mingw-w64)"
 arch=('any')
 url="https://llvm.org/"
@@ -51,9 +52,11 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cmake>=3.4.3"
              $([[ "$_generator" == "Ninja" ]] && echo \
                "${MINGW_PACKAGE_PREFIX}-ninja")
              )
-depends=("${MINGW_PACKAGE_PREFIX}-gcc")
+depends=("${MINGW_PACKAGE_PREFIX}-gcc"
+         "${MINGW_PACKAGE_PREFIX}-uasm")
 options=('!debug' 'strip')
 source=(${_url}/$pkgver/llvm-${pkgver}.src.tar.xz{,.sig}
+        ${_url}/$pkgver/openmp-${pkgver}.src.tar.xz{,.sig}
         ${_url}/$pkgver/cfe-${pkgver}.src.tar.xz{,.sig}
         ${_url}/$pkgver/compiler-rt-${pkgver}.src.tar.xz{,.sig}
         ${_url}/$pkgver/test-suite-${pkgver}.src.tar.xz{,.sig}
@@ -96,7 +99,9 @@ source=(${_url}/$pkgver/llvm-${pkgver}.src.tar.xz{,.sig}
         "0510-fix-CMake-when-LLDB_DISABLE_PYTHON-if-ON-and-ep.patch"
         "0601-fix-static-assert-macro.patch"
         "0701-disable-visibility-annotations.patch"
-        "0801-Don-t-build-LLVMPolly-on-WIN32.patch")
+        "0801-Don-t-build-LLVMPolly-on-WIN32.patch"
+        "0901-openmp-kpm-lock.patch"
+        "0902-libomp-weak-mingw.patch")
 # Some patch notes :)
 #0001-0099 -> llvm
 #0101-0199 -> clang
@@ -107,7 +112,10 @@ source=(${_url}/$pkgver/llvm-${pkgver}.src.tar.xz{,.sig}
 #0601-0699 -> libunwind
 #0701-0799 -> libc++abi
 #0801-0899 -> polly
+#0901-0999 -> openmp
 sha256sums=('d6a0565cf21f22e9b4353b2eb92622e8365000a9e90a16b09b56f8157eabfe84'
+            'SKIP'
+            '9979eb1133066376cc0be29d1682bc0b0e7fb541075b391061679111ae4d3b5b'
             'SKIP'
             '7ba81eef7c22ca5da688fdf9d88c20934d2d6b40bfe150ffd338900890aa4610'
             'SKIP'
@@ -161,7 +169,9 @@ sha256sums=('d6a0565cf21f22e9b4353b2eb92622e8365000a9e90a16b09b56f8157eabfe84'
             '963387da0ff24e167c91d193def2f5a7581dca41166f73b8914fcf8fd636101f'
             'b9727a84f6e412ef9ace5f1b4030ccbc8789a6f1ef74cc09f95dfa9118515b8a'
             'eaa7ad87e3f0fc9ff697c8865cce5c501fcb3a71a9a29c9497e444013163976f'
-            'bc394e597f8939b6f6630bd88c990f951738aaadacded2f3be71c658e9608fe7')
+            'bc394e597f8939b6f6630bd88c990f951738aaadacded2f3be71c658e9608fe7'
+            'db8dc554f7780609ee4eb4bc9e3817d4a9409b622f6471c8db06c92705805ead'
+            'f7958638e73273ea6a8df4a4e8726a0904d049fdaea7e84c33db5dec1af08fa8')
 validpgpkeys=('B6C8F98282B944E3B0D5C2530FC3042E345AD05D'  # Hans Wennborg, Google.
               '474E22316ABF4785A88C6E8EA2C794A986419D8A') # Tom Stellard
 noextract=(cfe-${pkgver}.src.tar.xz
@@ -252,12 +262,19 @@ prepare() {
   apply_patch_with_msg \
       "0801-Don-t-build-LLVMPolly-on-WIN32.patch"
 
+  cd "${srcdir}/openmp-${pkgver}.src"
+  apply_patch_with_msg \
+      "0901-openmp-kpm-lock.patch" \
+      "0902-libomp-weak-mingw.patch"
+    
+
+
   # At the present, clang must reside inside the LLVM source code tree to build
   # See https://bugs.llvm.org/show_bug.cgi?id=4840
 
   cd "${srcdir}"/llvm-${pkgver}.src
   rm -rf tools/clang tools/clang/tools/extra tools/lld tools/lldb tools/polly projects/compiler-rt projects/libcxx \
-         projects/libcxxabi projects/libunwind projects/test-suite | true
+         projects/libcxxabi projects/libunwind projects/openmp projects/test-suite | true
   mv "${srcdir}/cfe-${pkgver}.src"               tools/clang
   mv "${srcdir}/clang-tools-extra-${pkgver}.src" tools/clang/tools/extra
   mv "${srcdir}/lld-${pkgver}.src"               tools/lld
@@ -267,6 +284,7 @@ prepare() {
   mv "${srcdir}/libcxxabi-${pkgver}.src"         projects/libcxxabi
   mv "${srcdir}/libcxx-${pkgver}.src"            projects/libcxx
   mv "${srcdir}/libunwind-${pkgver}.src"         projects/libunwind
+  mv "${srcdir}/openmp-${pkgver}.src"            projects/openmp
   #mv "${srcdir}/testsuite-${pkgver}.src"         projects/test-suite
 }
 
@@ -298,10 +316,19 @@ build() {
     export CC='clang'
     export CXX='clang++'
   fi
+  
+  export ASM_COMPILER="${MINGW_PREFIX}/bin/uasm.exe"
+  if [ "${CARCH}" == "x86_64" ]; then
+    export ASM_COMPILER_FLAGS=-win64
+  fi
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake.exe \
     -G"$_generator" \
+    -DCMAKE_VERBOSE_MAKEFILE=ON \
+    -DCMAKE_ASM_MASM_COMPILER="${ASM_COMPILER}" \
+    -DLIBOMP_ASMFLAGS="${ASM_COMPILER_FLAGS}" \
+    -DLIBOMP_FORTRAN_MODULES=ON \
     -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib \
     -DFFI_INCLUDE_DIR="${FFI_INCLUDE_DIR}" \
     -DCMAKE_C_FLAGS="${CFLAGS}" \
@@ -329,7 +356,11 @@ build() {
     "${extra_config[@]}" \
     ../llvm-${pkgver}.src
 
-  ${_make_cmd}
+  # sed away the bad windows style command line parameters (they are translated by msys from /bad to c:\msys\bad
+  sed -i.orig 's/\/c  \/Fo/-c -Fo/' projects/openmp/runtime/src/CMakeFiles/omp.dir/build.make
+  sed -i.orig 's/\/safeseh \/coff/-safeseh -coff/' projects/openmp/runtime/src/CMakeFiles/omp.dir/build.make
+
+  ${_make_cmd} VERBOSE=1
 
   # Disable automatic installation of components that go into subpackages
   # -i.orig to check what has been removed in-case it starts dropping more than it should
@@ -337,7 +368,8 @@ build() {
   sed -i.orig '/\(clang\|lld\|lldb\|polly\)\/cmake_install.cmake/d' tools/cmake_install.cmake
   sed -i.orig '/\(extra\|scan-build\|scan-view\)\/cmake_install.cmake/d' tools/clang/tools/cmake_install.cmake
 # sed -i.orig '/\(compiler-rt\|libcxxabi\|libcxx\)\/cmake_install.cmake/d' projects/cmake_install.cmake
-  sed -i.orig '/\(compiler-rt\|libcxxabi\|libcxx\|libunwind\)\/cmake_install.cmake/d' projects/cmake_install.cmake
+  sed -i.orig '/\(compiler-rt\|libcxxabi\|libcxx\|openmp\|libunwind\)\/cmake_install.cmake/d' projects/cmake_install.cmake
+  # fix the bad command line parameters, use unix style
 }
 
 #check() {
@@ -408,6 +440,14 @@ package_libcxx() {
 
   cd "${srcdir}/llvm-${pkgver}.src"
   ${_make_cmd} -C ../build-${CARCH}/projects/libcxx -j1 DESTDIR="${pkgdir}" install
+}
+
+package_openmp() {
+  pkgdesc="OpenMP library (mingw-w64)"
+  url="https://openmp.llvm.org/"
+
+  cd "${srcdir}/llvm-${pkgver}.src"
+  ${_make_cmd} -C ../build-${CARCH}/projects/openmp DESTDIR="${pkgdir}" install
 }
 
 package_libcxxabi() {
@@ -522,6 +562,10 @@ package_mingw-w64-i686-libc++(){
   package_libcxx
 }
 
+package_mingw-w64-i686-openmp(){
+  package_openmp
+}
+
 package_mingw-w64-i686-lld(){
   package_lld
 }
@@ -565,6 +609,11 @@ package_mingw-w64-x86_64-libc++abi(){
 package_mingw-w64-x86_64-libc++(){
   package_libcxx
 }
+
+package_mingw-w64-x86_64-openmp(){
+  package_openmp
+}
+
 
 package_mingw-w64-x86_64-lld(){
   package_lld
