@@ -1,0 +1,315 @@
+From 7318576fc7037412b755f038f8148f2d299587aa Mon Sep 17 00:00:00 2001
+From: Even Rouault <even.rouault@spatialys.com>
+Date: Tue, 26 Nov 2019 14:33:32 +0100
+Subject: [PATCH] PDF: fix to build against latest Poppler master (0.83dev)
+
+---
+ gdal/frmts/pdf/pdfio.cpp | 3 +++
+ gdal/frmts/pdf/pdfio.h   | 7 ++++++-
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/gdal/frmts/pdf/pdfio.cpp b/gdal/frmts/pdf/pdfio.cpp
+index 917e92330ae..c0b9dad93cb 100644
+--- a/gdal/frmts/pdf/pdfio.cpp
++++ b/gdal/frmts/pdf/pdfio.cpp
+@@ -170,6 +170,9 @@ getStart_ret_type VSIPDFFileStream::getStart()
+ /************************************************************************/
+ 
+ StreamKind VSIPDFFileStream::getKind()
++#if POPPLER_MAJOR_VERSION >= 1 || POPPLER_MINOR_VERSION >= 83
++                                        const
++#endif
+ {
+     return strFile;
+ }
+diff --git a/gdal/frmts/pdf/pdfio.h b/gdal/frmts/pdf/pdfio.h
+index aa34ab7210d..23344d33f77 100644
+--- a/gdal/frmts/pdf/pdfio.h
++++ b/gdal/frmts/pdf/pdfio.h
+@@ -81,7 +81,12 @@ class VSIPDFFileStream final: public BaseStream
+         virtual void       setPos(setPos_offset_type pos, int dir = 0) override;
+         virtual void       moveStart(moveStart_delta_type delta) override;
+ 
+-        virtual StreamKind getKind() override;
++        virtual StreamKind getKind()
++#if POPPLER_MAJOR_VERSION >= 1 || POPPLER_MINOR_VERSION >= 83
++            const
++#endif
++            override;
++
+         virtual GooString *getFileName() override;
+ 
+         virtual int        getChar() override;
+
+From 1f8fa16f58cfe0364099ddad0e1d86522d8de41a Mon Sep 17 00:00:00 2001
+From: Even Rouault <even.rouault@spatialys.com>
+Date: Wed, 13 Nov 2019 14:07:22 +0100
+Subject: [PATCH] PDF: fix build against Poppler 0.83.0dev
+
+---
+ gdal/frmts/pdf/pdfdataset.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/gdal/frmts/pdf/pdfdataset.cpp b/gdal/frmts/pdf/pdfdataset.cpp
+index 8f944c40d30..88017953de5 100644
+--- a/gdal/frmts/pdf/pdfdataset.cpp
++++ b/gdal/frmts/pdf/pdfdataset.cpp
+@@ -4267,7 +4267,13 @@ PDFDataset *PDFDataset::Open( GDALOpenInfo * poOpenInfo )
+         CPLMutexHolderD(&hGlobalParamsMutex);
+         /* poppler global variable */
+         if (globalParams == nullptr)
++        {
++#if POPPLER_MAJOR_VERSION >= 1 || POPPLER_MINOR_VERSION >= 83
++            globalParams.reset(new GlobalParams());
++#else
+             globalParams = new GlobalParams();
++#endif
++        }
+ 
+         globalParams->setPrintCommands(CPLTestBool(
+             CPLGetConfigOption("GDAL_PDF_PRINT_COMMANDS", "FALSE")));
+From c82531d303948c7102a987b2adc8b58414f2fbf5 Mon Sep 17 00:00:00 2001
+From: Even Rouault <even.rouault@spatialys.com>
+Date: Tue, 26 Nov 2019 15:12:19 +0100
+Subject: [PATCH] PDF: fix crash on corrupted file. Fixes
+ https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=19098
+
+---
+ gdal/frmts/pdf/pdfdataset.cpp | 22 ++++++++++++++++++++--
+ gdal/frmts/pdf/pdfio.cpp      |  1 +
+ gdal/frmts/pdf/pdfio.h        |  4 ++++
+ 3 files changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/gdal/frmts/pdf/pdfdataset.cpp b/gdal/frmts/pdf/pdfdataset.cpp
+index 88017953de5..967dd8fcd24 100644
+--- a/gdal/frmts/pdf/pdfdataset.cpp
++++ b/gdal/frmts/pdf/pdfdataset.cpp
+@@ -4292,11 +4292,12 @@ PDFDataset *PDFDataset::Open( GDALOpenInfo * poOpenInfo )
+ 
+         g_nPopplerErrors = 0;
+ #if POPPLER_MAJOR_VERSION >= 1 || POPPLER_MINOR_VERSION >= 58
+-        poDocPoppler = new PDFDoc(new VSIPDFFileStream(fp, pszFilename, std::move(oObj)), nullptr, poUserPwd);
++        auto poStream = new VSIPDFFileStream(fp, pszFilename, std::move(oObj));
+ #else
+         oObj.getObj()->initNull();
+-        poDocPoppler = new PDFDoc(new VSIPDFFileStream(fp, pszFilename, oObj.getObj()), nullptr, poUserPwd);
++        auto poStream = new VSIPDFFileStream(fp, pszFilename, oObj.getObj());
+ #endif
++        poDocPoppler = new PDFDoc(poStream, nullptr, poUserPwd);
+         delete poUserPwd;
+         if( g_nPopplerErrors >= MAX_POPPLER_ERRORS )
+         {
+@@ -4339,8 +4340,25 @@ PDFDataset *PDFDataset::Open( GDALOpenInfo * poOpenInfo )
+ 
+             return nullptr;
+         }
++        else if( poDocPoppler->isLinearized() &&
++                 !poStream->FoundLinearizedHint() )
++        {
++            // This is a likely defect of poppler Linearization.cc file that
++            // recognizes a file as linearized if the /Linearized hint is missing,
++            // but the content of this dictionary are present.
++            // But given the hacks of PDFFreeDoc() and VSIPDFFileStream::FillBuffer()
++            // opening such a file will result in a null-ptr deref at closing if
++            // we try to access a page and build the page cache, so just exit now
++            CPLError(CE_Failure, CPLE_AppDefined, "Invalid PDF");
++
++            PDFFreeDoc(poDocPoppler);
++
++            return nullptr;
++        }
+         else
++        {
+             break;
++        }
+     }
+ 
+     poCatalogPoppler = poDocPoppler->getCatalog();
+diff --git a/gdal/frmts/pdf/pdfio.cpp b/gdal/frmts/pdf/pdfio.cpp
+index c0b9dad93cb..fdd6abe682e 100644
+--- a/gdal/frmts/pdf/pdfio.cpp
++++ b/gdal/frmts/pdf/pdfio.cpp
+@@ -226,6 +226,7 @@ int VSIPDFFileStream::FillBuffer()
+             if( memcmp(abyBuffer + i, "/Linearized ",
+                        strlen("/Linearized ")) == 0 )
+             {
++                bFoundLinearizedHint = true;
+                 memcpy(abyBuffer + i, "/XXXXXXXXXX ", strlen("/Linearized "));
+                 break;
+             }
+diff --git a/gdal/frmts/pdf/pdfio.h b/gdal/frmts/pdf/pdfio.h
+index 23344d33f77..d42b33373b6 100644
+--- a/gdal/frmts/pdf/pdfio.h
++++ b/gdal/frmts/pdf/pdfio.h
+@@ -97,6 +97,8 @@ class VSIPDFFileStream final: public BaseStream
+         virtual void       unfilteredReset () override;
+         virtual void       close() override;
+ 
++        bool               FoundLinearizedHint() const { return bFoundLinearizedHint; }
++
+     private:
+         virtual GBool hasGetChars() override;
+         virtual int getChars(int nChars, Guchar *buffer) override;
+@@ -116,6 +118,8 @@ class VSIPDFFileStream final: public BaseStream
+         int                nPosInBuffer;
+         int                nBufferLength;
+ 
++        bool               bFoundLinearizedHint = false;
++
+         int                FillBuffer();
+ };
+ 
+From 2b10cb8700f8f187452f517bc82438d67714d4dd Mon Sep 17 00:00:00 2001
+From: Even Rouault <even.rouault@spatialys.com>
+Date: Thu, 12 Dec 2019 22:58:55 +0100
+Subject: [PATCH] PDF: fix use-after-free on some corrupted PDF files. Fixes
+ https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=19400
+
+---
+ gdal/frmts/pdf/gdal_pdf.h     |  1 +
+ gdal/frmts/pdf/pdfdataset.cpp | 32 ++++++++++++++++++++++++--------
+ gdal/frmts/pdf/pdfio.cpp      |  2 --
+ 3 files changed, 25 insertions(+), 10 deletions(-)
+
+diff --git a/gdal/frmts/pdf/gdal_pdf.h b/gdal/frmts/pdf/gdal_pdf.h
+index 9fd1cfb5b18..084963155db 100644
+--- a/gdal/frmts/pdf/gdal_pdf.h
++++ b/gdal/frmts/pdf/gdal_pdf.h
+@@ -189,6 +189,7 @@ class PDFDataset final: public GDALPamDataset
+     friend class PDFRasterBand;
+     friend class PDFImageRasterBand;
+ 
++    VSILFILE    *m_fp = nullptr;
+     PDFDataset*  poParentDS;
+ 
+     CPLString    osFilename;
+diff --git a/gdal/frmts/pdf/pdfdataset.cpp b/gdal/frmts/pdf/pdfdataset.cpp
+index 967dd8fcd24..7cdeddf1cb0 100644
+--- a/gdal/frmts/pdf/pdfdataset.cpp
++++ b/gdal/frmts/pdf/pdfdataset.cpp
+@@ -2629,6 +2629,10 @@ PDFDataset::~PDFDataset()
+     for(int i=0;i<nLayers;i++)
+         delete papoLayers[i];
+     CPLFree( papoLayers );
++
++    // Do that only after having destroyed Poppler objects
++    if( m_fp )
++        VSIFCloseL(m_fp);
+ }
+ 
+ /************************************************************************/
+@@ -4255,6 +4259,17 @@ PDFDataset *PDFDataset::Open( GDALOpenInfo * poOpenInfo )
+ #endif
+     int nPages = 0;
+ 
++    struct FilePointerKeeper
++    {
++        VSILFILE* m_fp;
++
++        FilePointerKeeper(VSILFILE* fp = nullptr): m_fp(fp) {}
++        ~FilePointerKeeper() { if( m_fp ) VSIFCloseL(m_fp); }
++        void reset(VSILFILE* fp) { if( m_fp ) VSIFCloseL(m_fp); m_fp = fp; }
++        VSILFILE* release() { VSILFILE* ret = m_fp; m_fp = nullptr; return ret; }
++    };
++    FilePointerKeeper fpKeeper;
++
+ #ifdef HAVE_POPPLER
+   if(bUseLib.test(PDFLIB_POPPLER))
+   {
+@@ -4279,14 +4294,16 @@ PDFDataset *PDFDataset::Open( GDALOpenInfo * poOpenInfo )
+             CPLGetConfigOption("GDAL_PDF_PRINT_COMMANDS", "FALSE")));
+     }
+ 
+-    while( true )
+-    {
+-        VSILFILE* fp = VSIFOpenL(pszFilename, "rb");
+-        if (fp == nullptr)
+-            return nullptr;
++    VSILFILE* fp = VSIFOpenL(pszFilename, "rb");
++    if (fp == nullptr)
++        return nullptr;
+ 
+-        fp = (VSILFILE*)VSICreateBufferedReaderHandle((VSIVirtualHandle*)fp);
++    fp = (VSILFILE*)VSICreateBufferedReaderHandle((VSIVirtualHandle*)fp);
++    fpKeeper.reset(fp);
+ 
++    while( true )
++    {
++        VSIFSeekL(fp, 0, SEEK_SET);
+         if (pszUserPwd)
+             poUserPwd = new GooString(pszUserPwd);
+ 
+@@ -4337,7 +4354,6 @@ PDFDataset *PDFDataset::Open( GDALOpenInfo * poOpenInfo )
+             }
+ 
+             PDFFreeDoc(poDocPoppler);
+-
+             return nullptr;
+         }
+         else if( poDocPoppler->isLinearized() &&
+@@ -4352,7 +4368,6 @@ PDFDataset *PDFDataset::Open( GDALOpenInfo * poOpenInfo )
+             CPLError(CE_Failure, CPLE_AppDefined, "Invalid PDF");
+ 
+             PDFFreeDoc(poDocPoppler);
+-
+             return nullptr;
+         }
+         else
+@@ -4589,6 +4604,7 @@ PDFDataset *PDFDataset::Open( GDALOpenInfo * poOpenInfo )
+     }
+ 
+     PDFDataset* poDS = new PDFDataset();
++    poDS->m_fp = fpKeeper.release();
+     poDS->papszOpenOptions = CSLDuplicate(poOpenInfo->papszOpenOptions);
+     poDS->bUseLib = bUseLib;
+     poDS->osFilename = pszFilename;
+diff --git a/gdal/frmts/pdf/pdfio.cpp b/gdal/frmts/pdf/pdfio.cpp
+index df6edd5eb26..49068b8830b 100644
+--- a/gdal/frmts/pdf/pdfio.cpp
++++ b/gdal/frmts/pdf/pdfio.cpp
+@@ -107,8 +107,6 @@ VSIPDFFileStream::~VSIPDFFileStream()
+     if (poParent == nullptr)
+     {
+         delete poFilename;
+-        if (f)
+-            VSIFCloseL(f);
+     }
+ }
+ 
+From d587c2b056cd37a9bf51bf8afa1b740e16c7ba2b Mon Sep 17 00:00:00 2001
+From: Even Rouault <even.rouault@spatialys.com>
+Date: Wed, 8 Jan 2020 14:26:12 +0100
+Subject: [PATCH] PDF: add support for poppler 0.85.0dev
+
+---
+ gdal/frmts/pdf/pdfdataset.cpp | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/gdal/frmts/pdf/pdfdataset.cpp b/gdal/frmts/pdf/pdfdataset.cpp
+index 7cdeddf1cb0..f6149617cee 100644
+--- a/gdal/frmts/pdf/pdfdataset.cpp
++++ b/gdal/frmts/pdf/pdfdataset.cpp
+@@ -2762,7 +2762,10 @@ static void PDFDatasetErrorFunctionCommon(const CPLString& osError)
+ static int g_nPopplerErrors = 0;
+ constexpr int MAX_POPPLER_ERRORS = 1000;
+ 
+-static void PDFDatasetErrorFunction(void* /* userData*/,
++static void PDFDatasetErrorFunction(
++#if !(POPPLER_MAJOR_VERSION >= 1 || POPPLER_MINOR_VERSION >= 85)
++                                    void* /* userData*/,
++#endif
+                                     ErrorCategory /* eErrCategory */,
+                                     Goffset nPos,
+ #if POPPLER_MAJOR_VERSION >= 1 || POPPLER_MINOR_VERSION >= 71
+@@ -4276,7 +4279,11 @@ PDFDataset *PDFDataset::Open( GDALOpenInfo * poOpenInfo )
+     GooString* poUserPwd = nullptr;
+ 
+     /* Set custom error handler for poppler errors */
++#if POPPLER_MAJOR_VERSION >= 1 || POPPLER_MINOR_VERSION >= 85
++    setErrorCallback(PDFDatasetErrorFunction);
++#else
+     setErrorCallback(PDFDatasetErrorFunction, nullptr);
++#endif
+ 
+     {
+         CPLMutexHolderD(&hGlobalParamsMutex);
