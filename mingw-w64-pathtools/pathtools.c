@@ -246,7 +246,7 @@ simplify_path(char * path)
   for (i = 0; i < n_toks; ++i)
   {
     tok_size = strlen(toks[i]);
-    memcpy (result_p, toks[i], tok_size);
+    memmove (result_p, toks[i], tok_size);
     result_p += tok_size;
     if ((!i || tok_size) && ((i < n_toks - 1) || it_ended_with_a_slash == 1))
     {
