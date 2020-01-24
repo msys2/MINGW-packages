@@ -1,0 +1,86 @@
+diff -Naur qt-everywhere-src-5.12.4-orig/qtbase/src/corelib/io/qfilesystemengine_win.cpp qt-everywhere-src-5.12.4/qtbase/src/corelib/io/qfilesystemengine_win.cpp
+--- qt-everywhere-src-5.12.4-orig/qtbase/src/corelib/io/qfilesystemengine_win.cpp	2019-06-12 23:59:14.000000000 +0300
++++ qt-everywhere-src-5.12.4/qtbase/src/corelib/io/qfilesystemengine_win.cpp	2019-06-15 15:56:30.187254700 +0300
+@@ -936,9 +936,10 @@
+     int errorCode = GetLastError();
+     if (errorCode == ERROR_ACCESS_DENIED || errorCode == ERROR_SHARING_VIOLATION) {
+         WIN32_FIND_DATA findData;
+-        if (getFindData(fname.nativeFilePath(), findData)
++        const QString nativeFilePath = fname.nativeFilePath();
++        if (getFindData(nativeFilePath, findData)
+             && findData.dwFileAttributes != INVALID_FILE_ATTRIBUTES) {
+-            data.fillFromFindData(findData, true, fname.isDriveRoot());
++            data.fillFromFindData(findData, true, fname.isDriveRoot(), nativeFilePath);
+             filledData = true;
+         }
+     }
+@@ -1053,8 +1054,9 @@
+         data.knownFlagsMask |= QFileSystemMetaData::LinkType;
+         if (data.fileAttribute_ & FILE_ATTRIBUTE_REPARSE_POINT) {
+             WIN32_FIND_DATA findData;
+-            if (getFindData(fname.nativeFilePath(), findData))
+-                data.fillFromFindData(findData, true);
++            const QString nativeFilePath = fname.nativeFilePath();
++            if (getFindData(nativeFilePath, findData))
++                data.fillFromFindData(findData, true, false, nativeFilePath);
+         }
+     }
+     data.knownFlagsMask |= what;
+diff -Naur qt-everywhere-src-5.12.4-orig/qtbase/src/corelib/io/qfilesystemiterator_win.cpp qt-everywhere-src-5.12.4/qtbase/src/corelib/io/qfilesystemiterator_win.cpp
+--- qt-everywhere-src-5.12.4-orig/qtbase/src/corelib/io/qfilesystemiterator_win.cpp	2019-06-12 23:59:14.000000000 +0300
++++ qt-everywhere-src-5.12.4/qtbase/src/corelib/io/qfilesystemiterator_win.cpp	2019-06-15 15:56:30.187254700 +0300
+@@ -133,7 +133,7 @@
+         fileEntry = QFileSystemEntry(dirPath + fileName);
+         metaData = QFileSystemMetaData();
+         if (!fileName.endsWith(QLatin1String(".lnk"))) {
+-            metaData.fillFromFindData(findData, true);
++            metaData.fillFromFindData(findData, true, false, fileEntry.nativeFilePath());
+         }
+         return true;
+     }
+diff -Naur qt-everywhere-src-5.12.4-orig/qtbase/src/corelib/io/qfilesystemmetadata_p.h qt-everywhere-src-5.12.4/qtbase/src/corelib/io/qfilesystemmetadata_p.h
+--- qt-everywhere-src-5.12.4-orig/qtbase/src/corelib/io/qfilesystemmetadata_p.h	2019-06-12 23:59:14.000000000 +0300
++++ qt-everywhere-src-5.12.4/qtbase/src/corelib/io/qfilesystemmetadata_p.h	2019-06-15 15:56:30.187254700 +0300
+@@ -231,7 +231,7 @@
+ 
+ #if defined(Q_OS_WIN)
+     inline void fillFromFileAttribute(DWORD fileAttribute, bool isDriveRoot = false);
+-    inline void fillFromFindData(WIN32_FIND_DATA &findData, bool setLinkType = false, bool isDriveRoot = false);
++    inline void fillFromFindData(WIN32_FIND_DATA &findData, bool setLinkType = false, bool isDriveRoot = false, const QString &nativeFullFilePath = QString());
+ #  ifndef Q_OS_WINRT
+     inline void fillFromFindInfo(BY_HANDLE_FILE_INFORMATION &fileInfo);
+ #  endif
+@@ -339,7 +339,7 @@
+     knownFlagsMask |= FileType | DirectoryType | HiddenAttribute | ExistsAttribute;
+ }
+ 
+-inline void QFileSystemMetaData::fillFromFindData(WIN32_FIND_DATA &findData, bool setLinkType, bool isDriveRoot)
++inline void QFileSystemMetaData::fillFromFindData(WIN32_FIND_DATA &findData, bool setLinkType, bool isDriveRoot, const QString &nativeFullFilePath)
+ {
+     fillFromFileAttribute(findData.dwFileAttributes, isDriveRoot);
+     birthTime_ = findData.ftCreationTime;
+@@ -356,9 +356,21 @@
+     if (setLinkType) {
+         knownFlagsMask |=  LinkType;
+         entryFlags &= ~LinkType;
+-        if ((fileAttribute_ & FILE_ATTRIBUTE_REPARSE_POINT)
+-            && (findData.dwReserved0 == IO_REPARSE_TAG_SYMLINK)) {
+-            entryFlags |= LinkType;
++        if (fileAttribute_ & FILE_ATTRIBUTE_REPARSE_POINT) {
++            if (findData.dwReserved0 == IO_REPARSE_TAG_SYMLINK) {
++                entryFlags |= LinkType;
++            } else if (findData.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT) {
++                // Junctions and mount points are implemented as NTFS reparse points.
++                // But mount points cannot be treated as symlinks because they might
++                // not have a link target.
++                wchar_t buf[50];
++                QString path = nativeFullFilePath;
++                if (!path.endsWith(QLatin1Char('\\')))
++                    path.append(QLatin1Char('\\'));
++                BOOL isMountPoint = GetVolumeNameForVolumeMountPoint(reinterpret_cast<const wchar_t*>(path.utf16()), buf, sizeof(buf) / sizeof(wchar_t));
++                if (!isMountPoint)
++                    entryFlags |= LinkType;
++            }
+         }
+     }
+ }
