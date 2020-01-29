@@ -25,6 +25,10 @@ _search = '$(cygpath -m ${MINGW_PREFIX})/lib'
 foreach d : [${llvmlibs}]
   _deps += cpp.find_library(d, dirs : _search)
 endforeach
+_search2 = '$(cygpath -m ${MINGW_PREFIX})/bin'
+foreach d2 : ['libLLVM', 'libLTO', 'libRemarks']
+  _deps += cpp.find_library(d2, dirs : _search2)
+endforeach
 
 dep_llvm = declare_dependency(
   include_directories : include_directories('$(cygpath -m ${MINGW_PREFIX})/include'),
