@@ -1,6 +1,6 @@
 #!/bin/sh
 # Get LLVM libraries
-llvmlibs=$(${MINGW_PREFIX}/bin/llvm-config --libnames engine coroutines)
+llvmlibs=$(${MINGW_PREFIX}/bin/llvm-config --link-static --libnames engine coroutines)
 
 # Get LLVM RTTI status
 rtti=false
@@ -24,6 +24,10 @@ _deps = []
 _search = '$(cygpath -m ${MINGW_PREFIX})/lib'
 foreach d : [${llvmlibs}]
   _deps += cpp.find_library(d, dirs : _search)
+endforeach
+_search2 = '$(cygpath -m ${MINGW_PREFIX})/bin'
+foreach d2 : ['libLLVM', 'libLTO', 'libRemarks']
+  _deps += cpp.find_library(d2, dirs : _search2)
 endforeach
 
 dep_llvm = declare_dependency(
