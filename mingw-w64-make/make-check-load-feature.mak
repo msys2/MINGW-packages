@@ -15,11 +15,15 @@ endif
 
 # Run and check the new make function 'mk-temp'.
 .PHONY: all
-TXT_ERROR=FAILED Temporary file not created
-TXT_PASSED=PASSED Temporary file created.
+  TXT_ERROR  = FAILED  Temporary file not created
+  TXT_PASSED = PASSED  Temporary file created.
 all:
 	$(if $(mk-temp tmpfile.),$(warning $(TXT_PASSED)),$(error $(TXT_ERROR)))
 
+ifeq ($(LIBS),)
+  LIBS       = -lgnumake-1
+endif
+
 %.dll: %.c
 	$(warning Compiling $@.)
-	gcc -shared -fPIC -o $@ $< $(if $(LIBS),$(LIBS),-lgnumake-1)
+	gcc -shared -fPIC $(CFLAGS) -o $@ $< $(LIBS)
