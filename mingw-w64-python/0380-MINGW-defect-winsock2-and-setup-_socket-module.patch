@@ -1,0 +1,144 @@
+diff -Naur Python-3.8.0-orig/configure.ac Python-3.8.0/configure.ac
+--- Python-3.8.0-orig/configure.ac	2019-10-22 10:01:27.970591200 +0300
++++ Python-3.8.0/configure.ac	2019-10-22 10:01:39.327411100 +0300
+@@ -4291,21 +4291,36 @@
+ ],[])
+ AC_MSG_RESULT($was_it_defined)
+ 
++AC_CHECK_HEADERS([ws2tcpip.h])
+ AC_MSG_CHECKING(for addrinfo)
+ AC_CACHE_VAL(ac_cv_struct_addrinfo,
+-AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <netdb.h>]], [[struct addrinfo a]])],
++AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
++#ifdef HAVE_WS2TCPIP_H
++#  include <ws2tcpip.h>
++#else
++#  include <netdb.h>
++#endif]],
++    [[struct addrinfo a]])],
+   [ac_cv_struct_addrinfo=yes],
+   [ac_cv_struct_addrinfo=no]))
+ AC_MSG_RESULT($ac_cv_struct_addrinfo)
+ if test $ac_cv_struct_addrinfo = yes; then
+-	AC_DEFINE(HAVE_ADDRINFO, 1, [struct addrinfo (netdb.h)])
++	AC_DEFINE(HAVE_ADDRINFO, 1, [struct addrinfo])
+ fi
+ 
+ AC_MSG_CHECKING(for sockaddr_storage)
+ AC_CACHE_VAL(ac_cv_struct_sockaddr_storage,
+ AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+-#		include <sys/types.h>
+-#		include <sys/socket.h>]], [[struct sockaddr_storage s]])],
++#ifdef HAVE_WS2TCPIP_H
++#include <ws2tcpip.h>
++#endif
++#ifdef HAVE_SYS_TYPES_H
++#include <sys/types.h>
++#endif
++#ifdef HAVE_SYS_SOCKET_H
++#include <sys/socket.h>
++#endif]],
++    [[struct sockaddr_storage s]])],
+   [ac_cv_struct_sockaddr_storage=yes],
+   [ac_cv_struct_sockaddr_storage=no]))
+ AC_MSG_RESULT($ac_cv_struct_sockaddr_storage)
+@@ -5411,7 +5426,10 @@
+ 
+ AC_CHECK_TYPE(socklen_t,,
+   AC_DEFINE(socklen_t,int,
+-            [Define to `int' if <sys/socket.h> does not define.]),[
++            [Define to `int' if <sys/socket.h> or <ws2tcpip.h> does not define.]),[
++#ifdef HAVE_WS2TCPIP_H
++#include <ws2tcpip.h>
++#endif
+ #ifdef HAVE_SYS_TYPES_H
+ #include <sys/types.h>
+ #endif
+diff -Naur Python-3.8.0-orig/Misc/config_mingw Python-3.8.0/Misc/config_mingw
+--- Python-3.8.0-orig/Misc/config_mingw	2019-10-22 10:00:45.989917400 +0300
++++ Python-3.8.0/Misc/config_mingw	2019-10-22 10:01:39.733011900 +0300
+@@ -10,3 +10,6 @@
+ # files to ignore
+ ac_cv_file__dev_ptmx=ignore #NOTE: under MSYS environment device exist
+ ac_cv_file__dev_ptc=no
++
++# force detection of winsock2 functionality - require wxp or newer
++ac_cv_func_getpeername=yes
+diff -Naur Python-3.8.0-orig/Modules/socketmodule.c Python-3.8.0/Modules/socketmodule.c
+--- Python-3.8.0-orig/Modules/socketmodule.c	2019-10-14 16:34:47.000000000 +0300
++++ Python-3.8.0/Modules/socketmodule.c	2019-10-22 10:01:40.123012500 +0300
+@@ -310,7 +310,7 @@
+ # endif
+ 
+ /* Macros based on the IPPROTO enum, see: https://bugs.python.org/issue29515 */
+-#ifdef MS_WINDOWS
++#ifdef _MSC_VER
+ #define IPPROTO_ICMP IPPROTO_ICMP
+ #define IPPROTO_IGMP IPPROTO_IGMP
+ #define IPPROTO_GGP IPPROTO_GGP
+@@ -341,7 +341,7 @@
+ #define IPPROTO_PGM IPPROTO_PGM  // WinSock2 only
+ #define IPPROTO_L2TP IPPROTO_L2TP  // WinSock2 only
+ #define IPPROTO_SCTP IPPROTO_SCTP  // WinSock2 only
+-#endif /* MS_WINDOWS */
++#endif /* _MSC_VER */
+ 
+ /* Provides the IsWindows7SP1OrGreater() function */
+ #include <versionhelpers.h>
+@@ -434,6 +434,10 @@
+   /* Do not include addrinfo.h for MSVC7 or greater. 'addrinfo' and
+    * EAI_* constants are defined in (the already included) ws2tcpip.h.
+    */
++#elif defined(__MINGW32__)
++  /* Do not include addrinfo.h as minimum supported version is
++   * _WIN32_WINNT >= WindowsXP(0x0501)
++   */
+ #else
+ #  include "addrinfo.h"
+ #endif
+diff -Naur Python-3.8.0-orig/pyconfig.h.in Python-3.8.0/pyconfig.h.in
+--- Python-3.8.0-orig/pyconfig.h.in	2019-10-22 10:00:35.132298300 +0300
++++ Python-3.8.0/pyconfig.h.in	2019-10-22 10:01:40.513013200 +0300
+@@ -54,7 +54,7 @@
+ /* Define to 1 if you have the `acosh' function. */
+ #undef HAVE_ACOSH
+ 
+-/* struct addrinfo (netdb.h) */
++/* struct addrinfo */
+ #undef HAVE_ADDRINFO
+ 
+ /* Define to 1 if you have the `alarm' function. */
+@@ -1335,6 +1335,9 @@
+ /* Define if libssl has X509_VERIFY_PARAM_set1_host and related function */
+ #undef HAVE_X509_VERIFY_PARAM_SET1_HOST
+ 
++/* Define to 1 if you have the <ws2tcpip.h> header file. */
++#undef HAVE_WS2TCPIP_H
++
+ /* Define if the zlib library has inflateCopy */
+ #undef HAVE_ZLIB_COPY
+ 
+@@ -1644,7 +1647,7 @@
+ /* Define to `unsigned int' if <sys/types.h> does not define. */
+ #undef size_t
+ 
+-/* Define to `int' if <sys/socket.h> does not define. */
++/* Define to `int' if <sys/socket.h> or <ws2tcpip.h> does not define. */
+ #undef socklen_t
+ 
+ /* Define to `int' if <sys/types.h> doesn't define. */
+diff -Naur Python-3.8.0-orig/setup.py Python-3.8.0/setup.py
+--- Python-3.8.0-orig/setup.py	2019-10-22 10:01:38.141809100 +0300
++++ Python-3.8.0/setup.py	2019-10-22 10:01:40.934214000 +0300
+@@ -1050,7 +1050,11 @@
+     def detect_socket(self):
+         # socket(2)
+         if not VXWORKS:
++            socket_libs = []
++            if MS_WINDOWS:
++                socket_libs += ['ws2_32', 'iphlpapi']
+             self.add(Extension('_socket', ['socketmodule.c'],
++                               libraries = socket_libs,
+                                depends=['socketmodule.h']))
+         elif self.compiler.find_library_file(self.lib_dirs, 'net'):
+             libs = ['net']

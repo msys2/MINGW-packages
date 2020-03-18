@@ -4,6 +4,9 @@
 # Author: Renato Silva <br.renatosilva@gmail.com>
 # Author: Qian Hong <fracting@gmail.com>
 
+PKGEXT='.pkg.tar.zst'
+SRCEXT='.src.tar.gz'
+
 # Enable colors
 normal=$(tput sgr0)
 red=$(tput setaf 1)

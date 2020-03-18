@@ -1,0 +1,377 @@
+diff -Naur Python-3.8.0-orig/Include/pylifecycle.h Python-3.8.0/Include/pylifecycle.h
+--- Python-3.8.0-orig/Include/pylifecycle.h	2019-10-14 16:34:47.000000000 +0300
++++ Python-3.8.0/Include/pylifecycle.h	2019-10-22 10:02:36.752112100 +0300
+@@ -21,6 +21,12 @@
+ PyAPI_FUNC(PyThreadState *) Py_NewInterpreter(void);
+ PyAPI_FUNC(void) Py_EndInterpreter(PyThreadState *);
+ 
++PyAPI_FUNC(wchar_t) Py_GetSepW(const wchar_t *);
++PyAPI_FUNC(char) Py_GetSepA(const char *);
++
++PyAPI_FUNC(void) Py_NormalizeSepsW(wchar_t *);
++PyAPI_FUNC(void) Py_NormalizeSepsA(char *);
++
+ 
+ /* Py_PyAtExit is for the atexit module, Py_AtExit is for low-level
+  * exit functions.
+diff -Naur Python-3.8.0-orig/Lib/ntpath.py Python-3.8.0/Lib/ntpath.py
+--- Python-3.8.0-orig/Lib/ntpath.py	2019-10-14 16:34:47.000000000 +0300
++++ Python-3.8.0/Lib/ntpath.py	2019-10-22 10:02:37.157712800 +0300
+@@ -11,9 +11,7 @@
+ curdir = '.'
+ pardir = '..'
+ extsep = '.'
+-sep = '\\'
+ pathsep = ';'
+-altsep = '/'
+ defpath = '.;C:\\bin'
+ devnull = 'nul'
+ 
+@@ -23,6 +21,15 @@
+ import genericpath
+ from genericpath import *
+ 
++if sys.platform == "win32" and "MSYSTEM" in os.environ:
++    sep = '/'
++    altsep = '\\'
++else:
++    sep = '\\'
++    altsep = '/'
++bsep = str.encode(sep)
++baltsep = str.encode(altsep)
++
+ __all__ = ["normcase","isabs","join","splitdrive","split","splitext",
+            "basename","dirname","commonprefix","getsize","getmtime",
+            "getatime","getctime", "islink","exists","lexists","isdir","isfile",
+@@ -33,9 +40,27 @@
+ 
+ def _get_bothseps(path):
+     if isinstance(path, bytes):
+-        return b'\\/'
++        return bsep+baltsep
++    else:
++        return sep+altsep
++
++def _get_sep(path):
++    if isinstance(path, bytes):
++        return bsep
++    else:
++        return sep
++
++def _get_altsep(path):
++    if isinstance(path, bytes):
++        return baltsep
++    else:
++        return altsep
++
++def _get_colon(path):
++    if isinstance(path, bytes):
++        return b':'
+     else:
+-        return '\\/'
++        return ':'
+ 
+ # Normalize the case of a pathname and map slashes to backslashes.
+ # Other normalizations (such as optimizing '../' away) are not done
+@@ -47,9 +72,9 @@
+     Makes all characters lowercase and all slashes into backslashes."""
+     s = os.fspath(s)
+     if isinstance(s, bytes):
+-        return s.replace(b'/', b'\\').lower()
++        return s.replace(baltsep, bsep).lower()
+     else:
+-        return s.replace('/', '\\').lower()
++        return s.replace(altsep, sep).lower()
+ 
+ 
+ # Return whether a path is absolute.
+@@ -68,14 +93,9 @@
+ # Join two (or more) paths.
+ def join(path, *paths):
+     path = os.fspath(path)
+-    if isinstance(path, bytes):
+-        sep = b'\\'
+-        seps = b'\\/'
+-        colon = b':'
+-    else:
+-        sep = '\\'
+-        seps = '\\/'
+-        colon = ':'
++    sep = _get_sep(path)
++    seps = _get_bothseps(path)
++    colon = _get_colon(path)
+     try:
+         if not paths:
+             path[:0] + sep  #23780: Ensure compatible data type even if p is null.
+@@ -134,14 +154,9 @@
+     """
+     p = os.fspath(p)
+     if len(p) >= 2:
+-        if isinstance(p, bytes):
+-            sep = b'\\'
+-            altsep = b'/'
+-            colon = b':'
+-        else:
+-            sep = '\\'
+-            altsep = '/'
+-            colon = ':'
++        sep = _get_sep(p)
++        altsep = _get_altsep(p)
++        colon = _get_colon(p)
+         normp = p.replace(altsep, sep)
+         if (normp[0:2] == sep*2) and (normp[2:3] != sep):
+             # is a UNC path:
+@@ -195,9 +210,9 @@
+ def splitext(p):
+     p = os.fspath(p)
+     if isinstance(p, bytes):
+-        return genericpath._splitext(p, b'\\', b'/', b'.')
++        return genericpath._splitext(p, bsep, baltsep, b'.')
+     else:
+-        return genericpath._splitext(p, '\\', '/', '.')
++        return genericpath._splitext(p, sep, altsep, '.')
+ splitext.__doc__ = genericpath._splitext.__doc__
+ 
+ 
+@@ -442,15 +457,13 @@
+ def normpath(path):
+     """Normalize path, eliminating double slashes, etc."""
+     path = os.fspath(path)
++    sep = _get_sep(path)
++    altsep = _get_altsep(path)
+     if isinstance(path, bytes):
+-        sep = b'\\'
+-        altsep = b'/'
+         curdir = b'.'
+         pardir = b'..'
+         special_prefixes = (b'\\\\.\\', b'\\\\?\\')
+     else:
+-        sep = '\\'
+-        altsep = '/'
+         curdir = '.'
+         pardir = '..'
+         special_prefixes = ('\\\\.\\', '\\\\?\\')
+@@ -620,6 +620,7 @@
+                 # strip the prefix anyway.
+                 if ex.winerror == initial_winerror:
+                     path = spath
++        path = normpath(path)
+         return path
+ 
+ 
+@@ -645,12 +658,11 @@
+ def relpath(path, start=None):
+     """Return a relative version of a path"""
+     path = os.fspath(path)
++    sep = _get_sep(path)
+     if isinstance(path, bytes):
+-        sep = b'\\'
+         curdir = b'.'
+         pardir = b'..'
+     else:
+-        sep = '\\'
+         curdir = '.'
+         pardir = '..'
+ 
+@@ -705,13 +717,11 @@
+         raise ValueError('commonpath() arg is an empty sequence')
+ 
+     paths = tuple(map(os.fspath, paths))
++    sep = _get_sep(paths[0])
++    altsep = _get_altsep(paths[0])
+     if isinstance(paths[0], bytes):
+-        sep = b'\\'
+-        altsep = b'/'
+         curdir = b'.'
+     else:
+-        sep = '\\'
+-        altsep = '/'
+         curdir = '.'
+ 
+     try:
+diff -Naur Python-3.8.0-orig/Modules/posixmodule.c Python-3.8.0/Modules/posixmodule.c
+--- Python-3.8.0-orig/Modules/posixmodule.c	2019-10-22 10:00:56.988936800 +0300
++++ Python-3.8.0/Modules/posixmodule.c	2019-10-22 10:02:37.547713500 +0300
+@@ -3438,6 +3438,7 @@
+         return PyErr_SetFromWindowsErr(0);
+     }
+ 
++    Py_NormalizeSepsW(wbuf2);
+     PyObject *resobj = PyUnicode_FromWideChar(wbuf2, len);
+     if (wbuf2 != wbuf) {
+         PyMem_RawFree(wbuf2);
+@@ -3886,6 +3887,7 @@
+         result = GetFullPathNameW(path->wide, result, woutbufp, &wtemp);
+     }
+     if (result) {
++        Py_NormalizeSepsW(woutbufp);
+         v = PyUnicode_FromWideChar(woutbufp, wcslen(woutbufp));
+         if (path->narrow)
+             Py_SETREF(v, PyUnicode_EncodeFSDefault(v));
+@@ -3962,6 +3964,7 @@
+         target_path = tmp;
+     }
+ 
++    Py_NormalizeSepsW(target_path);
+     result = PyUnicode_FromWideChar(target_path, result_length);
+     if (result && path->narrow) {
+         Py_SETREF(result, PyUnicode_EncodeFSDefault(result));
+diff -Naur Python-3.8.0-orig/Python/initconfig.c Python-3.8.0/Python/initconfig.c
+--- Python-3.8.0-orig/Python/initconfig.c	2019-10-14 16:34:47.000000000 +0300
++++ Python-3.8.0/Python/initconfig.c	2019-10-22 10:02:37.968914200 +0300
+@@ -98,7 +98,7 @@
+ "PYTHONDEVMODE: enable the development mode.\n"
+ "PYTHONPYCACHEPREFIX: root directory for bytecode cache (pyc) files.\n";
+ 
+-#if defined(MS_WINDOWS)
++#if defined(_MSC_VER)
+ #  define PYTHONHOMEHELP "<prefix>\\python{major}{minor}"
+ #else
+ #  define PYTHONHOMEHELP "<prefix>/lib/pythonX.X"
+@@ -1129,7 +1129,7 @@
+     }
+ 
+     /* Last fall back: hardcoded name */
+-#ifdef MS_WINDOWS
++#ifdef _MSC_VER
+     const wchar_t *default_program_name = L"python";
+ #else
+     const wchar_t *default_program_name = L"python3";
+diff -Naur Python-3.8.0-orig/Python/pathconfig.c Python-3.8.0/Python/pathconfig.c
+--- Python-3.8.0-orig/Python/pathconfig.c	2019-10-14 16:34:47.000000000 +0300
++++ Python-3.8.0/Python/pathconfig.c	2019-10-22 10:02:38.358914900 +0300
+@@ -13,6 +13,114 @@
+ extern "C" {
+ #endif
+ 
++#ifdef __MINGW32__
++#define wcstok  wcstok_s
++#include <windows.h>
++#endif
++
++char
++Py_GetSepA(const char *name)
++{
++    char* msystem = (char*)2; /* So that non Windows use / as sep */
++    static char sep = '\0';
++#ifdef _WIN32
++    /* https://msdn.microsoft.com/en-gb/library/windows/desktop/aa365247%28v=vs.85%29.aspx
++     * The "\\?\" prefix .. indicate that the path should be passed to the system with minimal
++     * modification, which means that you cannot use forward slashes to represent path separators
++     */
++    if (name != NULL && memcmp(name, "\\\\?\\", sizeof("\\\\?\\") - sizeof(char)) == 0)
++    {
++        return '\\';
++    }
++#endif
++    if (sep != '\0')
++        return sep;
++#if defined(__MINGW32__)
++    msystem = Py_GETENV("MSYSTEM");
++#endif
++    if (msystem != NULL)
++        sep = '/';
++    else
++        sep = '\\';
++    return sep;
++}
++
++static char
++Py_GetAltSepA(const char *name)
++{
++    char sep = Py_GetSepA(name);
++    if (sep == '/')
++        return '\\';
++    return '/';
++}
++
++void
++Py_NormalizeSepsA(char *name)
++{
++    char sep = Py_GetSepA(name);
++    char altsep = Py_GetAltSepA(name);
++    char* seps;
++    if (strlen(name) > 1 && name[1] == ':') {
++        name[0] = toupper(name[0]);
++    }
++    seps = strchr(name, altsep);
++    while(seps) {
++        *seps = sep;
++        seps = strchr(seps, altsep);
++    }
++}
++
++wchar_t
++Py_GetSepW(const wchar_t *name)
++{
++    char* msystem = (char*)2; /* So that non Windows use / as sep */
++    static wchar_t sep = L'\0';
++#ifdef _WIN32
++    /* https://msdn.microsoft.com/en-gb/library/windows/desktop/aa365247%28v=vs.85%29.aspx
++     * The "\\?\" prefix .. indicate that the path should be passed to the system with minimal
++     * modification, which means that you cannot use forward slashes to represent path separators
++     */
++    if (name != NULL && memcmp(name, L"\\\\?\\", sizeof(L"\\\\?\\") - sizeof(wchar_t)) == 0)
++    {
++        return L'\\';
++    }
++#endif
++    if (sep != L'\0')
++        return sep;
++#if defined(__MINGW32__)
++    msystem = Py_GETENV("MSYSTEM");
++#endif
++    if (msystem != NULL)
++        sep = L'/';
++    else
++        sep = L'\\';
++    return sep;
++}
++
++static wchar_t
++Py_GetAltSepW(const wchar_t *name)
++{
++    char sep = Py_GetSepW(name);
++    if (sep == L'/')
++        return L'\\';
++    return L'/';
++}
++
++void
++Py_NormalizeSepsW(wchar_t *name)
++{
++    wchar_t sep = Py_GetSepW(name);
++    wchar_t altsep = Py_GetAltSepW(name);
++    wchar_t* seps;
++    if (wcslen(name) > 1 && name[1] == L':') {
++        name[0] = towupper(name[0]);
++    }
++    seps = wcschr(name, altsep);
++    while(seps) {
++        *seps = sep;
++        seps = wcschr(seps, altsep);
++    }
++}
+ 
+ _PyPathConfig _Py_path_config = _PyPathConfig_INIT;
+ #ifdef MS_WINDOWS
+@@ -560,6 +668,7 @@
+     if (_Py_path_config.program_name == NULL) {
+         Py_FatalError("Py_SetProgramName() failed: out of memory");
+     }
++    Py_NormalizeSepsW(_Py_path_config.program_name);
+ }
+ 
+ void
+diff -Naur Python-3.8.0-orig/Python/traceback.c Python-3.8.0/Python/traceback.c
+--- Python-3.8.0-orig/Python/traceback.c	2019-10-14 16:34:47.000000000 +0300
++++ Python-3.8.0/Python/traceback.c	2019-10-22 10:02:39.170116300 +0300
+@@ -315,7 +315,7 @@
+     filepath = PyBytes_AS_STRING(filebytes);
+ 
+     /* Search tail of filename in sys.path before giving up */
+-    tail = strrchr(filepath, SEP);
++    tail = strrchr(filepath, Py_GetSepA(filepath));
+     if (tail == NULL)
+         tail = filepath;
+     else

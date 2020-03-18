@@ -8,34 +8,181 @@ This is a workaround for a bug [1] in mingw-w64's winpthreads
 library.
 
 [1] https://sourceforge.net/p/mingw-w64/bugs/774/
----
- lib/Support/Parallel.cpp   |  4 ++--
- lib/Support/ThreadPool.cpp | 10 +++++-----
- 2 files changed, 7 insertions(+), 7 deletions(-)
+
+Also added the changes from:
+https://github.com/llvm/llvm-project/commit/564481aebe18a723c9cfe9ea9ca5808771f7e9d8#diff-ddfb1998b49bbec3e5a51bbb9f1b037c
 
 diff --git a/lib/Support/Parallel.cpp b/lib/Support/Parallel.cpp
 index d40fce67e9a..daffa29dc0f 100644
 --- a/lib/Support/Parallel.cpp
 +++ b/lib/Support/Parallel.cpp
-@@ -77,16 +77,16 @@ class ThreadPoolExecutor : public Executor {
-   ~ThreadPoolExecutor() override {
-     std::unique_lock<std::mutex> Lock(Mutex);
-     Stop = true;
+@@ -8,14 +8,17 @@
+
+ #include "llvm/Support/Parallel.h"
+ #include "llvm/Config/llvm-config.h"
++#include "llvm/Support/ManagedStatic.h"
+
+ #if LLVM_ENABLE_THREADS
+
+ #include "llvm/Support/Threading.h"
+
+ #include <atomic>
++#include <future>
+ #include <stack>
+ #include <thread>
++#include <vector>
+
+ namespace llvm {
+ namespace parallel {
+@@ -32,62 +35,57 @@ public:
+   static Executor *getDefaultExecutor();
+ };
+
+-#if defined(_MSC_VER)
+-/// An Executor that runs tasks via ConcRT.
+-class ConcRTExecutor : public Executor {
+-  struct Taskish {
+-    Taskish(std::function<void()> Task) : Task(Task) {}
+-
+-    std::function<void()> Task;
+-
+-    static void run(void *P) {
+-      Taskish *Self = static_cast<Taskish *>(P);
+-      Self->Task();
+-      concurrency::Free(Self);
+-    }
+-  };
+-
+-public:
+-  virtual void add(std::function<void()> F) {
+-    Concurrency::CurrentScheduler::ScheduleTask(
+-        Taskish::run, new (concurrency::Alloc(sizeof(Taskish))) Taskish(F));
+-  }
+-};
+-
+-Executor *Executor::getDefaultExecutor() {
+-  static ConcRTExecutor exec;
+-  return &exec;
+-}
+-
+-#else
+ /// An implementation of an Executor that runs closures on a thread pool
+ ///   in filo order.
+ class ThreadPoolExecutor : public Executor {
+ public:
+-  explicit ThreadPoolExecutor(unsigned ThreadCount = hardware_concurrency())
+-      : Done(ThreadCount) {
++  explicit ThreadPoolExecutor(unsigned ThreadCount = hardware_concurrency()) {
+     // Spawn all but one of the threads in another thread as spawning threads
+     // can take a while.
+-    std::thread([&, ThreadCount] {
+-      for (size_t i = 1; i < ThreadCount; ++i) {
+-        std::thread([=] { work(); }).detach();
++    Threads.reserve(ThreadCount);
++    Threads.resize(1);
++    std::lock_guard<std::mutex> Lock(Mutex);
++    Threads[0] = std::thread([&, ThreadCount] {
++      for (unsigned i = 1; i < ThreadCount; ++i) {
++        Threads.emplace_back([=] { work(); });
++        if (Stop)
++          break;
+       }
++      ThreadsCreated.set_value();
+       work();
+-    }).detach();
++    });
+   }
+
+-  ~ThreadPoolExecutor() override {
+-    std::unique_lock<std::mutex> Lock(Mutex);
+-    Stop = true;
 -    Lock.unlock();
++  void stop() {
++    {
++      std::lock_guard<std::mutex> Lock(Mutex);
++      if (Stop)
++        return;
++      Stop = true;
++    }
      Cond.notify_all();
-+    Lock.unlock();
-     // Wait for ~Latch.
+-    // Wait for ~Latch.
++    ThreadsCreated.get_future().wait();
    }
- 
+
++  ~ThreadPoolExecutor() override {
++    stop();
++    std::thread::id CurrentThreadId = std::this_thread::get_id();
++    for (std::thread &T : Threads)
++      if (T.get_id() == CurrentThreadId)
++        T.detach();
++      else
++        T.join();
++  }
++
++  struct Deleter {
++    static void call(void *Ptr) { ((ThreadPoolExecutor *)Ptr)->stop(); }
++  };
++
    void add(std::function<void()> F) override {
-     std::unique_lock<std::mutex> Lock(Mutex);
-     WorkStack.push(F);
+-    std::unique_lock<std::mutex> Lock(Mutex);
+-    WorkStack.push(F);
 -    Lock.unlock();
++    {
++      std::lock_guard<std::mutex> Lock(Mutex);
++      WorkStack.push(F);
++    }
      Cond.notify_one();
-+    Lock.unlock();
    }
- 
- private:
+
+@@ -103,22 +101,41 @@ private:
+       Lock.unlock();
+       Task();
+     }
+-    Done.dec();
+   }
+
+   std::atomic<bool> Stop{false};
+   std::stack<std::function<void()>> WorkStack;
+   std::mutex Mutex;
+   std::condition_variable Cond;
+-  parallel::detail::Latch Done;
++  std::promise<void> ThreadsCreated;
++  std::vector<std::thread> Threads;
+ };
+
+ Executor *Executor::getDefaultExecutor() {
+-  static ThreadPoolExecutor exec;
+-  return &exec;
+-}
+-#endif
++  // The ManagedStatic enables the ThreadPoolExecutor to be stopped via
++  // llvm_shutdown() which allows a "clean" fast exit, e.g. via _exit(). This
++  // stops the thread pool and waits for any worker thread creation to complete
++  // but does not wait for the threads to finish. The wait for worker thread
++  // creation to complete is important as it prevents intermittent crashes on
++  // Windows due to a race condition between thread creation and process exit.
++  //
++  // The ThreadPoolExecutor will only be destroyed when the static unique_ptr to
++  // it is destroyed, i.e. in a normal full exit. The ThreadPoolExecutor
++  // destructor ensures it has been stopped and waits for worker threads to
++  // finish. The wait is important as it prevents intermittent crashes on
++  // Windows when the process is doing a full exit.
++  //
++  // The Windows crashes appear to only occur with the MSVC static runtimes and
++  // are more frequent with the debug static runtime.
++  //
++  // This also prevents intermittent deadlocks on exit with the MinGW runtime.
++  static ManagedStatic<ThreadPoolExecutor, object_creator<ThreadPoolExecutor>,
++                       ThreadPoolExecutor::Deleter>
++      ManagedExec;
++  static std::unique_ptr<ThreadPoolExecutor> Exec(&(*ManagedExec));
++  return Exec.get();
+ }
++} // namespace
+
+ static std::atomic<int> TaskGroupInstances;
+
+
 diff --git a/lib/Support/ThreadPool.cpp b/lib/Support/ThreadPool.cpp
 index 40982d77791..157e971a06f 100644
 --- a/lib/Support/ThreadPool.cpp
@@ -45,7 +192,7 @@ index 40982d77791..157e971a06f 100644
            std::unique_lock<std::mutex> LockGuard(CompletionLock);
            --ActiveThreads;
 -        }
- 
+
 -        // Notify task completion, in case someone waits on ThreadPool::wait()
 -        CompletionCondition.notify_all();
 +          // Notify task completion, in case someone waits on ThreadPool::wait()
@@ -56,14 +203,14 @@ index 40982d77791..157e971a06f 100644
    }
 @@ -90,8 +90,8 @@ std::shared_future<void> ThreadPool::asyncImpl(TaskTy Task) {
      assert(EnableFlag && "Queuing a thread during ThreadPool destruction");
- 
+
      Tasks.push(std::move(PackagedTask));
 +    QueueCondition.notify_one();
    }
 -  QueueCondition.notify_one();
    return Future.share();
  }
- 
+
 @@ -100,8 +100,8 @@ ThreadPool::~ThreadPool() {
    {
      std::unique_lock<std::mutex> LockGuard(QueueLock);
