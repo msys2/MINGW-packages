@@ -1,6 +1,17 @@
-MINGW-packages
-==============
-[![AppVeyor status](https://ci.appveyor.com/api/projects/status/github/Alexpux/mingw-packages?branch=master&svg=true)](https://ci.appveyor.com/project/Alexpux/mingw-packages)
+# MINGW-packages
+
+
+[![Gitter chat][1]][2]&nbsp;&nbsp;
+[![AppVeyor status][3]][4]&nbsp;&nbsp;
+[![Azure status][5]][6]&nbsp;&nbsp;
+
+[1]: https://badges.gitter.im/msys2/msys2.png
+[2]: https://gitter.im/msys2/msys2
+[3]: https://ci.appveyor.com/api/projects/status/github/Alexpux/mingw-packages?branch=master&svg=true
+[4]: https://ci.appveyor.com/project/Alexpux/mingw-packages
+[5]: https://dev.azure.com/msys2/mingw/_apis/build/status/msys2.MINGW-packages?branchName=master&svg=true
+[6]: https://dev.azure.com/msys2/mingw/_build/latest?definitionId=4&branchName=master
+
 
 This repository contains package scripts for MinGW-w64 targets to build under MSYS2.
 
@@ -34,3 +45,8 @@ You have two options if you want to use these packages:
 
 ## Creating packages
 See the [MSYS2 wiki](https://github.com/msys2/msys2/wiki/Creating-Packages) for instructions and advice about creating MINGW-packages.
+
+## License
+
+MSYS2-packages is licensed under BSD 3-Clause "New" or "Revised" License.
+A full copy of the license is provided in [LICENSE](LICENSE).
