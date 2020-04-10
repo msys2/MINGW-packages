@@ -36,5 +36,3 @@ List of packages that currently fail to build
 - plplot
 
 - pitivi-git
-
-- xmlada-gpl
