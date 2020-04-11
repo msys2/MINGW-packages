@@ -13,8 +13,6 @@ List of packages that currently fail to build
 
 - freerdp-git
 
-- gprbuild-gpl
-
 - gtkada
 
 - librocket-git
