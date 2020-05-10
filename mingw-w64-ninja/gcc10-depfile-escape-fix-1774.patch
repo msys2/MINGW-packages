@@ -1,0 +1,200 @@
+From dde512c47059751d41c4b8a6276e0bd81388470f Mon Sep 17 00:00:00 2001
+From: zero9178 <markus.boeck02@gmail.com>
+Date: Thu, 7 May 2020 22:39:08 +0200
+Subject: [PATCH 1/3] Added ability to parse escaped colons in GCC Dep files
+ enabling ninja to parse dep files of GCC 10 on Windows
+
+---
+ src/depfile_parser.in.cc   | 9 +++++++++
+ src/depfile_parser_test.cc | 7 ++-----
+ 2 files changed, 11 insertions(+), 5 deletions(-)
+
+diff --git a/src/depfile_parser.in.cc b/src/depfile_parser.in.cc
+index b32b942cd..007191da6 100644
+--- a/src/depfile_parser.in.cc
++++ b/src/depfile_parser.in.cc
+@@ -103,6 +103,15 @@ bool DepfileParser::Parse(string* content, string* err) {
+         *out++ = '#';
+         continue;
+       }
++      '\\'+ ':' {
++        // De-escape colon sign, but preserve other leading backslashes.
++        int len = (int)(in - start);
++        if (len > 2 && out < start)
++          memset(out, '\\', len - 2);
++        out += len - 2;
++        *out++ = ':';
++        continue;
++      }
+       '$$' {
+         // De-escape dollar character.
+         *out++ = '$';
+diff --git a/src/depfile_parser_test.cc b/src/depfile_parser_test.cc
+index bf1a0bcba..b142d1e87 100644
+--- a/src/depfile_parser_test.cc
++++ b/src/depfile_parser_test.cc
+@@ -132,13 +132,10 @@ TEST_F(DepfileParserTest, Escapes) {
+   // Put backslashes before a variety of characters, see which ones make
+   // it through.
+   string err;
+-  EXPECT_TRUE(Parse(
+-"\\!\\@\\#$$\\%\\^\\&\\[\\]\\\\:",
+-      &err));
++  EXPECT_TRUE(Parse("\\!\\@\\#$$\\%\\^\\&\\[\\]\\\\::", &err));
+   ASSERT_EQ("", err);
+   ASSERT_EQ(1u, parser_.outs_.size());
+-  EXPECT_EQ("\\!\\@#$\\%\\^\\&\\[\\]\\\\",
+-            parser_.outs_[0].AsString());
++  EXPECT_EQ("\\!\\@#$\\%\\^\\&\\[\\]\\:", parser_.outs_[0].AsString());
+   ASSERT_EQ(0u, parser_.ins_.size());
+ }
+ 
+
+From c78019bd09733ac956c65eada57a65c9ee2507ca Mon Sep 17 00:00:00 2001
+From: zero9178 <markus.boeck02@gmail.com>
+Date: Thu, 7 May 2020 23:07:49 +0200
+Subject: [PATCH 2/3] Added generated depfile_parser.cc
+
+---
+ src/depfile_parser.cc | 58 ++++++++++++++++++++++++++-----------------
+ 1 file changed, 35 insertions(+), 23 deletions(-)
+
+diff --git a/src/depfile_parser.cc b/src/depfile_parser.cc
+index 90d4a8a0a..285eb6033 100644
+--- a/src/depfile_parser.cc
++++ b/src/depfile_parser.cc
+@@ -166,22 +166,23 @@ bool DepfileParser::Parse(string* content, string* err) {
+       goto yy5;
+ yy13:
+       yych = *(yymarker = ++in);
+-      if (yych <= 0x1F) {
++      if (yych <= ' ') {
+         if (yych <= '\n') {
+           if (yych <= 0x00) goto yy5;
+           if (yych <= '\t') goto yy16;
+           goto yy17;
+         } else {
+           if (yych == '\r') goto yy19;
+-          goto yy16;
++          if (yych <= 0x1F) goto yy16;
++          goto yy21;
+         }
+       } else {
+-        if (yych <= '#') {
+-          if (yych <= ' ') goto yy21;
+-          if (yych <= '"') goto yy16;
+-          goto yy23;
++        if (yych <= '9') {
++          if (yych == '#') goto yy23;
++          goto yy16;
+         } else {
+-          if (yych == '\\') goto yy25;
++          if (yych <= ':') goto yy25;
++          if (yych == '\\') goto yy27;
+           goto yy16;
+         }
+       }
+@@ -230,27 +231,37 @@ bool DepfileParser::Parse(string* content, string* err) {
+         continue;
+       }
+ yy25:
++      ++in;
++      {
++        // De-escape colon sign, but preserve other leading backslashes.
++        int len = (int)(in - start);
++        if (len > 2 && out < start)
++          memset(out, '\\', len - 2);
++        out += len - 2;
++        *out++ = ':';
++        continue;
++      }
++yy27:
+       yych = *++in;
+-      if (yych <= 0x1F) {
++      if (yych <= ' ') {
+         if (yych <= '\n') {
+           if (yych <= 0x00) goto yy11;
+           if (yych <= '\t') goto yy16;
+           goto yy11;
+         } else {
+           if (yych == '\r') goto yy11;
+-          goto yy16;
++          if (yych <= 0x1F) goto yy16;
+         }
+       } else {
+-        if (yych <= '#') {
+-          if (yych <= ' ') goto yy26;
+-          if (yych <= '"') goto yy16;
+-          goto yy23;
++        if (yych <= '9') {
++          if (yych == '#') goto yy23;
++          goto yy16;
+         } else {
+-          if (yych == '\\') goto yy28;
++          if (yych <= ':') goto yy25;
++          if (yych == '\\') goto yy30;
+           goto yy16;
+         }
+       }
+-yy26:
+       ++in;
+       {
+         // 2N backslashes plus space -> 2N backslashes, end of filename.
+@@ -260,24 +271,25 @@ bool DepfileParser::Parse(string* content, string* err) {
+         out += len - 1;
+         break;
+       }
+-yy28:
++yy30:
+       yych = *++in;
+-      if (yych <= 0x1F) {
++      if (yych <= ' ') {
+         if (yych <= '\n') {
+           if (yych <= 0x00) goto yy11;
+           if (yych <= '\t') goto yy16;
+           goto yy11;
+         } else {
+           if (yych == '\r') goto yy11;
+-          goto yy16;
++          if (yych <= 0x1F) goto yy16;
++          goto yy21;
+         }
+       } else {
+-        if (yych <= '#') {
+-          if (yych <= ' ') goto yy21;
+-          if (yych <= '"') goto yy16;
+-          goto yy23;
++        if (yych <= '9') {
++          if (yych == '#') goto yy23;
++          goto yy16;
+         } else {
+-          if (yych == '\\') goto yy25;
++          if (yych <= ':') goto yy25;
++          if (yych == '\\') goto yy27;
+           goto yy16;
+         }
+       }
+
+From 31862ebf4066e75e4e7b22ed55340f1dda3b548d Mon Sep 17 00:00:00 2001
+From: zero9178 <markus.boeck02@gmail.com>
+Date: Fri, 8 May 2020 22:28:33 +0200
+Subject: [PATCH 3/3] Addressed formatting
+
+---
+ src/depfile_parser_test.cc | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/depfile_parser_test.cc b/src/depfile_parser_test.cc
+index b142d1e87..0969a721f 100644
+--- a/src/depfile_parser_test.cc
++++ b/src/depfile_parser_test.cc
+@@ -135,7 +135,8 @@ TEST_F(DepfileParserTest, Escapes) {
+   EXPECT_TRUE(Parse("\\!\\@\\#$$\\%\\^\\&\\[\\]\\\\::", &err));
+   ASSERT_EQ("", err);
+   ASSERT_EQ(1u, parser_.outs_.size());
+-  EXPECT_EQ("\\!\\@#$\\%\\^\\&\\[\\]\\:", parser_.outs_[0].AsString());
++  EXPECT_EQ("\\!\\@#$\\%\\^\\&\\[\\]\\:",
++            parser_.outs_[0].AsString());
+   ASSERT_EQ(0u, parser_.ins_.size());
+ }
+ 
