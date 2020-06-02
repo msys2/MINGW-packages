@@ -1,0 +1,211 @@
+From 841558d3bdc9c9510b841c438838196378741021 Mon Sep 17 00:00:00 2001
+From: Nikita Popov <nikita.ppv@gmail.com>
+Date: Tue, 4 Feb 2020 19:23:45 +0100
+Subject: [PATCH 1/5] Remove trailing newline from llvm-config output
+
+---
+ src/bootstrap/test.rs | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/bootstrap/test.rs b/src/bootstrap/test.rs
+index aa1d1b7c42413..b52fbe4666eb3 100644
+--- a/src/bootstrap/test.rs
++++ b/src/bootstrap/test.rs
+@@ -1141,6 +1141,8 @@ impl Step for Compiletest {
+             let llvm_config = builder.ensure(native::Llvm { target: builder.config.build });
+             if !builder.config.dry_run {
+                 let llvm_version = output(Command::new(&llvm_config).arg("--version"));
++                // Remove trailing newline from llvm-config output.
++                let llvm_version = llvm_version.trim_end();
+                 cmd.arg("--llvm-version").arg(llvm_version);
+             }
+             if !builder.is_rust_llvm(target) {
+
+From 7a14f9ed4fa60f4d8fc042fc678c80c14a850dc0 Mon Sep 17 00:00:00 2001
+From: Nikita Popov <nikita.ppv@gmail.com>
+Date: Sat, 18 Jan 2020 23:00:30 +0100
+Subject: [PATCH 2/5] Fix LLVM version handling in compiletest
+
+Convert version string to integer before comparing. Otherwise
+we get into trouble with double digit versions ;)
+---
+ src/tools/compiletest/src/header.rs       | 27 ++++++++++++++++++-----
+ src/tools/compiletest/src/header/tests.rs |  5 ++---
+ 2 files changed, 23 insertions(+), 9 deletions(-)
+
+diff --git a/src/tools/compiletest/src/header.rs b/src/tools/compiletest/src/header.rs
+index 2a24a8c3c9485..cb648db8830ef 100644
+--- a/src/tools/compiletest/src/header.rs
++++ b/src/tools/compiletest/src/header.rs
+@@ -191,6 +191,7 @@ impl EarlyProps {
+                 return true;
+             }
+             if let Some(ref actual_version) = config.llvm_version {
++                let actual_version = version_to_int(actual_version);
+                 if line.starts_with("min-llvm-version") {
+                     let min_version = line
+                         .trim_end()
+@@ -199,7 +200,7 @@ impl EarlyProps {
+                         .expect("Malformed llvm version directive");
+                     // Ignore if actual version is smaller the minimum required
+                     // version
+-                    &actual_version[..] < min_version
++                    actual_version < version_to_int(min_version)
+                 } else if line.starts_with("min-system-llvm-version") {
+                     let min_version = line
+                         .trim_end()
+@@ -208,7 +209,7 @@ impl EarlyProps {
+                         .expect("Malformed llvm version directive");
+                     // Ignore if using system LLVM and actual version
+                     // is smaller the minimum required version
+-                    config.system_llvm && &actual_version[..] < min_version
++                    config.system_llvm && actual_version < version_to_int(min_version)
+                 } else if line.starts_with("ignore-llvm-version") {
+                     // Syntax is: "ignore-llvm-version <version1> [- <version2>]"
+                     let range_components = line
+@@ -219,15 +220,15 @@ impl EarlyProps {
+                         .take(3) // 3 or more = invalid, so take at most 3.
+                         .collect::<Vec<&str>>();
+                     match range_components.len() {
+-                        1 => &actual_version[..] == range_components[0],
++                        1 => actual_version == version_to_int(range_components[0]),
+                         2 => {
+-                            let v_min = range_components[0];
+-                            let v_max = range_components[1];
++                            let v_min = version_to_int(range_components[0]);
++                            let v_max = version_to_int(range_components[1]);
+                             if v_max < v_min {
+                                 panic!("Malformed LLVM version range: max < min")
+                             }
+                             // Ignore if version lies inside of range.
+-                            &actual_version[..] >= v_min && &actual_version[..] <= v_max
++                            actual_version >= v_min && actual_version <= v_max
+                         }
+                         _ => panic!("Malformed LLVM version directive"),
+                     }
+@@ -238,6 +239,20 @@ impl EarlyProps {
+                 false
+             }
+         }
++
++        fn version_to_int(version: &str) -> u32 {
++            let version_without_suffix = version.split('-').next().unwrap();
++            let components: Vec<u32> = version_without_suffix
++                .split('.')
++                .map(|s| s.parse().expect("Malformed version component"))
++                .collect();
++            match components.len() {
++                1 => components[0] * 10000,
++                2 => components[0] * 10000 + components[1] * 100,
++                3 => components[0] * 10000 + components[1] * 100 + components[2],
++                _ => panic!("Malformed version"),
++            }
++        }
+     }
+ }
+ 
+diff --git a/src/tools/compiletest/src/header/tests.rs b/src/tools/compiletest/src/header/tests.rs
+index 6c478f7e29da4..31d991e0c2f87 100644
+--- a/src/tools/compiletest/src/header/tests.rs
++++ b/src/tools/compiletest/src/header/tests.rs
+@@ -122,9 +122,8 @@ fn llvm_version() {
+     config.llvm_version = Some("9.3.1-rust-1.43.0-dev".to_owned());
+     assert!(!parse_rs(&config, "// min-llvm-version 9.2").ignore);
+ 
+-    // FIXME.
+-    // config.llvm_version = Some("10.0.0-rust".to_owned());
+-    // assert!(!parse_rs(&config, "// min-llvm-version 9.0").ignore);
++    config.llvm_version = Some("10.0.0-rust".to_owned());
++    assert!(!parse_rs(&config, "// min-llvm-version 9.0").ignore);
+ }
+ 
+ #[test]
+
+From 66008eb9e4e46bb5c12a215e2abe2338617c2582 Mon Sep 17 00:00:00 2001
+From: Nikita Popov <nikita.ppv@gmail.com>
+Date: Sun, 19 Jan 2020 22:47:45 +0100
+Subject: [PATCH 3/5] Adjust data layout in test
+
+---
+ .../run-make-fulldeps/target-specs/my-awesome-platform.json     | 2 +-
+ .../target-specs/my-x86_64-unknown-linux-gnu-platform.json      | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/test/run-make-fulldeps/target-specs/my-awesome-platform.json b/src/test/run-make-fulldeps/target-specs/my-awesome-platform.json
+index 8d028280a8da7..00de3de05f07a 100644
+--- a/src/test/run-make-fulldeps/target-specs/my-awesome-platform.json
++++ b/src/test/run-make-fulldeps/target-specs/my-awesome-platform.json
+@@ -1,5 +1,5 @@
+ {
+-    "data-layout": "e-m:e-p:32:32-f64:32:64-f80:32-n8:16:32-S128",
++    "data-layout": "e-m:e-p:32:32-p270:32:32-p271:32:32-p272:64:64-f64:32:64-f80:32-n8:16:32-S128",
+     "linker-flavor": "gcc",
+     "llvm-target": "i686-unknown-linux-gnu",
+     "target-endian": "little",
+diff --git a/src/test/run-make-fulldeps/target-specs/my-x86_64-unknown-linux-gnu-platform.json b/src/test/run-make-fulldeps/target-specs/my-x86_64-unknown-linux-gnu-platform.json
+index 48040ae3da0ef..6d5e964ed4fee 100644
+--- a/src/test/run-make-fulldeps/target-specs/my-x86_64-unknown-linux-gnu-platform.json
++++ b/src/test/run-make-fulldeps/target-specs/my-x86_64-unknown-linux-gnu-platform.json
+@@ -1,6 +1,6 @@
+ {
+     "pre-link-args": {"gcc": ["-m64"]},
+-    "data-layout": "e-m:e-i64:64-f80:128-n8:16:32:64-S128",
++    "data-layout": "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128",
+     "linker-flavor": "gcc",
+     "llvm-target": "x86_64-unknown-linux-gnu",
+     "target-endian": "little",
+
+From a94fa896cc92d5e0678376cf5aa8b64af0899732 Mon Sep 17 00:00:00 2001
+From: Nikita Popov <nikita.ppv@gmail.com>
+Date: Tue, 4 Feb 2020 20:35:50 +0100
+Subject: [PATCH 4/5] Fix timeTraceProfilerInitialize for LLVM 10
+
+---
+ src/rustllvm/PassWrapper.cpp | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/rustllvm/PassWrapper.cpp b/src/rustllvm/PassWrapper.cpp
+index 90d24d20737db..9e8614e3b6d34 100644
+--- a/src/rustllvm/PassWrapper.cpp
++++ b/src/rustllvm/PassWrapper.cpp
+@@ -67,7 +67,11 @@ extern "C" void LLVMInitializePasses() {
+ }
+ 
+ extern "C" void LLVMTimeTraceProfilerInitialize() {
+-#if LLVM_VERSION_GE(9, 0)
++#if LLVM_VERSION_GE(10, 0)
++  timeTraceProfilerInitialize(
++      /* TimeTraceGranularity */ 0,
++      /* ProcName */ "rustc");
++#elif LLVM_VERSION_GE(9, 0)
+   timeTraceProfilerInitialize();
+ #endif
+ }
+
+From 497f879b1e24c369362bcd821959ffabc50a8a31 Mon Sep 17 00:00:00 2001
+From: Nikita Popov <nikita.ppv@gmail.com>
+Date: Mon, 2 Mar 2020 22:37:55 +0100
+Subject: [PATCH 5/5] Update CreateMemSet() usage for LLVM 10
+
+---
+ src/rustllvm/RustWrapper.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/rustllvm/RustWrapper.cpp b/src/rustllvm/RustWrapper.cpp
+index 25cfee3373dc4..799adb418822d 100644
+--- a/src/rustllvm/RustWrapper.cpp
++++ b/src/rustllvm/RustWrapper.cpp
+@@ -1333,8 +1333,13 @@ extern "C" LLVMValueRef LLVMRustBuildMemSet(LLVMBuilderRef B,
+                                             LLVMValueRef Dst, unsigned DstAlign,
+                                             LLVMValueRef Val,
+                                             LLVMValueRef Size, bool IsVolatile) {
++#if LLVM_VERSION_GE(10, 0)
++  return wrap(unwrap(B)->CreateMemSet(
++      unwrap(Dst), unwrap(Val), unwrap(Size), MaybeAlign(DstAlign), IsVolatile));
++#else
+   return wrap(unwrap(B)->CreateMemSet(
+       unwrap(Dst), unwrap(Val), unwrap(Size), DstAlign, IsVolatile));
++#endif
+ }
+ 
+ extern "C" LLVMValueRef
