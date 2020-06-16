@@ -1,0 +1,101 @@
+From 1dbe81185a889c39feb9380dd2e517214cb8728b Mon Sep 17 00:00:00 2001
+From: Christoph Reiter <reiter.christoph@gmail.com>
+Date: Wed, 8 Jul 2020 08:18:26 +0200
+Subject: [PATCH] append_to_destdir: handle Windows paths properly
+
+It currently uses is_absolute() to strip one leading component which doesn't
+work for paths like "C:/foo", "C:foo" and "/foo" which are either not absolute
+or have multiple components that need to be stripped.
+
+The goal is to join two paths and removing any components from the second
+one that would result in the first one being replaced/changed.
+
+push()/join() alters the first path if it starts with a RootDir, Prefix, or both, so
+we push everything from the second path except for those.
+
+Fixes #89
+---
+ src/cinstall.rs | 65 ++++++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 56 insertions(+), 9 deletions(-)
+
+diff --git a/src/cinstall.rs b/src/cinstall.rs
+index d7c1b9f..9212b2c 100644
+--- a/src/cinstall.rs
++++ b/src/cinstall.rs
+@@ -1,4 +1,4 @@
+-use std::path::{Path, PathBuf};
++use std::path::{Component, Path, PathBuf};
+ 
+ use cargo::core::Workspace;
+ use cargo::util::command_prelude::opt;
+@@ -52,15 +52,62 @@ the --release flag will use the `release` profile instead.
+ }
+ 
+ fn append_to_destdir(destdir: &PathBuf, path: &PathBuf) -> PathBuf {
+-    let path = if path.is_absolute() {
+-        let mut components = path.components();
+-        let _ = components.next();
+-        components.as_path()
+-    } else {
+-        path.as_path()
+-    };
++    let mut joined = destdir.clone();
++    for component in path.components() {
++        match component {
++            Component::Prefix(_) | Component::RootDir => {}
++            _ => joined.push(component),
++        };
++    }
++    joined
++}
++
++#[cfg(test)]
++mod tests {
++    use std::path::PathBuf;
++
++    #[test]
++    fn append_to_destdir() {
++        assert_eq!(
++            super::append_to_destdir(&PathBuf::from(r"/foo"), &PathBuf::from(r"/bar/./..")),
++            PathBuf::from(r"/foo/bar/./..")
++        );
++
++        assert_eq!(
++            super::append_to_destdir(&PathBuf::from(r"foo"), &PathBuf::from(r"bar")),
++            PathBuf::from(r"foo/bar")
++        );
++
++        assert_eq!(
++            super::append_to_destdir(&PathBuf::from(r""), &PathBuf::from(r"")),
++            PathBuf::from(r"")
++        );
++
++        if cfg!(windows) {
++            assert_eq!(
++                super::append_to_destdir(&PathBuf::from(r"X:\foo"), &PathBuf::from(r"Y:\bar")),
++                PathBuf::from(r"X:\foo\bar")
++            );
+ 
+-    destdir.join(path)
++            assert_eq!(
++                super::append_to_destdir(&PathBuf::from(r"A:\foo"), &PathBuf::from(r"B:bar")),
++                PathBuf::from(r"A:\foo\bar")
++            );
++
++            assert_eq!(
++                super::append_to_destdir(&PathBuf::from(r"\foo"), &PathBuf::from(r"\bar")),
++                PathBuf::from(r"\foo\bar")
++            );
++
++            assert_eq!(
++                super::append_to_destdir(
++                    &PathBuf::from(r"C:\dest"),
++                    &PathBuf::from(r"\\server\share\foo\bar")
++                ),
++                PathBuf::from(r"C:\\dest\\foo\\bar")
++            );
++        }
++    }
+ }
+ 
+ fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> anyhow::Result<u64> {
