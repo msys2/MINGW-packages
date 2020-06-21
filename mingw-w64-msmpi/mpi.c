@@ -32,13 +32,10 @@ int main(int argc, char** argv) {
 	int i = 0;
 	args[i++] = GetEnvironmentVariable(E, comp, SZ) > 0 ? comp : C;
 	args[i++] = ipath;
-#if 0
-// Not needed anymore for MS-MPI 10+
 #ifdef FC
-	args[i++] = "-fno-range-check";
-#else	
-	args[i++] = "-include"; args[i++] = "inttypes.h";
-#endif
+	// Workarounds for the GFORTRAN 10 increased strictness
+	args[i++] = "-fallow-invalid-boz";
+	args[i++] = "-fallow-argument-mismatch";
 #endif
 	if(!show) for(int x = 1; x < argc; ++x) args[i++] = argv[x];
 	args[i++] = lpath;
