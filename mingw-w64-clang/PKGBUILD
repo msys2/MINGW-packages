@@ -288,22 +288,13 @@ build() {
     -G"$_generator" \
     -DCLANG_ANALYZER_BUILD_Z3=ON \
     -DCMAKE_ASM_MASM_COMPILER="${ASM_COMPILER}" \
-    -DCMAKE_CXX_FLAGS="${CXXFLAGS} -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS -D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS" \
     -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
     -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib \
     -DFFI_INCLUDE_DIR="${FFI_INCLUDE_DIR}" \
     -DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON \
     -DLIBCLANG_BUILD_STATIC=ON \
-    -DLIBCXX_ENABLE_ABI_LINKER_SCRIPT=OFF \
-    -DLIBCXX_ENABLE_EXPERIMENTAL_LIBRARY=OFF \
-    -DLIBCXX_ENABLE_SHARED=OFF \
-    -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON \
-    -DLIBCXX_HAS_WIN32_THREAD_API=ON \
-    -DLIBCXXABI_ENABLE_NEW_DELETE_DEFINITIONS=OFF \
-    -DLIBCXXABI_ENABLE_SHARED=OFF \
     -DLIBOMP_ASMFLAGS="${ASM_COMPILER_FLAGS}" \
     -DLIBOMP_FORTRAN_MODULES=ON \
-    -DLIBUNWIND_ENABLE_SHARED=ON \
     -DLLDB_ENABLE_LIBEDIT=OFF \
     -DLLDB_RELOCATABLE_PYTHON=ON \
     -DLLDB_USE_SYSTEM_SIX=ON \
@@ -311,7 +302,7 @@ build() {
     -DLLVM_BUILD_STATIC=OFF \
     -DLLVM_ENABLE_ASSERTIONS=OFF \
     -DLLVM_ENABLE_FFI=ON \
-    -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;compiler-rt;libcxx;libcxxabi;libunwind;lld;lldb;openmp;polly" \
+    -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;compiler-rt;lld;lldb;openmp;polly" \
     -DLLVM_ENABLE_SPHINX=ON \
     -DLLVM_ENABLE_THREADS=ON \
     -DLLVM_INCLUDE_EXAMPLES=OFF \
@@ -333,6 +324,66 @@ build() {
   sed -i.orig '/\(clang\|lld\|lldb\|polly\)\/cmake_install.cmake/d' tools/cmake_install.cmake
   sed -i.orig '/\(extra\|scan-build\|scan-view\)\/cmake_install.cmake/d' tools/clang/tools/cmake_install.cmake
   sed -i.orig '/\(compiler-rt\|libcxxabi\|libcxx\|openmp\|libunwind\)\/cmake_install.cmake/d' projects/cmake_install.cmake
+
+  # Use newly built compiler because GCC/binutils doesn't play nicely
+  export CC="${srcdir}/build-${CARCH}/bin/clang"
+  export CXX="${srcdir}/build-${CARCH}/bin/clang++"
+  # Force win32 threads for libc++abi
+  export CXXFLAGS="${CXXFLAGS} -D_LIBCPP_HAS_THREAD_API_WIN32"
+  COMMON_CMAKE_ARGS=(-DCMAKE_AR=${srcdir}/build-${CARCH}/bin/llvm-ar
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX}
+    -DCMAKE_RANLIB=${srcdir}/build-${CARCH}/bin/llvm-ranlib
+    -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib
+    -DLIBCXX_ENABLE_EXPERIMENTAL_LIBRARY=ON
+    -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON
+    -DLIBCXX_HAS_WIN32_THREAD_API=ON
+    -DLIBCXX_USE_COMPILER_RT=ON
+    -DLIBCXXABI_ENABLE_NEW_DELETE_DEFINITIONS=OFF
+    -DLIBCXXABI_ENABLE_SHARED=OFF
+    -DLIBCXXABI_ENABLE_STATIC=ON
+    -DLIBCXXABI_USE_COMPILER_RT=ON
+    -DLIBCXXABI_USE_LLVM_UNWINDER=ON
+    -DLIBUNWIND_ENABLE_SHARED=ON
+    -DLIBUNWIND_USE_COMPILER_RT=ON
+    -DLLVM_ENABLE_LLD=ON
+    -DLLVM_ENABLE_PROJECTS="libcxx;libcxxabi;libunwind"
+    -DPYTHON_EXECUTABLE=${MINGW_PREFIX}/bin/python.exe)
+
+  cd "${srcdir}"
+
+  [[ -d build-libcxx-shared-${CARCH} ]] && rm -rf build-libcxx-shared-${CARCH}
+  mkdir build-libcxx-shared-${CARCH} && cd build-libcxx-shared-${CARCH}
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake.exe \
+    -G"$_generator" \
+    -DCMAKE_CXX_FLAGS="${CXXFLAGS} -D_LIBCPP_BUILDING_LIBRARY -U_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS" \
+    -DLIBCXX_ENABLE_SHARED=ON \
+    -DLIBCXX_ENABLE_STATIC=OFF \
+    -DLIBUNWIND_ENABLE_STATIC=OFF \
+    "${COMMON_CMAKE_ARGS[@]}" \
+    ${extra_config[@]} \
+    ../llvm-${pkgver}.src
+
+  ${_make_cmd} cxx
+
+  cd "${srcdir}"
+
+  [[ -d build-libcxx-static-${CARCH} ]] && rm -rf build-libcxx-static-${CARCH}
+  mkdir build-libcxx-static-${CARCH} && cd build-libcxx-static-${CARCH}
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake.exe \
+    -G"$_generator" \
+    -DCMAKE_CXX_FLAGS="${CXXFLAGS} -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS" \
+    -DLIBCXX_ENABLE_SHARED=OFF \
+    -DLIBCXX_ENABLE_STATIC=ON \
+    -DLIBUNWIND_ENABLE_STATIC=ON \
+    "${COMMON_CMAKE_ARGS[@]}" \
+    ${extra_config[@]} \
+    ../llvm-${pkgver}.src
+
+  ${_make_cmd} unwind cxxabi cxx
 }
 
 #check() {
@@ -400,9 +451,13 @@ package_compiler-rt() {
 package_libcxx() {
   pkgdesc="C++ Standard Library (mingw-w64)"
   url="https://libcxx.llvm.org/"
+  depends="${MINGW_PACKAGE_PREFIX}-libunwind"
 
   cd "${srcdir}/libcxx"
-  ${_make_cmd} -C ../build-${CARCH}/projects/libcxx -j1 DESTDIR="${pkgdir}" install
+  ${_make_cmd} -C ../build-libcxx-shared-${CARCH}/projects/libcxx DESTDIR="${pkgdir}" install
+  ${_make_cmd} -C ../build-libcxx-static-${CARCH}/projects/libcxx DESTDIR="${pkgdir}" install
+
+  install -Dm644 "${srcdir}/build-libcxx-static-${CARCH}/lib/libc++experimental.a" "${pkgdir}${MINGW_PREFIX}/lib/libc++experimental.a"
 }
 
 package_openmp() {
@@ -416,11 +471,10 @@ package_openmp() {
 package_libcxxabi() {
   pkgdesc="C++ Standard Library Support (mingw-w64)"
   url="https://libcxxabi.llvm.org/"
-  # Don't depend on libunwind until it actually works as installing it breaks some packages
-  #depends="${MINGW_PACKAGE_PREFIX}-libunwind"
+  depends="${MINGW_PACKAGE_PREFIX}-libunwind"
 
   cd "${srcdir}/libcxxabi"
-  ${_make_cmd} -C ../build-${CARCH}/projects/libcxxabi -j1 DESTDIR="${pkgdir}" install
+  ${_make_cmd} -C ../build-libcxx-static-${CARCH}/projects/libcxxabi DESTDIR="${pkgdir}" install
 }
 
 package_libunwind() {
@@ -428,10 +482,10 @@ package_libunwind() {
   url='https://llvm.org/'
 
   cd "${srcdir}/libunwind"
-  ${_make_cmd} -C ../build-${CARCH}/projects/libunwind -j1 DESTDIR="${pkgdir}" install
+  ${_make_cmd} -C ../build-libcxx-static-${CARCH}/projects/libunwind DESTDIR="${pkgdir}" install
 
   mkdir -p "${pkgdir}${MINGW_PREFIX}/bin"
-  install "${srcdir}/build-${CARCH}/lib/libunwind.dll" "${pkgdir}${MINGW_PREFIX}/bin/libunwind.dll"
+  install "${srcdir}/build-libcxx-static-${CARCH}/lib/libunwind.dll" "${pkgdir}${MINGW_PREFIX}/bin/libunwind.dll"
 }
 
 package_lld() {
