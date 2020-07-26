@@ -5,8 +5,6 @@
   -->
   <a title="GitHub Actions" href="https://github.com/msys2/MINGW-packages/actions?query=workflow%3Amain"><img alt="'main' workflow Status" src="https://img.shields.io/github/workflow/status/msys2/MINGW-packages/main?longCache=true&style=flat-square&label=build&logo=github"></a><!--
   -->
-  <a title="AppVeyor" href="https://ci.appveyor.com/project/Alexpux/mingw-packages"><img src="https://img.shields.io/appveyor/ci/Alexpux/mingw-packages/master.svg?logo=appveyor&logoColor=e8ecef&style=flat-square"></a><!--
-  -->
 </p>
 
 # MINGW-packages
