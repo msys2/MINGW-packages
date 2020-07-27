@@ -5,10 +5,6 @@
   -->
   <a title="GitHub Actions" href="https://github.com/msys2/MINGW-packages/actions?query=workflow%3Amain"><img alt="'main' workflow Status" src="https://img.shields.io/github/workflow/status/msys2/MINGW-packages/main?longCache=true&style=flat-square&label=build&logo=github"></a><!--
   -->
-  <a title="AppVeyor" href="https://ci.appveyor.com/project/Alexpux/mingw-packages"><img src="https://img.shields.io/appveyor/ci/Alexpux/mingw-packages/master.svg?logo=appveyor&logoColor=e8ecef&style=flat-square"></a><!--
-  -->
-  <a title="Azure DevOps" href="https://dev.azure.com/msys2/mingw/_build/latest?definitionId=4&branchName=master"><img src="https://img.shields.io/azure-devops/build/msys2/5ee43462-f2c2-45d5-8c1c-31fdb1fd15b4/4/master?style=flat-square&logo=azure-pipelines"></a><!--
-  -->
 </p>
 
 # MINGW-packages
@@ -18,7 +14,7 @@ This repository contains package scripts for MinGW-w64 targets to build under MS
 MSYS2 is an independent rewrite of MSYS providing a Unix-like environment and command-line interface for Windows making it possible to port software running on POSIX systems (such as Linux, BSD, and Unix systems) to Windows.
 
 ## Documentation
-See the [MSYS2 wiki](https://github.com/msys2/msys2/wiki).
+See the [MSYS2 website](https://www.msys2.org/wiki/Home).
 
 ## Using packages
 You have two options if you want to use these packages:
@@ -44,7 +40,7 @@ You have two options if you want to use these packages:
  ```
 
 ## Creating packages
-See the [MSYS2 wiki](https://github.com/msys2/msys2/wiki/Creating-Packages) for instructions and advice about creating MINGW-packages.
+See the [MSYS2 documentation](https://www.msys2.org/wiki/Creating-Packages) for instructions and advice about creating MINGW-packages.
 
 ## License
 
