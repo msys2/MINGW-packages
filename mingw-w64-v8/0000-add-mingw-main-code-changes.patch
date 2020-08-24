@@ -1,0 +1,687 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index b2dde3f9d7..30c18562fd 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -691,17 +691,25 @@ config("toolchain") {
+   if (v8_current_cpu == "x86") {
+     defines += [ "V8_TARGET_ARCH_IA32" ]
+     if (is_win) {
+-      # Ensure no surprising artifacts from 80bit double math with x86.
+-      cflags += [ "/arch:SSE2" ]
++      if(!is_mingw){
++        # Ensure no surprising artifacts from 80bit double math with x86.
++        cflags += [ "/arch:SSE2" ]
++      } else {
++        cflags += [ "-msse2" ]
++      }
+     }
+   }
+   if (v8_current_cpu == "x64") {
+     defines += [ "V8_TARGET_ARCH_X64" ]
+     if (is_win) {
+-      # Increase the initial stack size. The default is 1MB, this is 2MB. This
+-      # applies only to executables and shared libraries produced by V8 since
+-      # ldflags are not pushed to dependants.
+-      ldflags += [ "/STACK:2097152" ]
++      if(!is_mingw){
++        # Increase the initial stack size. The default is 1MB, this is 2MB. This
++        # applies only to executables and shared libraries produced by V8 since
++        # ldflags are not pushed to dependants.
++        ldflags += [ "/STACK:2097152" ]
++      } else {
++        ldflags += [ "-Wl,--stack,2097152" ]
++      }
+     }
+   }
+   if (is_android && v8_android_log_stdout) {
+@@ -757,7 +765,7 @@ config("toolchain") {
+   }
+
+   if (v8_no_inline) {
+-    if (is_win) {
++    if (is_win && !is_mingw) {
+       cflags += [ "/Ob0" ]
+     } else {
+       cflags += [
+@@ -781,7 +789,7 @@ config("toolchain") {
+     }
+   }
+
+-  if (is_win) {
++  if (is_win && !is_mingw) {
+     cflags += [
+       "/wd4245",  # Conversion with signed/unsigned mismatch.
+       "/wd4267",  # Conversion with possible loss of data.
+@@ -803,11 +811,11 @@ config("toolchain") {
+     ]
+   }
+
+-  if (!is_clang && is_win) {
++  if (!is_clang && !is_mingw && is_win) {
+     cflags += [ "/wd4506" ]  # Benign "no definition for inline function"
+   }
+
+-  if (!is_clang && !is_win) {
++  if (!is_clang && (!is_win || is_mingw)) {
+     cflags += [
+       # Disable gcc warnings for optimizations based on the assumption that
+       # signed overflow does not occur. Generates false positives (see
+@@ -3805,13 +3813,21 @@ v8_component("v8_libbase") {
+
+     defines += [ "_CRT_RAND_S" ]  # for rand_s()
+
+-    libs = [
+-      "dbghelp.lib",
+-      "winmm.lib",
+-      "ws2_32.lib",
+-    ]
++    if(!is_mingw){
++      libs = [
++        "dbghelp.lib",
++        "winmm.lib",
++        "ws2_32.lib",
++      ]
+
+-    data_deps += [ "//build/win:runtime_libs" ]
++      data_deps += [ "//build/win:runtime_libs" ]
++    } else {
++      libs = [
++        "dbghelp",
++        "winmm",
++        "ws2_32",
++      ]
++    }
+   }
+
+   if (v8_current_cpu == "mips" || v8_current_cpu == "mips64") {
+@@ -3952,7 +3968,7 @@ v8_source_set("cppgc_base") {
+   ]
+
+   if (target_cpu == "x64") {
+-    if (is_win) {
++    if (is_win && !is_mingw) {
+       sources += [ "src/heap/cppgc/asm/x64/push_registers_win.S" ]
+     } else {
+       sources += [ "src/heap/cppgc/asm/x64/push_registers.S" ]
+@@ -4303,7 +4319,10 @@ if (is_component_build) {
+       ":v8_snapshot",
+     ]
+
+-    configs = [ ":internal_config" ]
++    configs = [
++      ":internal_config",
++      "//build/config/win:export_all_symbols"
++      ]
+
+     public_configs = [ ":external_config" ]
+   }
+diff --git a/include/v8.h b/include/v8.h
+index 9926b308b1..cece860a0d 100644
+--- a/include/v8.h
++++ b/include/v8.h
+@@ -28,6 +28,11 @@
+ #include "v8-version.h"   // NOLINT(build/include)
+ #include "v8config.h"     // NOLINT(build/include)
+
++#if defined(__MINGW32__) || defined(__MINGW64__)
++// MinGW header files do not implicitly include windows.h
++struct _EXCEPTION_POINTERS;
++#endif
++
+ // We reserve the V8_* prefix for macros defined in V8 public API and
+ // assume there are no name conflicts with the embedder's code.
+
+diff --git a/include/v8config.h b/include/v8config.h
+index 40d23c35c1..3f3e264c84 100644
+--- a/include/v8config.h
++++ b/include/v8config.h
+@@ -118,7 +118,7 @@
+ #elif defined(__QNXNTO__)
+ # define V8_OS_POSIX 1
+ # define V8_OS_QNX 1
+-#elif defined(_WIN32)
++#elif defined(_WIN32) || defined(__MINGW32__) || defined(__MINGW64__)
+ # define V8_OS_WIN 1
+ #endif
+
+diff --git a/src/base/bits.h b/src/base/bits.h
+index b74b98e106..7d016bf23d 100644
+--- a/src/base/bits.h
++++ b/src/base/bits.h
+@@ -12,8 +12,10 @@
+ #include "src/base/macros.h"
+ #if V8_CC_MSVC
+ #include <intrin.h>
++#elif defined(__MINGW32__)
++#include <x86intrin.h>
+ #endif
+-#if V8_OS_WIN32
++#if V8_OS_WIN
+ #include "src/base/win32-headers.h"
+ #endif
+
+diff --git a/src/base/export-template.h b/src/base/export-template.h
+index 861cfe4027..90c41f7097 100644
+--- a/src/base/export-template.h
++++ b/src/base/export-template.h
+@@ -153,7 +153,12 @@
+
+ EXPORT_TEMPLATE_TEST(DEFAULT, );
+ EXPORT_TEMPLATE_TEST(DEFAULT, __attribute__((visibility("default"))));
++#if defined(__MINGW32__) || defined(__MINGW64__)
++// On MingW MSVC_HACK breaks.
++EXPORT_TEMPLATE_TEST(DEFAULT, __declspec(dllexport));
++#else
+ EXPORT_TEMPLATE_TEST(MSVC_HACK, __declspec(dllexport));
++#endif
+ EXPORT_TEMPLATE_TEST(DEFAULT, __declspec(dllimport));
+
+ #undef EXPORT_TEMPLATE_TEST
+diff --git a/src/base/platform/platform-win32.cc b/src/base/platform/platform-win32.cc
+index 5db3e34310..5c8fdc7ef0 100644
+--- a/src/base/platform/platform-win32.cc
++++ b/src/base/platform/platform-win32.cc
+@@ -33,71 +33,6 @@
+ #include <crtdbg.h>  // NOLINT
+ #endif               // defined(_MSC_VER)
+
+-// Extra functions for MinGW. Most of these are the _s functions which are in
+-// the Microsoft Visual Studio C++ CRT.
+-#ifdef __MINGW32__
+-
+-
+-#ifndef __MINGW64_VERSION_MAJOR
+-
+-#define _TRUNCATE 0
+-#define STRUNCATE 80
+-
+-inline void MemoryFence() {
+-  int barrier = 0;
+-  __asm__ __volatile__("xchgl %%eax,%0 ":"=r" (barrier));
+-}
+-
+-#endif  // __MINGW64_VERSION_MAJOR
+-
+-
+-int localtime_s(tm* out_tm, const time_t* time) {
+-  tm* posix_local_time_struct = localtime_r(time, out_tm);
+-  if (posix_local_time_struct == nullptr) return 1;
+-  return 0;
+-}
+-
+-
+-int fopen_s(FILE** pFile, const char* filename, const char* mode) {
+-  *pFile = fopen(filename, mode);
+-  return *pFile != nullptr ? 0 : 1;
+-}
+-
+-int _vsnprintf_s(char* buffer, size_t sizeOfBuffer, size_t count,
+-                 const char* format, va_list argptr) {
+-  DCHECK(count == _TRUNCATE);
+-  return _vsnprintf(buffer, sizeOfBuffer, format, argptr);
+-}
+-
+-
+-int strncpy_s(char* dest, size_t dest_size, const char* source, size_t count) {
+-  CHECK(source != nullptr);
+-  CHECK(dest != nullptr);
+-  CHECK_GT(dest_size, 0);
+-
+-  if (count == _TRUNCATE) {
+-    while (dest_size > 0 && *source != 0) {
+-      *(dest++) = *(source++);
+-      --dest_size;
+-    }
+-    if (dest_size == 0) {
+-      *(dest - 1) = 0;
+-      return STRUNCATE;
+-    }
+-  } else {
+-    while (dest_size > 0 && count > 0 && *source != 0) {
+-      *(dest++) = *(source++);
+-      --dest_size;
+-      --count;
+-    }
+-  }
+-  CHECK_GT(dest_size, 0);
+-  *dest = 0;
+-  return 0;
+-}
+-
+-#endif  // __MINGW32__
+-
+ namespace v8 {
+ namespace base {
+
+diff --git a/src/base/platform/time.cc b/src/base/platform/time.cc
+index f07fd8e595..270ebfd408 100644
+--- a/src/base/platform/time.cc
++++ b/src/base/platform/time.cc
+@@ -766,13 +766,13 @@ bool ThreadTicks::IsSupported() {
+ ThreadTicks ThreadTicks::Now() {
+ #if V8_OS_MACOSX
+   return ThreadTicks(ComputeThreadTicks());
+-#elif(defined(_POSIX_THREAD_CPUTIME) && (_POSIX_THREAD_CPUTIME >= 0)) || \
+-  defined(V8_OS_ANDROID)
+-  return ThreadTicks(ClockNow(CLOCK_THREAD_CPUTIME_ID));
+ #elif V8_OS_SOLARIS
+   return ThreadTicks(gethrvtime() / Time::kNanosecondsPerMicrosecond);
+ #elif V8_OS_WIN
+   return ThreadTicks::GetForThread(::GetCurrentThread());
++#elif(defined(_POSIX_THREAD_CPUTIME) && (_POSIX_THREAD_CPUTIME >= 0)) || \
++  defined(V8_OS_ANDROID)
++  return ThreadTicks(ClockNow(CLOCK_THREAD_CPUTIME_ID));
+ #else
+   UNREACHABLE();
+ #endif
+diff --git a/src/base/template-utils.h b/src/base/template-utils.h
+index 8f89672e1a..001540c7c0 100644
+--- a/src/base/template-utils.h
++++ b/src/base/template-utils.h
+@@ -7,6 +7,7 @@
+
+ #include <array>
+ #include <functional>
++#include <ostream>
+ #include <type_traits>
+ #include <utility>
+
+diff --git a/src/base/win32-headers.h b/src/base/win32-headers.h
+index 82555463c0..8ed6ff5a7b 100644
+--- a/src/base/win32-headers.h
++++ b/src/base/win32-headers.h
+@@ -38,12 +38,6 @@
+ #include <mmsystem.h>  // For timeGetTime().
+ #include <signal.h>  // For raise().
+ #include <time.h>  // For LocalOffset() implementation.
+-#ifdef __MINGW32__
+-// Require Windows XP or higher when compiling with MinGW. This is for MinGW
+-// header files to expose getaddrinfo.
+-#undef _WIN32_WINNT
+-#define _WIN32_WINNT 0x501
+-#endif  // __MINGW32__
+ #if !defined(__MINGW32__) || defined(__MINGW64_VERSION_MAJOR)
+ #include <dbghelp.h>         // For SymLoadModule64 and al.
+ #include <errno.h>           // For STRUNCATE
+@@ -56,9 +50,7 @@
+ // makes it impossible to have them elsewhere.
+ #include <winsock2.h>
+ #include <ws2tcpip.h>
+-#ifndef __MINGW32__
+ #include <wspiapi.h>
+-#endif  // __MINGW32__
+ #include <process.h>  // For _beginthreadex().
+ #include <stdlib.h>
+
+diff --git a/src/compiler/node-cache.h b/src/compiler/node-cache.h
+index 935e5778e3..d5dae22512 100644
+--- a/src/compiler/node-cache.h
++++ b/src/compiler/node-cache.h
+@@ -29,7 +29,7 @@ class Node;
+ // nodes such as constants, parameters, etc.
+ template <typename Key, typename Hash = base::hash<Key>,
+           typename Pred = std::equal_to<Key> >
+-class EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE) NodeCache final {
++class V8_EXPORT_PRIVATE NodeCache final {
+  public:
+   explicit NodeCache(Zone* zone) : map_(zone) {}
+   ~NodeCache() = default;
+diff --git a/src/heap/cppgc/asm/x64/push_registers.S b/src/heap/cppgc/asm/x64/push_registers.S
+index 018859d5c0..3c8dd012c7 100644
+--- a/src/heap/cppgc/asm/x64/push_registers.S
++++ b/src/heap/cppgc/asm/x64/push_registers.S
+@@ -11,7 +11,12 @@
+ .globl _PushAllRegistersAndIterateStack
+ _PushAllRegistersAndIterateStack:
+
+-#else  // !V8_TARGET_OS_MACOSX
++#elif defined(V8_TARGET_OS_WIN)
++
++.globl PushAllRegistersAndIterateStack
++PushAllRegistersAndIterateStack:
++
++#else  // !V8_TARGET_OS_MACOSX && !V8_TARGET_OS_WIN
+
+ .type PushAllRegistersAndIterateStack, %function
+ .global PushAllRegistersAndIterateStack
+diff --git a/src/heap/spaces-inl.h b/src/heap/spaces-inl.h
+index a73ea6fe0c..ad596d979f 100644
+--- a/src/heap/spaces-inl.h
++++ b/src/heap/spaces-inl.h
+@@ -66,7 +66,7 @@ HeapObject SemiSpaceObjectIterator::Next() {
+ // -----------------------------------------------------------------------------
+ // PagedSpaceObjectIterator
+
+-HeapObject PagedSpaceObjectIterator::Next() {
++inline HeapObject PagedSpaceObjectIterator::Next() {
+   do {
+     HeapObject next_obj = FromCurrentPage();
+     if (!next_obj.is_null()) return next_obj;
+diff --git a/src/heap/spaces.h b/src/heap/spaces.h
+index 8d587443e3..cb0a1a28d1 100644
+--- a/src/heap/spaces.h
++++ b/src/heap/spaces.h
+@@ -1628,7 +1628,7 @@ class V8_EXPORT_PRIVATE PagedSpaceObjectIterator : public ObjectIterator {
+   // Advance to the next object, skipping free spaces and other fillers and
+   // skipping the special garbage section of which there is one per space.
+   // Returns nullptr when the iteration has ended.
+-  inline HeapObject Next() override;
++  HeapObject Next() override;
+
+  private:
+   // Fast (inlined) path of next().
+diff --git a/src/objects/feedback-vector.cc b/src/objects/feedback-vector.cc
+index 929b312f22..7beff3395d 100644
+--- a/src/objects/feedback-vector.cc
++++ b/src/objects/feedback-vector.cc
+@@ -114,9 +114,9 @@ Handle<FeedbackMetadata> FeedbackMetadata::New(LocalIsolate* isolate,
+   return metadata;
+ }
+
+-template Handle<FeedbackMetadata> FeedbackMetadata::New(
++template V8_EXPORT Handle<FeedbackMetadata> FeedbackMetadata::New(
+     Isolate* isolate, const FeedbackVectorSpec* spec);
+-template Handle<FeedbackMetadata> FeedbackMetadata::New(
++template V8_EXPORT Handle<FeedbackMetadata> FeedbackMetadata::New(
+     OffThreadIsolate* isolate, const FeedbackVectorSpec* spec);
+
+ bool FeedbackMetadata::SpecDiffersFrom(
+diff --git a/src/objects/js-number-format.cc b/src/objects/js-number-format.cc
+index 7d50f947f7..2d7fd77113 100644
+--- a/src/objects/js-number-format.cc
++++ b/src/objects/js-number-format.cc
+@@ -1239,44 +1239,33 @@ MaybeHandle<JSNumberFormat> JSNumberFormat::New(Isolate* isolate,
+ }
+
+ namespace {
+-Maybe<icu::UnicodeString> IcuFormatNumber(
++Maybe<bool> IcuFormatNumber(
+     Isolate* isolate,
+     const icu::number::LocalizedNumberFormatter& number_format,
+-    Handle<Object> numeric_obj, icu::FieldPositionIterator* fp_iter) {
++    Handle<Object> numeric_obj, icu::number::FormattedNumber* formatted) {
+   // If it is BigInt, handle it differently.
+   UErrorCode status = U_ZERO_ERROR;
+-  icu::number::FormattedNumber formatted;
+   if (numeric_obj->IsBigInt()) {
+     Handle<BigInt> big_int = Handle<BigInt>::cast(numeric_obj);
+     Handle<String> big_int_string;
+     ASSIGN_RETURN_ON_EXCEPTION_VALUE(isolate, big_int_string,
+                                      BigInt::ToString(isolate, big_int),
+-                                     Nothing<icu::UnicodeString>());
+-    formatted = number_format.formatDecimal(
++                                     Nothing<bool>());
++    *formatted = number_format.formatDecimal(
+         {big_int_string->ToCString().get(), big_int_string->length()}, status);
+   } else {
+     double number = numeric_obj->IsNaN()
+                         ? std::numeric_limits<double>::quiet_NaN()
+                         : numeric_obj->Number();
+-    formatted = number_format.formatDouble(number, status);
++    *formatted = number_format.formatDouble(number, status);
+   }
+   if (U_FAILURE(status)) {
+     // This happen because of icu data trimming trim out "unit".
+     // See https://bugs.chromium.org/p/v8/issues/detail?id=8641
+-    THROW_NEW_ERROR_RETURN_VALUE(isolate,
+-                                 NewTypeError(MessageTemplate::kIcuError),
+-                                 Nothing<icu::UnicodeString>());
+-  }
+-  if (fp_iter) {
+-    formatted.getAllFieldPositions(*fp_iter, status);
+-  }
+-  icu::UnicodeString result = formatted.toString(status);
+-  if (U_FAILURE(status)) {
+-    THROW_NEW_ERROR_RETURN_VALUE(isolate,
+-                                 NewTypeError(MessageTemplate::kIcuError),
+-                                 Nothing<icu::UnicodeString>());
++    THROW_NEW_ERROR_RETURN_VALUE(
++        isolate, NewTypeError(MessageTemplate::kIcuError), Nothing<bool>());
+   }
+-  return Just(result);
++  return Just(true);
+ }
+
+ }  // namespace
+@@ -1287,10 +1276,16 @@ MaybeHandle<String> JSNumberFormat::FormatNumeric(
+     Handle<Object> numeric_obj) {
+   DCHECK(numeric_obj->IsNumeric());
+
+-  Maybe<icu::UnicodeString> maybe_format =
+-      IcuFormatNumber(isolate, number_format, numeric_obj, nullptr);
++  icu::number::FormattedNumber formatted;
++  Maybe<bool> maybe_format =
++      IcuFormatNumber(isolate, number_format, numeric_obj, &formatted);
+   MAYBE_RETURN(maybe_format, Handle<String>());
+-  return Intl::ToString(isolate, maybe_format.FromJust());
++  UErrorCode status = U_ZERO_ERROR;
++  icu::UnicodeString result = formatted.toString(status);
++  if (U_FAILURE(status)) {
++    THROW_NEW_ERROR(isolate, NewTypeError(MessageTemplate::kIcuError), String);
++  }
++  return Intl::ToString(isolate, result);
+ }
+
+ namespace {
+@@ -1403,12 +1398,18 @@ std::vector<NumberFormatSpan> FlattenRegionsToParts(
+ }
+
+ namespace {
+-Maybe<int> ConstructParts(Isolate* isolate, const icu::UnicodeString& formatted,
+-                          icu::FieldPositionIterator* fp_iter,
++Maybe<int> ConstructParts(Isolate* isolate,
++                          icu::number::FormattedNumber* formatted,
+                           Handle<JSArray> result, int start_index,
+                           Handle<Object> numeric_obj, bool style_is_unit) {
++  UErrorCode status = U_ZERO_ERROR;
++  icu::UnicodeString formatted_text = formatted->toString(status);
++  if (U_FAILURE(status)) {
++    THROW_NEW_ERROR_RETURN_VALUE(
++        isolate, NewTypeError(MessageTemplate::kIcuError), Nothing<int>());
++  }
+   DCHECK(numeric_obj->IsNumeric());
+-  int32_t length = formatted.length();
++  int32_t length = formatted_text.length();
+   int index = start_index;
+   if (length == 0) return Just(index);
+
+@@ -1417,13 +1418,14 @@ Maybe<int> ConstructParts(Isolate* isolate, const icu::UnicodeString& formatted,
+   // other region covers some part of the formatted string. It's possible
+   // there's another field with exactly the same begin and end as this backdrop,
+   // in which case the backdrop's field_id of -1 will give it lower priority.
+-  regions.push_back(NumberFormatSpan(-1, 0, formatted.length()));
++  regions.push_back(NumberFormatSpan(-1, 0, formatted_text.length()));
+
+   {
+-    icu::FieldPosition fp;
+-    while (fp_iter->next(fp)) {
+-      regions.push_back(NumberFormatSpan(fp.getField(), fp.getBeginIndex(),
+-                                         fp.getEndIndex()));
++    icu::ConstrainedFieldPosition cfp;
++    cfp.constrainCategory(UFIELD_CATEGORY_NUMBER);
++    while (formatted->nextPosition(cfp, status)) {
++      regions.push_back(
++          NumberFormatSpan(cfp.getField(), cfp.getStart(), cfp.getLimit()));
+     }
+   }
+
+@@ -1445,7 +1447,7 @@ Maybe<int> ConstructParts(Isolate* isolate, const icu::UnicodeString& formatted,
+     Handle<String> substring;
+     ASSIGN_RETURN_ON_EXCEPTION_VALUE(
+         isolate, substring,
+-        Intl::ToString(isolate, formatted, part.begin_pos, part.end_pos),
++        Intl::ToString(isolate, formatted_text, part.begin_pos, part.end_pos),
+         Nothing<int>());
+     Intl::AddElement(isolate, result, index, field_type_string, substring);
+     ++index;
+@@ -1465,20 +1467,19 @@ MaybeHandle<JSArray> JSNumberFormat::FormatToParts(
+       number_format->icu_number_formatter().raw();
+   CHECK_NOT_NULL(fmt);
+
+-  icu::FieldPositionIterator fp_iter;
+-  Maybe<icu::UnicodeString> maybe_format =
+-      IcuFormatNumber(isolate, *fmt, numeric_obj, &fp_iter);
++  icu::number::FormattedNumber formatted;
++  Maybe<bool> maybe_format =
++      IcuFormatNumber(isolate, *fmt, numeric_obj, &formatted);
+   MAYBE_RETURN(maybe_format, Handle<JSArray>());
+-
+   UErrorCode status = U_ZERO_ERROR;
++
+   bool style_is_unit =
+       Style::UNIT == StyleFromSkeleton(fmt->toSkeleton(status));
+   CHECK(U_SUCCESS(status));
+
+   Handle<JSArray> result = factory->NewJSArray(0);
+-  Maybe<int> maybe_format_to_parts =
+-      ConstructParts(isolate, maybe_format.FromJust(), &fp_iter, result, 0,
+-                     numeric_obj, style_is_unit);
++  Maybe<int> maybe_format_to_parts = ConstructParts(
++      isolate, &formatted, result, 0, numeric_obj, style_is_unit);
+   MAYBE_RETURN(maybe_format_to_parts, Handle<JSArray>());
+
+   return result;
+diff --git a/src/objects/ordered-hash-table.h b/src/objects/ordered-hash-table.h
+index b587960432..e80b5757e4 100644
+--- a/src/objects/ordered-hash-table.h
++++ b/src/objects/ordered-hash-table.h
+@@ -7,7 +7,11 @@
+
+ #include "src/base/export-template.h"
+ #include "src/common/globals.h"
++#if defined(_M_IX86) && defined(_MSC_VER)
++#include "src/objects/fixed-array-inl.h"
++#else
+ #include "src/objects/fixed-array.h"
++#endif
+ #include "src/objects/js-objects.h"
+ #include "src/objects/smi.h"
+ #include "src/roots/roots.h"
+diff --git a/src/objects/string.h b/src/objects/string.h
+index 616a4b967b..505ac1b059 100644
+--- a/src/objects/string.h
++++ b/src/objects/string.h
+@@ -293,7 +293,7 @@ class String : public TorqueGeneratedString<String, Name> {
+
+   V8_EXPORT_PRIVATE bool HasOneBytePrefix(Vector<const char> str);
+   V8_EXPORT_PRIVATE bool IsOneByteEqualTo(Vector<const uint8_t> str);
+-  V8_EXPORT_PRIVATE bool IsOneByteEqualTo(Vector<const char> str) {
++  inline bool IsOneByteEqualTo(Vector<const char> str) {
+     return IsOneByteEqualTo(Vector<const uint8_t>::cast(str));
+   }
+   bool IsTwoByteEqualTo(Vector<const uc16> str);
+diff --git a/src/snapshot/serializer-common.cc b/src/snapshot/serializer-common.cc
+index 9218d4eaa9..7b226de2f9 100644
+--- a/src/snapshot/serializer-common.cc
++++ b/src/snapshot/serializer-common.cc
+@@ -8,7 +8,7 @@
+ #include "src/objects/foreign-inl.h"
+ #include "src/objects/objects-inl.h"
+ #include "src/objects/slots.h"
+-#include "third_party/zlib/zlib.h"
++#include "zlib.h"
+
+ namespace v8 {
+ namespace internal {
+diff --git a/test/cctest/BUILD.gn b/test/cctest/BUILD.gn
+index 89fe36f65b..7aa3dca4a5 100644
+--- a/test/cctest/BUILD.gn
++++ b/test/cctest/BUILD.gn
+@@ -416,17 +416,28 @@ v8_source_set("cctest_sources") {
+   }
+
+   if (is_win) {
+-    # This warning is benignly triggered by the U16 and U32 macros in
+-    # bytecode-utils.h.
+-    # C4309: 'static_cast': truncation of constant value
+-    cflags += [ "/wd4309" ]
++    if(is_mingw) {
++      # Buffer overrun warning... intended?
++      cflags += [
++        "-Wno-array-bounds",
++        "-Wno-stringop-truncation"
++        ]
++    } else {
++      # This warning is benignly triggered by the U16 and U32 macros in
++      # bytecode-utils.h.
++      # C4309: 'static_cast': truncation of constant value
++      cflags += [ "/wd4309" ]
+
+-    # MSVS wants this for gay-{precision,shortest}.cc.
+-    cflags += [ "/bigobj" ]
++      # Buffer overrun warning... intended?
++      cflags += [ "/wd4789" ]
+
+-    if (symbol_level == 2) {
+-      sources += [ "test-v8windbg.cc" ]
+-      deps += [ "../../tools/v8windbg:v8windbg_test" ]
++      # MSVS wants this for gay-{precision,shortest}.cc.
++      cflags += [ "/bigobj" ]
++
++      if (symbol_level == 2) {
++        sources += [ "test-v8windbg.cc" ]
++        deps += [ "../../tools/v8windbg:v8windbg_test" ]
++      }
+     }
+   }
+
+diff --git a/test/unittests/BUILD.gn b/test/unittests/BUILD.gn
+index f3b060e5da..ad6c70d73f 100644
+--- a/test/unittests/BUILD.gn
++++ b/test/unittests/BUILD.gn
+@@ -366,7 +366,7 @@ v8_source_set("unittests_sources") {
+     "//testing/gtest",
+   ]
+
+-  if (is_win) {
++  if (is_win && !is_mingw) {
+     # This warning is benignly triggered by the U16 and U32 macros in
+     # bytecode-utils.h.
+     # C4309: 'static_cast': truncation of constant value
+diff --git a/third_party/googletest/BUILD.gn b/third_party/googletest/BUILD.gn
+index f105d1a6b4..e63dcb9d6d 100644
+--- a/third_party/googletest/BUILD.gn
++++ b/third_party/googletest/BUILD.gn
+@@ -30,7 +30,7 @@ config("gtest_config") {
+     "src/googletest/include",
+   ]
+
+-  if (is_win) {
++  if (is_win && !is_mingw) {
+     cflags = [ "/wd4800" ]  # Unused variable warning.
+   }
+ }
+diff --git a/tools/BUILD.gn b/tools/BUILD.gn
+index 2f8197dd36..9b1e4fabb9 100644
+--- a/tools/BUILD.gn
++++ b/tools/BUILD.gn
+@@ -15,7 +15,8 @@ group("gn_all") {
+     "jsfunfuzz:v8_jsfunfuzz",
+   ]
+
+-  if (is_win) {
++  # MinGW does not support DbgModel yet
++  if (is_win && !is_mingw) {
+     data_deps += [ "v8windbg" ]
+   }
+ }
+diff --git a/tools/v8windbg/BUILD.gn b/tools/v8windbg/BUILD.gn
+index 10d06a127f..1cdaf86312 100644
+--- a/tools/v8windbg/BUILD.gn
++++ b/tools/v8windbg/BUILD.gn
+@@ -6,7 +6,14 @@ import("../../gni/v8.gni")
+
+ config("v8windbg_config") {
+   # Required for successful compilation of SDK header file DbgModel.h.
+-  cflags_cc = [ "/Zc:twoPhase-" ]
++  if(!is_mingw){
++    cflags_cc = [ "/Zc:twoPhase-" ]
++  }
++  if(is_win && !is_clang && !is_mingw){
++    # Avoid "The contents of <optional> are available only with C++17 or later."
++    # warning from MSVC
++    cflags_cc += [ "/std:c++latest" ]
++  }
+
+   include_dirs = [ "../.." ]
+ }
