@@ -1,0 +1,611 @@
+From 3021170f1728200d1f08c2a57af625f7a1003097 Mon Sep 17 00:00:00 2001
+From: Jeremy Drake <sourceware-bugzilla@jdrake.com>
+Date: Thu, 27 Aug 2020 12:58:27 +0100
+Subject: [PATCH 1/3] Change the default characteristics of DLLs built by the
+ linker to more secure settings.
+
+	PR 19011
+	* emultempl/pe.em (DEFAULT_DLL_CHARACTERISTICS): Define.
+	(pe_dll_characteristics): Initialise to DEFAULT_DLL_CHARACTERISTICS.
+	(add_options): Add options to disable DLL characteristics.
+	(list_options): List the new options.
+	(handle_options): Handle the new options.
+	* emultempl/pep.em: Similar changes to above.
+	(NT_EXE_IMAGE_BASE): Default to an address above 4G.
+	(NT_DLL_IMAGE_BASE, NT_DLL_AUTO_IMAGE_BASE,
+	(NT_DLL_AUTO_IMAGE_MASK): Likewise.
+	* ld.texi: Document the new options.
+	* pe-dll.c (pe_dll_enable_reloc_section): Change to default to
+	true.
+	(generate_reloc): Do nothing if there is no reloc section.
+	(pe_exe_fill_sections): Only assign the reloc section contents if
+	the section exists.
+	* testsuite/ld-pe/pe.exp: Add the --disable-reloc-section flag to
+	the .secrel32 tests.
+	* testsuite/ld-scripts/provide-8.d: Expect for fail on PE targets.
+	* NEWS: Mention the change in DLL generation.
+---
+ ld/ChangeLog                        | 23 ++++++++
+ ld/NEWS                             |  3 +
+ ld/emultempl/pe.em                  | 75 ++++++++++++++++++++----
+ ld/emultempl/pep.em                 | 91 +++++++++++++++++++++++------
+ ld/ld.texi                          | 34 ++++++++---
+ ld/pe-dll.c                         | 10 +++-
+ ld/testsuite/ld-pe/pe.exp           |  6 +-
+ ld/testsuite/ld-scripts/provide-8.d |  2 +-
+ 8 files changed, 201 insertions(+), 43 deletions(-)
+
+diff --git a/ld/ChangeLog b/ld/ChangeLog
+index 4ba491d3c1..0a65318c46 100644
+--- a/ld/ChangeLog
++++ b/ld/ChangeLog
+@@ -1,3 +1,26 @@
++2020-08-27  Jeremy Drake  <sourceware-bugzilla@jdrake.com>
++
++	PR 19011
++	* emultempl/pe.em (DEFAULT_DLL_CHARACTERISTICS): Define.
++	(pe_dll_characteristics): Initialise to DEFAULT_DLL_CHARACTERISTICS.
++	(add_options): Add options to disable DLL characteristics.
++	(list_options): List the new options.
++	(handle_options): Handle the new options.
++	* emultempl/pep.em: Similar changes to above.
++	(NT_EXE_IMAGE_BASE): Default to an address above 4G.
++	(NT_DLL_IMAGE_BASE, NT_DLL_AUTO_IMAGE_BASE,
++	(NT_DLL_AUTO_IMAGE_MASK): Likewise.
++	* ld.texi: Document the new options.
++	* pe-dll.c (pe_dll_enable_reloc_section): Change to default to
++	true.
++	(generate_reloc): Do nothing if there is no reloc section.
++	(pe_exe_fill_sections): Only assign the reloc section contents if
++	the section exists.
++	* testsuite/ld-pe/pe.exp: Add the --disable-reloc-section flag to
++	the .secrel32 tests.
++	* testsuite/ld-scripts/provide-8.d: Expect for fail on PE targets.
++	* NEWS: Mention the change in DLL generation.
++
+ 2020-07-24  Nick Clifton  <nickc@redhat.com>
+ 
+ 	2.35 Release:
+diff --git a/ld/NEWS b/ld/NEWS
+index eb2cff12ea..004e7c5d41 100644
+--- a/ld/NEWS
++++ b/ld/NEWS
+@@ -1,5 +1,8 @@
+ -*- text -*-
+ 
++* The creation of PE format DLLs now defaults to using a more secure set of DLL
++  characteristics.
++
+ Changes in 2.35:
+ 
+ * X86 NaCl target support is removed.
+diff --git a/ld/emultempl/pe.em b/ld/emultempl/pe.em
+index 3899c9d92c..f45518eafb 100644
+--- a/ld/emultempl/pe.em
++++ b/ld/emultempl/pe.em
+@@ -104,6 +104,9 @@ fragment <<EOF
+ #define DEFAULT_PSEUDO_RELOC_VERSION 1
+ #endif
+ 
++#define DEFAULT_DLL_CHARACTERISTICS	(IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE \
++					 | IMAGE_DLL_CHARACTERISTICS_NX_COMPAT)
++
+ #if defined(TARGET_IS_i386pe) || ! defined(DLL_SUPPORT)
+ #define	PE_DEF_SUBSYSTEM		3
+ #else
+@@ -129,7 +132,7 @@ static flagword real_flags = 0;
+ static int support_old_code = 0;
+ static char * thumb_entry_symbol = NULL;
+ static lang_assignment_statement_type *image_base_statement = 0;
+-static unsigned short pe_dll_characteristics = 0;
++static unsigned short pe_dll_characteristics = DEFAULT_DLL_CHARACTERISTICS;
+ static bfd_boolean insert_timestamp = TRUE;
+ static const char *emit_build_id;
+ 
+@@ -271,6 +274,17 @@ fragment <<EOF
+ #define OPTION_NO_INSERT_TIMESTAMP	(OPTION_INSERT_TIMESTAMP + 1)
+ #define OPTION_BUILD_ID			(OPTION_NO_INSERT_TIMESTAMP + 1)
+ #define OPTION_ENABLE_RELOC_SECTION	(OPTION_BUILD_ID + 1)
++#define OPTION_DISABLE_RELOC_SECTION	(OPTION_ENABLE_RELOC_SECTION + 1)
++/* DLL Characteristics flags.  */
++#define OPTION_DISABLE_DYNAMIC_BASE	(OPTION_DISABLE_RELOC_SECTION + 1)
++#define OPTION_DISABLE_FORCE_INTEGRITY	(OPTION_DISABLE_DYNAMIC_BASE + 1)
++#define OPTION_DISABLE_NX_COMPAT	(OPTION_DISABLE_FORCE_INTEGRITY + 1)
++#define OPTION_DISABLE_NO_ISOLATION	(OPTION_DISABLE_NX_COMPAT + 1)
++#define OPTION_DISABLE_NO_SEH		(OPTION_DISABLE_NO_ISOLATION + 1)
++#define OPTION_DISABLE_NO_BIND		(OPTION_DISABLE_NO_SEH + 1)
++#define OPTION_DISABLE_WDM_DRIVER	(OPTION_DISABLE_NO_BIND + 1)
++#define OPTION_DISABLE_TERMINAL_SERVER_AWARE \
++					(OPTION_DISABLE_WDM_DRIVER + 1)
+ 
+ static void
+ gld${EMULATION_NAME}_add_options
+@@ -342,15 +356,24 @@ gld${EMULATION_NAME}_add_options
+     {"enable-long-section-names", no_argument, NULL, OPTION_ENABLE_LONG_SECTION_NAMES},
+     {"disable-long-section-names", no_argument, NULL, OPTION_DISABLE_LONG_SECTION_NAMES},
+     {"dynamicbase",no_argument, NULL, OPTION_DYNAMIC_BASE},
++    {"disable-dynamicbase",no_argument, NULL, OPTION_DISABLE_DYNAMIC_BASE},
+     {"forceinteg", no_argument, NULL, OPTION_FORCE_INTEGRITY},
++    {"disable-forceinteg", no_argument, NULL, OPTION_DISABLE_FORCE_INTEGRITY},
+     {"nxcompat", no_argument, NULL, OPTION_NX_COMPAT},
++    {"disable-nxcompat", no_argument, NULL, OPTION_DISABLE_NX_COMPAT},
+     {"no-isolation", no_argument, NULL, OPTION_NO_ISOLATION},
++    {"disable-no-isolation", no_argument, NULL, OPTION_DISABLE_NO_ISOLATION},
+     {"no-seh", no_argument, NULL, OPTION_NO_SEH},
++    {"disable-no-seh", no_argument, NULL, OPTION_DISABLE_NO_SEH},
+     {"no-bind", no_argument, NULL, OPTION_NO_BIND},
++    {"disable-no-bind", no_argument, NULL, OPTION_DISABLE_NO_BIND},
+     {"wdmdriver", no_argument, NULL, OPTION_WDM_DRIVER},
++    {"disable-wdmdriver", no_argument, NULL, OPTION_DISABLE_WDM_DRIVER},
+     {"tsaware", no_argument, NULL, OPTION_TERMINAL_SERVER_AWARE},
++    {"disable-tsaware", no_argument, NULL, OPTION_DISABLE_TERMINAL_SERVER_AWARE},
+     {"build-id", optional_argument, NULL, OPTION_BUILD_ID},
+     {"enable-reloc-section", no_argument, NULL, OPTION_ENABLE_RELOC_SECTION},
++    {"disable-reloc-section", no_argument, NULL, OPTION_DISABLE_RELOC_SECTION},
+     {NULL, no_argument, NULL, 0}
+   };
+ 
+@@ -414,7 +437,7 @@ static definfo init[] =
+   D(SizeOfHeapReserve,"__size_of_heap_reserve__", 0x100000, FALSE),
+   D(SizeOfHeapCommit,"__size_of_heap_commit__", 0x1000, FALSE),
+   D(LoaderFlags,"__loader_flags__", 0x0, FALSE),
+-  D(DllCharacteristics, "__dll_characteristics__", 0x0, FALSE),
++  D(DllCharacteristics, "__dll_characteristics__", DEFAULT_DLL_CHARACTERISTICS, FALSE),
+   { NULL, 0, 0, NULL, 0 , FALSE}
+ };
+ 
+@@ -483,18 +506,21 @@ gld_${EMULATION_NAME}_list_options (FILE *file)
+                                        executable image files\n"));
+   fprintf (file, _("  --disable-long-section-names       Never use long COFF section names, even\n\
+                                        in object files\n"));
+-  fprintf (file, _("  --dynamicbase                      Image base address may be relocated using\n\
++  fprintf (file, _("  --[disable-]dynamicbase            Image base address may be relocated using\n\
+                                        address space layout randomization (ASLR)\n"));
+   fprintf (file, _("  --enable-reloc-section             Create the base relocation table\n"));
+-  fprintf (file, _("  --forceinteg               Code integrity checks are enforced\n"));
+-  fprintf (file, _("  --nxcompat                 Image is compatible with data execution prevention\n"));
+-  fprintf (file, _("  --no-isolation             Image understands isolation but do not isolate the image\n"));
+-  fprintf (file, _("  --no-seh                   Image does not use SEH. No SE handler may\n\
++  fprintf (file, _("  --disable-reloc-section            Do not create the base relocation table\n"));
++  fprintf (file, _("  --[disable-]forceinteg             Code integrity checks are enforced\n"));
++  fprintf (file, _("  --[disable-]nxcompat               Image is compatible with data execution\n\
++                                       prevention\n"));
++  fprintf (file, _("  --[disable-]no-isolation           Image understands isolation but do not\n\
++                                       isolate the image\n"));
++  fprintf (file, _("  --[disable-]no-seh                 Image does not use SEH. No SE handler may\n\
+                                        be called in this image\n"));
+-  fprintf (file, _("  --no-bind                  Do not bind this image\n"));
+-  fprintf (file, _("  --wdmdriver                Driver uses the WDM model\n"));
+-  fprintf (file, _("  --tsaware                  Image is Terminal Server aware\n"));
+-  fprintf (file, _("  --build-id[=STYLE]         Generate build ID\n"));
++  fprintf (file, _("  --[disable-]no-bind                Do not bind this image\n"));
++  fprintf (file, _("  --[disable-]wdmdriver              Driver uses the WDM model\n"));
++  fprintf (file, _("  --[disable-]tsaware                Image is Terminal Server aware\n"));
++  fprintf (file, _("  --build-id[=STYLE]                 Generate build ID\n"));
+ }
+ 
+ 
+@@ -862,27 +888,54 @@ gld${EMULATION_NAME}_handle_option (int optc)
+     case OPTION_ENABLE_RELOC_SECTION:
+       pe_dll_enable_reloc_section = 1;
+       break;
++    case OPTION_DISABLE_RELOC_SECTION:
++      pe_dll_enable_reloc_section = 0;
++      /* fall through */
++    case OPTION_DISABLE_DYNAMIC_BASE:
++      pe_dll_characteristics &= ~ IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE;
++      break;
+     case OPTION_FORCE_INTEGRITY:
+       pe_dll_characteristics |= IMAGE_DLL_CHARACTERISTICS_FORCE_INTEGRITY;
+       break;
++    case OPTION_DISABLE_FORCE_INTEGRITY:
++      pe_dll_characteristics &= ~ IMAGE_DLL_CHARACTERISTICS_FORCE_INTEGRITY;
++      break;
+     case OPTION_NX_COMPAT:
+       pe_dll_characteristics |= IMAGE_DLL_CHARACTERISTICS_NX_COMPAT;
+       break;
++    case OPTION_DISABLE_NX_COMPAT:
++      pe_dll_characteristics &= ~ IMAGE_DLL_CHARACTERISTICS_NX_COMPAT;
++      break;
+     case OPTION_NO_ISOLATION:
+       pe_dll_characteristics |= IMAGE_DLLCHARACTERISTICS_NO_ISOLATION;
+       break;
++    case OPTION_DISABLE_NO_ISOLATION:
++      pe_dll_characteristics &= ~ IMAGE_DLLCHARACTERISTICS_NO_ISOLATION;
++      break;
+     case OPTION_NO_SEH:
+       pe_dll_characteristics |= IMAGE_DLLCHARACTERISTICS_NO_SEH;
+       break;
++    case OPTION_DISABLE_NO_SEH:
++      pe_dll_characteristics &= ~ IMAGE_DLLCHARACTERISTICS_NO_SEH;
++      break;
+     case OPTION_NO_BIND:
+       pe_dll_characteristics |= IMAGE_DLLCHARACTERISTICS_NO_BIND;
+       break;
++    case OPTION_DISABLE_NO_BIND:
++      pe_dll_characteristics &= ~ IMAGE_DLLCHARACTERISTICS_NO_BIND;
++      break;
+     case OPTION_WDM_DRIVER:
+       pe_dll_characteristics |= IMAGE_DLLCHARACTERISTICS_WDM_DRIVER;
+       break;
++    case OPTION_DISABLE_WDM_DRIVER:
++      pe_dll_characteristics &= ~ IMAGE_DLLCHARACTERISTICS_WDM_DRIVER;
++      break;
+     case OPTION_TERMINAL_SERVER_AWARE:
+       pe_dll_characteristics |= IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE;
+       break;
++    case OPTION_DISABLE_TERMINAL_SERVER_AWARE:
++      pe_dll_characteristics &= ~ IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE;
++      break;
+     case OPTION_BUILD_ID:
+       free ((char *) emit_build_id);
+       emit_build_id = NULL;
+diff --git a/ld/emultempl/pep.em b/ld/emultempl/pep.em
+index a0a7023e70..7d9395168d 100644
+--- a/ld/emultempl/pep.em
++++ b/ld/emultempl/pep.em
+@@ -99,24 +99,28 @@ fragment <<EOF
+ #define DLL_SUPPORT
+ #endif
+ 
++#define DEFAULT_DLL_CHARACTERISTICS	(IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE \
++					 | IMAGE_DLL_CHARACTERISTICS_HIGH_ENTROPY_VA \
++					 | IMAGE_DLL_CHARACTERISTICS_NX_COMPAT)
++
+ #if defined(TARGET_IS_i386pep) || ! defined(DLL_SUPPORT)
+ #define	PE_DEF_SUBSYSTEM		3
+ #undef NT_EXE_IMAGE_BASE
+ #define NT_EXE_IMAGE_BASE \
+   ((bfd_vma) (${move_default_addr_high} ? 0x100400000LL \
+-					: 0x400000LL))
++					: 0x140000000LL))
+ #undef NT_DLL_IMAGE_BASE
+ #define NT_DLL_IMAGE_BASE \
+   ((bfd_vma) (${move_default_addr_high} ? 0x400000000LL \
+-					: 0x10000000LL))
++					: 0x180000000LL))
+ #undef NT_DLL_AUTO_IMAGE_BASE
+ #define NT_DLL_AUTO_IMAGE_BASE \
+   ((bfd_vma) (${move_default_addr_high} ? 0x400000000LL \
+-					: 0x61300000LL))
++					: 0x1C0000000LL))
+ #undef NT_DLL_AUTO_IMAGE_MASK
+ #define NT_DLL_AUTO_IMAGE_MASK \
+   ((bfd_vma) (${move_default_addr_high} ? 0x1ffff0000LL \
+-					: 0x0ffc0000LL))
++					: 0x1ffff0000LL))
+ #else
+ #undef  NT_EXE_IMAGE_BASE
+ #define NT_EXE_IMAGE_BASE \
+@@ -147,7 +151,7 @@ static int pep_subsystem = ${SUBSYSTEM};
+ static flagword real_flags = IMAGE_FILE_LARGE_ADDRESS_AWARE;
+ static int support_old_code = 0;
+ static lang_assignment_statement_type *image_base_statement = 0;
+-static unsigned short pe_dll_characteristics = 0;
++static unsigned short pe_dll_characteristics = DEFAULT_DLL_CHARACTERISTICS;
+ static bfd_boolean insert_timestamp = TRUE;
+ static const char *emit_build_id;
+ 
+@@ -248,7 +252,17 @@ enum options
+   OPTION_NO_INSERT_TIMESTAMP,
+   OPTION_TERMINAL_SERVER_AWARE,
+   OPTION_BUILD_ID,
+-  OPTION_ENABLE_RELOC_SECTION
++  OPTION_ENABLE_RELOC_SECTION,
++  OPTION_DISABLE_RELOC_SECTION,
++  OPTION_DISABLE_HIGH_ENTROPY_VA,
++  OPTION_DISABLE_DYNAMIC_BASE,
++  OPTION_DISABLE_FORCE_INTEGRITY,
++  OPTION_DISABLE_NX_COMPAT,
++  OPTION_DISABLE_NO_ISOLATION,
++  OPTION_DISABLE_NO_SEH,
++  OPTION_DISABLE_NO_BIND,
++  OPTION_DISABLE_WDM_DRIVER,
++  OPTION_DISABLE_TERMINAL_SERVER_AWARE
+ };
+ 
+ static void
+@@ -327,6 +341,16 @@ gld${EMULATION_NAME}_add_options
+     {"no-insert-timestamp", no_argument, NULL, OPTION_NO_INSERT_TIMESTAMP},
+     {"build-id", optional_argument, NULL, OPTION_BUILD_ID},
+     {"enable-reloc-section", no_argument, NULL, OPTION_ENABLE_RELOC_SECTION},
++    {"disable-reloc-section", no_argument, NULL, OPTION_DISABLE_RELOC_SECTION},
++    {"disable-high-entropy-va", no_argument, NULL, OPTION_DISABLE_HIGH_ENTROPY_VA},
++    {"disable-dynamicbase",no_argument, NULL, OPTION_DISABLE_DYNAMIC_BASE},
++    {"disable-forceinteg", no_argument, NULL, OPTION_DISABLE_FORCE_INTEGRITY},
++    {"disable-nxcompat", no_argument, NULL, OPTION_DISABLE_NX_COMPAT},
++    {"disable-no-isolation", no_argument, NULL, OPTION_DISABLE_NO_ISOLATION},
++    {"disable-no-seh", no_argument, NULL, OPTION_DISABLE_NO_SEH},
++    {"disable-no-bind", no_argument, NULL, OPTION_DISABLE_NO_BIND},
++    {"disable-wdmdriver", no_argument, NULL, OPTION_DISABLE_WDM_DRIVER},
++    {"disable-tsaware", no_argument, NULL, OPTION_DISABLE_TERMINAL_SERVER_AWARE},
+     {NULL, no_argument, NULL, 0}
+   };
+ 
+@@ -384,7 +408,7 @@ static definfo init[] =
+   D(SizeOfHeapReserve,"__size_of_heap_reserve__", 0x100000, FALSE),
+   D(SizeOfHeapCommit,"__size_of_heap_commit__", 0x1000, FALSE),
+   D(LoaderFlags,"__loader_flags__", 0x0, FALSE),
+-  D(DllCharacteristics, "__dll_characteristics__", 0x0, FALSE),
++  D(DllCharacteristics, "__dll_characteristics__", DEFAULT_DLL_CHARACTERISTICS, FALSE),
+   { NULL, 0, 0, NULL, 0, FALSE}
+ };
+ 
+@@ -446,20 +470,23 @@ gld_${EMULATION_NAME}_list_options (FILE *file)
+                                        executable image files\n"));
+   fprintf (file, _("  --disable-long-section-names       Never use long COFF section names, even\n\
+                                        in object files\n"));
+-  fprintf (file, _("  --high-entropy-va                  Image is compatible with 64-bit address space\n\
++  fprintf (file, _("  --[disable-]high-entropy-va        Image is compatible with 64-bit address space\n\
+                                        layout randomization (ASLR)\n"));
+-  fprintf (file, _("  --dynamicbase                      Image base address may be relocated using\n\
++  fprintf (file, _("  --[disable-]dynamicbase            Image base address may be relocated using\n\
+                                        address space layout randomization (ASLR)\n"));
+   fprintf (file, _("  --enable-reloc-section             Create the base relocation table\n"));
+-  fprintf (file, _("  --forceinteg               Code integrity checks are enforced\n"));
+-  fprintf (file, _("  --nxcompat                 Image is compatible with data execution prevention\n"));
+-  fprintf (file, _("  --no-isolation             Image understands isolation but do not isolate the image\n"));
+-  fprintf (file, _("  --no-seh                   Image does not use SEH; no SE handler may\n\
++  fprintf (file, _("  --disable-reloc-section            Do not create the base relocation table\n"));
++  fprintf (file, _("  --[disable-]forceinteg             Code integrity checks are enforced\n"));
++  fprintf (file, _("  --[disable-]nxcompat               Image is compatible with data execution\n\
++                                       prevention\n"));
++  fprintf (file, _("  --[disable-]no-isolation           Image understands isolation but do not\n\
++                                       isolate the image\n"));
++  fprintf (file, _("  --[disable-]no-seh                 Image does not use SEH; no SE handler may\n\
+                                        be called in this image\n"));
+-  fprintf (file, _("  --no-bind                  Do not bind this image\n"));
+-  fprintf (file, _("  --wdmdriver                Driver uses the WDM model\n"));
+-  fprintf (file, _("  --tsaware                  Image is Terminal Server aware\n"));
+-  fprintf (file, _("  --build-id[=STYLE]         Generate build ID\n"));
++  fprintf (file, _("  --[disable-]no-bind                Do not bind this image\n"));
++  fprintf (file, _("  --[disable-]wdmdriver              Driver uses the WDM model\n"));
++  fprintf (file, _("  --[disable-]tsaware                Image is Terminal Server aware\n"));
++  fprintf (file, _("  --build-id[=STYLE]                 Generate build ID\n"));
+ #endif
+ }
+ 
+@@ -809,27 +836,57 @@ gld${EMULATION_NAME}_handle_option (int optc)
+     case OPTION_ENABLE_RELOC_SECTION:
+       pep_dll_enable_reloc_section = 1;
+       break;
++    case OPTION_DISABLE_RELOC_SECTION:
++      pep_dll_enable_reloc_section = 0;
++      /* fall through */
++    case OPTION_DISABLE_DYNAMIC_BASE:
++      pe_dll_characteristics &= ~ IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE;
++      /* fall through */
++    case OPTION_DISABLE_HIGH_ENTROPY_VA:
++      pe_dll_characteristics &= ~ IMAGE_DLL_CHARACTERISTICS_HIGH_ENTROPY_VA;
++      break;
+     case OPTION_FORCE_INTEGRITY:
+       pe_dll_characteristics |= IMAGE_DLL_CHARACTERISTICS_FORCE_INTEGRITY;
+       break;
++    case OPTION_DISABLE_FORCE_INTEGRITY:
++      pe_dll_characteristics &= ~ IMAGE_DLL_CHARACTERISTICS_FORCE_INTEGRITY;
++      break;
+     case OPTION_NX_COMPAT:
+       pe_dll_characteristics |= IMAGE_DLL_CHARACTERISTICS_NX_COMPAT;
+       break;
++    case OPTION_DISABLE_NX_COMPAT:
++      pe_dll_characteristics &= ~ IMAGE_DLL_CHARACTERISTICS_NX_COMPAT;
++      break;
+     case OPTION_NO_ISOLATION:
+       pe_dll_characteristics |= IMAGE_DLLCHARACTERISTICS_NO_ISOLATION;
+       break;
++    case OPTION_DISABLE_NO_ISOLATION:
++      pe_dll_characteristics &= ~ IMAGE_DLLCHARACTERISTICS_NO_ISOLATION;
++      break;
+     case OPTION_NO_SEH:
+       pe_dll_characteristics |= IMAGE_DLLCHARACTERISTICS_NO_SEH;
+       break;
++    case OPTION_DISABLE_NO_SEH:
++      pe_dll_characteristics &= ~ IMAGE_DLLCHARACTERISTICS_NO_SEH;
++      break;
+     case OPTION_NO_BIND:
+       pe_dll_characteristics |= IMAGE_DLLCHARACTERISTICS_NO_BIND;
+       break;
++    case OPTION_DISABLE_NO_BIND:
++      pe_dll_characteristics &= ~ IMAGE_DLLCHARACTERISTICS_NO_BIND;
++      break;
+     case OPTION_WDM_DRIVER:
+       pe_dll_characteristics |= IMAGE_DLLCHARACTERISTICS_WDM_DRIVER;
+       break;
++    case OPTION_DISABLE_WDM_DRIVER:
++      pe_dll_characteristics &= ~ IMAGE_DLLCHARACTERISTICS_WDM_DRIVER;
++      break;
+     case OPTION_TERMINAL_SERVER_AWARE:
+       pe_dll_characteristics |= IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE;
+       break;
++    case OPTION_DISABLE_TERMINAL_SERVER_AWARE:
++      pe_dll_characteristics &= ~ IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE;
++      break;
+     case OPTION_BUILD_ID:
+       free ((char *) emit_build_id);
+       emit_build_id = NULL;
+diff --git a/ld/ld.texi b/ld/ld.texi
+index 2a93e9456a..43658a2daa 100644
+--- a/ld/ld.texi
++++ b/ld/ld.texi
+@@ -3097,47 +3097,63 @@ of the PE file header:
+ 
+ @kindex --high-entropy-va
+ @item --high-entropy-va
++@itemx --disable-high-entropy-va
+ Image is compatible with 64-bit address space layout randomization
+-(ASLR).
++(ASLR).  This option is enabled by default for 64-bit PE images.
++
+ This option also implies @option{--dynamicbase} and
+ @option{--enable-reloc-section}.
+ 
+ @kindex --dynamicbase
+ @item --dynamicbase
++@itemx --disable-dynamicbase
+ The image base address may be relocated using address space layout
+ randomization (ASLR).  This feature was introduced with MS Windows
+-Vista for i386 PE targets.
++Vista for i386 PE targets.  This option is enabled by default but
++can be disabled via the @option{--disable-dynamicbase} option.
+ This option also implies @option{--enable-reloc-section}.
+ 
+ @kindex --forceinteg
+ @item --forceinteg
+-Code integrity checks are enforced.
++@itemx --disable-forceinteg
++Code integrity checks are enforced.  This option is disabled by
++default.
+ 
+ @kindex --nxcompat
+ @item --nxcompat
++@item --disable-nxcompat
+ The image is compatible with the Data Execution Prevention.
+-This feature was introduced with MS Windows XP SP2 for i386 PE targets.
++This feature was introduced with MS Windows XP SP2 for i386 PE
++targets.  The option is enabled by default.
+ 
+ @kindex --no-isolation
+ @item --no-isolation
++@itemx --disable-no-isolation
+ Although the image understands isolation, do not isolate the image.
++This option is disabled by default.
+ 
+ @kindex --no-seh
+ @item --no-seh
++@itemx --disable-no-seh
+ The image does not use SEH. No SE handler may be called from
+-this image.
++this image.  This option is disabled by default.
+ 
+ @kindex --no-bind
+ @item --no-bind
+-Do not bind this image.
++@itemx --disable-no-bind
++Do not bind this image.  This option is disabled by default.
+ 
+ @kindex --wdmdriver
+ @item --wdmdriver
+-The driver uses the MS Windows Driver Model.
++@itemx --disable-wdmdriver
++The driver uses the MS Windows Driver Model.  This option is disabled
++by default.
+ 
+ @kindex --tsaware
+ @item --tsaware
+-The image is Terminal Server aware.
++@itemx --disable-tsaware
++The image is Terminal Server aware.  This option is disabled by
++default.
+ 
+ @kindex --insert-timestamp
+ @item --insert-timestamp
+@@ -3153,8 +3169,10 @@ identically.
+ 
+ @kindex --enable-reloc-section
+ @item --enable-reloc-section
++@itemx --disable-reloc-section
+ Create the base relocation table, which is necessary if the image
+ is loaded at a different image base than specified in the PE header.
++This option is enabled by default.
+ @end table
+ 
+ @c man end
+diff --git a/ld/pe-dll.c b/ld/pe-dll.c
+index 3e8fe1be9b..14b402ee8d 100644
+--- a/ld/pe-dll.c
++++ b/ld/pe-dll.c
+@@ -160,7 +160,7 @@ int pe_dll_extra_pe_debug = 0;
+ int pe_use_nul_prefixed_import_tables = 0;
+ int pe_use_coff_long_section_names = -1;
+ int pe_leading_underscore = -1;
+-int pe_dll_enable_reloc_section = 0;
++int pe_dll_enable_reloc_section = 1;
+ 
+ /* Static variables and types.  */
+ 
+@@ -1505,7 +1505,6 @@ pe_find_data_imports (const char *symhead,
+ static void
+ generate_reloc (bfd *abfd, struct bfd_link_info *info)
+ {
+-
+   /* For .reloc stuff.  */
+   reloc_data_type *reloc_data;
+   int total_relocs = 0;
+@@ -1516,6 +1515,8 @@ generate_reloc (bfd *abfd, struct bfd_link_info *info)
+   bfd *b;
+   struct bfd_section *s;
+ 
++  if (reloc_s == NULL)
++    return;
+   total_relocs = 0;
+   for (b = info->input_bfds; b; b = b->link.next)
+     for (s = b->sections; s; s = s->next)
+@@ -1547,9 +1548,11 @@ generate_reloc (bfd *abfd, struct bfd_link_info *info)
+ 	  if (s->output_section->vma == 0)
+ 	    {
+ 	      /* Huh?  Shouldn't happen, but punt if it does.  */
++#if 0 /* This happens when linking with --just-symbols=<file>, so do not generate an error.  */
+ 	      einfo (_("%P: zero vma section reloc detected: `%s' #%d f=%d\n"),
+ 		     s->output_section->name, s->output_section->index,
+ 		     s->output_section->flags);
++#endif
+ 	      continue;
+ 	    }
+ 
+@@ -3630,7 +3633,8 @@ pe_exe_fill_sections (bfd *abfd, struct bfd_link_info *info)
+       /* Do the assignments again.  */
+       lang_do_assignments (lang_final_phase_enum);
+     }
+-  reloc_s->contents = reloc_d;
++  if (reloc_s)
++    reloc_s->contents = reloc_d;
+ }
+ 
+ bfd_boolean
+diff --git a/ld/testsuite/ld-pe/pe.exp b/ld/testsuite/ld-pe/pe.exp
+index 7bc933fc5a..17dafbb02b 100644
+--- a/ld/testsuite/ld-pe/pe.exp
++++ b/ld/testsuite/ld-pe/pe.exp
+@@ -33,7 +33,7 @@ if {[istarget i*86-*-cygwin*]
+ 
+     if {[istarget x86_64-*-mingw*] } {
+       set pe_tests {
+-	{".secrel32" "" "" "" {secrel1.s secrel2.s}
++	{".secrel32" "--disable-reloc-section" "" "" {secrel1.s secrel2.s}
+ 	 {{objdump -s secrel_64.d}} "secrel.x"}
+ 	{"Empty export table" "" "" "" "exports.s"
+ 	 {{objdump -p exports64.d}} "exports.dll"}
+@@ -42,7 +42,7 @@ if {[istarget i*86-*-cygwin*]
+       }
+     } elseif {[istarget i*86-*-cygwin*] } {
+       set pe_tests {
+-	{".secrel32" "--disable-auto-import" "" "" {secrel1.s secrel2.s}
++	{".secrel32" "--disable-auto-import --disable-reloc-section" "" "" {secrel1.s secrel2.s}
+ 	 {{objdump -s secrel.d}} "secrel.x"}
+ 	{"Empty export table" "" "" "" "exports.s"
+ 	 {{objdump -p exports.d}} "exports.dll"}
+@@ -51,7 +51,7 @@ if {[istarget i*86-*-cygwin*]
+       }
+     } else {
+       set pe_tests {
+-	{".secrel32" "" "" "" {secrel1.s secrel2.s}
++	{".secrel32" "--disable-reloc-section" "" "" {secrel1.s secrel2.s}
+ 	 {{objdump -s secrel.d}} "secrel.x"}
+ 	{"Empty export table" "" "" "" "exports.s"
+ 	 {{objdump -p exports.d}} "exports.dll"}
+diff --git a/ld/testsuite/ld-scripts/provide-8.d b/ld/testsuite/ld-scripts/provide-8.d
+index f5abc524e8..1dd5553ed3 100644
+--- a/ld/testsuite/ld-scripts/provide-8.d
++++ b/ld/testsuite/ld-scripts/provide-8.d
+@@ -1,7 +1,7 @@
+ #source: provide-5.s
+ #ld: -T provide-8.t
+ #nm: -B
+-#xfail: x86_64-*-cygwin mmix-*-* sh-*-pe spu-*-*
++#xfail: mmix-*-* *-*-pe spu-*-* *-*-mingw* *-*-cygwin
+ 
+ #...
+ 0+4000 D __FOO
+-- 
+2.28.0.windows.1
+
