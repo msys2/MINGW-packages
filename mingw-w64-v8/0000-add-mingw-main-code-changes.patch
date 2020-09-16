@@ -1,0 +1,616 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index 65d137cbed..ca15a61046 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -752,17 +752,25 @@ config("toolchain") {
+   if (v8_current_cpu == "x86") {
+     defines += [ "V8_TARGET_ARCH_IA32" ]
+     if (is_win) {
+-      # Ensure no surprising artifacts from 80bit double math with x86.
+-      cflags += [ "/arch:SSE2" ]
++      if(!is_mingw){
++        # Ensure no surprising artifacts from 80bit double math with x86.
++        cflags += [ "/arch:SSE2" ]
++      } else {
++        cflags += [ "-msse2" ]
++      }
+     }
+   }
+   if (v8_current_cpu == "x64") {
+     defines += [ "V8_TARGET_ARCH_X64" ]
+     if (is_win) {
+-      # Increase the initial stack size. The default is 1MB, this is 2MB. This
+-      # applies only to executables and shared libraries produced by V8 since
+-      # ldflags are not pushed to dependants.
+-      ldflags += [ "/STACK:2097152" ]
++      if(!is_mingw){
++        # Increase the initial stack size. The default is 1MB, this is 2MB. This
++        # applies only to executables and shared libraries produced by V8 since
++        # ldflags are not pushed to dependants.
++        ldflags += [ "/STACK:2097152" ]
++      } else {
++        ldflags += [ "-Wl,--stack,2097152" ]
++      }
+     }
+   }
+   if (is_android && v8_android_log_stdout) {
+@@ -818,7 +826,7 @@ config("toolchain") {
+   }
+
+   if (v8_no_inline) {
+-    if (is_win) {
++    if (is_win && !is_mingw) {
+       cflags += [ "/Ob0" ]
+     } else {
+       cflags += [
+@@ -842,7 +850,7 @@ config("toolchain") {
+     }
+   }
+
+-  if (is_win) {
++  if (is_win && !is_mingw) {
+     cflags += [
+       "/wd4245",  # Conversion with signed/unsigned mismatch.
+       "/wd4267",  # Conversion with possible loss of data.
+@@ -864,11 +872,11 @@ config("toolchain") {
+     ]
+   }
+
+-  if (!is_clang && is_win) {
++  if (!is_clang && !is_mingw && is_win) {
+     cflags += [ "/wd4506" ]  # Benign "no definition for inline function"
+   }
+
+-  if (!is_clang && !is_win) {
++  if (!is_clang && (!is_win || is_mingw)) {
+     cflags += [
+       # Disable gcc warnings for optimizations based on the assumption that
+       # signed overflow does not occur. Generates false positives (see
+@@ -3985,13 +3993,21 @@ v8_component("v8_libbase") {
+
+     defines += [ "_CRT_RAND_S" ]  # for rand_s()
+
+-    libs = [
+-      "dbghelp.lib",
+-      "winmm.lib",
+-      "ws2_32.lib",
+-    ]
++    if(!is_mingw){
++      libs = [
++        "dbghelp.lib",
++        "winmm.lib",
++        "ws2_32.lib",
++      ]
+
+-    data_deps += [ "//build/win:runtime_libs" ]
++      data_deps += [ "//build/win:runtime_libs" ]
++    } else {
++      libs = [
++        "dbghelp",
++        "winmm",
++        "ws2_32",
++      ]
++    }
+   }
+
+   if (v8_current_cpu == "mips" || v8_current_cpu == "mips64") {
+@@ -4115,7 +4131,7 @@ v8_source_set("v8_cppgc_shared") {
+     "src/heap/base/stack.h",
+   ]
+
+-  if (is_clang || !is_win) {
++  if (is_clang || is_mingw) {
+     if (current_cpu == "x64") {
+       sources += [ "src/heap/base/asm/x64/push_registers_asm.cc" ]
+     } else if (current_cpu == "x86") {
+@@ -4133,7 +4149,7 @@ v8_source_set("v8_cppgc_shared") {
+     } else if (current_cpu == "mips64el") {
+       sources += [ "src/heap/base/asm/mips64/push_registers_asm.cc" ]
+     }
+-  } else if (is_win) {
++  } else if (is_win && !is_mingw) {
+     if (current_cpu == "x64") {
+       sources += [ "src/heap/base/asm/x64/push_registers_masm.S" ]
+     } else if (current_cpu == "x86") {
+@@ -4354,8 +4370,11 @@ if (current_toolchain == v8_snapshot_toolchain) {
+       "src/snapshot/snapshot-empty.cc",
+     ]
+
+-    configs = [ ":internal_config" ]
+-
++    configs = [
++      ":internal_config",
++      "//build/config/win:strip_debug_symbols_at_link_time" # Work around a bug in the mingw linker.
++    ]
++
+     deps = [
+       ":v8_base_without_compiler",
+       ":v8_compiler_for_mksnapshot",
+@@ -4574,7 +4593,10 @@ if (is_component_build) {
+       ":v8_snapshot",
+     ]
+
+-    configs = [ ":internal_config" ]
++    configs = [
++      ":internal_config",
++      "//build/config/win:strip_debug_symbols_at_link_time", # Work around a bug in the mingw linker.
++    ]
+
+     public_configs = [ ":external_config" ]
+   }
+@@ -4593,7 +4615,11 @@ if (is_component_build) {
+       ":v8_snapshot",
+     ]
+
+-    configs = [ ":internal_config" ]
++    configs = [
++      ":internal_config",
++      "//build/config/win:export_all_symbols",
++      "//build/config/win:strip_debug_symbols_at_link_time", # Work around a bug in the mingw linker.
++      ]
+
+     public_configs = [ ":external_config" ]
+   }
+diff --git a/include/v8.h b/include/v8.h
+index 13b40db28e..f749ccc207 100644
+--- a/include/v8.h
++++ b/include/v8.h
+@@ -30,6 +30,11 @@
+ #include "v8-version.h"   // NOLINT(build/include_directory)
+ #include "v8config.h"     // NOLINT(build/include_directory)
+
++#if defined(__MINGW32__) || defined(__MINGW64__)
++// MinGW header files do not implicitly include windows.h
++struct _EXCEPTION_POINTERS;
++#endif
++
+ // We reserve the V8_* prefix for macros defined in V8 public API and
+ // assume there are no name conflicts with the embedder's code.
+
+diff --git a/include/v8config.h b/include/v8config.h
+index bbd1d6ce97..74b9c7bc8a 100644
+--- a/include/v8config.h
++++ b/include/v8config.h
+@@ -118,7 +118,7 @@
+ #elif defined(__QNXNTO__)
+ # define V8_OS_POSIX 1
+ # define V8_OS_QNX 1
+-#elif defined(_WIN32)
++#elif defined(_WIN32) || defined(__MINGW32__) || defined(__MINGW64__)
+ # define V8_OS_WIN 1
+ #endif
+
+diff --git a/src/base/bits.h b/src/base/bits.h
+index cf4b77fa18..414b8073fe 100644
+--- a/src/base/bits.h
++++ b/src/base/bits.h
+@@ -12,8 +12,10 @@
+ #include "src/base/macros.h"
+ #if V8_CC_MSVC
+ #include <intrin.h>
++#elif defined(__MINGW32__)
++#include <x86intrin.h>
+ #endif
+-#if V8_OS_WIN32
++#if V8_OS_WIN
+ #include "src/base/win32-headers.h"
+ #endif
+
+diff --git a/src/base/export-template.h b/src/base/export-template.h
+index 861cfe4027..90c41f7097 100644
+--- a/src/base/export-template.h
++++ b/src/base/export-template.h
+@@ -153,7 +153,12 @@
+
+ EXPORT_TEMPLATE_TEST(DEFAULT, );
+ EXPORT_TEMPLATE_TEST(DEFAULT, __attribute__((visibility("default"))));
++#if defined(__MINGW32__) || defined(__MINGW64__)
++// On MingW MSVC_HACK breaks.
++EXPORT_TEMPLATE_TEST(DEFAULT, __declspec(dllexport));
++#else
+ EXPORT_TEMPLATE_TEST(MSVC_HACK, __declspec(dllexport));
++#endif
+ EXPORT_TEMPLATE_TEST(DEFAULT, __declspec(dllimport));
+
+ #undef EXPORT_TEMPLATE_TEST
+diff --git a/src/base/platform/platform-win32.cc b/src/base/platform/platform-win32.cc
+index 5db3e34310..5c8fdc7ef0 100644
+--- a/src/base/platform/platform-win32.cc
++++ b/src/base/platform/platform-win32.cc
+@@ -33,71 +33,6 @@
+ #include <crtdbg.h>  // NOLINT
+ #endif               // defined(_MSC_VER)
+
+-// Extra functions for MinGW. Most of these are the _s functions which are in
+-// the Microsoft Visual Studio C++ CRT.
+-#ifdef __MINGW32__
+-
+-
+-#ifndef __MINGW64_VERSION_MAJOR
+-
+-#define _TRUNCATE 0
+-#define STRUNCATE 80
+-
+-inline void MemoryFence() {
+-  int barrier = 0;
+-  __asm__ __volatile__("xchgl %%eax,%0 ":"=r" (barrier));
+-}
+-
+-#endif  // __MINGW64_VERSION_MAJOR
+-
+-
+-int localtime_s(tm* out_tm, const time_t* time) {
+-  tm* posix_local_time_struct = localtime_r(time, out_tm);
+-  if (posix_local_time_struct == nullptr) return 1;
+-  return 0;
+-}
+-
+-
+-int fopen_s(FILE** pFile, const char* filename, const char* mode) {
+-  *pFile = fopen(filename, mode);
+-  return *pFile != nullptr ? 0 : 1;
+-}
+-
+-int _vsnprintf_s(char* buffer, size_t sizeOfBuffer, size_t count,
+-                 const char* format, va_list argptr) {
+-  DCHECK(count == _TRUNCATE);
+-  return _vsnprintf(buffer, sizeOfBuffer, format, argptr);
+-}
+-
+-
+-int strncpy_s(char* dest, size_t dest_size, const char* source, size_t count) {
+-  CHECK(source != nullptr);
+-  CHECK(dest != nullptr);
+-  CHECK_GT(dest_size, 0);
+-
+-  if (count == _TRUNCATE) {
+-    while (dest_size > 0 && *source != 0) {
+-      *(dest++) = *(source++);
+-      --dest_size;
+-    }
+-    if (dest_size == 0) {
+-      *(dest - 1) = 0;
+-      return STRUNCATE;
+-    }
+-  } else {
+-    while (dest_size > 0 && count > 0 && *source != 0) {
+-      *(dest++) = *(source++);
+-      --dest_size;
+-      --count;
+-    }
+-  }
+-  CHECK_GT(dest_size, 0);
+-  *dest = 0;
+-  return 0;
+-}
+-
+-#endif  // __MINGW32__
+-
+ namespace v8 {
+ namespace base {
+
+diff --git a/src/base/platform/time.cc b/src/base/platform/time.cc
+index a12a5b0d0a..6f1cccf89f 100644
+--- a/src/base/platform/time.cc
++++ b/src/base/platform/time.cc
+@@ -754,13 +754,13 @@ bool ThreadTicks::IsSupported() {
+ ThreadTicks ThreadTicks::Now() {
+ #if V8_OS_MACOSX
+   return ThreadTicks(ComputeThreadTicks());
+-#elif(defined(_POSIX_THREAD_CPUTIME) && (_POSIX_THREAD_CPUTIME >= 0)) || \
+-  defined(V8_OS_ANDROID)
+-  return ThreadTicks(ClockNow(CLOCK_THREAD_CPUTIME_ID));
+ #elif V8_OS_SOLARIS
+   return ThreadTicks(gethrvtime() / Time::kNanosecondsPerMicrosecond);
+ #elif V8_OS_WIN
+   return ThreadTicks::GetForThread(::GetCurrentThread());
++#elif(defined(_POSIX_THREAD_CPUTIME) && (_POSIX_THREAD_CPUTIME >= 0)) || \
++  defined(V8_OS_ANDROID)
++  return ThreadTicks(ClockNow(CLOCK_THREAD_CPUTIME_ID));
+ #else
+   UNREACHABLE();
+ #endif
+diff --git a/src/base/win32-headers.h b/src/base/win32-headers.h
+index 82555463c0..8ed6ff5a7b 100644
+--- a/src/base/win32-headers.h
++++ b/src/base/win32-headers.h
+@@ -38,12 +38,6 @@
+ #include <mmsystem.h>  // For timeGetTime().
+ #include <signal.h>  // For raise().
+ #include <time.h>  // For LocalOffset() implementation.
+-#ifdef __MINGW32__
+-// Require Windows XP or higher when compiling with MinGW. This is for MinGW
+-// header files to expose getaddrinfo.
+-#undef _WIN32_WINNT
+-#define _WIN32_WINNT 0x501
+-#endif  // __MINGW32__
+ #if !defined(__MINGW32__) || defined(__MINGW64_VERSION_MAJOR)
+ #include <dbghelp.h>         // For SymLoadModule64 and al.
+ #include <errno.h>           // For STRUNCATE
+@@ -56,9 +50,7 @@
+ // makes it impossible to have them elsewhere.
+ #include <winsock2.h>
+ #include <ws2tcpip.h>
+-#ifndef __MINGW32__
+ #include <wspiapi.h>
+-#endif  // __MINGW32__
+ #include <process.h>  // For _beginthreadex().
+ #include <stdlib.h>
+
+diff --git a/src/compiler/node-cache.h b/src/compiler/node-cache.h
+index 935e5778e3..d5dae22512 100644
+--- a/src/compiler/node-cache.h
++++ b/src/compiler/node-cache.h
+@@ -29,7 +29,7 @@ class Node;
+ // nodes such as constants, parameters, etc.
+ template <typename Key, typename Hash = base::hash<Key>,
+           typename Pred = std::equal_to<Key> >
+-class EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE) NodeCache final {
++class V8_EXPORT_PRIVATE NodeCache final {
+  public:
+   explicit NodeCache(Zone* zone) : map_(zone) {}
+   ~NodeCache() = default;
+diff --git a/src/heap/cppgc/marking-visitor.h b/src/heap/cppgc/marking-visitor.h
+index 50427162a1..6083644658 100644
+--- a/src/heap/cppgc/marking-visitor.h
++++ b/src/heap/cppgc/marking-visitor.h
+@@ -21,7 +21,7 @@ namespace internal {
+ class BasePage;
+ class HeapObjectHeader;
+
+-class MarkingVisitor : public ConservativeTracingVisitor,
++class V8_EXPORT_PRIVATE MarkingVisitor : public ConservativeTracingVisitor,
+                        public heap::base::StackVisitor {
+  public:
+   MarkingVisitor(HeapBase&, Marker::MarkingWorklist*,
+diff --git a/src/heap/cppgc/raw-heap.h b/src/heap/cppgc/raw-heap.h
+index e63fc32c43..f899e5634e 100644
+--- a/src/heap/cppgc/raw-heap.h
++++ b/src/heap/cppgc/raw-heap.h
+@@ -49,6 +49,8 @@ class V8_EXPORT_PRIVATE RawHeap final {
+
+   explicit RawHeap(HeapBase* heap, size_t custom_spaces);
+   ~RawHeap();
++  RawHeap(const RawHeap&) = delete;
++  RawHeap& operator=(const RawHeap&) = delete;
+
+   // Space iteration support.
+   iterator begin() { return spaces_.begin(); }
+diff --git a/src/heap/paged-spaces-inl.h b/src/heap/paged-spaces-inl.h
+index 6b2e5a848a..09e24adb52 100644
+--- a/src/heap/paged-spaces-inl.h
++++ b/src/heap/paged-spaces-inl.h
+@@ -17,7 +17,7 @@ namespace internal {
+ // -----------------------------------------------------------------------------
+ // PagedSpaceObjectIterator
+
+-HeapObject PagedSpaceObjectIterator::Next() {
++inline HeapObject PagedSpaceObjectIterator::Next() {
+   do {
+     HeapObject next_obj = FromCurrentPage();
+     if (!next_obj.is_null()) return next_obj;
+diff --git a/src/heap/paged-spaces.h b/src/heap/paged-spaces.h
+index 395ff29343..01fe7b192c 100644
+--- a/src/heap/paged-spaces.h
++++ b/src/heap/paged-spaces.h
+@@ -49,7 +49,7 @@ class V8_EXPORT_PRIVATE PagedSpaceObjectIterator : public ObjectIterator {
+   // Advance to the next object, skipping free spaces and other fillers and
+   // skipping the special garbage section of which there is one per space.
+   // Returns nullptr when the iteration has ended.
+-  inline HeapObject Next() override;
++  HeapObject Next() override;
+
+  private:
+   // Fast (inlined) path of next().
+diff --git a/src/objects/feedback-vector.cc b/src/objects/feedback-vector.cc
+index ce638b2339..f265ff475c 100644
+--- a/src/objects/feedback-vector.cc
++++ b/src/objects/feedback-vector.cc
+@@ -114,9 +114,9 @@ Handle<FeedbackMetadata> FeedbackMetadata::New(LocalIsolate* isolate,
+   return metadata;
+ }
+
+-template Handle<FeedbackMetadata> FeedbackMetadata::New(
++template V8_EXPORT Handle<FeedbackMetadata> FeedbackMetadata::New(
+     Isolate* isolate, const FeedbackVectorSpec* spec);
+-template Handle<FeedbackMetadata> FeedbackMetadata::New(
++template V8_EXPORT Handle<FeedbackMetadata> FeedbackMetadata::New(
+     OffThreadIsolate* isolate, const FeedbackVectorSpec* spec);
+
+ bool FeedbackMetadata::SpecDiffersFrom(
+diff --git a/src/objects/ordered-hash-table.h b/src/objects/ordered-hash-table.h
+index 5f3c45a110..838057007f 100644
+--- a/src/objects/ordered-hash-table.h
++++ b/src/objects/ordered-hash-table.h
+@@ -7,7 +7,11 @@
+
+ #include "src/base/export-template.h"
+ #include "src/common/globals.h"
++#if defined(_M_IX86) && defined(_MSC_VER)
++#include "src/objects/fixed-array-inl.h"
++#else
+ #include "src/objects/fixed-array.h"
++#endif
+ #include "src/objects/js-objects.h"
+ #include "src/objects/smi.h"
+ #include "src/roots/roots.h"
+diff --git a/src/objects/string.h b/src/objects/string.h
+index 7c275cc6cb..ba7fca6fb8 100644
+--- a/src/objects/string.h
++++ b/src/objects/string.h
+@@ -293,7 +293,7 @@ class String : public TorqueGeneratedString<String, Name> {
+
+   V8_EXPORT_PRIVATE bool HasOneBytePrefix(Vector<const char> str);
+   V8_EXPORT_PRIVATE bool IsOneByteEqualTo(Vector<const uint8_t> str);
+-  V8_EXPORT_PRIVATE bool IsOneByteEqualTo(Vector<const char> str) {
++  inline bool IsOneByteEqualTo(Vector<const char> str) {
+     return IsOneByteEqualTo(Vector<const uint8_t>::cast(str));
+   }
+   bool IsTwoByteEqualTo(Vector<const uc16> str);
+diff --git a/src/snapshot/snapshot-utils.cc b/src/snapshot/snapshot-utils.cc
+index eb2372372c..7defadb4b1 100644
+--- a/src/snapshot/snapshot-utils.cc
++++ b/src/snapshot/snapshot-utils.cc
+@@ -5,7 +5,7 @@
+ #include "src/snapshot/snapshot-utils.h"
+
+ #include "src/sanitizer/msan.h"
+-#include "third_party/zlib/zlib.h"
++#include "zlib.h"
+
+ namespace v8 {
+ namespace internal {
+diff --git a/src/wasm/function-body-decoder-impl.h b/src/wasm/function-body-decoder-impl.h
+index d038a7c8d5..be70958a3e 100644
+--- a/src/wasm/function-body-decoder-impl.h
++++ b/src/wasm/function-body-decoder-impl.h
+@@ -1712,7 +1712,7 @@ class WasmDecoder : public Decoder {
+   }
+
+   // TODO(clemensb): This is only used by the interpreter; move there.
+-  V8_EXPORT_PRIVATE std::pair<uint32_t, uint32_t> StackEffect(const byte* pc) {
++  std::pair<uint32_t, uint32_t> StackEffect(const byte* pc) {
+     WasmOpcode opcode = static_cast<WasmOpcode>(*pc);
+     // Handle "simple" opcodes with a fixed signature first.
+     const FunctionSig* sig = WasmOpcodes::Signature(opcode);
+diff --git a/test/cctest/BUILD.gn b/test/cctest/BUILD.gn
+index a55451c6c9..3540b7940c 100644
+--- a/test/cctest/BUILD.gn
++++ b/test/cctest/BUILD.gn
+@@ -31,6 +31,7 @@ v8_executable("cctest") {
+     "../..:internal_config_base",
+     "../..:v8_tracing_config",
+     ":cctest_config",
++    "//build/config/win:strip_debug_symbols_at_link_time", # Work around a bug in the mingw linker.
+   ]
+
+   ldflags = []
+@@ -435,17 +436,28 @@ v8_source_set("cctest_sources") {
+   }
+
+   if (is_win) {
+-    # This warning is benignly triggered by the U16 and U32 macros in
+-    # bytecode-utils.h.
+-    # C4309: 'static_cast': truncation of constant value
+-    cflags += [ "/wd4309" ]
+-
+-    # MSVS wants this for gay-{precision,shortest}.cc.
+-    cflags += [ "/bigobj" ]
+-
+-    if (symbol_level == 2) {
+-      sources += [ "test-v8windbg.cc" ]
+-      deps += [ "../../tools/v8windbg:v8windbg_test" ]
++    if(is_mingw) {
++      # Buffer overrun warning... intended?
++      cflags += [
++        "-Wno-array-bounds",
++        "-Wno-stringop-truncation"
++        ]
++    } else {
++      # This warning is benignly triggered by the U16 and U32 macros in
++      # bytecode-utils.h.
++      # C4309: 'static_cast': truncation of constant value
++      cflags += [ "/wd4309" ]
++
++      # Buffer overrun warning... intended?
++      cflags += [ "/wd4789" ]
++
++      # MSVS wants this for gay-{precision,shortest}.cc.
++      cflags += [ "/bigobj" ]
++
++      if (symbol_level == 2) {
++        sources += [ "test-v8windbg.cc" ]
++        deps += [ "../../tools/v8windbg:v8windbg_test" ]
++      }
+     }
+   }
+
+diff --git a/test/unittests/BUILD.gn b/test/unittests/BUILD.gn
+index b42d09d760..1d56eb3297 100644
+--- a/test/unittests/BUILD.gn
++++ b/test/unittests/BUILD.gn
+@@ -120,6 +120,11 @@ v8_executable("unittests") {
+     "../..:external_config",
+     "../..:internal_config_base",
+   ]
++
++  # Work around mingw's ld bug handling large debug symbols.
++  if(!is_component_build){
++    configs += [ "//build/config/win:strip_debug_symbols_at_link_time" ]
++  }
+ }
+
+ v8_source_set("unittests_sources") {
+@@ -399,7 +404,7 @@ v8_source_set("unittests_sources") {
+     "//testing/gtest",
+   ]
+
+-  if (is_win) {
++  if (is_win && !is_mingw) {
+     # This warning is benignly triggered by the U16 and U32 macros in
+     # bytecode-utils.h.
+     # C4309: 'static_cast': truncation of constant value
+diff --git a/third_party/googletest/BUILD.gn b/third_party/googletest/BUILD.gn
+index cfa9205547..f3b0051f61 100644
+--- a/third_party/googletest/BUILD.gn
++++ b/third_party/googletest/BUILD.gn
+@@ -30,7 +30,7 @@ config("gtest_config") {
+     "src/googletest/include",
+   ]
+
+-  if (is_win) {
++  if (is_win && !is_mingw) {
+     cflags = [ "/wd4800" ]  # Unused variable warning.
+   }
+ }
+diff --git a/tools/BUILD.gn b/tools/BUILD.gn
+index 2f8197dd36..9b1e4fabb9 100644
+--- a/tools/BUILD.gn
++++ b/tools/BUILD.gn
+@@ -15,7 +15,8 @@ group("gn_all") {
+     "jsfunfuzz:v8_jsfunfuzz",
+   ]
+
+-  if (is_win) {
++  # MinGW does not support DbgModel yet
++  if (is_win && !is_mingw) {
+     data_deps += [ "v8windbg" ]
+   }
+ }
+diff --git a/tools/debug_helper/BUILD.gn b/tools/debug_helper/BUILD.gn
+index 522a0e2270..bbe5809baa 100644
+--- a/tools/debug_helper/BUILD.gn
++++ b/tools/debug_helper/BUILD.gn
+@@ -92,10 +92,12 @@ v8_component("v8_debug_helper") {
+     "../..:run_torque",
+     "../..:v8_headers",
+     "../..:v8_libbase",
++    "../..:v8",
+   ]
+
+   configs = [ ":internal_config" ]
+   if (v8_enable_i18n_support) {
++    public_deps = [ "//third_party/icu" ]
+     configs += [ "//third_party/icu:icu_config" ]
+   }
+
+diff --git a/tools/v8windbg/BUILD.gn b/tools/v8windbg/BUILD.gn
+index 10d06a127f..1cdaf86312 100644
+--- a/tools/v8windbg/BUILD.gn
++++ b/tools/v8windbg/BUILD.gn
+@@ -6,7 +6,14 @@ import("../../gni/v8.gni")
+
+ config("v8windbg_config") {
+   # Required for successful compilation of SDK header file DbgModel.h.
+-  cflags_cc = [ "/Zc:twoPhase-" ]
++  if(!is_mingw){
++    cflags_cc = [ "/Zc:twoPhase-" ]
++  }
++  if(is_win && !is_clang && !is_mingw){
++    # Avoid "The contents of <optional> are available only with C++17 or later."
++    # warning from MSVC
++    cflags_cc += [ "/std:c++latest" ]
++  }
+
+   include_dirs = [ "../.." ]
+ }
