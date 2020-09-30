@@ -3,19 +3,18 @@
 # Contributed by: nanodude
 
 _realname=newlib
-_target=arm-none-eabi
+_all_targets="arm-none-eabi riscv64-unknown-elf"
 _gccver=8.4.0
 
-pkgbase=mingw-w64-${_target}-${_realname}
-pkgname=("${MINGW_PACKAGE_PREFIX}-${_target}-${_realname}")
+pkgbase=mingw-w64-${_realname}
+pkgname=($(for _target in ${_all_targets}; do
+               echo "${MINGW_PACKAGE_PREFIX}-${_target}-${_realname}"
+           done))
 pkgver=3.3.0
 pkgrel=1
-pkgdesc='GNU Tools for ARM Embedded Processors - Newlib (mingw-w64)'
 arch=('any')
 url="https://sourceware.org/newlib/"
 license=('Various')
-groups=("${MINGW_PACKAGE_PREFIX}-${_target}-toolchain")
-depends=("${MINGW_PACKAGE_PREFIX}-${_target}-binutils")
 options=('staticlibs' '!strip' '!emptydirs')
 source=(
     "https://sourceware.org/pub/newlib/newlib-${pkgver}.tar.gz"
@@ -31,21 +30,18 @@ prepare() {
     cd ${srcdir}
     # bsdtar doesn't like the symlinks
     tar -xf newlib-${pkgver}.tar.gz
-
-    cd ${srcdir}/gcc-${_gccver}
-    mkdir gcc-build-${MINGW_CHOST}
-    mkdir gcc-install-${MINGW_CHOST}
-
-    cd ${srcdir}/newlib-${pkgver}
-    mkdir {newlib,nano}-build-${MINGW_CHOST}
 }
 
 # Newlib is required to build GCC, but GCC is also required to compile newlib
 # So we must build a minimal GCC first, to avoid the circular dependency
 _build_gcc() {
-    cd ${srcdir}/gcc-${_gccver}/gcc-build-${MINGW_CHOST}
+    _target=$1
 
-    cp -a ${MINGW_PREFIX}/${_target} ${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}
+    echo "Building GCC" ${_target}
+
+    cd ${srcdir}/gcc-${_gccver}/gcc-build-${MINGW_CHOST}-${_target}
+
+    cp -a ${MINGW_PREFIX}/${_target} ${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}-${_target}
 
     local _GCC_LDFLAGS="${LDFLAGS} -Wl,--disable-dynamicbase"
     ../configure \
@@ -76,21 +72,32 @@ _build_gcc() {
         --with-multilib-list=rmprofile \
         --with-host-libstdcxx="-static-libgcc -Wl,-Bstatic,-lstdc++,-Bdynamic -lm" \
         --with-sysroot=${MINGW_PREFIX} \
-        --with-build-sysroot=${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST} \
+        --with-build-sysroot=${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}-${_target} \
         --with-build-time-tools=${MINGW_PREFIX}/${_target}/bin \
         LDFLAGS="${_GCC_LDFLAGS}"
 
     make all-gcc
-    make DESTDIR=${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST} install-gcc
+    make DESTDIR=${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}-${_target} install-gcc
 }
 
-build() {
-    _build_gcc
+build_common() {
+    _target=$1
 
-    cd ${srcdir}/newlib-${pkgver}/newlib-build-${MINGW_CHOST}
+    cd ${srcdir}/gcc-${_gccver}
+    mkdir -p gcc-build-${MINGW_CHOST}-${_target}
+    mkdir -p gcc-install-${MINGW_CHOST}-${_target}
+
+    cd ${srcdir}/newlib-${pkgver}
+    mkdir -p {newlib,nano}-build-${MINGW_CHOST}-${_target}
+
+    _build_gcc ${_target}
+
+    cd ${srcdir}/newlib-${pkgver}/newlib-build-${MINGW_CHOST}-${_target}
+
+    echo "Building" ${_target}
 
     ../configure \
-        PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}/bin:${PATH}" \
+        PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}-${_target}/bin:${PATH}" \
         --build=${MINGW_CHOST} \
         --host=${MINGW_CHOST} \
         --target=${_target} \
@@ -101,12 +108,12 @@ build() {
         --enable-newlib-retargetable-locking \
         --disable-newlib-supplied-syscalls \
         --disable-nls
-    make PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}/bin:${PATH}"
+    make PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}-${_target}/bin:${PATH}"
 
-    cd ${srcdir}/newlib-${pkgver}/nano-build-${MINGW_CHOST}
+    cd ${srcdir}/newlib-${pkgver}/nano-build-${MINGW_CHOST}-${_target}
 
     ../configure \
-        PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}/bin:${PATH}" \
+        PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}-${_target}/bin:${PATH}" \
         --build=${MINGW_CHOST} \
         --host=${MINGW_CHOST} \
         --target=${_target} \
@@ -123,28 +130,59 @@ build() {
         --enable-newlib-global-atexit \
         --enable-newlib-nano-formatted-io \
         --disable-nls
-    make PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}/bin:${PATH}"
+    make PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}-${_target}/bin:${PATH}"
 }
 
-package() {
+build() {
+    for _target in ${_all_targets}; do
+        build_common ${_target}
+    done
+}
+
+package_common() {
+    _target=$1
+
+    groups=("${MINGW_PACKAGE_PREFIX}-${_target}-toolchain")
+    depends=("${MINGW_PACKAGE_PREFIX}-${_target}-binutils")
+
     cd ${pkgdir}
 
-    # make install complains if theses dirs do not already exist, for some reason
-    mkdir -p ${pkgdir}${MINGW_PREFIX}/${_target}/lib/arm/v5te/{hard,softfp}
-    mkdir -p ${pkgdir}${MINGW_PREFIX}/${_target}/lib/thumb/nofp
-    mkdir -p ${pkgdir}${MINGW_PREFIX}/${_target}/lib/thumb/v{6-m,7,7-m,7e-m,8-m.base,8-m.main}/nofp
-    mkdir -p ${pkgdir}${MINGW_PREFIX}/${_target}/lib/thumb/v{7+fp,7e-m+fp,7e-m+dp,8-m.main+fp,8-m.main+dp}/{hard,softfp}
+    if [ "x${_target}" == "xarm-none-eabi" ]; then
+        # make install complains if theses dirs do not already exist, for some reason
+        mkdir -p ${pkgdir}${MINGW_PREFIX}/${_target}/lib/arm/v5te/{hard,softfp}
+        mkdir -p ${pkgdir}${MINGW_PREFIX}/${_target}/lib/thumb/nofp
+        mkdir -p ${pkgdir}${MINGW_PREFIX}/${_target}/lib/thumb/v{6-m,7,7-m,7e-m,8-m.base,8-m.main}/nofp
+        mkdir -p ${pkgdir}${MINGW_PREFIX}/${_target}/lib/thumb/v{7+fp,7e-m+fp,7e-m+dp,8-m.main+fp,8-m.main+dp}/{hard,softfp}
+    fi
 
-    cd ${srcdir}/newlib-${pkgver}/nano-build-${MINGW_CHOST}
+    cd ${srcdir}/newlib-${pkgver}/nano-build-${MINGW_CHOST}-${_target}
 
-    make DESTDIR=${pkgdir} PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}/bin:${PATH}" install
+    make DESTDIR=${pkgdir} PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}-${_target}/bin:${PATH}" install
 
     find ${pkgdir} -regex ".*/lib\(c\|g\|rdimon\)\.a" -exec rename .a _nano.a '{}' \;
     install -Dm644 -t ${pkgdir}${MINGW_PREFIX}/${_target}/include/newlib-nano ${pkgdir}${MINGW_PREFIX}/${_target}/include/newlib.h
 
-    cd ${srcdir}/newlib-${pkgver}/newlib-build-${MINGW_CHOST}
+    cd ${srcdir}/newlib-${pkgver}/newlib-build-${MINGW_CHOST}-${_target}
 
-    make DESTDIR=${pkgdir} PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}/bin:${PATH}" install
+    make DESTDIR=${pkgdir} PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}-${_target}/bin:${PATH}" install
 
     find ${pkgdir}${MINGW_PREFIX}/${_target}/lib \( -name "*.a" -or -name "*.o" \) -exec ${_target}-objcopy -R .comment -R .note -R .debug_info -R .debug_aranges -R .debug_pubnames -R .debug_pubtypes -R .debug_abbrev -R .debug_line -R .debug_str -R .debug_ranges -R .debug_loc '{}' \;
+}
+
+package_mingw-w64-x86_64-arm-none-eabi-newlib() {
+    _target='arm-none-eabi'
+    pkgdesc='GNU Tools for ARM Embedded Processors - Newlib (mingw-w64)'
+    package_common ${_target}
+}
+package_mingw-w64-i686-arm-none-eabi-newlib() {
+    package_mingw-w64-x86_64-arm-none-eabi-newlib
+}
+
+package_mingw-w64-x86_64-riscv64-unknown-elf-newlib() {
+    _target='riscv64-unknown-elf'
+    pkgdesc='GNU Tools for RISC-V Embedded Processors - Newlib (mingw-w64)'
+    package_common ${_target}
+}
+package_mingw-w64-i686-riscv64-unknown-elf-newlib() {
+    package_mingw-w64-x86_64-riscv64-unknown-elf-newlib
 }
