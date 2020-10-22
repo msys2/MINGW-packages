@@ -5,10 +5,6 @@
   -->
   <a title="GitHub Actions" href="https://github.com/msys2/MINGW-packages/actions?query=workflow%3Amain"><img alt="'main' workflow Status" src="https://img.shields.io/github/workflow/status/msys2/MINGW-packages/main?longCache=true&style=flat-square&label=build&logo=github"></a><!--
   -->
-  <a title="AppVeyor" href="https://ci.appveyor.com/project/Alexpux/mingw-packages"><img src="https://img.shields.io/appveyor/ci/Alexpux/mingw-packages/master.svg?logo=appveyor&logoColor=e8ecef&style=flat-square"></a><!--
-  -->
-  <a title="Azure DevOps" href="https://dev.azure.com/msys2/mingw/_build/latest?definitionId=4&branchName=master"><img src="https://img.shields.io/azure-devops/build/msys2/5ee43462-f2c2-45d5-8c1c-31fdb1fd15b4/4/master?style=flat-square&logo=azure-pipelines"></a><!--
-  -->
 </p>
 
 # MINGW-packages

@@ -94,19 +94,6 @@ _build_add() {
     sorted_packages+=("${package}")
 }
 
-# Download previous artifact
-_download_previous() {
-    local filenames=("${@}")
-    [[ "${DEPLOY_PROVIDER}" = bintray ]] || return 1
-    for filename in "${filenames[@]}"; do
-        if ! wget --no-verbose "https://dl.bintray.com/${BINTRAY_ACCOUNT}/${BINTRAY_REPOSITORY}/${filename}"; then
-            rm -f "${filenames[@]}"
-            return 1
-        fi
-    done
-    return 0
-}
-
 # Git configuration
 git_config() {
     local name="${1}"
@@ -130,14 +117,6 @@ execute(){
     cd - > /dev/null
 }
 
-# Update system
-update_system() {
-    repman add ci.msys 'https://dl.bintray.com/alexpux/msys2' || return 1
-    pacman --noconfirm --noprogressbar --sync --refresh --refresh --sysupgrade --sysupgrade || return 1
-    test -n "${DISABLE_QUALITY_CHECK}" && return 0 # TODO: remove this option when not anymore needed
-    pacman --noconfirm --needed --noprogressbar --sync ci.msys/pactoys
-}
-
 # Sort packages by dependency
 define_build_order() {
     local sorted_packages=()
@@ -145,34 +124,6 @@ define_build_order() {
         _build_add "${unsorted_package}"
     done
     packages=("${sorted_packages[@]}")
-}
-
-# Associate artifacts with this build
-create_build_references() {
-    local repository_name="${1}"
-    local references="${repository_name}.builds"
-    _download_previous "${references}" || touch "${references}"
-    for file in *; do
-        sed -i "/^${file}.*/d" "${references}"
-        printf '%-80s%s\n' "${file}" "${BUILD_URL}" >> "${references}"
-    done
-    sort "${references}" | tee "${references}.sorted" | sed -r 's/(\S+)\s.*\/([^/]+)/\2\t\1/'
-    mv "${references}.sorted" "${references}"
-}
-
-# Add packages to repository
-create_pacman_repository() {
-    local name="${1}"
-    _download_previous "${name}".{db,files}{,.tar.xz}
-    repo-add "${name}.db.tar.xz" *.pkg.tar.xz
-}
-
-# Deployment is enabled
-deploy_enabled() {
-    test -n "${BUILD_URL}" || return 1
-    [[ "${DEPLOY_PROVIDER}" = bintray ]] || return 1
-    local repository_account="$(git remote get-url origin | cut -d/ -f4)"
-    [[ "${repository_account,,}" = "${BINTRAY_ACCOUNT,,}" ]]
 }
 
 # Added commits
