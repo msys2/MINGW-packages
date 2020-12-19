@@ -15,7 +15,7 @@ git_config user.name  'MSYS2 Continuous Integration'
 git remote add upstream 'https://github.com/MSYS2/MINGW-packages'
 git fetch --quiet upstream
 # So that makepkg auto-fetches keys from validpgpkeys
-mkdir -p ~/.gnupg && echo -e "keyserver keyserver.ubuntu.com\nkeyserver-options auto-key-retrieve" > ~/.gnupg/gpg.conf
+mkdir -p ~/.gnupg && echo -e "keyserver hkp://keys.gnupg.net\nkeyserver-options auto-key-retrieve" > ~/.gnupg/gpg.conf
 # reduce time required to install packages by disabling pacman's disk space checking
 sed -i 's/^CheckSpace/#CheckSpace/g' /etc/pacman.conf
 
