@@ -31,7 +31,7 @@ execute 'Approving recipe quality' check_recipe_quality
 for package in "${packages[@]}"; do
     execute 'Building binary' makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild
     execute 'Building source' makepkg --noconfirm --noprogressbar --allsource --config '/etc/makepkg_mingw64.conf'
-    execute 'Installing' yes:pacman --noprogressbar --upgrade *"${PKGEXT}"
+    execute 'Installing' yes:pacman --noprogressbar --upgrade '*.pkg.tar.*'
     mv "${package}"/*.pkg.tar.* artifacts
     mv "${package}"/*.src.tar.gz artifacts
     unset package
