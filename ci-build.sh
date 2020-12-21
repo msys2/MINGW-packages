@@ -33,8 +33,8 @@ for package in "${packages[@]}"; do
     execute 'Building binary' makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild
     execute 'Building source' makepkg --noconfirm --noprogressbar --allsource --config '/etc/makepkg_mingw64.conf'
     execute 'Installing' yes:pacman --noprogressbar --upgrade *"${PKGEXT}"
-    mv "${package}"/*"${PKGEXT}" artifacts
-    mv "${package}"/*"${SRCEXT}" artifacts
+    mv "${package}"/*.pkg.tar.* artifacts
+    mv "${package}"/*.src.tar.gz artifacts
     unset package
 done
 success 'All packages built successfully'
