@@ -8,27 +8,80 @@ _target=arm-none-eabi
 pkgbase=mingw-w64-${_target}-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_target}-${_realname}")
 pkgver=9.2
-pkgrel=1
+pkgrel=2
 pkgdesc='GNU Tools for ARM Embedded Processors - GDB (mingw-w64)'
 arch=('any')
 license=('GPL')
 url='https://www.gnu.org/software/gdb/'
 groups=("${MINGW_PACKAGE_PREFIX}-${_target}-toolchain")
-source=(https://ftp.gnu.org/gnu/${_realname}/${_realname}-${pkgver}.tar.xz{,.sig})
+source=(
+    https://ftp.gnu.org/gnu/gdb/${_realname}-${pkgver}.tar.xz{,.sig}
+    'gdb-perfomance.patch'
+    'gdb-fix-using-gnu-print.patch'
+    'gdb-7.12-dynamic-libs.patch'
+    'python-configure-path-fixes.patch'
+    'gdb-fix-tui-with-pdcurses.patch'
+    'gdb-9.1-lib-order.patch'
+    'gdb-home-is-userprofile.patch'
+)
 sha256sums=(
     '360cd7ae79b776988e89d8f9a01c985d0b1fa21c767a4295e5f88cb49175c555'
     'SKIP'
+    'a0a2d974e80b656646c87cc669fda798182a35b001aab933567c41b880530aa0'
+    '29fce74348a2862dd3856da58cd3c6c40a910cbdb95e5003d571c33a04532b78'
+    '9de9c30bbb8cd2c6f60414b5a34cdf1fae27238293fb6007c628a8b821f88e0b'
+    '6378e1a96e3bedc2a160f0f6780cb973ce6139017f2786e7ab97f8bcd9824d27'
+    'f70cc0a0633d01adf777eb57a82f8c9880f6511d55e44c1dc415ddebc7467e0b'
+    'dcfbfb2e3fc90a51e11202529e34c1b3dcc17e352067ffdfc58b63c1deab9523'
+    'a63ba094dcd9bf0c0f98c6dce5825590b2cf7014834fd3bec5f88fe25d90228a'
 )
+depends=("${MINGW_PACKAGE_PREFIX}-expat"
+         "${MINGW_PACKAGE_PREFIX}-libiconv"
+         "${MINGW_PACKAGE_PREFIX}-ncurses"
+         "${MINGW_PACKAGE_PREFIX}-python"
+         "${MINGW_PACKAGE_PREFIX}-readline"
+         "${MINGW_PACKAGE_PREFIX}-xxhash"
+         "${MINGW_PACKAGE_PREFIX}-zlib")
+checkdepends=('dejagnu' 'bc')
+makedepends=("${MINGW_PACKAGE_PREFIX}-iconv"
+             "${MINGW_PACKAGE_PREFIX}-xz")
+options=('staticlibs' '!distcc' '!ccache')
 validpgpkeys=('F40ADB902B24264AA42E50BF92EDB04BFF325CF3') # Joel Brobecker
 
 prepare() {
     cd ${srcdir}/${_realname}-${pkgver}
 
-    mkdir ${_realname}-build
+    mkdir ${_realname}-build-${MINGW_CHOST}
+
+    # https://sourceware.org/bugzilla/show_bug.cgi?id=15412
+    patch -p1 -i ../gdb-perfomance.patch
+
+    patch -p1 -i ../gdb-fix-using-gnu-print.patch
+
+    # https://sourceware.org/bugzilla/show_bug.cgi?id=21078
+    patch -p1 -i ../gdb-7.12-dynamic-libs.patch
+
+    patch -p1 -i ../python-configure-path-fixes.patch
+
+    patch -p1 -i ../gdb-fix-tui-with-pdcurses.patch
+    patch -p1 -i ../gdb-9.1-lib-order.patch
+    patch -p1 -i ../gdb-home-is-userprofile.patch
+
+    # hack! - libiberty configure tests for header files using "$CPP $CPPFLAGS"
+    sed -i "/ac_cpp=/s/\$CPPFLAGS/\$CPPFLAGS -O2/" libiberty/configure
 }
 
 build() {
-    cd ${srcdir}/${_realname}-${pkgver}/${_realname}-build
+    cd ${srcdir}/${_realname}-${pkgver}/${_realname}-build-${MINGW_CHOST}
+    
+    if [ "${CARCH}" != "x86_64" ]; then
+      LDFLAGS+=" -Wl,--large-address-aware"
+    fi
+
+    CPPFLAGS+=" -I${MINGW_PREFIX}/include/ncurses"
+    CFLAGS+=" -I${MINGW_PREFIX}/include/ncurses"
+    CXXFLAGS+=" -I${MINGW_PREFIX}/include/ncurses"
+    LDFLAGS+=" -fstack-protector"
 
     ../configure \
         --build=${MINGW_CHOST} \
@@ -41,17 +94,31 @@ build() {
         --disable-libssp \
         --disable-install-libbfd \
         --disable-install-libiberty \
-        --with-system-readline
+        --with-system-readline \
+        --enable-languages=c,c++ \
+        --disable-werror \
+        --disable-win32-registry \
+        --disable-rpath \
+        --with-curses \
+        --with-system-gdbinit=${MINGW_PREFIX}/etc/gdbinit \
+        --with-python=${MINGW_PREFIX}/bin/python \
+        --with-expat \
+        --with-libiconv-prefix=${MINGW_PREFIX} \
+        --with-zlib \
+        --with-lzma \
+        --enable-tui \
+        --enable-source-highlight=no
+
     make
 }
 
 package() {
-    cd ${srcdir}/${_realname}-${pkgver}/${_realname}-build
+    cd ${srcdir}/${_realname}-${pkgver}/${_realname}-build-${MINGW_CHOST}
 
     make DESTDIR="$pkgdir" install-gdb
 
     cd ${pkgdir}${MINGW_PREFIX}
 
     # Remove files that conflict with native gdb
-    rm -rf include share/gdb share/info
+    rm -rf include share/gdb share/info lib
 }
