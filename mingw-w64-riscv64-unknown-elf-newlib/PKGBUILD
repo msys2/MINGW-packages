@@ -1,0 +1,144 @@
+# Maintainer: Fabien Chouteau <chouteau@adacore.com>
+# Based on mingw-w64-arm-none-eabi-newlib
+
+_realname=newlib
+_target=riscv64-unknown-elf
+_gccver=10.1.0
+
+pkgbase=mingw-w64-${_target}-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_target}-${_realname}")
+pkgver=3.3.0
+pkgrel=2
+pkgdesc='GNU Tools for RISC-V Embedded Processors - Newlib (mingw-w64)'
+arch=('any')
+url="https://sourceware.org/newlib/"
+license=('Various')
+groups=("${MINGW_PACKAGE_PREFIX}-${_target}-toolchain")
+depends=("${MINGW_PACKAGE_PREFIX}-${_target}-binutils")
+options=('staticlibs' '!strip' '!emptydirs')
+source=(
+    "https://sourceware.org/pub/newlib/newlib-${pkgver}.tar.gz"
+    "https://ftp.gnu.org/gnu/gcc/gcc-${_gccver}/gcc-${_gccver}.tar.xz"
+)
+sha256sums=(
+    '58dd9e3eaedf519360d92d84205c3deef0b3fc286685d1c562e245914ef72c66'
+    'b6898a23844b656f1b68691c5c012036c2e694ac4b53a8918d4712ad876e7ea2'
+)
+noextract=("newlib-${pkgver}.tar.gz")
+
+prepare() {
+    cd ${srcdir}
+    # bsdtar doesn't like the symlinks
+    tar -xf newlib-${pkgver}.tar.gz
+
+    cd ${srcdir}/gcc-${_gccver}
+    mkdir gcc-build-${MINGW_CHOST}
+    mkdir gcc-install-${MINGW_CHOST}
+
+    cd ${srcdir}/newlib-${pkgver}
+    mkdir {newlib,nano}-build-${MINGW_CHOST}
+}
+
+# Newlib is required to build GCC, but GCC is also required to compile newlib
+# So we must build a minimal GCC first, to avoid the circular dependency
+_build_gcc() {
+    cd ${srcdir}/gcc-${_gccver}/gcc-build-${MINGW_CHOST}
+
+    cp -a ${MINGW_PREFIX}/${_target} ${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}
+
+    local _GCC_LDFLAGS="${LDFLAGS} -Wl,--disable-dynamicbase"
+    if [ "${CARCH}" = 'x86_64' ]; then
+        _GCC_LDFLAGS+=",--image-base=0x400000"
+    fi
+    ../configure \
+        --build=${MINGW_CHOST} \
+        --host=${MINGW_CHOST} \
+        --prefix=/ \
+        --target=${_target} \
+        --enable-languages=c \
+        --disable-nls \
+        --disable-libssp \
+        --disable-shared \
+        --disable-threads \
+        --disable-libgomp \
+        --disable-werror \
+        --disable-lto \
+        --disable-libffi \
+        --disable-decimal-float \
+        --disable-libmudflap \
+        --disable-libquadmath \
+        --disable-libstdcxx-pch \
+        --disable-libsanitizer \
+        --disable-tls \
+        --enable-multilib \
+        --enable-interwork \
+        --without-headers \
+        --with-libelf \
+        --with-newlib \
+        --enable-multilib \
+        --with-host-libstdcxx="-static-libgcc -Wl,-Bstatic,-lstdc++,-Bdynamic -lm" \
+        --with-sysroot=${MINGW_PREFIX} \
+        --with-build-sysroot=${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST} \
+        --with-build-time-tools=${MINGW_PREFIX}/${_target}/bin \
+        LDFLAGS="${_GCC_LDFLAGS}"
+
+    make all-gcc
+    make DESTDIR=${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST} install-gcc
+}
+
+build() {
+    _build_gcc
+
+    cd ${srcdir}/newlib-${pkgver}/newlib-build-${MINGW_CHOST}
+
+    ../configure \
+        PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}/bin:${PATH}" \
+        --build=${MINGW_CHOST} \
+        --host=${MINGW_CHOST} \
+        --target=${_target} \
+        --prefix=${MINGW_PREFIX} \
+        --enable-newlib-io-long-double \
+        --enable-newlib-io-long-long \
+        --enable-newlib-io-c99-formats \
+        --enable-newlib-register-fini \
+        --disable-nls
+    make PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}/bin:${PATH}"
+
+    cd ${srcdir}/newlib-${pkgver}/nano-build-${MINGW_CHOST}
+
+    ../configure \
+        PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}/bin:${PATH}" \
+        --build=${MINGW_CHOST} \
+        --host=${MINGW_CHOST} \
+        --target=${_target} \
+        --prefix=${MINGW_PREFIX} \
+		--enable-newlib-reent-small \
+		--disable-newlib-fvwrite-in-streamio \
+		--disable-newlib-fseek-optimization \
+		--disable-newlib-wide-orient \
+		--enable-newlib-nano-malloc \
+		--disable-newlib-unbuf-stream-opt \
+		--enable-lite-exit \
+		--enable-newlib-global-atexit \
+		--enable-newlib-nano-formatted-io \
+		--disable-newlib-supplied-syscalls \
+        --disable-nls
+    make PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}/bin:${PATH}"
+}
+
+package() {
+    cd ${pkgdir}
+
+    cd ${srcdir}/newlib-${pkgver}/nano-build-${MINGW_CHOST}
+
+    make DESTDIR=${pkgdir} PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}/bin:${PATH}" install
+
+    find ${pkgdir} -regex ".*/lib\(c\|g\|rdimon\|gloss\)\.a" -exec rename .a _nano.a '{}' \;
+    install -Dm644 -t ${pkgdir}${MINGW_PREFIX}/${_target}/include/newlib-nano ${pkgdir}${MINGW_PREFIX}/${_target}/include/newlib.h
+
+    cd ${srcdir}/newlib-${pkgver}/newlib-build-${MINGW_CHOST}
+
+    make DESTDIR=${pkgdir} PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MINGW_CHOST}/bin:${PATH}" install
+
+    find ${pkgdir}${MINGW_PREFIX}/${_target}/lib \( -name "*.a" -or -name "*.o" \) -exec ${_target}-objcopy -R .comment -R .note -R .debug_info -R .debug_aranges -R .debug_pubnames -R .debug_pubtypes -R .debug_abbrev -R .debug_line -R .debug_str -R .debug_ranges -R .debug_loc '{}' \;
+}
