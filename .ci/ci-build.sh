@@ -53,7 +53,7 @@ for package in "${packages[@]}"; do
     echo "::endgroup::"
 
     mv "${package}"/*.pkg.tar.* artifacts
-    mv "${package}"/*.src.tar.gz artifacts
+    mv "${package}"/*.src.tar.* artifacts
     unset package
 done
 success 'All packages built successfully'
