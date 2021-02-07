@@ -78,7 +78,7 @@ V=0
 
 # Should all enabled warnings (see mk/warnings.mk) be turned into errors while
 # building stage 2?
-WERROR=-Wno-error
+WERROR=-Wnoerror
 
 # After stage 1 and the libraries have been built, you can uncomment this line:
 #stage=2
