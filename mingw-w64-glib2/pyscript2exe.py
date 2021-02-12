@@ -12,8 +12,7 @@ path = sys.argv[1]
 with open(path, "rb") as f:
     data = f.read()
 with open(path, "wb") as f:
-    shebang = "#!" + os.path.join(sys.prefix, 'bin',os.path.basename(sys.executable))
-    f.write(re.sub(b"^#![^\n\r]*", shebang.encode(), data))
+    f.write(re.sub(b"^#![^\n\r]*", b'', data))
 root, ext = os.path.splitext(path)
 with open(root + ".exe", "wb") as f:
     f.write(get_win_launcher("cli"))
