@@ -1,0 +1,395 @@
+From c56e112ee48909b4bad90fcbb95352c5914bd30f Mon Sep 17 00:00:00 2001
+From: Nikias Bassen <nikias@gmx.li>
+Date: Fri, 27 Nov 2020 05:03:15 +0100
+Subject: [PATCH] socket: Fix build on Windows
+
+---
+ common/Makefile.am |   2 +-
+ common/socket.c    | 309 ++++++++++++++++++++++++++++++++++++++++++++-
+ configure.ac       |   2 +-
+ src/Makefile.am    |   2 +-
+ tools/iproxy.c     |   2 +-
+ 5 files changed, 312 insertions(+), 5 deletions(-)
+
+diff --git a/common/Makefile.am b/common/Makefile.am
+index ca8180c..8d0e889 100644
+--- a/common/Makefile.am
++++ b/common/Makefile.am
+@@ -12,5 +12,5 @@ libinternalcommon_la_SOURCES =			\
+ 	collection.h
+ 
+ if WIN32
+-libinternalcommon_la_LIBADD += -lws2_32
++libinternalcommon_la_LIBADD += -lws2_32 -lIphlpapi
+ endif
+diff --git a/common/socket.c b/common/socket.c
+index 47c0903..bcccbae 100644
+--- a/common/socket.c
++++ b/common/socket.c
+@@ -34,7 +34,16 @@
+ #include <winsock2.h>
+ #include <ws2tcpip.h>
+ #include <windows.h>
++#ifndef HAVE_GETIFADDRS
++#include <iphlpapi.h>
++#endif
+ static int wsa_init = 0;
++#ifndef IFF_RUNNING
++#define IFF_RUNNING IFF_UP
++#endif
++#ifndef AI_NUMERICSERV
++#define AI_NUMERICSERV 0
++#endif
+ #else
+ #include <sys/socket.h>
+ #include <sys/un.h>
+@@ -377,10 +386,308 @@ static uint32_t _in6_addr_scope(struct in6_addr* addr)
+ 	return scope;
+ }
+ 
++#ifndef HAVE_GETIFADDRS
++#ifdef WIN32
++
++struct ifaddrs {
++	struct ifaddrs  *ifa_next;    /* Next item in list */
++	char            *ifa_name;    /* Name of interface */
++	unsigned int     ifa_flags;   /* Flags from SIOCGIFFLAGS */
++	struct sockaddr *ifa_addr;    /* Address of interface */
++	struct sockaddr *ifa_netmask; /* Netmask of interface */
++	union {
++		struct sockaddr *ifu_broadaddr; /* Broadcast address of interface */
++		struct sockaddr *ifu_dstaddr;   /* Point-to-point destination address */
++	} ifa_ifu;
++#define                  ifa_broadaddr ifa_ifu.ifu_broadaddr
++#define                  ifa_dstaddr   ifa_ifu.ifu_dstaddr
++	void            *ifa_data;    /* Address-specific data */
++};
++
++#define WORKING_BUFFER_SIZE 15000
++#define MAX_TRIES 3
++
++static void freeifaddrs(struct ifaddrs *ifa)
++{
++	if (!ifa) {
++		return;
++	}
++	free(ifa->ifa_name);
++	free(ifa->ifa_addr);
++	free(ifa->ifa_netmask);
++	free(ifa->ifa_dstaddr);
++	freeifaddrs(ifa->ifa_next);
++	free(ifa);
++}
++
++/*
++ * getifaddrs() reference implementation for win32.
++ * Heavily based on openpgm's implementation found here:
++ * https://github.com/steve-o/openpgm/blob/master/openpgm/pgm/getifaddrs.c
++ */
++static int getifaddrs(struct ifaddrs** ifap)
++{
++	struct ifaddrs* ifa = NULL;
++
++	DWORD dwRetVal = 0;
++
++	PIP_ADAPTER_ADDRESSES pAddresses = NULL;
++	ULONG outBufLen = 0;
++	ULONG Iterations = 0;
++
++	ULONG flags = GAA_FLAG_INCLUDE_PREFIX |
++		GAA_FLAG_SKIP_ANYCAST |
++		GAA_FLAG_SKIP_DNS_SERVER |
++		GAA_FLAG_SKIP_FRIENDLY_NAME |
++		GAA_FLAG_SKIP_MULTICAST;
++
++	PIP_ADAPTER_ADDRESSES adapter = NULL;
++
++	if (!ifap) {
++		errno = EINVAL;
++		return -1;
++	}
++	*ifap = NULL;
++
++	outBufLen = WORKING_BUFFER_SIZE;
++	do {
++		pAddresses = (IP_ADAPTER_ADDRESSES*)malloc(outBufLen);
++		if (pAddresses == NULL) {
++			printf("Memory allocation failed for IP_ADAPTER_ADDRESSES struct\n");
++			return -1;
++		}
++		dwRetVal = GetAdaptersAddresses(AF_UNSPEC, flags, NULL, pAddresses, &outBufLen);
++		if (dwRetVal == ERROR_BUFFER_OVERFLOW) {
++			free(pAddresses);
++			pAddresses = NULL;
++		} else {
++			break;
++		}
++		Iterations++;
++	} while ((dwRetVal == ERROR_BUFFER_OVERFLOW) && (Iterations < MAX_TRIES));
++
++	if (dwRetVal != NO_ERROR) {
++		free(pAddresses);
++		return -1;
++	}
++
++	for (adapter = pAddresses; adapter; adapter = adapter->Next) {
++		int unicastIndex = 0;
++		for (IP_ADAPTER_UNICAST_ADDRESS *unicast = adapter->FirstUnicastAddress; unicast; unicast = unicast->Next, ++unicastIndex) {
++			/* ensure IP adapter */
++			if (AF_INET != unicast->Address.lpSockaddr->sa_family && AF_INET6 != unicast->Address.lpSockaddr->sa_family) {
++				continue;
++			}
++
++			if (!ifa) {
++				ifa = malloc(sizeof(struct ifaddrs));
++				if (!ifa) {
++					errno = ENOMEM;
++					free(pAddresses);
++					return -1;
++				}
++				*ifap = ifa;
++				ifa->ifa_next = NULL;
++			} else {
++				struct ifaddrs* ifanew = malloc(sizeof(struct ifaddrs));
++				if (!ifanew) {
++					freeifaddrs(*ifap);
++					free(pAddresses);
++					errno = ENOMEM;
++					return -1;
++				}
++				ifa->ifa_next = ifanew;
++				ifa = ifanew;
++				ifa->ifa_next = NULL;
++			}
++
++			/* name */
++			ifa->ifa_name = strdup(adapter->AdapterName);
++
++			/* flags */
++			ifa->ifa_flags = 0;
++			if (IfOperStatusUp == adapter->OperStatus)
++				ifa->ifa_flags |= IFF_UP;
++			if (IF_TYPE_SOFTWARE_LOOPBACK == adapter->IfType)
++				ifa->ifa_flags |= IFF_LOOPBACK;
++			if (!(adapter->Flags & IP_ADAPTER_NO_MULTICAST))
++				ifa->ifa_flags |= IFF_MULTICAST;
++
++			/* address */
++			ifa->ifa_addr = (struct sockaddr*)malloc(sizeof(struct sockaddr_storage));
++			memcpy(ifa->ifa_addr, unicast->Address.lpSockaddr, unicast->Address.iSockaddrLength);
++
++			/* netmask */
++			ifa->ifa_netmask = (struct sockaddr*)malloc(sizeof(struct sockaddr_storage));
++			memset(ifa->ifa_netmask, 0, sizeof(struct sockaddr_storage));
++
++/* pre-Vista must hunt for matching prefix in linked list, otherwise use
++ * OnLinkPrefixLength from IP_ADAPTER_UNICAST_ADDRESS structure.
++ * FirstPrefix requires Windows XP SP1, from SP1 to pre-Vista provides a
++ * single adapter prefix for each IP address.  Vista and later provides
++ * host IP address prefix, subnet IP address, and subnet broadcast IP
++ * address.  In addition there is a multicast and broadcast address prefix.
++ */
++			ULONG prefixLength = 0;
++
++#if defined( _WIN32 ) && ( _WIN32_WINNT >= 0x0600 )
++/* For a unicast IPv4 address, any value greater than 32 is an illegal
++ * value. For a unicast IPv6 address, any value greater than 128 is an
++ * illegal value. A value of 255 is commonly used to represent an illegal
++ * value.
++ *
++ * Windows 7 SP1 returns 64 for Teredo links which is incorrect.
++ */
++
++#define IN6_IS_ADDR_TEREDO(addr) \
++	(((const uint32_t *)(addr))[0] == ntohl (0x20010000))
++
++			if (AF_INET6 == unicast->Address.lpSockaddr->sa_family &&
++/* TunnelType only applies to one interface on the adapter and no
++ * convenient method is provided to determine which.
++ */
++				TUNNEL_TYPE_TEREDO == adapter->TunnelType &&
++/* Test the interface with the known Teredo network prefix.
++ */
++				IN6_IS_ADDR_TEREDO( &((struct sockaddr_in6*)(unicast->Address.lpSockaddr))->sin6_addr) &&
++/* Test that this version is actually wrong, subsequent releases from Microsoft
++ * may resolve the issue.
++ */
++				32 != unicast->OnLinkPrefixLength)
++			{
++				prefixLength = 32;
++			}
++			else
++				prefixLength = unicast->OnLinkPrefixLength;
++#else
++/* The order of linked IP_ADAPTER_UNICAST_ADDRESS structures pointed to by
++ * the FirstUnicastAddress member does not have any relationship with the
++ * order of linked IP_ADAPTER_PREFIX structures pointed to by the FirstPrefix
++ * member.
++ *
++ * Example enumeration:
++ *    [ no subnet ]
++ *   ::1/128            - address
++ *   ff00::%1/8         - multicast (no IPv6 broadcast)
++ *   127.0.0.0/8        - subnet
++ *   127.0.0.1/32       - address
++ *   127.255.255.255/32 - subnet broadcast
++ *   224.0.0.0/4        - multicast
++ *   255.255.255.255/32 - broadcast
++ *
++ * Which differs from most adapters listing three IPv6:
++ *   fe80::%10/64       - subnet
++ *   fe80::51e9:5fe5:4202:325a%10/128 - address
++ *   ff00::%10/8        - multicast
++ *
++ * !IfOperStatusUp IPv4 addresses are skipped:
++ *   fe80::%13/64       - subnet
++ *   fe80::d530:946d:e8df:8c91%13/128 - address
++ *   ff00::%13/8        - multicast
++ *    [ no subnet  ]
++ *    [ no address ]
++ *   224.0.0.0/4        - multicast
++ *   255.255.255.255/32 - broadcast
++ *
++ * On PTP links no multicast or broadcast addresses are returned:
++ *    [ no subnet ]
++ *   fe80::5efe:10.203.9.30/128 - address
++ *    [ no multicast ]
++ *    [ no multicast ]
++ *    [ no broadcast ]
++ *
++ * Active primary IPv6 interfaces are a bit overloaded:
++ *   ::/0               - default route
++ *   2001::/32          - global subnet
++ *   2001:0:4137:9e76:2443:d6:ba87:1a2a/128 - global address
++ *   fe80::/64          - link-local subnet
++ *   fe80::2443:d6:ba87:1a2a/128 - link-local address
++ *   ff00::/8           - multicast
++ */
++
++#define IN_LINKLOCAL(a)	((((uint32_t) (a)) & 0xaffff0000) == 0xa9fe0000)
++
++			for (IP_ADAPTER_PREFIX *prefix = adapter->FirstPrefix; prefix; prefix = prefix->Next) {
++				LPSOCKADDR lpSockaddr = prefix->Address.lpSockaddr;
++				if (lpSockaddr->sa_family != unicast->Address.lpSockaddr->sa_family)
++					continue;
++/* special cases */
++/* RFC2863: IPv4 interface not up */
++				if (AF_INET == lpSockaddr->sa_family && adapter->OperStatus != IfOperStatusUp) {
++/* RFC3927: link-local IPv4 always has 16-bit CIDR */
++					if (IN_LINKLOCAL( ntohl (((struct sockaddr_in*)(unicast->Address.lpSockaddr))->sin_addr.s_addr))) {
++						prefixLength = 16;
++					}
++					break;
++				}
++/* default IPv6 route */
++				if (AF_INET6 == lpSockaddr->sa_family && 0 == prefix->PrefixLength && IN6_IS_ADDR_UNSPECIFIED( &((struct sockaddr_in6*)(lpSockaddr))->sin6_addr)) {
++					continue;
++				}
++/* Assume unicast address for first prefix of operational adapter */
++				if (AF_INET == lpSockaddr->sa_family)
++					if (IN_MULTICAST( ntohl (((struct sockaddr_in*)(lpSockaddr))->sin_addr.s_addr))) {
++						fprintf(stderr, "FATAL: first prefix is non a unicast address\n");
++						break;
++					}
++				if (AF_INET6 == lpSockaddr->sa_family)
++					if (IN6_IS_ADDR_MULTICAST( &((struct sockaddr_in6*)(lpSockaddr))->sin6_addr)) {
++						fprintf(stderr, "FATAL: first prefix is not a unicast address\n");
++						break;
++					}
++/* Assume subnet or host IP address for XP backward compatibility */
++
++				prefixLength = prefix->PrefixLength;
++				break;
++			}
++#endif /* defined( _WIN32 ) && ( _WIN32_WINNT >= 0x0600 ) */
++
++/* map prefix to netmask */
++			ifa->ifa_netmask->sa_family = unicast->Address.lpSockaddr->sa_family;
++			switch (unicast->Address.lpSockaddr->sa_family) {
++			case AF_INET:
++				if (0 == prefixLength || prefixLength > 32) {
++					prefixLength = 32;
++				}
++#if defined( _WIN32) && ( _WIN32_WINNT >= 0x0600 )
++/* Added in Vista, but no IPv6 equivalent. */
++				{
++				ULONG Mask;
++				ConvertLengthToIpv4Mask (prefixLength, &Mask);
++				((struct sockaddr_in*)ifa->ifa_netmask)->sin_addr.s_addr = Mask;	/* network order */
++				}
++#else
++/* NB: left-shift of full bit-width is undefined in C standard. */
++				((struct sockaddr_in*)ifa->ifa_netmask)->sin_addr.s_addr = htonl( 0xffffffffU << ( 32 - prefixLength ) );
++#endif
++				break;
++
++			case AF_INET6:
++				if (0 == prefixLength || prefixLength > 128) {
++					prefixLength = 128;
++				}
++				for (LONG i = prefixLength, j = 0; i > 0; i -= 8, ++j) {
++					((struct sockaddr_in6*)ifa->ifa_netmask)->sin6_addr.s6_addr[ j ] = i >= 8 ? 0xff : (ULONG)(( 0xffU << ( 8 - i ) ) & 0xffU );
++				}
++				break;
++			default:
++				break;
++			}
++		}
++	}
++	free(pAddresses);
++
++	return 0;
++}
++#else
++#error No reference implementation for getifaddrs available for this platform.
++#endif
++#endif
++
+ static int32_t _sockaddr_in6_scope_id(struct sockaddr_in6* addr)
+ {
+ 	int32_t res = -1;
+-	struct ifaddrs *ifaddr, *ifa;
++	struct ifaddrs *ifaddr = NULL, *ifa = NULL;
+ 	uint32_t addr_scope;
+ 
+ 	/* get scope for requested address */
+diff --git a/configure.ac b/configure.ac
+index 6247389..39ecbed 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -64,7 +64,7 @@ AC_TYPE_UINT32_T
+ AC_TYPE_UINT8_T
+ 
+ # Checks for library functions.
+-AC_CHECK_FUNCS([strcasecmp strdup strerror stpncpy sleep malloc realloc])
++AC_CHECK_FUNCS([strcasecmp strdup strerror stpncpy sleep malloc realloc getifaddrs])
+ 
+ # Check for operating system
+ AC_MSG_CHECKING([for platform-specific build settings])
+diff --git a/src/Makefile.am b/src/Makefile.am
+index 227a5c0..dc9a730 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -10,7 +10,7 @@ libusbmuxd_2_0_la_SOURCES = libusbmuxd.c
+ 
+ if WIN32
+ libusbmuxd_2_0_la_LDFLAGS += -avoid-version -static-libgcc
+-libusbmuxd_2_0_la_LIBADD += -lws2_32
++libusbmuxd_2_0_la_LIBADD += -lws2_32 -lIphlpapi
+ endif
+ 
+ pkgconfigdir = $(libdir)/pkgconfig
+diff --git a/tools/iproxy.c b/tools/iproxy.c
+index 0a52c67..28fcb46 100644
+--- a/tools/iproxy.c
++++ b/tools/iproxy.c
+@@ -38,8 +38,8 @@
+ #include <errno.h>
+ #include <getopt.h>
+ #ifdef WIN32
+-#include <windows.h>
+ #include <winsock2.h>
++#include <windows.h>
+ typedef unsigned int socklen_t;
+ #else
+ #include <sys/select.h>
