@@ -1,7 +1,9 @@
 #!/bin/bash
-set -e
 
 . PKGBUILD
+
+set -e
+
 _keyserver=(
     "keyserver.ubuntu.com"
     "keys.gnupg.net"
