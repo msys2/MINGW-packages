@@ -1,0 +1,225 @@
+From 49a714e59194a7c549aa6657676a1b4be4520650 Mon Sep 17 00:00:00 2001
+From: Eric Botcazou <ebotcazou@adacore.com>
+Date: Mon, 1 Mar 2021 07:53:05 +0100
+Subject: [PATCH] Fix wrong result for 1.0/3.0 at -O2 -fno-omit-frame-pointer
+ -frounding-math
+
+This wrong-code PR for the C++ compiler on x86-64/Windows is a regression
+in GCC 9 and later, but the underlying issue has probably been there since
+SEH was implemented and is exposed by this comment in config/i386/winnt.c:
+
+  /* SEH records saves relative to the "current" stack pointer, whether
+     or not there's a frame pointer in place.  This tracks the current
+     stack pointer offset from the CFA.  */
+  HOST_WIDE_INT sp_offset;
+
+That's not what the (current) Microsoft documentation says; instead it says:
+
+  /* SEH records offsets relative to the lowest address of the fixed stack
+     allocation.  If there is no frame pointer, these offsets are from the
+     stack pointer; if there is a frame pointer, these offsets are from the
+     value of the stack pointer when the frame pointer was established, i.e.
+     the frame pointer minus the offset in the .seh_setframe directive.  */
+
+That's why the implementation is correct only under the condition that the
+frame pointer be established *after* the fixed stack allocation; as a matter
+of fact, that's clearly the model underpinning SEH, but is the opposite of
+what is done e.g. on Linux.
+
+However the issue is mostly papered over in practice because:
+
+  1. SEH forces use_fast_prologue_epilogue to false, which in turns forces
+save_regs_using_mov to false, so the general regs are always pushed when
+they need to be saved, which eliminates the offset computation for them.
+
+  2. As soon as a frame is larger than 240 bytes, the frame pointer is fixed
+arbitrarily to 128 bytes above the stack pointer, which of course requires
+that it be established after the fixed stack allocation.
+
+So you need a small frame clobbering one of the call-saved XMM registers in
+order to generate wrong SEH unwind info.
+
+The attached fix makes sure that the frame pointer is always established
+after the fixed stack allocation by pointing it at or below the lowest used
+register save area, i.e. the SSE save area, and removing the special early
+saves in the prologue; the end result is a uniform prologue sequence for
+SEH whatever the frame size.  And it avoids a discrepancy between cases
+where the number of saved general regs is even and cases where it is odd.
+
+gcc/
+	PR target/99234
+	* config/i386/i386.c (ix86_compute_frame_layout): For a SEH target,
+	point the hard frame pointer to the SSE register save area instead
+	of the general register save area.  Perform only minimal adjustment
+	for small frames if it is initially not correctly aligned.
+	(ix86_expand_prologue): Remove early saves for a SEH target.
+	* config/i386/winnt.c (struct seh_frame_state): Document constraint.
+gcc/testsuite/
+	* g++.dg/eh/seh-xmm-unwind.C: New test.
+---
+ gcc/config/i386/i386.c                   | 35 +++++---------
+ gcc/config/i386/winnt.c                  | 17 +++++--
+ gcc/testsuite/g++.dg/eh/seh-xmm-unwind.C | 61 ++++++++++++++++++++++++
+ 3 files changed, 88 insertions(+), 25 deletions(-)
+ create mode 100644 gcc/testsuite/g++.dg/eh/seh-xmm-unwind.C
+
+diff --git a/gcc/config/i386/i386.c b/gcc/config/i386/i386.c
+index aedf7873ce5..7b803661366 100644
+--- a/gcc/config/i386/i386.c
++++ b/gcc/config/i386/i386.c
+@@ -6190,11 +6190,6 @@ ix86_compute_frame_layout (void)
+   offset += frame->nregs * UNITS_PER_WORD;
+   frame->reg_save_offset = offset;
+ 
+-  /* On SEH target, registers are pushed just before the frame pointer
+-     location.  */
+-  if (TARGET_SEH)
+-    frame->hard_frame_pointer_offset = offset;
+-
+   /* Calculate the size of the va-arg area (not including padding, if any).  */
+   frame->va_arg_size = ix86_varargs_gpr_size + ix86_varargs_fpr_size;
+ 
+@@ -6357,14 +6352,21 @@ ix86_compute_frame_layout (void)
+      the unwind data structure.  */
+   if (TARGET_SEH)
+     {
+-      HOST_WIDE_INT diff;
++      /* Force the frame pointer to point at or below the lowest register save
++	 area, see the SEH code in config/i386/winnt.c for the rationale.  */
++      frame->hard_frame_pointer_offset = frame->sse_reg_save_offset;
+ 
+-      /* If we can leave the frame pointer where it is, do so.  Also, returns
++      /* If we can leave the frame pointer where it is, do so.  Also, return
+ 	 the establisher frame for __builtin_frame_address (0).  */
+-      diff = frame->stack_pointer_offset - frame->hard_frame_pointer_offset;
+-      if (diff <= SEH_MAX_FRAME_SIZE
+-	  && (diff > 240 || (diff & 15) != 0)
+-	  && !crtl->accesses_prior_frames)
++      const HOST_WIDE_INT diff
++	= frame->stack_pointer_offset - frame->hard_frame_pointer_offset;
++      if (diff <= 255)
++	{
++	  /* The resulting diff will be a multiple of 16 lower than 255,
++	     i.e. at most 240 as required by the unwind data structure.  */
++	  frame->hard_frame_pointer_offset += (diff & 15);
++	}
++      else if (diff <= SEH_MAX_FRAME_SIZE && !crtl->accesses_prior_frames)
+ 	{
+ 	  /* Ideally we'd determine what portion of the local stack frame
+ 	     (within the constraint of the lowest 240) is most heavily used.
+@@ -8170,17 +8172,6 @@ ix86_expand_prologue (void)
+       insn = emit_insn (gen_push (hard_frame_pointer_rtx));
+       RTX_FRAME_RELATED_P (insn) = 1;
+ 
+-      /* Push registers now, before setting the frame pointer
+-	 on SEH target.  */
+-      if (!int_registers_saved
+-	  && TARGET_SEH
+-	  && !frame.save_regs_using_mov)
+-	{
+-	  ix86_emit_save_regs ();
+-	  int_registers_saved = true;
+-	  gcc_assert (m->fs.sp_offset == frame.reg_save_offset);
+-	}
+-
+       if (m->fs.sp_offset == frame.hard_frame_pointer_offset)
+ 	{
+ 	  insn = emit_move_insn (hard_frame_pointer_rtx, stack_pointer_rtx);
+diff --git a/gcc/config/i386/winnt.c b/gcc/config/i386/winnt.c
+index eae3ee2ef9a..201f69e74c4 100644
+--- a/gcc/config/i386/winnt.c
++++ b/gcc/config/i386/winnt.c
+@@ -830,9 +830,20 @@ i386_pe_asm_lto_end (void)
+ 
+ struct seh_frame_state
+ {
+-  /* SEH records saves relative to the "current" stack pointer, whether
+-     or not there's a frame pointer in place.  This tracks the current
+-     stack pointer offset from the CFA.  */
++  /* SEH records offsets relative to the lowest address of the fixed stack
++     allocation.  If there is no frame pointer, these offsets are from the
++     stack pointer; if there is a frame pointer, these offsets are from the
++     value of the stack pointer when the frame pointer was established, i.e.
++     the frame pointer minus the offset in the .seh_setframe directive.
++
++     We do not distinguish these two cases, i.e. we consider that the offsets
++     are always relative to the "current" stack pointer.  This means that we
++     need to perform the fixed stack allocation before establishing the frame
++     pointer whenever there are registers to be saved, and this is guaranteed
++     by the prologue provided that we force the frame pointer to point at or
++     below the lowest used register save area, see ix86_compute_frame_layout.
++
++     This tracks the current stack pointer offset from the CFA.  */
+   HOST_WIDE_INT sp_offset;
+ 
+   /* The CFA is located at CFA_REG + CFA_OFFSET.  */
+diff --git a/gcc/testsuite/g++.dg/eh/seh-xmm-unwind.C b/gcc/testsuite/g++.dg/eh/seh-xmm-unwind.C
+new file mode 100644
+index 00000000000..07fd805b3fd
+--- /dev/null
++++ b/gcc/testsuite/g++.dg/eh/seh-xmm-unwind.C
+@@ -0,0 +1,61 @@
++/* PR target/99234 */
++/* Test SEH unwinding of XMM register saves.  */
++
++/* { dg-do run { target { x86_64-*-mingw32 && lp64 } } } */
++
++extern "C" void abort (void);
++extern "C" void exit (int);
++
++void
++foo (void)
++{
++  register __int128 xmm6  asm("xmm6")  = 0;
++  register __int128 xmm7  asm("xmm7")  = 0;
++  register __int128 xmm8  asm("xmm8")  = 0;
++  register __int128 xmm9  asm("xmm9")  = 0;
++  register __int128 xmm10 asm("xmm10") = 0;
++  register __int128 xmm11 asm("xmm11") = 0;
++  register __int128 xmm12 asm("xmm12") = 0;
++  register __int128 xmm13 asm("xmm13") = 0;
++  register __int128 xmm14 asm("xmm14") = 0;
++  register __int128 xmm15 asm("xmm15") = 0;
++
++  __asm__ __volatile__ ("" : "+x" (xmm6),  "+x" (xmm7),  "+x" (xmm8),  "+x" (xmm9),
++			     "+x" (xmm10), "+x" (xmm11), "+x" (xmm12), "+x" (xmm13),
++			     "+x" (xmm14), "+x" (xmm15));
++
++  throw 1;
++}
++
++int
++main (void)
++{
++  register __int128 xmm6  asm("xmm6")  = 6;
++  register __int128 xmm7  asm("xmm7")  = 7;
++  register __int128 xmm8  asm("xmm8")  = 8;
++  register __int128 xmm9  asm("xmm9")  = 9;
++  register __int128 xmm10 asm("xmm10") = 10;
++  register __int128 xmm11 asm("xmm11") = 11;
++  register __int128 xmm12 asm("xmm12") = 12;
++  register __int128 xmm13 asm("xmm13") = 13;
++  register __int128 xmm14 asm("xmm14") = 14;
++  register __int128 xmm15 asm("xmm15") = 15;
++
++  __asm__ __volatile__ ("" : "+x" (xmm6),  "+x" (xmm7),  "+x" (xmm8),  "+x" (xmm9),
++			     "+x" (xmm10), "+x" (xmm11), "+x" (xmm12), "+x" (xmm13),
++			     "+x" (xmm14), "+x" (xmm15));
++
++  try {
++    foo ();
++  } catch (...) {
++    __asm__ __volatile__ ("" : "+x" (xmm6),  "+x" (xmm7),  "+x" (xmm8),  "+x" (xmm9),
++			       "+x" (xmm10), "+x" (xmm11), "+x" (xmm12), "+x" (xmm13),
++			       "+x" (xmm14), "+x" (xmm15));
++
++    if (xmm6 != 6 || xmm7 != 7 || xmm8 != 8 || xmm9 != 9 || xmm10 != 10
++        || xmm11 != 11 || xmm12 != 12 || xmm13 != 13 || xmm14 != 14 || xmm15 != 15)
++      abort ();
++  }
++
++  exit (0);
++}
+-- 
+2.27.0
+
