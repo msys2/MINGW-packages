@@ -28,6 +28,7 @@ import shutil
 from collections import OrderedDict
 import hashlib
 import time
+import shlex
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 
@@ -89,6 +90,21 @@ def get_cache_key(pkgbuild_path: str) -> str:
     return h.hexdigest()
 
 
+def get_mingw_arch_list(pkgbuild_path: str) -> List[str]:
+    bash = shutil.which("bash")
+    assert bash is not None
+    sub_commands = [
+        shlex.join(['source', pkgbuild_path]),
+        'echo -n "${mingw_arch[@]}"'
+    ]
+    out = subprocess.check_output([bash, '-c', ';'.join(sub_commands)], universal_newlines=True)
+    arch_list = out.strip().split()
+    if not arch_list:
+        arch_list = ["mingw32", "mingw64"]
+    assert arch_list
+    return arch_list
+
+
 def get_srcinfo_for_pkgbuild(args: Tuple[str, str]) -> Optional[CacheTuple]:
     pkgbuild_path, mode = args
     pkgbuild_path = os.path.abspath(pkgbuild_path)
@@ -106,7 +122,7 @@ def get_srcinfo_for_pkgbuild(args: Tuple[str, str]) -> Optional[CacheTuple]:
         srcinfos = {}
 
         if mode == "mingw":
-            for name in ["mingw32", "mingw64"]:
+            for name in get_mingw_arch_list(pkgbuild_path):
                 env = os.environ.copy()
                 env["MINGW_INSTALLS"] = name
                 srcinfos[name] = subprocess.check_output(
