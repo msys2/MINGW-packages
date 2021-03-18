@@ -75,6 +75,7 @@ endif
 # Set to V = 0 to get prettier build output.
 # Please use V=1 (the default) when reporting GHC bugs.
 V=1
+GhcStage2HcOpts += -v3
 
 # Should all enabled warnings (see mk/warnings.mk) be turned into errors while
 # building stage 2?
