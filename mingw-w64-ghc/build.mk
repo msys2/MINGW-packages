@@ -113,4 +113,4 @@ V=1
 # Don't strip debug and other unneeded symbols from libraries and executables.
 STRIP_CMD = :
 
-utils/unlit_EXTRA_HC_OPTS += -v3 -optwindres -v
+utils/unlit_EXTRA_HC_OPTS += -v3 -optwindres-v
