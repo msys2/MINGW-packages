@@ -12,7 +12,7 @@ if [ "${_variant}" = "-static" ]; then
   _build_mode=("-debug-and-release")
   _with_icu=no
   _with_fontconfig=no
-  _with_openssl=yes
+  _with_openssl=no
   _with_dbus=yes
   _system_freetype=no
   _system_zlib=yes
@@ -77,6 +77,9 @@ if [ "${_ltcg}" = "yes" ]; then
    LTCG_LFLAGS="-flto-partition=1to1 -flto -ffat-lto-objects"
 fi
 
+# hardening (ASLR, High entropy ASLR, DEP)
+_enable_hardening=yes
+
 # So that both configure shell script and configure.exe
 # are tested on MSYS2, we use both depending on variant
 if [ "${_variant}" = "-static" ]; then
@@ -108,11 +111,11 @@ if [ "${_variant}" = "-static" ]; then
 else
   pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}" "${MINGW_PACKAGE_PREFIX}-${_realname}-debug")
 fi
-_ver_base=5.14.1
+_ver_base=5.15.2
 # use 5.6.1-1 hot fix : only the archive name was changed from *-5.6.1.tar.xz to *-5.6.1-1.tar.xz
 _hotfix=
 pkgver=${_ver_base//-/}
-pkgrel=3
+pkgrel=2
 arch=('any')
 pkgdesc="A cross-platform application and UI framework (mingw-w64${_namesuff})"
 url='https://www.qt.io/'
@@ -170,9 +173,12 @@ makedepends=("bison"
              "make"
              "patch"
              "perl"
+             "rsync"
+             "unzip"
              "${MINGW_PACKAGE_PREFIX}-gcc"
              "${MINGW_PACKAGE_PREFIX}-clang"
              "${MINGW_PACKAGE_PREFIX}-clang-tools-extra"
+             "${MINGW_PACKAGE_PREFIX}-fxc2"
              "${MINGW_PACKAGE_PREFIX}-pkg-config"
              "${MINGW_PACKAGE_PREFIX}-python"
              "${MINGW_PACKAGE_PREFIX}-ruby"
@@ -212,8 +218,6 @@ source=(#https://download.qt.io/development_releases/qt/${pkgver%.*}/${_ver_base
         0030-qt-5.3.1-workaround-ansidecl-h-PTR-define-conflict.patch
         0035-qt-5.3.2-dont-add-resource-files-to-qmake-libs.patch
         0036-qt-5.3.2-win32-qt5-static-cmake-link-ws2_32-and--static.patch
-        0041-qt-5.4.0-Fix-mingw-create_cmake-prl-file-has-no-lib-prefix.patch
-        0044-qt-5.13-static-cmake-fix-default-libs.patch
         0046-qt-5.4.1-Revert-Revert-fix-NTFS-mount-points.patch
         0048-qt-5.4.2-win32-Avoid-platformNativeInterface-segfaults-with-minimal-platform.patch
         0049-qt-5.8.0-win32-do-not-use-fontconfig.patch
@@ -223,10 +227,14 @@ source=(#https://download.qt.io/development_releases/qt/${pkgver%.*}/${_ver_base
         0056-qt-5.11-static_icu.patch
         0057-fix-and-enable-iconv-codec.patch
         0060-activeqt-handle-win64-in-dumpcpp.patch
+        0062-fix-static-build-big-resources.patch
+        0063-enable-mingw-schannel-alpn.patch
         0125-qt5-windeployqt-fixes.patch
         0300-qt-5.8.0-cast-errors.patch
-        0301-link-evr.patch
-        0302-ugly-hack-disable-qdoc-build.patch)
+        0302-ugly-hack-disable-qdoc-build.patch
+        0304-qtdeclarative-disable-dx12.patch
+        0310-fix-assimp-not-found.patch
+        'fad2dc11.diff.zip::https://codereview.qt-project.org/changes/qt%2Fqtbase~333051/revisions/1/patch?zip')
 
 # Translates using cygpath according to the ${_make} being used
 # (so either mingw32-make or MSYS2 make can be used)
@@ -304,15 +312,13 @@ prepare() {
 
   # Patches so that qt5-static can be used with cmake.
   apply_patch_with_msg \
-    0036-qt-5.3.2-win32-qt5-static-cmake-link-ws2_32-and--static.patch \
-    0041-qt-5.4.0-Fix-mingw-create_cmake-prl-file-has-no-lib-prefix.patch \
-    0044-qt-5.13-static-cmake-fix-default-libs.patch
+    0036-qt-5.3.2-win32-qt5-static-cmake-link-ws2_32-and--static.patch
 
   # More odds and sods.
   # patch -p1 -i ${srcdir}/0044-qt-5.4.0-win32-g++-enable-qtwebengine-build.patch
 
-  apply_patch_with_msg \
-    0046-qt-5.4.1-Revert-Revert-fix-NTFS-mount-points.patch
+  #apply_patch_with_msg \
+  #  0046-qt-5.4.1-Revert-Revert-fix-NTFS-mount-points.patch
 
   apply_patch_with_msg \
     0048-qt-5.4.2-win32-Avoid-platformNativeInterface-segfaults-with-minimal-platform.patch \
@@ -323,57 +329,46 @@ prepare() {
     0056-qt-5.11-static_icu.patch \
     0057-fix-and-enable-iconv-codec.patch \
     0060-activeqt-handle-win64-in-dumpcpp.patch \
+    0062-fix-static-build-big-resources.patch \
+    0063-enable-mingw-schannel-alpn.patch \
     0125-qt5-windeployqt-fixes.patch \
     0300-qt-5.8.0-cast-errors.patch \
-    0301-link-evr.patch
+    0304-qtdeclarative-disable-dx12.patch \
+    0310-fix-assimp-not-found.patch
+
+  # https://codereview.qt-project.org/c/qt/qtbase/+/333051
+  cd qtbase
+  apply_patch_with_msg fad2dc11.diff
+  cd -
 
   # See: https://bugreports.qt.io/browse/QTBUG-37902
   # _ver_num=${_ver_base%%-*}
   # sed -i "s/^MODULE_VERSION = .*$/MODULE_VERSION = ${_ver_num}/g" qtenginio/.qmake.conf
 
   local _ARCH_TUNE=
+  local _HARD_FLAGS=
   case ${MINGW_CHOST} in
     i686*)
       _ARCH_TUNE="-march=i686 -mtune=core2"
+      if [ "${_enable_hardening}" = "yes" ]; then
+        _HARD_FLAGS="-Wl,--dynamicbase,--nxcompat,--no-seh"
+      fi
     ;;
     x86_64*)
       _ARCH_TUNE="-march=nocona -mtune=core2"
+      if [ "${_enable_hardening}" = "yes" ]; then
+        _HARD_FLAGS="-Wl,--dynamicbase,--high-entropy-va,--nxcompat,--default-image-base-high"
+      fi
     ;;
   esac
-
-  # Determine the CFLAGS, DEBUG_CFLAGS and LDFLAGS that we will tell qmake.conf about.
-  # If this is qt5-static, we'd like to add -Os in an attempt to reduce size a little,
-  # however there's an ICE in GCC 4.9.1 with x86_64, so must tread carefully.
-  # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=61207
-  # Unlike OPTIM_D, please keep this one down here since it is not user selectable due
-  # to the GCC bug.
-  # This is the default, prevent re-appending.
-  # OPTIM_O="-O2"
-  if [ "${_variant}" = "-static" -a "${CARCH}" = "i686" ]; then
-    OPTIM_O="-Os"
-  fi
-
-  if [ "${_debuggable_release}" = "yes" ]; then
-    QMAKE_LFLAGS_RELEASE=
-    OPTIM_O="${OPTIM_O} -g"
-  else
-    QMAKE_LFLAGS_RELEASE="-Wl,-s,--relax,--gc-sections"
-    OPTIM_O="${OPTIM_O} -fno-ident -ffunction-sections -fdata-sections"
-  fi
 
   BIGOBJ_FLAGS="-Wa,-mbig-obj"
 
   # Append these ones ..
   sed -i "s|^QMAKE_CFLAGS .*= \(.*\)$|QMAKE_CFLAGS            = \1 ${_ARCH_TUNE} ${BIGOBJ_FLAGS} ${LTCG_CFLAGS}|g" qtbase/mkspecs/win32-g++/qmake.conf
-  if [ -n "$OPTIM_D" ]; then
-    sed -i "s|^QMAKE_CFLAGS_DEBUG .*= \(.*\)$|QMAKE_CFLAGS_DEBUG      = \1 ${OPTIM_D}|g" qtbase/mkspecs/win32-g++/qmake.conf
-  fi
-  if [ -n "$OPTIM_O" ]; then
-    sed -i "s|^QMAKE_CFLAGS_RELEASE .*= \(.*\)$|QMAKE_CFLAGS_RELEASE    = \1 ${OPTIM_O}|g" qtbase/mkspecs/win32-g++/qmake.conf
-  fi
-  sed -i "s|^QMAKE_LFLAGS            =\(.*\)$|QMAKE_LFLAGS            = \1 ${LTCG_LFLAGS}|g" qtbase/mkspecs/win32-g++/qmake.conf
+  sed -i "s|^QMAKE_LFLAGS           +=\(.*\)$|QMAKE_LFLAGS            += \1 ${LTCG_LFLAGS} ${_HARD_FLAGS}|g" qtbase/mkspecs/common/gcc-base.conf
   # But overwrite this one.
-  sed -i "s|^QMAKE_LFLAGS_RELEASE .*= \(.*\)$|QMAKE_LFLAGS_RELEASE    = ${QMAKE_LFLAGS_RELEASE}|g" qtbase/mkspecs/win32-g++/qmake.conf
+  #sed -i "s|^QMAKE_LFLAGS_RELEASE .*= \(.*\)$|QMAKE_LFLAGS_RELEASE    = ${QMAKE_LFLAGS_RELEASE}|g" qtbase/mkspecs/common/g++-win32.conf
 
   # To keep the build folder name quite small (PATH_MAX limit)
   # the source folder (long) is renamed to $CARCH (i686 or x86_64)
@@ -457,6 +452,9 @@ build() {
   #  export OPENSSL_LIBS="-lssl -lcrypto -lws2_32 -lcrypt32 -lgdi32"
   #fi
 
+  # https://github.com/msys2/MSYS2-packages/issues/2282
+  export MSYS2_ARG_CONV_EXCL='--foreign-types='
+
   # Qt manages the compiler flags for release / debug configs separately, so having our own values (-O2) is harmful here ..
   unset CFLAGS
   unset CXXFLAGS
@@ -496,7 +494,7 @@ build() {
     if [ "$_with_openssl" == "yes" ]; then
       configure_opts+=("-openssl-linked")
     else
-      configure_opts+=("-no-openssl")
+      configure_opts+=("-schannel")
     fi
   else
     configure_opts+=("-shared")
@@ -508,7 +506,7 @@ build() {
       configure_opts+=("-no-dbus")
     fi
     if [ "$_with_openssl" == "no" ]; then
-      configure_opts+=("-no-openssl")
+      configure_opts+=("-schannel")
     fi
   fi
 
@@ -593,6 +591,7 @@ build() {
     "${_extra_libs[@]}" \
     -no-iconv \
     -no-gstreamer \
+    -no-wmf \
     "${_extra_config[@]}" \
     "${_sql_config[@]}" \
     "${configure_opts[@]}"
@@ -620,6 +619,7 @@ build() {
   # can happen at -j9 so make twice (dumpdoc.exe depends on libqtiff but can get built
   # first).
   ${_make} ${MAKEFLAGS} || ${_make} ${MAKEFLAGS}
+
   # For quicker turn-around testing qtwebengine.
   # ${_make} module-qtbase
   # ${_make} module-qtwebengine
@@ -659,8 +659,14 @@ package_it() {
   install -D -m644 LICENSE.LGPLv3  "${pkgdir}${_qt5_prefix}"/share/licenses/qt5/LICENSE.LGPLv3
   install -D -m644 LICENSE.QT-LICENSE-AGREEMENT  "${pkgdir}${_qt5_prefix}"/share/licenses/qt5/LICENSE.QT-LICENSE-AGREEMENT
 
+  mv -f "${pkgdir}${_qt5_prefix}/lib"/*.debug "${pkgdir}${_qt5_prefix}/bin"/ || true
+  rsync -armR --remove-source-files --include="*/" --include="*.debug" --exclude="*" --prune-empty-dirs ${pkgdir}/.${MINGW_PREFIX} ${srcdir}/${CARCH}-debug/
+
   # Remove dlls from lib/
   rm -f "${pkgdir}${_qt5_prefix}/lib"/*.dll
+  
+  # Remove *.orig files
+  find "${pkgdir}${_qt5_prefix}" -type f -name "*.orig" -exec rm -f {} \;
 
   # Workaround for installing empty .pc files
   plain "---> Fix pkgconfig files..."
@@ -712,31 +718,28 @@ package_it() {
   fi
 }
 
-if [ "${_variant}" = "-static" ]; then
-  package() {
-    package_it
-  }
-else
-
-package_mingw-w64-i686-qt5() {
+package_qt5-static() {
   package_it
 }
 
-package_mingw-w64-i686-qt5-debug() {
-  cd ${CARCH}
-  install -Dm644 */lib/*.debug -t "$pkgdir"/$MINGW_PREFIX/bin
-}
-
-package_mingw-w64-x86_64-qt5() {
+package_qt5() {
   package_it
 }
 
-package_mingw-w64-x86_64-qt5-debug() {
-  cd ${CARCH}
-  install -Dm644 */lib/*.debug -t "$pkgdir"/$MINGW_PREFIX/bin
+package_qt5-debug() {
+  cp -rf ${srcdir}/${CARCH}-debug${MINGW_PREFIX} "${pkgdir}"/
 }
 
-fi
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;
 
 # return 0
 # And now for something completely broken:
@@ -779,36 +782,38 @@ fi
 # export PKG_CONFIG_PATH=/mingw32/lib/pkgconfig
 # E:/m2/repo/mingw-w64-qt5/src/i686/qtbase/bin/qmake.exe -o Makefile qml.pro
 
-sha256sums=('6f17f488f512b39c2feb57d83a5e0a13dcef32999bea2e2a8f832f54a29badb8'
-            'fabc14c5e854a17f1fdfb6575e0950b1f6e8b0f4ee36cca0c017994b4070ecac'
+sha256sums=('3a530d1b243b5dec00bc54937455471aaa3e56849d2593edb8ded07228202240'
+            '884b32f0e2e1bb110330a921b69443379a7be98c42f13754f9c5f56c040ba3b7'
             '617e6fa85a92353d0073425d37cd5d90d92cb7f906d66dd2d0df576122d091a4'
             '27ce2161b5dbea2fcce6b15948ab722a71036d056420854f6554969f683583bb'
             'e04033364f5ad77906b4100c34572df57bd793a55bc33b7d8a753a2cc60af259'
             '18fd2fa42215ac47b3b314261ab98cbe65f8231429e4f29a152288a3ca93daf1'
             '4e154fbc9059a096c351d019da6b18c907b1d8b06e028f48c7365f62bcd0edc9'
-            'f763a03ab2b4eaecf88d85ba9ba77681cffd3a99f2d02f4cc9963f3905243460'
+            'd99a4b74a062912a6913a883655d67257715866209a5c17cf9a3e6837dbd9260'
             '465d3897c4494695b66ac121944b3bd370db91bfea71dd2c9170dbf268cc99ea'
             '678c185795a41c7f38822120030585a0427287f3a1c2df9616daaa89f3285df3'
-            '61175144833ff17d60018b31c6434afce3adc729a13d0d21021adec3be191185'
+            'd8a476be7e55e8bb9362868073dc9e7937431e68b9578c0a0ed103cf1ebc8c01'
             'd7c228df3cc680793a6c858e1fac01092c0877071c075804b7e93f6b3a481eae'
             '97fcd6bd58ff8b8d735a6381b607bb3b4b351d1d07be1bbc18b97155dcbb501d'
-            '5c437c611d2d19b834b2ba3301e270bf16e6bc6e6fe6470f8066a443ffcad152'
+            'f80ce415f25f0aa4ead2efe369b41efe35d9848d4d36d8dbf3831e48dbd6e506'
             '19566c38bd50581acaa6a9f46f0e25c41fdfc8b0b42269126e4d3a9b83e2f224'
             'ddaa067d144f5788ab7a3ed0dfc426d702c13de9c35f04eaaf38d642be4934d4'
             '8beeb610df3aff14bae43c56e5781cda3d49f1ad23c6e3fc2aa2405ce002de46'
-            '6595c9a5dbbdcea44f1c085c25a186b15ca4a732b28d1894a11141ddd472250d'
-            '14b88305c02f8471d5b01a2c9d2385fbeee78f5084a6d0da53246623243ebffd'
-            '04ff6646cf5785f97e03d5b6cd599044d9879533b2dd3ca65aa928d748924abb'
-            '2816d297d783c00744d6cf94758da1cb59dfd1061deceb82744e607b8292e324'
+            'f008164ef2a224b8c52736bab53f1aeec72d610928f03cce57f632824dfdd615'
+            'a09ba083957a2b9020b5e17e57db98c3f41390db26d85b310798597fc2a4d34f'
             '42724bd154ed98c612d19a7daee2b5028270ef6dbfe7f35d5f97c8d0605f9fe6'
             '3dc4d7c4fed8fedd726211edbfe13f4d78247d3ab2f789f3ce2a8e43e59a7c5b'
             'c84cb5ba4243413232bc693fb0f54c0283bf0e496e6790a2698f226f80275a61'
-            'e8cc18754c5c77047ac9a5ac9e7c7638f655e6524539245779c7803bddbb4c3d'
+            '69e1d6f8fc59ee2da0abe0a6965d0d7730bd015c5b1f1c5b4a69435328b21768'
             '00e32052ac1a9a8391275dfe69901d4ae146ac1441c00bf46f3ef1cfe459a78d'
             '8a74fab12c9d3faac81d75ea1c0662624b83059631db8d9f2570b414d62dc692'
             'b878680172290ad2dcb5508827ef5a9230cbfd8e97d2672d2e96b5addbd55833'
             '928a8eaca8840ff353cdff8fd11140724cb89094e6115fdd7b8cf534830adcca'
+            'f07ff4f72626b91aa67ce7ffc78ce7c7c5765bf5431a65b7d867b5f66fa1506b'
+            'f930338562119f542b550e3cdb802f1f7ebd476f54dd7297db424271167394b0'
             '28ad823dc8b6665de7b552e82411a8b7b25bf716c42597d8dc8644bded63199c'
             '9ea7aeb486023f3aebf1af44603ebd9266009aaeaf91e52c37c8c5154ea3900c'
-            '4f2375373829b6764a4552d4183bccd43b8c308e4dee1e2f95d06298de47afaa'
-            '7e57ce20b6707bc3b4a727da3287cadda13a74317d86515358b2535bc15244c7')
+            '7e57ce20b6707bc3b4a727da3287cadda13a74317d86515358b2535bc15244c7'
+            '052c7035ad9a4fc0321975ba7658fb755bbc0841c7e1d9e88bb0a15e6a90b770'
+            '157b97b3e3031d93d93e45368a1c54ebfbf9578116f75f5126e977e5dd518191'
+            '502e61c1a1750f6bbc3aa7149e5e4c5ec96a1c5a91bee290771a35e172b45bb4')

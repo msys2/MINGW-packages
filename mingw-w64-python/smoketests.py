@@ -101,6 +101,24 @@ class Tests(unittest.TestCase):
         # This should be able to execute without exceptions
         sysconfig.get_config_vars()
 
+    def test_sqlite_enable_load_extension(self):
+        # Make sure --enable-loadable-sqlite-extensions is used
+        import sqlite3
+        self.assertTrue(sqlite3.Connection.enable_load_extension)
+
+    def test_venv_creation(self):
+        import tempfile
+        import venv
+        import subprocess
+        import shutil
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = venv.EnvBuilder()
+            builder.create(tmp)
+            assert os.path.exists(os.path.join(tmp, "bin", "activate"))
+            assert os.path.exists(os.path.join(tmp, "bin", "python.exe"))
+            assert os.path.exists(os.path.join(tmp, "bin", "python3.exe"))
+            subprocess.check_call([shutil.which("bash.exe"), os.path.join(tmp, "bin", "activate")])
+
 
 def suite():
     return unittest.TestLoader().loadTestsFromName(__name__)

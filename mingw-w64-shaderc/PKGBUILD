@@ -1,0 +1,81 @@
+# Maintainer: Biswapriyo Nath <nathbappai@gmail.com>
+
+_realname=shaderc
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+pkgver=2020.5
+pkgrel=1
+pkgdesc="Collection of tools, libraries and tests for shader compilation (mingw-w64)"
+url="https://github.com/google/shaderc"
+arch=('any')
+license=('Apache')
+depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
+         "${MINGW_PACKAGE_PREFIX}-glslang"
+         "${MINGW_PACKAGE_PREFIX}-spirv-tools")
+makedepends=("${MINGW_PACKAGE_PREFIX}-asciidoctor"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-python"
+             "${MINGW_PACKAGE_PREFIX}-spirv-headers")
+source=("${_realname}-${pkgver}.tar.gz"::"https://github.com/google/shaderc/archive/v${pkgver}.tar.gz"
+        "0001-fix-glslang-hlsl-linking-order.patch")
+sha512sums=('705493f024345603d1803b1bc87c605055efc0359745a0f04e3eb4a4fc073e87dc408404e8d2a9e920d42252fc20745d6cd58525c9de25f2e0428711b24cc287'
+            '598c8e32196ac015e5d7e486717163425d9b233851f23540fe4d6a79b86ba07dd6804e9d2e4776a3e0f5c33f5057db0a31b03dccc9a49c66971eb34d32e01a7e')
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  # https://www.mail-archive.com/devel@lists.fedoraproject.org/msg156020.html
+  patch -Nbp1 -i "${srcdir}/0001-fix-glslang-hlsl-linking-order.patch"
+
+  # de-vendor libs and disable git versioning
+  sed '/examples/d;/third_party/d' -i CMakeLists.txt
+  sed '/build-version/d' -i glslc/CMakeLists.txt
+  cat <<- EOF > glslc/src/build-version.inc
+"${pkgver}\\n"
+"$(pacman -Q "${MINGW_PACKAGE_PREFIX}-spirv-tools"|cut -d \  -f 2|sed 's/-.*//')\\n"
+"$(pacman -Q "${MINGW_PACKAGE_PREFIX}-glslang"|cut -d \  -f 2|sed 's/-.*//')\\n"
+EOF
+}
+
+build() {
+  [[ -d "${srcdir}/build-${MINGW_CHOST}" ]] && rm -rf "${srcdir}/build-${MINGW_CHOST}"
+  mkdir -p "${srcdir}/build-${MINGW_CHOST}" && cd "${srcdir}/build-${MINGW_CHOST}"
+
+  local -a _extra_config
+
+  if check_option "debug" "y"; then
+    _extra_config+=(-DCMAKE_BUILD_TYPE=Debug)
+  else
+    _extra_config+=(-DCMAKE_BUILD_TYPE=Release)
+  fi
+
+  local -a _glslang_inc
+  _glslang_inc=$(cygpath -m "${MINGW_PREFIX}/include/glslang")
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake.exe \
+    -G "Ninja" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    ${_extra_config[@]} \
+    -Dglslang_SOURCE_DIR=${_glslang_inc} \
+    -DSHADERC_SKIP_TESTS=ON \
+    -DSHADERC_ENABLE_WERROR_COMPILE=OFF \
+    ../${_realname}-${pkgver}
+
+  ${MINGW_PREFIX}/bin/cmake.exe --build ./
+
+  # Generate manpage
+  # Suppress asciidoctor: ERROR: line 1: non-conforming manpage title
+  cd "${srcdir}/${_realname}-${pkgver}/glslc"
+  ${MINGW_PREFIX}/bin/asciidoctor -b manpage README.asciidoc -o glslc.1 || true
+}
+
+package() {
+  cd "${srcdir}/build-${MINGW_CHOST}"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --build ./ --target install
+
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/glslc/glslc.1" \
+  -t "${pkgdir}${MINGW_PREFIX}/share/man/man1"
+}

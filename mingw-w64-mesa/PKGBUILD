@@ -3,34 +3,37 @@
 _realname=mesa
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=20.0.0
+pkgver=21.0.0
 pkgrel=1
 pkgdesc="Open-source implementation of the OpenGL specification (mingw-w64)"
 arch=('any')
 makedepends=("${MINGW_PACKAGE_PREFIX}-llvm"
              "${MINGW_PACKAGE_PREFIX}-gcc"
-             "${MINGW_PACKAGE_PREFIX}-zlib"
-             "${MINGW_PACKAGE_PREFIX}-python3-mako"
+             "${MINGW_PACKAGE_PREFIX}-python-mako"
              "${MINGW_PACKAGE_PREFIX}-meson"
-             "${MINGW_PACKAGE_PREFIX}-pkg-config")
-# Workaround bug https://gitlab.freedesktop.org/mesa/mesa/issues/2012 by adding dependencies
-depends=("${MINGW_PACKAGE_PREFIX}-zlib"
-         "${MINGW_PACKAGE_PREFIX}-gcc-libs")
+             "${MINGW_PACKAGE_PREFIX}-pkg-config"
+             "${MINGW_PACKAGE_PREFIX}-vulkan-loader"
+             "${MINGW_PACKAGE_PREFIX}-spirv-tools"
+             "${MINGW_PACKAGE_PREFIX}-vulkan-validation-layers")
+depends=("${MINGW_PACKAGE_PREFIX}-llvm"
+         "${MINGW_PACKAGE_PREFIX}-zlib"
+         "${MINGW_PACKAGE_PREFIX}-vulkan-loader")
 optdepends=("${MINGW_PACKAGE_PREFIX}-opengl-man-pages: for the OpenGL API man pages"
-            "${MINGW_PACKAGE_PREFIX}-llvm: for shared linking LLVM")
+            "${MINGW_PACKAGE_PREFIX}-zstd: use ZSTD instead of zlib for certain compression tasks")
 url="https://www.mesa3d.org/"
 license=('MIT')
 options=('staticlibs' 'strip')
 source=(https://mesa.freedesktop.org/archive/${_realname}-${pkgver}.tar.xz{,.sig}
         llvmwrapgen.sh)
-sha256sums=('bb6db3e54b608d2536d4000b3de7dd3ae115fc114e8acbb5afff4b3bbed04b34'
+sha256sums=('e6204e98e6a8d77cf9dc5d34f99dd8e3ef7144f3601c808ca0dd26ba522e0d84'
             'SKIP'
-            'e0340aad84db73fea994f2ce6a91bd19e54c17b6137e0dfb1bc8fabca8e72ed8')
+            '69f21522f20c10f5699dfe3e128aa88d4fedde816f6e8df1506d7470c44bf3da')
 validpgpkeys=('8703B6700E7EE06D7A39B8D6EDAE37B02CEB490D') # Emil Velikov <emil.l.velikov@gmail.com>
 validpgpkeys+=('946D09B5E4C9845E63075FF1D961C596A7203456') # Andres Gomez <tanty@igalia.com>
 validpgpkeys+=('E3E8F480C52ADD73B278EE78E1ECBE07D7D70895') # Juan Antonio Suárez Romero (Igalia, S.L.) <jasuarez@igalia.com>"
 validpgpkeys+=('A5CC9FEC93F2F837CB044912336909B6B25FADFA') # Juan A. Suarez Romero <jasuarez@igalia.com>
 validpgpkeys+=('71C4B75620BC75708B4BDB254C95FAAB3EB073EC') # Dylan Baker <dylan@pnwbakers.com>
+validpgpkeys+=('57551DE15B968F6341C248F68D8E31AFC32428A6') # Eric Engestrom <eric@engestrom.ch>
 
 noextract=(${_realname}-${pkgver}.tar.xz)
 
@@ -68,50 +71,61 @@ prepare() {
 
   cd ${srcdir}/${_realname}-${pkgver}
 
-# Run and optionally test LLVM Meson wrap generator
-
-  ${srcdir}/llvmwrapgen.sh
-# /bin/cat ${srcdir}/${_realname}-${pkgver}/subprojects/llvm/meson.build
-}
-
-buildcmd(){
-  ${MINGW_PREFIX}/bin/meson ./build/windows-${_mach} \
-  --prefix=${MINGW_PREFIX} \
-  --includedir=include/mesa \
-  --default-library=both \
-  --buildtype=release \
-  --backend=ninja \
-  -Dshared-glapi=true \
-  -Dgles1=true \
-  -Dgles2=true \
-  -Dllvm=true \
-  -Dosmesa=gallium \
-  -Dbuild-tests=true
-  ${MINGW_PREFIX}/bin/ninja -C ./build/windows-${_mach}
+# Generate binary wrap for LLVM if llvm-config tool is busted
+  if ! [ "$(${MINGW_PREFIX}/bin/llvm-config --has-rtti 2>&1)" = YES ] && ! [ "$(${MINGW_PREFIX}/bin/llvm-config --has-rtti 2>&1)" = NO ]; then
+    nollvmconfig=1 llvm_static=false ${srcdir}/llvmwrapgen.sh
+  fi
 }
 
 build() {
   cd ${srcdir}/${_realname}-${pkgver}
-  CFLAGS="-march=core2 -pipe" \
-  CXXFLAGS="-march=core2 -pipe" \
-  LDFLAGS="-s" \
-  PROCESSOR_ARCHITECTURE="${CARCH}" \
-  buildcmd
+  buildconf="${MINGW_PREFIX}/bin/meson ./build/windows-${_mach}
+  --prefix=${MINGW_PREFIX}
+  --includedir=include/mesa
+  --buildtype=release
+  --backend=ninja
+  -Dshared-glapi=enabled
+  -Dgles1=enabled
+  -Dgles2=enabled
+  -Dllvm=enabled
+  -Dshared-llvm=enabled
+  -Dosmesa=true
+  -Dbuild-tests=true
+  -Dgallium-drivers=swrast,zink"
+
+# Enable swr driver in x86_64 package
+  if [ ${_mach} = x86_64 ]; then
+    buildconf="${buildconf},swr
+    -Dswr-arches=avx,avx2,skx,knl"
+  fi
+
+# Fallback to binary wrap if llvm-config tool is busted
+  if ! [ "$(${MINGW_PREFIX}/bin/llvm-config --has-rtti 2>&1)" = YES ] && ! [ "$(${MINGW_PREFIX}/bin/llvm-config --has-rtti 2>&1)" = NO ]; then
+    buildconf="${buildconf}
+     --force-fallback-for=llvm"
+  fi
+
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+  PROCESSOR_ARCHITECTURE="${CARCH}" ${buildconf} \
+  -Dc_args='-march=core2 -pipe' \
+  -Dcpp_args='-march=core2 -pipe' \
+  -Dc_link_args='-s' \
+  -Dcpp_link_args='-s'
+
+  ${MINGW_PREFIX}/bin/ninja -C ./build/windows-${_mach}
 }
 
 package() {
   cd ${srcdir}/${_realname}-${pkgver}/build/windows-${_mach}
-  DESTDIR=${pkgdir}${MINGW_PREFIX} ${MINGW_PREFIX}/bin/meson install
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/meson install
+
+# Install graw library
   cp -f ${srcdir}/${_realname}-${pkgver}/build/windows-${_mach}/src/gallium/targets/graw-gdi/graw.dll ${pkgdir}${MINGW_PREFIX}/bin/
   cp -f ${srcdir}/${_realname}-${pkgver}/build/windows-${_mach}/src/gallium/targets/graw-null/graw_null.dll ${pkgdir}${MINGW_PREFIX}/bin/
   cp -f ${srcdir}/${_realname}-${pkgver}/build/windows-${_mach}/src/gallium/targets/graw-gdi/graw.dll.a ${pkgdir}${MINGW_PREFIX}/lib/
+  cp -f ${srcdir}/${_realname}-${pkgver}/build/windows-${_mach}/src/gallium/targets/graw-null/graw_null.dll.a ${pkgdir}${MINGW_PREFIX}/lib/
 
-# fixup .pc files with valid info
-  sed -e "s|$(cygpath -m ${MINGW_PREFIX})|${MINGW_PREFIX}|g" \
-    -e "s|8.0.0|${pkgver}|g" \
+# fix osmesa version in .pc file
+  sed -e "s|8.0.0|${pkgver}|g" \
     -i ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/osmesa.pc
-  sed -e "s|$(cygpath -m ${MINGW_PREFIX})|${MINGW_PREFIX}|g" \
-    -i ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/glesv1_cm.pc
-  sed -e "s|$(cygpath -m ${MINGW_PREFIX})|${MINGW_PREFIX}|g" \
-    -i ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/glesv2.pc
 }

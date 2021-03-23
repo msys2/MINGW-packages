@@ -1,0 +1,214 @@
+# Contributor: Oleg A. Khlybov <fougas@mail.ru>
+
+_realname=petsc
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}" "${MINGW_PACKAGE_PREFIX}-${_realname}-build")
+# The `petsc-build` package contains the distilled PETSc build tree
+# required at compile time by some packages (such as SLEPc).
+# Regular users should use the `petsc` package.
+pkgver=3.14.5
+pkgrel=1
+arch=('any')
+pkgdesc='Sparse iterative (non)linear solver package (mingw-w64)'
+depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
+         "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran"	
+         "${MINGW_PACKAGE_PREFIX}-openblas"
+         "${MINGW_PACKAGE_PREFIX}-parmetis"
+         "${MINGW_PACKAGE_PREFIX}-metis"
+         "${MINGW_PACKAGE_PREFIX}-hwloc"
+         "${MINGW_PACKAGE_PREFIX}-msmpi")
+makedepends=('python'
+             "${MINGW_PACKAGE_PREFIX}-gcc"
+             "${MINGW_PACKAGE_PREFIX}-gcc-fortran")
+optdepends=("${MINGW_PACKAGE_PREFIX}-tcl: build & run test suite")
+options=('strip' 'staticlibs')
+license=('2-clause BSD')
+url="https://www.mcs.anl.gov/petsc/"
+source=("http://ftp.mcs.anl.gov/pub/petsc/release-snapshots/${_realname}-lite-${pkgver}.tar.gz"
+        'all.tcl'
+        'tclbuildtest.tcl'
+        'petsc.test'
+        'petsc-mat.test'
+        '0001-mpi-detection-override.patch')
+noextract=("${_realname}-lite-${pkgver}.tar.gz")
+sha256sums=('8b8ff5c4e10468f696803b354a502d690c7d25c19d694a7e10008a302fdbb048'
+            'ec5072630e1c0309fe383669e9187790cd135a393c67bc4bc35cf60b0ba396ff'
+            '15c7af25b91406d5fe5f26cfe00963b6cfde1c3dd466eb25f1b6fae299934966'
+            '9662cc4104726c714f7961aba6f8c93bfb85f3d3f89b4908b0a55aedab41ca31'
+            'fc95ca4ddc138d288f047835a68a84a11cb841c6cca146c6ef7d7e63e0836b1a'
+            'a28912b086807df7381abaec28353023a148f17a594abb6a1478f3b7b434373b')
+
+prepare() {
+  mkdir -p $srcdir/build-${MINGW_CHOST} && cd $srcdir/build-${MINGW_CHOST}
+  tar xzf $srcdir/${_realname}-lite-${pkgver}.tar.gz
+  cd ${_realname}-${pkgver}
+  for p in ${source[*]:5}; do
+    patch -p1 -i "$srcdir/$p"
+  done
+}
+
+builds='dso dto dmo zso zto zmo sso sto smo cso cto cmo'
+
+_petsc() {
+  opts="--with-single-library=0 --disable-shared --with-windows-graphics=0 --with-x=0 --with-openblas=1 --with-hwloc=1 --with-openblas-dir=$MINGW_PREFIX"
+  ld=gfortran
+  pc="openblas hwloc"
+  xflags=-msse # SSE support is required for proper FP trapping
+  iflags=
+  ldflags=
+  desc=
+  case $1 in
+    ?m?)
+      opts="$opts --with-mpi=1 --with-mpi-compilers=1 --with-pthread=0 --with-openmp=0 --with-metis=1 --with-parmetis=1"
+      pc="$pc parmetis msmpi"
+      ld=mpifort
+      desc="MPI parallel"
+    ;;
+    ?t?)
+      opts="$opts --with-mpi=0 --with-pthread=0 --with-openmp=1"
+      iflags="$iflags -I\${includedir}/mpiuni"
+      ldflags="-fopenmp $ldflags"
+      desc="OpenMP multithreaded"
+    ;;
+    ?s?)
+      opts="$opts --with-mpi=0 --with-pthread=0 --with-openmp=0"
+      iflags="$iflags -I\${includedir}/mpiuni"
+      desc="Sequential"
+    ;;
+  esac
+  case $1 in
+    z*|d*)
+      opts="$opts --with-precision=double"
+      desc="$desc double precision"
+    ;;
+    c*|s*)
+      opts="$opts --with-precision=single"
+      desc="$desc single precision"
+    ;;
+  esac
+  case $1 in
+    d*|s*)
+      opts="$opts --with-scalar-type=real"
+    ;;
+    z*|c*)
+      opts="$opts --with-scalar-type=complex"
+      desc="$desc complex"
+    ;;
+  esac
+  case $1 in
+    *o)
+      opts="$opts --with-debugging=0"
+      cflags="$CFLAGS $xflags"
+      cxxflags="$CXXFLAGS $xflags"
+      fflags="$CFLAGS $xflags"
+      options=('strip' 'staticlibs')
+    ;;
+    *g)
+      opts="$opts --with-debugging=1"
+      debug="-g -Og"
+      cflags="$CFLAGS $debug $xflags"
+      cxxflags="$CXXFLAGS $debug $xflags"
+      fflags="$CFLAGS $debug $xflags"
+      options=('!strip' 'staticlibs')
+    ;;
+  esac
+}
+
+build() {
+  cd  "${srcdir}/build-${MINGW_CHOST}/${_realname}-${pkgver}"
+  for build in ${builds}; do
+    _petsc ${build}
+    export PETSC_DIR=`pwd`
+    /usr/bin/python configure --PETSC_ARCH=${build} ${opts} CFLAGS="$cflags" FFLAGS="$fflags" CXXFLAGS="$cxxflags" CPPFLAGS="$CPPFLAGS" LDFLAGS="$LDFLAGS" MAKEFLAGS="$MAKEFLAGS"
+    make PETSC_ARCH=${build} all
+  	(
+  		cd ${build}/lib
+  		lib=libpetsc-${build}
+  		rm -rf ${lib}.a
+  	  case ${build} in
+    		*o) strip -S *.a ;;
+  	  esac
+  		ar crsT ${lib}.a libpetscts.a libpetscsnes.a libpetscksp.a libpetscdm.a libpetscmat.a libpetscvec.a libpetscsys.a
+  		${ld} -shared -Wl,--enable-auto-import -Wl,--export-all-symbols -o ${lib}.dll -Wl,--out-implib,${lib}.dll.a -Wl,--whole-archive ${lib}.a -Wl,--no-whole-archive ${ldflags} $(pkg-config ${pc} --libs)
+  	)
+  done
+}
+
+eval "package_${MINGW_PACKAGE_PREFIX}-${_realname}() { _package; }"
+eval "package_${MINGW_PACKAGE_PREFIX}-${_realname}-build() { _package_build; }"
+
+_package() {
+  cd ${srcdir}/build-${MINGW_CHOST}/${_realname}-${pkgver}
+  mkdir -p ${pkgdir}${MINGW_PREFIX}/{bin,lib/pkgconfig,lib/${_realname},include/${_realname},share/test/${_realname}/{ksp,mat}}
+  (
+    cd include
+    cp *.h ${pkgdir}${MINGW_PREFIX}/include/${_realname}
+    cd ${_realname}
+    cp -R finclude mpiuni ${pkgdir}${MINGW_PREFIX}/include/${_realname}
+    cd ${pkgdir}${MINGW_PREFIX}/include/${_realname}
+    find . \( ! -name '*.h' -a -type f \) -delete
+  )
+  (
+    cd ${srcdir}
+    cp {all,tclbuildtest}.tcl {petsc,petsc-mat}.test ${pkgdir}${MINGW_PREFIX}/share/test/${_realname}
+  )
+  (
+    cd src/ksp/ksp/tutorials
+    cp ex1.c ex2.c ex1f.F90 ex2f.F90 ${pkgdir}${MINGW_PREFIX}/share/test/${_realname}/ksp
+  )
+  (
+    cd src/mat/tutorials
+    cp ex15.c ex15f.F90 ${pkgdir}${MINGW_PREFIX}/share/test/${_realname}/mat
+  )
+  for build in ${builds}; do
+    _petsc ${build}
+  	(
+  		cd ${build}/lib
+  		mkdir -p ${pkgdir}${MINGW_PREFIX}/lib/${_realname}/${build}
+  		cp *.a ${pkgdir}${MINGW_PREFIX}/lib/${_realname}/${build}
+  		cp *.dll ${pkgdir}${MINGW_PREFIX}/bin
+  	)
+  	(
+  		cd ${build}/include
+  		mkdir -p ${pkgdir}${MINGW_PREFIX}/include/${_realname}/${build}
+  		cp *.{h,mod} ${pkgdir}${MINGW_PREFIX}/include/${_realname}/${build}
+  	)
+    lib=${_realname}-${build}
+    echo "
+      prefix=${MINGW_PREFIX}
+      libdir=\${prefix}/lib/${_realname}
+      includedir=\${prefix}/include/${_realname}
+      Name: ${_realname}
+      URL: ${url}
+      Version: ${pkgver}
+      Description: ${desc} PETSc build
+      Requires.private: ${pc}
+      Cflags: -I\${includedir}/${build} -I\${includedir} ${iflags}
+      Libs.private: -L\${libdir}/${build} -l${lib} ${ldflags} -lgfortran -lquadmath
+      Libs: -L\${libdir}/${build} -l${lib}
+    " | sed '/^\s*$/d;s/^\s*//' > ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/${lib}.pc
+  done
+}
+
+_package_build() {
+  mkdir -p ${pkgdir}${MINGW_PREFIX}/src
+  cd ${srcdir}/build-${MINGW_CHOST}
+  cp -R ${_realname}-${pkgver} ${pkgdir}${MINGW_PREFIX}/src
+  cd ${pkgdir}${MINGW_PREFIX}/src
+  find . -regextype posix-extended \( -regex '.*\.(o|dll|log|DIR)$' -or -regex '.*/__pycache__' \) -exec rm -rf {} +
+  for build in ${builds}; do
+    find . -regextype posix-extended -regex ".*$build/(bin|obj|tests)" -exec rm -rf {} +
+    si=${MINGW_PREFIX}/src/${_realname}-${pkgver}/include
+    sb=${MINGW_PREFIX}/src/${_realname}-${pkgver}/${build}/include
+    pi=${MINGW_PREFIX}/include/petsc
+    pb=${MINGW_PREFIX}/include/petsc/${build}
+    sed -r -i \
+      -e "s%(PETSC_(C|F)C_INCLUDES)[[:space:]]+.*$%\\1 = -I${sb} -I${si}%" \
+      -e "s%(PETSC_(C|F)C_INCLUDES_INSTALL)[[:space:]]+.*$%\\1 = -I${pb} -I${pi}%" \
+      ${_realname}-${pkgver}/${build}/lib/petsc/conf/petscvariables
+  done
+  echo "
+    petsc_pkgver=${pkgver}
+    petsc_builds=\"${builds}\"
+  " | sed '/^\s*$/d;s/^\s*//' > ${_realname}-${pkgver}/petsc
+}

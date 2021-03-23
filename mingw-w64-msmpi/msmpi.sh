@@ -57,4 +57,4 @@ rootdir=`pwd`
 )
 
 # Export file signatures to be embed into PKGBUILD in order to ensure build integrity
-ruby export.rb mpi.c mpi.h mpif.h mpi.f90 mpifptr.h.{x86_64,i686} msmpi.def.{x86_64,i686}
+# ruby export.rb mpi.c mpi.h mpif.h mpi.f90 mpifptr.h.{x86_64,i686} msmpi.def.{x86_64,i686}

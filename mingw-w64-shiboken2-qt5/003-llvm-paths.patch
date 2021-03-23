@@ -1,0 +1,96 @@
+diff -Naur pyside-setup-opensource-src-5.15.0/sources/shiboken2/ApiExtractor/abstractmetabuilder.cpp pyside-setup-opensource-src-5.15.0-patched/sources/shiboken2/ApiExtractor/abstractmetabuilder.cpp
+--- pyside-setup-opensource-src-5.15.0/sources/shiboken2/ApiExtractor/abstractmetabuilder.cpp	2020-05-26 10:58:24.000000000 -0700
++++ pyside-setup-opensource-src-5.15.0-patched/sources/shiboken2/ApiExtractor/abstractmetabuilder.cpp	2020-07-29 10:37:03.275443600 -0700
+@@ -411,6 +411,14 @@
+ {
+     clang::Builder builder;
+     builder.setSystemIncludes(TypeDatabase::instance()->systemIncludes());
++#ifdef Q_CC_MINGW
++    auto includePaths = clang::emulatedSystemIncludePaths();
++    std::transform(includePaths.begin(), includePaths.end(), includePaths.begin(),
++              [](QByteArray filename) { // to forward slashes
++      return QFile::encodeName(QDir::cleanPath(QFile::decodeName(filename)));
++    });
++    builder.setSystemIncludePaths(includePaths);
++#endif
+     if (level == LanguageLevel::Default)
+         level = clang::emulatedCompilerLanguageLevel();
+     arguments.prepend(QByteArrayLiteral("-std=")
+diff -Naur pyside-setup-opensource-src-5.15.0/sources/shiboken2/ApiExtractor/clangparser/clangbuilder.cpp pyside-setup-opensource-src-5.15.0-patched/sources/shiboken2/ApiExtractor/clangparser/clangbuilder.cpp
+--- pyside-setup-opensource-src-5.15.0/sources/shiboken2/ApiExtractor/clangparser/clangbuilder.cpp	2020-05-26 10:58:24.000000000 -0700
++++ pyside-setup-opensource-src-5.15.0-patched/sources/shiboken2/ApiExtractor/clangparser/clangbuilder.cpp	2020-07-29 10:59:22.454320100 -0700
+@@ -794,7 +794,8 @@
+     // Has been observed to be 0 for invalid locations
+     bool result = false;
+     if (const char *cFileName = clang_getCString(cxFileName)) {
+-        result = d->visitHeader(cFileName);
++        QString absoluteFileName = QDir::cleanPath(QString::fromUtf8(cFileName));
++        result = d->visitHeader(absoluteFileName.toUtf8().constData());
+         clang_disposeString(cxFileName);
+     }
+     return result;
+@@ -810,6 +811,11 @@
+     }
+ }
+ 
++void Builder::setSystemIncludePaths(const QByteArrayList &systemIncludePaths)
++{
++    d->m_systemIncludePaths.append(systemIncludePaths);
++}
++
+ FileModelItem Builder::dom() const
+ {
+     Q_ASSERT(!d->m_scopeStack.isEmpty());
+diff -Naur pyside-setup-opensource-src-5.15.0/sources/shiboken2/ApiExtractor/clangparser/clangbuilder.h pyside-setup-opensource-src-5.15.0-patched/sources/shiboken2/ApiExtractor/clangparser/clangbuilder.h
+--- pyside-setup-opensource-src-5.15.0/sources/shiboken2/ApiExtractor/clangparser/clangbuilder.h	2020-05-26 10:58:24.000000000 -0700
++++ pyside-setup-opensource-src-5.15.0-patched/sources/shiboken2/ApiExtractor/clangparser/clangbuilder.h	2020-07-29 07:42:28.465778700 -0700
+@@ -45,6 +45,7 @@
+     ~Builder();
+ 
+     void setSystemIncludes(const QByteArrayList &systemIncludes);
++    void setSystemIncludePaths(const QByteArrayList &systemIncludePaths);
+ 
+     bool visitLocation(const CXSourceLocation &location) const override;
+ 
+diff -Naur pyside-setup-opensource-src-5.15.0/sources/shiboken2/ApiExtractor/clangparser/compilersupport.cpp pyside-setup-opensource-src-5.15.0-patched/sources/shiboken2/ApiExtractor/clangparser/compilersupport.cpp
+--- pyside-setup-opensource-src-5.15.0/sources/shiboken2/ApiExtractor/clangparser/compilersupport.cpp	2020-05-26 10:58:24.000000000 -0700
++++ pyside-setup-opensource-src-5.15.0-patched/sources/shiboken2/ApiExtractor/clangparser/compilersupport.cpp	2020-07-29 07:44:21.186726500 -0700
+@@ -401,4 +401,15 @@
+     return LanguageLevel::Default;
+ }
+ 
++QByteArrayList emulatedSystemIncludePaths()
++{
++    HeaderPaths headerPaths = gppInternalIncludePaths(compilerFromCMake(QStringLiteral("clang++")));
++    QByteArrayList result;
++    std::transform(headerPaths.cbegin(), headerPaths.cend(),
++                   std::back_inserter(result), [](const HeaderPath& path) {
++        return path.path;
++    });
++    return result;
++}
++
+ } // namespace clang
+diff -Naur pyside-setup-opensource-src-5.15.0/sources/shiboken2/ApiExtractor/clangparser/compilersupport.h pyside-setup-opensource-src-5.15.0-patched/sources/shiboken2/ApiExtractor/clangparser/compilersupport.h
+--- pyside-setup-opensource-src-5.15.0/sources/shiboken2/ApiExtractor/clangparser/compilersupport.h	2020-05-26 10:58:24.000000000 -0700
++++ pyside-setup-opensource-src-5.15.0-patched/sources/shiboken2/ApiExtractor/clangparser/compilersupport.h	2020-07-29 07:29:43.909862800 -0700
+@@ -46,6 +46,7 @@
+ QVersionNumber libClangVersion();
+ 
+ QByteArrayList emulatedCompilerOptions();
++QByteArrayList emulatedSystemIncludePaths();
+ LanguageLevel emulatedCompilerLanguageLevel();
+ 
+ const char *languageLevelOption(LanguageLevel l);
+diff -Naur pyside-setup-opensource-src-5.15.0/sources/shiboken2/ApiExtractor/reporthandler.cpp pyside-setup-opensource-src-5.15.0-patched/sources/shiboken2/ApiExtractor/reporthandler.cpp
+--- pyside-setup-opensource-src-5.15.0/sources/shiboken2/ApiExtractor/reporthandler.cpp	2020-05-26 10:58:24.000000000 -0700
++++ pyside-setup-opensource-src-5.15.0-patched/sources/shiboken2/ApiExtractor/reporthandler.cpp	2020-07-28 08:42:08.462697500 -0700
+@@ -35,7 +35,7 @@
+ #include <cstdarg>
+ #include <cstdio>
+ 
+-#if defined(_WINDOWS) || defined(NOCOLOR)
++#if defined(Q_OS_WIN) || defined(NOCOLOR)
+     #define COLOR_END ""
+     #define COLOR_WHITE ""
+     #define COLOR_YELLOW ""

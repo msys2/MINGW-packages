@@ -1,103 +1,150 @@
 # Maintainer: Carlos Antunes <cmantunes@gmail.com>
+# Maintainer: fauxpark <fauxpark@gmail.com>
 # Contributed by: nanodude
 
 _realname=gcc
 _target=arm-none-eabi
 
+_enable_ada=yes
+
 pkgbase=mingw-w64-${_target}-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_target}-${_realname}")
-pkgver=8.2.0
-pkgrel=1
-pkgdesc="GNU Tools for ARM Embedded Processors - GCC (mingw-w64)"
+pkgver=10.1.0
+pkgrel=2
+pkgdesc='GNU Tools for ARM Embedded Processors - GCC (mingw-w64)'
 arch=('any')
-url="https://launchpad.net/gcc-arm-embedded"
-license=('GPL' 'Various')
+license=('GPL')
+url='https://www.gnu.org/software/gcc/gcc.html'
 groups=("${MINGW_PACKAGE_PREFIX}-${_target}-toolchain")
-depends=("${MINGW_PACKAGE_PREFIX}-${_target}-newlib"
-         "${MINGW_PACKAGE_PREFIX}-${_target}-binutils")
-makedepends=("${MINGW_PACKAGE_PREFIX}-gcc")
-options=('staticlibs' '!debug' '!strip')
-source=('gcc-arm-embedded.tar.bz2::https://launchpad.net/gcc-arm-embedded/4.8/4.8-2014-q3-update/+download/gcc-arm-none-eabi-4_8-2014q3-20140805-src.tar.bz2'
-	'010-gcc-isl-0.13.patch'
-	'020-gcc-auto-host-screwup.patch')
-sha256sums=('09519946642d5366ab739a89d3388b2ea333cd7dc50192bab3736a9593af83e6'
-            '8e8da71e6e6b347dd7fc7f7938bf9af22be031ad8916749fa6c368f87d8891f0'
-            'b5e826a0dc477f04233e68cc7d0dfc4f498c36e16c5cc3751cb52bcd9a7f0c24')
-noextract=('gcc-arm-embedded.tar.bz2')
+provides=("${MINGW_PACKAGE_PREFIX}-${_target}-gcc-ada")
+depends=(
+    "${MINGW_PACKAGE_PREFIX}-${_target}-binutils"
+    "${MINGW_PACKAGE_PREFIX}-${_target}-newlib"
+    "${MINGW_PACKAGE_PREFIX}-isl"
+    "${MINGW_PACKAGE_PREFIX}-mpc"
+    "${MINGW_PACKAGE_PREFIX}-zlib"
+    "${MINGW_PACKAGE_PREFIX}-zstd"
+)
+makedepends=(
+    "${MINGW_PACKAGE_PREFIX}-gmp"
+    "${MINGW_PACKAGE_PREFIX}-mpfr"
+    $([[ "$_enable_ada" == "yes" ]] && echo "${MINGW_PACKAGE_PREFIX}-gcc-ada")
+)
+options=('!emptydirs' '!strip')
+source=("https://ftp.gnu.org/gnu/gcc/gcc-${pkgver}/gcc-${pkgver}.tar.xz")
+sha256sums=('b6898a23844b656f1b68691c5c012036c2e694ac4b53a8918d4712ad876e7ea2')
 
 prepare() {
-  # Extract packages from archive
-  rm -rf ${srcdir}/tmp
-  mkdir ${srcdir}/tmp && cd ${srcdir}/tmp
-  tar xf ../../gcc-arm-embedded.tar.bz2 --strip-components=2
+    cd ${srcdir}/gcc-${pkgver}
 
-  # Copy and extract GCC package
-  cp gcc.tar.bz2 ${srcdir}
-  cd ${srcdir}
-  [ -d gcc ] && rm -rf gcc
-  tar xf gcc.tar.bz2
+    mkdir gcc-build-${MINGW_CHOST}
+    mkdir gcc-build-nano-${MINGW_CHOST}
+}
 
-  # GCC: Compatibility with isl>=0.12.2
-  cd "${srcdir}/gcc"
-  patch -p0 -i "${srcdir}/010-gcc-isl-0.13.patch"
+_build_gcc() {
+    local _languages=$1 # Comma separated list of languages support to build
 
-  # GCC: deal with auto-host.h hack in crtstuff.c
-  patch -p1 -i "${srcdir}/020-gcc-auto-host-screwup.patch"
+    local _GCC_LDFLAGS="${LDFLAGS} -Wl,--disable-dynamicbase"
+    ../configure \
+        --build=${MINGW_CHOST} \
+        --host=${MINGW_CHOST} \
+        --prefix=${MINGW_PREFIX} \
+        --target=${_target} \
+        --with-native-system-header-dir=${MINGW_PREFIX}/${MINGW_CHOST}/include \
+        --libexecdir=${MINGW_PREFIX}/lib \
+        --enable-languages=${_languages} \
+        --enable-plugins \
+        --disable-decimal-float \
+        --disable-libffi \
+        --disable-libgomp \
+        --disable-libmudflap \
+        --disable-libquadmath \
+        --disable-libssp \
+        --disable-libstdcxx-pch \
+        --disable-nls \
+        --disable-shared \
+        --disable-threads \
+        --disable-tls \
+        --disable-libada \
+        --with-gnu-as \
+        --with-gnu-ld \
+        --with-system-zlib \
+        --with-newlib \
+        --with-headers=${MINGW_PREFIX}/${_target}/include \
+        --with-python-dir=share/gcc-${_target} \
+        --with-gmp \
+        --with-mpfr \
+        --with-mpc \
+        --with-isl \
+        --with-libelf \
+        --enable-gnu-indirect_function \
+        --with-multilib-list=rmprofile \
+        --with-host-libstdcxx="-static-libgcc -Wl,-Bstatic,-lstdc++,-Bdynamic -lm" \
+        --enable-linker-plugin-flags='LDFLAGS=-static-libstdc++\ -static-libgcc\ '"${LDFLAGS// /\\ }"'\ -Wl,--stack,12582912' \
+        LDFLAGS="${_GCC_LDFLAGS}"
+
+    make INHIBIT_LIBC_CFLAGS='-DUSE_TM_CLONE_REGISTRY=0'
+
+	if [[ "${_languages}" == *ada* ]]; then
+		make -C gcc cross-gnattools
+		make -C gcc ada.all.cross
+    fi
+
 }
 
 build() {
-  # Build GCC
-  cd $srcdir
-  rm -rf build-${MINGW_CHOST}
-  mkdir -p build-${MINGW_CHOST} && cd build-${MINGW_CHOST}
-  unset CFLAGS
-  unset CXXFLAGS
-  CFLAGS="-g -O3 -fdata-sections -ffunction-sections"
-  CXXFLAGS="${CFLAGS}"
-  ../${_realname}/configure \
-    --build="${MINGW_CHOST}" \
-    --host="${MINGW_CHOST}" \
-    --target="${_target}" \
-    --prefix="${MINGW_PREFIX}" \
-    --enable-languages="c,c++" \
-    --disable-werror \
-    --disable-lto \
-    --disable-nls \
-    --disable-libffi \
-    --disable-decimal-float \
-    --disable-libgomp \
-    --disable-libmudflap \
-    --disable-libquadmath \
-    --disable-libssp \
-    --disable-libstdcxx-pch \
-    --disable-libsanitizer \
-    --disable-threads \
-    --disable-tls \
-    --disable-shared \
-    --enable-multilib \
-    --enable-interwork \
-    --with-newlib \
-    --with-headers=yes \
-    --with-native-system-header-dir=/include \
-    --with-gnu-as \
-    --with-gnu-ld \
-    --with-system-zlib \
-    --with-python-dir="share/${_target}-${_realname}" \
-    --with-libelf \
-    --with-{gmp,mpfr,mpc,isl,cloog}="${MINGW_PREFIX}" \
-    --disable-isl-version-check \
-    --disable-cloog-version-check \
-    --with-multilib-list="armv6-m,armv7-m,armv7e-m,armv7-r" \
-    --with-host-libstdcxx="-static-libgcc -Wl,-Bstatic,-lstdc++,-Bdynamic -lm" \
-    --with-sysroot="${MINGW_PREFIX}"
-  make
+    local _languages="c,c++"
+    if [ "$_enable_ada" == "yes" ]; then
+        _languages+=",ada"
+    fi
+
+    cd ${srcdir}/gcc-${pkgver}/gcc-build-${MINGW_CHOST}
+
+    export CFLAGS_FOR_TARGET='-g -Os -ffunction-sections -fdata-sections'
+    export CXXFLAGS_FOR_TARGET='-g -Os -ffunction-sections -fdata-sections'
+    _build_gcc ${_languages}
+
+    # Build libstdc++ without exceptions support (the 'nano' variant)
+    cd ${srcdir}/gcc-${pkgver}/gcc-build-nano-${MINGW_CHOST}
+
+    export CFLAGS_FOR_TARGET='-g -Os -ffunction-sections -fdata-sections -fno-exceptions'
+    export CXXFLAGS_FOR_TARGET='-g -Os -ffunction-sections -fdata-sections -fno-exceptions'
+	# Only C and C++ are required for the nano build
+    _build_gcc "c,c++"
 }
 
 package() {
-  cd ${srcdir}/build-${MINGW_CHOST}
-  make -j1 DESTDIR=${pkgdir} install
+    cd ${srcdir}/gcc-${pkgver}/gcc-build-${MINGW_CHOST}
 
-  # Remove files that conflict with host
-  rm -rf "${pkgdir}${MINGW_PREFIX}/share/info"
+    make DESTDIR="${pkgdir}" install
+
+    cd ${srcdir}/gcc-${pkgver}/gcc-build-nano-${MINGW_CHOST}
+
+    mkdir ${pkgdir}/nano-install-${MINGW_CHOST}
+
+    make DESTDIR="${pkgdir}/nano-install-${MINGW_CHOST}" install
+
+    cd ${pkgdir}${MINGW_PREFIX}
+
+    # we need only libstdc nano files
+    multilibs=($(bin/${_target}-gcc -print-multi-lib 2>/dev/null))
+    for multilib in "${multilibs[@]}"; do
+        dir="${multilib%%;*}"
+        from_dir=${pkgdir}/nano-install-${MINGW_CHOST}${MINGW_PREFIX}/${_target}/lib/"$dir"
+        to_dir=${_target}/lib/"$dir"
+
+        cp -f "$from_dir"/libstdc++.a "$to_dir"/libstdc++_nano.a
+        cp -f "$from_dir"/libsupc++.a "$to_dir"/libsupc++_nano.a
+    done
+    rm -r ${pkgdir}/nano-install-${MINGW_CHOST}
+
+    # strip target binaries
+    find lib/gcc/${_target}/${pkgver} ${_target}/lib -type f -and \( -name \*.a -or -name \*.o \) -exec ${_target}-objcopy -R .comment -R .note -R .debug_info -R .debug_aranges -R .debug_pubnames -R .debug_pubtypes -R .debug_abbrev -R .debug_line -R .debug_str -R .debug_ranges -R .debug_loc '{}' \;
+
+    # strip host binaries
+    find bin/ lib/gcc/${_target}/${pkgver} -type f -and \( -executable \) -exec strip '{}' \;
+
+    # Remove files that conflict with host gcc package
+    rm -r share/man/man7
+    rm -r share/info
 }
-

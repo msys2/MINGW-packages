@@ -17,8 +17,8 @@ _realname=python
 pkgbase="mingw-w64-${_realname}"
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
 _pybasever=3.8
-pkgver=${_pybasever}.2
-pkgrel=1
+pkgver=${_pybasever}.8
+pkgrel=2
 provides=("${MINGW_PACKAGE_PREFIX}-python3=${pkgver}")
 conflicts=("${MINGW_PACKAGE_PREFIX}-python3"
            "${MINGW_PACKAGE_PREFIX}-python2<2.7.16-7")
@@ -119,22 +119,21 @@ source=("https://www.python.org/ftp/python/${pkgver%rc?}/Python-${pkgver}.tar.xz
         1701-disable-broken-gdbm-module.patch
         1800-link-win-resource-files-and-build-pythonw.patch
         1810-3.7-mpdec-mingw.patch
-        1830-mingw-implement-setenv-for-PY_COERCE_C_LOCALE.patch
         1850-disable-readline.patch
         1860-fix-isselectable.patch
         1870-use-_wcsnicmp-instead-wcsncasecmp.patch
-        1880-make-default-python.patch
         1890-_xxsubinterpretersmodule.patch
         2010-configure-have-inet-pton.patch
         2030-fix-msvc9-import.patch
-        2050-undo-venv-redirector.patch
         2051-set-venv-activate-path-unix.patch
-        2052-venv-remove-msys-from-env-and-add-exe-prefix.patch
+        2052-venv-creation-fixes.patch
         2060-pass-gen-profile-ldflags.patch
         2070-distutils-add-windmc-to-cygwinccompiler.patch
         2080-pkg-config-windows-must-link-ext-with-python-lib.patch
         3000-importlib-bootstrap-path-sep.patch
         3001-pathlib-path-sep.patch
+        3011-fix-build-testinternalcapi.patch
+        3020-extend-MS_WINDOWS-flag.patch
         5000-warnings-fixes.patch
         smoketests.py)
 
@@ -159,12 +158,6 @@ del_file_exists() {
 
 prepare() {
   cd "${srcdir}/Python-${pkgver}"
-
-  # these are created by patches
-  rm -f Misc/config_mingw \
-        Misc/cross_mingw32 \
-        Modules/Setup.config.in \
-        Python/fileblocks.c
 
   plain "Apply Ray Donnelly's should-be-upstreamed patches"
   apply_patch_with_msg \
@@ -222,8 +215,7 @@ prepare() {
     0560-mingw-use-posix-getpath.patch \
     0565-mingw-add-ModuleFileName-dir-to-PATH.patch \
     0570-mingw-add-BUILDIN_WIN32_MODULEs-time-msvcrt.patch
-  # 0610- changed to not using -DVPATH='"$(VPATH_b2h)"' anymore since VPATH is
-  # relative, therefore getpath.c:355: joinpath(prefix, vpath) works naturally
+
   apply_patch_with_msg \
     0610-msys-cygwin-semi-native-build-sysconfig.patch \
     0620-mingw-sysconfig-like-posix.patch \
@@ -265,7 +257,6 @@ prepare() {
   # Extend some isatty calls to check for mintty when checking for
   # a terminal output.
   # https://github.com/Alexpux/MINGW-packages/issues/2645
-  # https://github.com/Alexpux/MINGW-packages/issues/2656
   apply_patch_with_msg \
     1700-cygpty-isatty.patch
 
@@ -281,11 +272,9 @@ prepare() {
 
   apply_patch_with_msg \
     1810-3.7-mpdec-mingw.patch \
-    1830-mingw-implement-setenv-for-PY_COERCE_C_LOCALE.patch \
     1850-disable-readline.patch \
     1860-fix-isselectable.patch \
     1870-use-_wcsnicmp-instead-wcsncasecmp.patch \
-    1880-make-default-python.patch \
     1890-_xxsubinterpretersmodule.patch
 
   # https://github.com/msys2/MINGW-packages/issues/5184
@@ -295,9 +284,8 @@ prepare() {
   apply_patch_with_msg 2030-fix-msvc9-import.patch
 
   # https://github.com/msys2/MINGW-packages/issues/5001
-  apply_patch_with_msg 2050-undo-venv-redirector.patch
   apply_patch_with_msg 2051-set-venv-activate-path-unix.patch
-  apply_patch_with_msg 2052-venv-remove-msys-from-env-and-add-exe-prefix.patch
+  apply_patch_with_msg 2052-venv-creation-fixes.patch
 
   apply_patch_with_msg 2060-pass-gen-profile-ldflags.patch
   
@@ -310,26 +298,10 @@ prepare() {
 
   apply_patch_with_msg 5000-warnings-fixes.patch
 
+  apply_patch_with_msg 3011-fix-build-testinternalcapi.patch
+
+  apply_patch_with_msg 3020-extend-MS_WINDOWS-flag.patch
   autoreconf -vfi
-
-  # Temporary workaround for FS#22322
-  # See https://bugs.python.org/issue10835 for upstream report
-  #sed -i "/progname =/s/python/python${_pybasever}/" Python/pythonrun.c
-
-  touch Include/graminit.h
-  touch Python/graminit.c
-  touch Parser/Python.asdl
-  touch Parser/asdl.py
-  touch Parser/asdl_c.py
-  touch Include/Python-ast.h
-  touch Python/Python-ast.c
-  echo \"\" > Parser/pgen.stamp
-
-  # Ensure that we are using the system copy of various libraries (expat, zlib and libffi),
-  # rather than copies shipped in the tarball
-  rm -r Modules/expat
-  #rm -r Modules/zlib
-  rm -r Modules/_ctypes/{darwin,libffi}*
 }
 
 check() {
@@ -351,18 +323,12 @@ build() {
   CPPFLAGS+=" -I${PREFIX_WIN}/include/ncurses "
 
   declare -a _extra_config
-  if check_option "strip" "y"; then
-    LDFLAGS+=" -s "
-  fi
   if check_option "debug" "n"; then
     CFLAGS+=" -DNDEBUG "
     CXXFLAGS+=" -DNDEBUG "
     _extra_config+=("--enable-optimizations")
     _extra_config+=("--with-lto")
   else
-    plain " -DDEBUG -DPy_DEBUG -D_DEBUG does not work unfortunately .."
-    #    CFLAGS+=" -DDEBUG -DPy_DEBUG -D_DEBUG "
-    #    CXXFLAGS+=" -DDEBUG -DPy_DEBUG -D_DEBUG "
     CFLAGS+=" -O0 -ggdb"
     CXXFLAGS+=" -O0 -ggdb"
     _extra_config+=("--with-pydebug")
@@ -397,6 +363,8 @@ build() {
     --with-system-ffi \
     --with-system-libmpdec \
     --without-ensurepip \
+    --without-c-locale-coercion \
+    --enable-loadable-sqlite-extensions \
     "${_extra_config[@]}" \
     OPT=""
 
@@ -404,6 +372,11 @@ build() {
   make regen-importlib
 
   make
+
+  # Add missing venvlauncher files (issue #7014)
+  # FIXME: build these from PC/launcher.c instead
+  cp python.exe venvlauncher.exe
+  cp pythonw.exe venvwlauncher.exe
 }
 
 package() {
@@ -433,7 +406,6 @@ package() {
 
   # Need for building boost python module
   cp -f "${pkgdir}${MINGW_PREFIX}"/lib/python${_pybasever}/config-${VERABI}/libpython${VERABI}.dll.a "${pkgdir}${MINGW_PREFIX}"/lib/libpython${_pybasever}.dll.a
-  #cp -f "${pkgdir}${MINGW_PREFIX}"/lib/python${_pybasever}/config-${VERABI}/libpython${VERABI}.dll.a "${pkgdir}${MINGW_PREFIX}"/lib/python${_pybasever}/config-${VERABI}/libpython${_pybasever}.dll.a
 
   # some useful "stuff"
   install -dm755 "${pkgdir}${MINGW_PREFIX}"/lib/python${_pybasever}/Tools/{i18n,scripts}
@@ -452,6 +424,9 @@ package() {
   done
 
   # Default names are aliases for Python now
+  cp "${pkgdir}${MINGW_PREFIX}"/bin/python3.exe "${pkgdir}${MINGW_PREFIX}"/bin/python.exe
+  cp "${pkgdir}${MINGW_PREFIX}"/bin/python3w.exe "${pkgdir}${MINGW_PREFIX}"/bin/pythonw.exe
+  cp "${pkgdir}${MINGW_PREFIX}"/bin/python3-config "${pkgdir}${MINGW_PREFIX}"/bin/python-config
   cp "${pkgdir}${MINGW_PREFIX}"/bin/idle3 "${pkgdir}${MINGW_PREFIX}"/bin/idle
   cp "${pkgdir}${MINGW_PREFIX}"/bin/pydoc3 "${pkgdir}${MINGW_PREFIX}"/bin/pydoc
   cp "${pkgdir}${MINGW_PREFIX}"/bin/2to3-${_pybasever} "${pkgdir}${MINGW_PREFIX}"/bin/2to3
@@ -472,9 +447,13 @@ package() {
     "${pkgdir}${MINGW_PREFIX}"/lib/python${_pybasever}/lib-dynload/_sysconfigdata*.py \
     "${pkgdir}${MINGW_PREFIX}"/lib/python${_pybasever}/smtpd.py
 
+  # install venv launchers
+  mkdir -p "${pkgdir}${MINGW_PREFIX}"/lib/python${_pybasever}/venv/scripts/nt
+  cp venvlauncher.exe "${pkgdir}${MINGW_PREFIX}"/lib/python${_pybasever}/venv/scripts/nt/python.exe
+  cp venvwlauncher.exe "${pkgdir}${MINGW_PREFIX}"/lib/python${_pybasever}/venv/scripts/nt/pythonw.exe
 }
 
-sha256sums=('2646e7dc233362f59714c6193017bb2d6f7b38d6ab4a0cb5fbac5c36c4d845df'
+sha256sums=('7c664249ff77e443d6ea0e4cf0e587eae918ca3c48d081d1915fe2a1f1bcc5cc'
             '0ee1acf745d38d41fd098487b9595705fd8f6666d7b154d54ddba32d14f1253b'
             '0d27f52bc514dbf2b730f62fa6c18c797a2f4cbad8698d95b15e2774d68e483d'
             'd2d73d9fb9db48fecb3a6856e4606f444eaac7637fd4f65e192701e53ac422eb'
@@ -502,7 +481,7 @@ sha256sums=('2646e7dc233362f59714c6193017bb2d6f7b38d6ab4a0cb5fbac5c36c4d845df'
             '194ef359356d4d58bb15bafe8738c0586350d26e85cc39f5db833f428d67b41d'
             'ce63ec2ec57db5fcfae332f8bb413d6c2f8888d29e449b8ae674cbcbe01a5f95'
             'f7729d39c8eadce379b2b21cd253c604bfe3e4293945b4d6def9bf0c9b3c8f4f'
-            'be165a89d087dcc1d06b78031d441e7dd1f5d5c2a0a73de49c4c9e211132b97a'
+            '7bd7cac5cc9424b934ae31e6aebf7a960fca8d6ac82778f107a4b16a4e7865c8'
             '85ec670b8c0a8fc7a5dcafc19aa697d358c5bfe67cb3d7e17ec8070d4edb16f3'
             '4804d854bb9fb3e6ff11c23e420b6ff34266bbc93ce33115129bf838171d49ee'
             'a26997445938dd01a03a16a622d19adbc270e679df195407436c97246c96f99a'
@@ -514,7 +493,7 @@ sha256sums=('2646e7dc233362f59714c6193017bb2d6f7b38d6ab4a0cb5fbac5c36c4d845df'
             '840cbf8fafa2cc230dd8a9f667dbad80d54ad573f929f9970252722b9183688b'
             'fbae2e8121a027713ce9cf2197b4d702f512e65d028a2a71d4229a4c70f8410d'
             '95cf0d30ad7f0f171da79187f1564b8b2796e9d76551cfb442c26ae4d9f1aafe'
-            '23a3566e06b43ccf292bebe0a464421d41c5a30deb9f80d0964dd01ff483e5ed'
+            '6b37b7d4ecd269abcf92ada988d4be48e0fee1473d6a2cc7d6562812c579095d'
             '4bb617a956b783edfb1a4246580172c4f9eb2728ff14730618854a3be7840dad'
             '65aff7e831f3bb4b37ed5d4db5dfa75ab6bd582d132dd197e658ccb699dbfac7'
             'f2a7b6dce11311e3d318d5729258935a520dcb7ce4dc879ecb1738a2f8bfe434'
@@ -548,25 +527,24 @@ sha256sums=('2646e7dc233362f59714c6193017bb2d6f7b38d6ab4a0cb5fbac5c36c4d845df'
             '7e2652a26a8e7198b9b6fd2bfd476c514362f347ba75b1dd014faac443266fd7'
             '8ea5b335b10bfb4e492646902db043aee06c953941b3eca7fe24603a3238abf8'
             'a9977459a8e6c31f1643da7ede6ac7199dee96559d74188f5c9d3799787ac4fa'
-            'df598e955ce9886159f857378314b59ac07aaa167bc23ffb656f5f61b7ff1b01'
+            '7bab1dfb1d5b288e3270a61f9b1892c151f1dd1f8e32c07ae6adc37ef14844bb'
             '551047905350e113384f99e0e929e9381dc0a4ed514ca4ebe279dcdad798edce'
-            '1da319664d39427156488b9b39ff39e33c53ef608f66319fdf9fb9bcdb29020d'
+            'afafaa920fee0bb11fb246b37956c71c0e68dadaf09e27ebdcd7097dd2c0f0ef'
             'fc6164a90f0ca2a9341aaf4448b4334c3393459ca5cbad6d7149f8bcf70da5fe'
-            '8f917063fe5e662ffe11d6e782d5828c41ec54a04b90693db9b5df4280e9ade5'
             '181672743d9e2449064a1b18764fa400af5d3cd268098e7b7e5069d0b128caa2'
             '6f2032347bb40e2ebe9b3a03062147ffa2f656d47c87821623c3b7d46dc15ddb'
             'c4670070e546317295071350872e1a00918fd3284609620f84beb44ed54c1ebd'
-            '9141426ce9a02877e8118395479aa4f44f5d7f22afec3984bad9d0df41a59844'
             '17bf1ea04f476ee66555bc4386ffbebfe6be6f75e67947b7f85511241ac46407'
             '0ded9e2792b95902d898aba91020103875f2987a9566b353f3e6988b08848f4a'
             'd3a0669c83e4df5d33606b4c3443d2c6c71b76cb4f6421d6d54ee630023be6c2'
-            'c49e557d57a459b62c327bbbfa17b49e282e9978656a2cbae30685b5c97c1ede'
             'a7fbf65a86889f95138360ca4dbd4e51de2e214384ee39740d9c6c381ff997d9'
-            'ea0c602b59803b7f274c351676f6b09f93f3ff2b8695f28390dcb3effacb95db'
+            'ac0400fd7c9ceada1356fe4b7eae3892f35652f09f488b31fd011e0642d373a3'
             '6f1a48380445406709ba5c6b4b9c6f0301ea645324feb429f3719dc29b8f28ff'
             'b2f4083ada35c18876edf38220d84ca757cf710bc5c2d80ee8b5083dc6c2609f'
             '487c92837717975ad6c63fe2a1f8e8c5c9e0554e96000102d83c82f4a77fd9bd'
             'f6ecf2edc9468210111d77e396853af49cb8a43d9bc0d20212f88cf2bc33685d'
             '6efc39323d14239f2a55576a8b3f32cb79eeefdd5881ba813493c14be2939f3c'
+            '005381222cfef42ccc21151845b6d43d25c861f35c2192e5e23c2a14df7938f0'
+            'b6b3f8f2c809dc7ef43bc26306516edf4a5d1e038343ad8c7a45f666011c2e8b'
             '24151631c3e70306ae92ffb8fea38992a752cd0a76771a5e53445f56c2be1f00'
-            '6b535c53435ebed57e6f519429bd4ff845d1651e5a080e6f0517307cb45c5da7')
+            '589ad07c257aba8296df4de7f181a91bd498615f02ce5bc85231535cd25ebf3f')

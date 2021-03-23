@@ -1,0 +1,81 @@
+From a54919e0c11542f6716043003e403f1910f32528 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Martin=20Storsj=C3=B6?= <martin@martin.st>
+Date: Thu, 27 Aug 2020 14:48:22 +0300
+Subject: [PATCH] [LLD] [COFF] Error out if creating a DLL with too many
+ exported symbols
+
+The PE/DLL format has a limit on 64k exported symbols per DLL; make
+sure to check this.
+
+Differential Revision: https://reviews.llvm.org/D86701
+---
+ COFF/DriverUtils.cpp         |  8 ++++++--
+ test/COFF/Inputs/def-many.py |  5 +++++
+ test/COFF/export-limit.s     | 13 +++++++++++++
+ 3 files changed, 24 insertions(+), 2 deletions(-)
+ create mode 100644 test/COFF/Inputs/def-many.py
+ create mode 100644 test/COFF/export-limit.s
+
+diff --git a/COFF/DriverUtils.cpp b/COFF/DriverUtils.cpp
+index 6cb761abea4..de78359bb44 100644
+--- a/COFF/DriverUtils.cpp
++++ b/COFF/DriverUtils.cpp
+@@ -32,6 +32,7 @@
+ #include "llvm/Support/Program.h"
+ #include "llvm/Support/raw_ostream.h"
+ #include "llvm/WindowsManifest/WindowsManifestMerger.h"
++#include <limits>
+ #include <memory>
+ 
+ using namespace llvm::COFF;
+@@ -673,12 +674,15 @@ void fixupExports() {
+ 
+ void assignExportOrdinals() {
+   // Assign unique ordinals if default (= 0).
+-  uint16_t max = 0;
++  uint32_t max = 0;
+   for (Export &e : config->exports)
+-    max = std::max(max, e.ordinal);
++    max = std::max(max, (uint32_t)e.ordinal);
+   for (Export &e : config->exports)
+     if (e.ordinal == 0)
+       e.ordinal = ++max;
++  if (max > std::numeric_limits<uint16_t>::max())
++    fatal("too many exported symbols (max " +
++          Twine(std::numeric_limits<uint16_t>::max()) + ")");
+ }
+ 
+ // Parses a string in the form of "key=value" and check
+diff --git a/test/COFF/Inputs/def-many.py b/test/COFF/Inputs/def-many.py
+new file mode 100644
+index 00000000000..ec2b811fce7
+--- /dev/null
++++ b/test/COFF/Inputs/def-many.py
+@@ -0,0 +1,5 @@
++import sys
++
++print("EXPORTS")
++for i in range(0, int(sys.argv[1])):
++  print("f%d=f" % (i))
+diff --git a/test/COFF/export-limit.s b/test/COFF/export-limit.s
+new file mode 100644
+index 00000000000..e65a84cb718
+--- /dev/null
++++ b/test/COFF/export-limit.s
+@@ -0,0 +1,13 @@
++# REQUIRES: x86
++# RUN: %python %p/Inputs/def-many.py 65535 > %t-65535.def
++# RUN: %python %p/Inputs/def-many.py 65536 > %t-65536.def
++# RUN: llvm-mc -triple x86_64-win32 %s -filetype=obj -o %t.obj
++# RUN: lld-link -dll -noentry %t.obj -out:%t.dll -def:%t-65535.def
++# RUN: not lld-link -dll -noentry %t.obj -out:%t.dll -def:%t-65536.def 2>&1 | FileCheck %s
++
++# CHECK: error: too many exported symbols
++
++        .text
++        .globl f
++f:
++        ret
+-- 
+2.29.0.rc1.windows.1
+
