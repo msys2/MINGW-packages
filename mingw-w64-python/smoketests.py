@@ -119,6 +119,10 @@ class Tests(unittest.TestCase):
             assert os.path.exists(os.path.join(tmp, "bin", "python3.exe"))
             subprocess.check_call([shutil.which("bash.exe"), os.path.join(tmp, "bin", "activate")])
 
+    def test_has_mktime(self):
+        from time import mktime, gmtime
+        mktime(gmtime())
+
 
 def suite():
     return unittest.TestLoader().loadTestsFromName(__name__)
