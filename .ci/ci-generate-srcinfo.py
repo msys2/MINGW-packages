@@ -100,7 +100,7 @@ def get_mingw_arch_list(pkgbuild_path: str) -> List[str]:
     out = subprocess.check_output([bash, '-c', ';'.join(sub_commands)], universal_newlines=True)
     arch_list = out.strip().split()
     if not arch_list:
-        arch_list = ["mingw32", "mingw64"]
+        arch_list = ["mingw32", "mingw64", "ucrt64"]
     assert arch_list
     return arch_list
 
@@ -124,7 +124,7 @@ def get_srcinfo_for_pkgbuild(args: Tuple[str, str]) -> Optional[CacheTuple]:
         if mode == "mingw":
             for name in get_mingw_arch_list(pkgbuild_path):
                 env = os.environ.copy()
-                env["MINGW_INSTALLS"] = name
+                env["MINGW_ARCH"] = name
                 srcinfos[name] = subprocess.check_output(
                     [bash, "/usr/bin/makepkg-mingw",
                     "--printsrcinfo", "-p", git_path],

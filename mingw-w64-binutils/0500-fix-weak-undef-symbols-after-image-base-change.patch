@@ -1,0 +1,189 @@
+From 74edb473c9ecf5e2053ecf8e429ee608feafb9e1 Mon Sep 17 00:00:00 2001
+From: Tamar Christina <tamar.christina@arm.com>
+Date: Thu, 1 Apr 2021 17:10:38 +0100
+Subject: [PATCH] PE/Windows x86_64: Fix weak undef symbols after image base
+ change
+
+The change in PR19011 changed the image load address from being in the lower
+32-bit address space to the higher 64-bit address space.
+
+However when you have a weak undef symbol which stays undef at the end of
+linking the linker has to resolve this (Windows loader does not support undef
+symbols).  As such typically these would resolve to 0.
+
+The relocation used for these weak symbols are the normal 32-bit PC_REL call
+relocs.  So when doing the overflow check LD checks if the distance between the
+symbol and the call is within range.  However now that the load address is
+> 32-bits and the symbol val is 0 this overflow check will always fail.
+
+As such the linker gives a bogus error.  This patch makes the linker not emit
+the overflow failure but chooses to still let the check be performed (as it's
+mid-end code).
+
+One down side of this is that it does break the common convention that the call
+be to sym at 0x0. i.e. before you'd get
+
+      401015:   74 05                   je     40101c
+      401017:   e8 e4 ef bf ff          callq  0
+
+and now you get
+
+   140001015:   74 05                   je     14000101c
+   140001017:   e8 e4 ef ff bf          call   100000000
+
+since the call is PC_REL there's no way to get the range large enough to
+resolve to 0.  As such I have chosen to leave it as the furthest simple range
+that we can still represent.
+
+By only ignoring the error we leave the symbol value itself to still be 0
+such that the if(<symbol>) checks still work correctly.
+
+bfd/ChangeLog:
+
+2021-04-01  Tamar Christina  <tamar.christina@arm.com>
+
+	PR ld/26659
+	* cofflink.c (_bfd_coff_generic_relocate_section): Ignore overflow.
+
+ld/ChangeLog:
+
+2021-04-01  Tamar Christina  <tamar.christina@arm.com>
+
+	PR ld/26659
+	* testsuite/ld-pe/pe.exp: Add test.
+	* testsuite/ld-pe/pr26659-weak-undef-sym.d: New test.
+	* testsuite/ld-pe/pr26659-weak-undef-sym.s: New test.
+---
+ bfd/ChangeLog                               |  5 +++
+ bfd/cofflink.c                              | 15 ++++++++
+ ld/ChangeLog                                |  7 ++++
+ ld/testsuite/ld-pe/pe.exp                   |  1 +
+ ld/testsuite/ld-pe/pr26659-weak-undef-sym.d | 32 +++++++++++++++++
+ ld/testsuite/ld-pe/pr26659-weak-undef-sym.s | 38 +++++++++++++++++++++
+ 6 files changed, 98 insertions(+)
+ create mode 100644 ld/testsuite/ld-pe/pr26659-weak-undef-sym.d
+ create mode 100644 ld/testsuite/ld-pe/pr26659-weak-undef-sym.s
+
+diff --git a/bfd/cofflink.c b/bfd/cofflink.c
+index c6b65c761d7..dd3e8dd4bf6 100644
+--- a/bfd/cofflink.c
++++ b/bfd/cofflink.c
+@@ -3129,6 +3129,21 @@ _bfd_coff_generic_relocate_section (bfd *output_bfd,
+ 	  return false;
+ 	case bfd_reloc_overflow:
+ 	  {
++
++	    /* Ignore any weak undef symbols that may have overflowed.  Due to
++	       PR ld/19011 the base address is now in the upper 64-bit address
++	       range.  This means that when _bfd_final_link_relocate calculates
++	       the overlow it takes the distance between the symbol and the VMA
++	       which will now always overflow as 0 - 64-bit addr > 32-bit range
++	       of the relocation.  This ends up creating PR ld/26659.  */
++	    if (val == 0
++		/* Reverse the hack where 4 is subtracted from the addend.  */
++		&& (addend + 4) == 0
++		&& sym->n_sclass == C_NT_WEAK
++		&& bfd_coff_classify_symbol (output_bfd, sym)
++		     == COFF_SYMBOL_UNDEFINED)
++	      break;
++
+ 	    const char *name;
+ 	    char buf[SYMNMLEN + 1];
+ 
+diff --git a/ld/testsuite/ld-pe/pe.exp b/ld/testsuite/ld-pe/pe.exp
+index b1a200180be..a536b51c3e6 100644
+--- a/ld/testsuite/ld-pe/pe.exp
++++ b/ld/testsuite/ld-pe/pe.exp
+@@ -81,6 +81,7 @@ run_dump_test "reloc"
+ run_dump_test "weakdef-1"
+ 
+ run_dump_test "pr19803"
++run_dump_test "pr26659-weak-undef-sym"
+ set pr19803_dll {
+     {   "PR 19803: not exporting swept symbols"
+ 	"-shared --out-implib dx.dll --gc-sections"
+diff --git a/ld/testsuite/ld-pe/pr26659-weak-undef-sym.d b/ld/testsuite/ld-pe/pr26659-weak-undef-sym.d
+new file mode 100644
+index 00000000000..0b48994877d
+--- /dev/null
++++ b/ld/testsuite/ld-pe/pr26659-weak-undef-sym.d
+@@ -0,0 +1,32 @@
++#source: pr26659-weak-undef-sym.s
++#target: x86_64-*-cygwin* x86_64-*-pe x86_64-*-mingw*
++#ld: -e0
++#objdump: -d
++
++#...
++0000000140001000 <foo>:
++   140001000:	55                   	push   %rbp
++   140001001:	48 89 e5             	mov    %rsp,%rbp
++   140001004:	48 83 ec 20          	sub    \$0x20,%rsp
++   140001008:	89 4d 10             	mov    %ecx,0x10\(%rbp\)
++   14000100b:	48 8b 05 ee 0f 00 00 	mov    0xfee\(%rip\),%rax        # 140002000 <__data_end__>
++   140001012:	48 85 c0             	test   %rax,%rax
++   140001015:	74 05                	je     14000101c <foo\+0x1c>
++   140001017:	e8 e4 ef ff bf       	call   100000000 <__size_of_stack_reserve__\+0xffe00000>
++   14000101c:	48 8b 05 ed 0f 00 00 	mov    0xfed\(%rip\),%rax        # 140002010 <.refptr.bar2>
++   140001023:	48 85 c0             	test   %rax,%rax
++   140001026:	74 05                	je     14000102d <foo\+0x2d>
++   140001028:	e8 d3 ef ff bf       	call   100000000 <__size_of_stack_reserve__\+0xffe00000>
++   14000102d:	8b 45 10             	mov    0x10\(%rbp\),%eax
++   140001030:	0f af c0             	imul   %eax,%eax
++   140001033:	48 83 c4 20          	add    \$0x20,%rsp
++   140001037:	5d                   	pop    %rbp
++   140001038:	c3                   	ret    
++   140001039:	90                   	nop
++   14000103a:	90                   	nop
++   14000103b:	90                   	nop
++   14000103c:	90                   	nop
++   14000103d:	90                   	nop
++   14000103e:	90                   	nop
++   14000103f:	90                   	nop
++#pass
+diff --git a/ld/testsuite/ld-pe/pr26659-weak-undef-sym.s b/ld/testsuite/ld-pe/pr26659-weak-undef-sym.s
+new file mode 100644
+index 00000000000..7a42759e752
+--- /dev/null
++++ b/ld/testsuite/ld-pe/pr26659-weak-undef-sym.s
+@@ -0,0 +1,38 @@
++        .text
++        .globl  foo
++        .def    foo;    .scl    2;      .type   32;     .endef
++foo:
++        pushq   %rbp
++        movq    %rsp, %rbp
++        subq    $32, %rsp
++        movl    %ecx, 16(%rbp)
++        movq    .refptr.bar1(%rip), %rax
++        testq   %rax, %rax
++        je      .L2
++        call    bar1
++.L2:
++        movq    .refptr.bar2(%rip), %rax
++        testq   %rax, %rax
++        je      .L3
++        call    bar2
++.L3:
++        movl    16(%rbp), %eax
++        imull   %eax, %eax
++        addq    $32, %rsp
++        popq    %rbp
++        ret
++        .weak   bar2
++        .weak   bar1
++        .def    bar1;   .scl    2;      .type   32;     .endef
++        .def    bar2;   .scl    2;      .type   32;     .endef
++        .section        .rdata$.refptr.bar2, "dr"
++        .globl  .refptr.bar2
++        .linkonce       discard
++.refptr.bar2:
++        .quad   bar2
++        .section        .rdata$.refptr.bar1, "dr"
++        .globl  .refptr.bar1
++        .linkonce       discard
++.refptr.bar1:
++        .quad   bar1
++
+-- 
+2.27.0
+
