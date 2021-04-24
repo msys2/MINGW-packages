@@ -1,0 +1,239 @@
+From 955a5b73059d27eba7db0783bb4769934d8c8a82 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Martin=20Storsj=C3=B6?= <martin@martin.st>
+Date: Sun, 26 Apr 2020 04:58:33 +0300
+Subject: [PATCH] Fix building for aarch64 windows with mingw toolchains (#555)
+
+* aarch64: Check _WIN32 instead of _M_ARM64 for detecting windows
+
+This fixes building for aarch64 with mingw toolchains. _M_ARM64 is
+predefined by MSVC, while mingw compilers predefine __aarch64__.
+
+In aarch64 specific code, change checks for _M_ARM64 into checks for
+_WIN32.
+
+In arch independent code, check for
+(defined(_M_ARM64) || defined(__aarch64__)) && defined(_WIN32)
+instead of just _M_ARM64.
+
+In src/closures.c, coalesce checks like
+defined(X86_WIN32) || defined(X86_WIN64) || defined(_M_ARM64)
+into plain defined(_WIN32). Technically, this enables code for
+ARM32 windows where it wasn't, but as far as I can see it, those
+codepaths should be fine for that architecture variant as well.
+
+* aarch64: Only use armasm source when building with MSVC
+
+When building for windows/arm64 with clang, the normal gas style .S
+source works fine. sysv.S and win64_armasm.S seem to be functionally
+equivalent, with only differences being due to assembler syntax.
+---
+ configure.host          | 10 ++++++++--
+ src/aarch64/ffi.c       | 14 +++++++-------
+ src/aarch64/ffitarget.h |  8 ++++----
+ src/closures.c          | 12 ++++++------
+ src/prep_cif.c          |  2 +-
+ 5 files changed, 26 insertions(+), 20 deletions(-)
+
+diff --git a/configure.host b/configure.host
+index 9a72cda..947e73b 100644
+--- a/configure.host
++++ b/configure.host
+@@ -8,7 +8,9 @@
+ case "${host}" in
+   aarch64*-*-cygwin* | aarch64*-*-mingw* | aarch64*-*-win* )
+ 	TARGET=ARM_WIN64; TARGETDIR=aarch64
+-	MSVC=1
++	if test "${ax_cv_c_compiler_vendor}" = "microsoft"; then
++	  MSVC=1
++	fi
+ 	;;
+ 
+   aarch64*-*-*)
+@@ -256,7 +258,11 @@ case "${TARGET}" in
+ 	SOURCES="ffi.c sysv_msvc_arm32.S"
+ 	;;
+   ARM_WIN64)
+-	SOURCES="ffi.c win64_armasm.S"
++	if test "$MSVC" = 1; then
++		SOURCES="ffi.c win64_armasm.S"
++	else
++		SOURCES="ffi.c sysv.S"
++	fi
+ 	;;
+   MIPS)
+ 	SOURCES="ffi.c o32.S n32.S"
+diff --git a/src/aarch64/ffi.c b/src/aarch64/ffi.c
+index 1ebf43c..2906c20 100644
+--- a/src/aarch64/ffi.c
++++ b/src/aarch64/ffi.c
+@@ -27,7 +27,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.  */
+ #include <ffi.h>
+ #include <ffi_common.h>
+ #include "internal.h"
+-#ifdef _M_ARM64
++#ifdef _WIN32
+ #include <windows.h> /* FlushInstructionCache */
+ #endif
+ 
+@@ -78,7 +78,7 @@ ffi_clear_cache (void *start, void *end)
+   sys_icache_invalidate (start, (char *)end - (char *)start);
+ #elif defined (__GNUC__)
+   __builtin___clear_cache (start, end);
+-#elif defined (_M_ARM64)
++#elif defined (_WIN32)
+   FlushInstructionCache(GetCurrentProcess(), start, (char*)end - (char*)start);
+ #else
+ #error "Missing builtin to flush instruction cache"
+@@ -665,7 +665,7 @@ ffi_call_int (ffi_cif *cif, void (*fn)(void), void *orig_rvalue,
+ 	    if (h)
+ 	      {
+ 		int elems = 4 - (h & 3);
+-#ifdef _M_ARM64 /* for handling armasm calling convention */
++#ifdef _WIN32 /* for handling armasm calling convention */
+                 if (cif->is_variadic)
+                   {
+                     if (state.ngrn + elems <= N_X_ARG_REG)
+@@ -690,7 +690,7 @@ ffi_call_int (ffi_cif *cif, void (*fn)(void), void *orig_rvalue,
+ 		  }
+ 		state.nsrn = N_V_ARG_REG;
+ 		dest = allocate_to_stack (&state, stack, ty->alignment, s);
+-#ifdef _M_ARM64 /* for handling armasm calling convention */
++#ifdef _WIN32 /* for handling armasm calling convention */
+ 	      }
+ #endif /* for handling armasm calling convention */
+ 	      }
+@@ -808,7 +808,7 @@ ffi_prep_closure_loc (ffi_closure *closure,
+   ffi_clear_cache(tramp, tramp + FFI_TRAMPOLINE_SIZE);
+ 
+   /* Also flush the cache for code mapping.  */
+-#ifdef _M_ARM64
++#ifdef _WIN32
+   // Not using dlmalloc.c for Windows ARM64 builds
+   // so calling ffi_data_to_code_pointer() isn't necessary
+   unsigned char *tramp_code = tramp;
+@@ -914,7 +914,7 @@ ffi_closure_SYSV_inner (ffi_cif *cif,
+ 	  if (h)
+ 	    {
+ 	      n = 4 - (h & 3);
+-#ifdef _M_ARM64  /* for handling armasm calling convention */
++#ifdef _WIN32  /* for handling armasm calling convention */
+               if (cif->is_variadic)
+                 {
+                   if (state.ngrn + n <= N_X_ARG_REG)
+@@ -954,7 +954,7 @@ ffi_closure_SYSV_inner (ffi_cif *cif,
+                       avalue[i] = allocate_to_stack(&state, stack,
+                                                    ty->alignment, s);
+                     }
+-#ifdef _M_ARM64  /* for handling armasm calling convention */
++#ifdef _WIN32  /* for handling armasm calling convention */
+                 }
+ #endif  /* for handling armasm calling convention */
+             }
+diff --git a/src/aarch64/ffitarget.h b/src/aarch64/ffitarget.h
+index ecb6d2d..7a8cabe 100644
+--- a/src/aarch64/ffitarget.h
++++ b/src/aarch64/ffitarget.h
+@@ -32,7 +32,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.  */
+ #define FFI_SIZEOF_JAVA_RAW  4
+ typedef unsigned long long ffi_arg;
+ typedef signed long long ffi_sarg;
+-#elif defined(_M_ARM64)
++#elif defined(_WIN32)
+ #define FFI_SIZEOF_ARG 8
+ typedef unsigned long long ffi_arg;
+ typedef signed long long ffi_sarg;
+@@ -69,7 +69,7 @@ typedef enum ffi_abi
+ #define FFI_TRAMPOLINE_CLOSURE_OFFSET FFI_TRAMPOLINE_SIZE
+ #endif
+ 
+-#ifdef _M_ARM64
++#ifdef _WIN32
+ #define FFI_EXTRA_CIF_FIELDS unsigned is_variadic
+ #endif
+ 
+@@ -78,13 +78,13 @@ typedef enum ffi_abi
+ #if defined (__APPLE__)
+ #define FFI_TARGET_SPECIFIC_VARIADIC
+ #define FFI_EXTRA_CIF_FIELDS unsigned aarch64_nfixedargs
+-#elif !defined(_M_ARM64)
++#elif !defined(_WIN32)
+ /* iOS and Windows reserve x18 for the system.  Disable Go closures until
+    a new static chain is chosen.  */
+ #define FFI_GO_CLOSURES 1
+ #endif
+ 
+-#ifndef _M_ARM64
++#ifndef _WIN32
+ /* No complex type on Windows */
+ #define FFI_TARGET_HAS_COMPLEX_TYPE
+ #endif
+diff --git a/src/closures.c b/src/closures.c
+index 5120021..12f8268 100644
+--- a/src/closures.c
++++ b/src/closures.c
+@@ -123,7 +123,7 @@ ffi_closure_free (void *ptr)
+ #  define FFI_MMAP_EXEC_WRIT 1
+ #  define HAVE_MNTENT 1
+ # endif
+-# if defined(X86_WIN32) || defined(X86_WIN64) || defined(_M_ARM64) || defined(__OS2__)
++# if defined(_WIN32) || defined(__OS2__)
+ /* Windows systems may have Data Execution Protection (DEP) enabled, 
+    which requires the use of VirtualMalloc/VirtualFree to alloc/free
+    executable memory. */
+@@ -386,7 +386,7 @@ ffi_closure_free (void *ptr)
+ #endif
+ #include <string.h>
+ #include <stdio.h>
+-#if !defined(X86_WIN32) && !defined(X86_WIN64) && !defined(_M_ARM64)
++#if !defined(_WIN32)
+ #ifdef HAVE_MNTENT
+ #include <mntent.h>
+ #endif /* HAVE_MNTENT */
+@@ -512,11 +512,11 @@ static int dlmalloc_trim(size_t) MAYBE_UNUSED;
+ static size_t dlmalloc_usable_size(void*) MAYBE_UNUSED;
+ static void dlmalloc_stats(void) MAYBE_UNUSED;
+ 
+-#if !(defined(X86_WIN32) || defined(X86_WIN64) || defined(_M_ARM64) || defined(__OS2__)) || defined (__CYGWIN__) || defined(__INTERIX)
++#if !(defined(_WIN32) || defined(__OS2__)) || defined (__CYGWIN__) || defined(__INTERIX)
+ /* Use these for mmap and munmap within dlmalloc.c.  */
+ static void *dlmmap(void *, size_t, int, int, int, off_t);
+ static int dlmunmap(void *, size_t);
+-#endif /* !(defined(X86_WIN32) || defined(X86_WIN64) || defined(__OS2__)) || defined (__CYGWIN__) || defined(__INTERIX) */
++#endif /* !(defined(_WIN32) || defined(__OS2__)) || defined (__CYGWIN__) || defined(__INTERIX) */
+ 
+ #define mmap dlmmap
+ #define munmap dlmunmap
+@@ -526,7 +526,7 @@ static int dlmunmap(void *, size_t);
+ #undef mmap
+ #undef munmap
+ 
+-#if !(defined(X86_WIN32) || defined(X86_WIN64) || defined(_M_ARM64) || defined(__OS2__)) || defined (__CYGWIN__) || defined(__INTERIX)
++#if !(defined(_WIN32) || defined(__OS2__)) || defined (__CYGWIN__) || defined(__INTERIX)
+ 
+ /* A mutex used to synchronize access to *exec* variables in this file.  */
+ static pthread_mutex_t open_temp_exec_file_mutex = PTHREAD_MUTEX_INITIALIZER;
+@@ -908,7 +908,7 @@ segment_holding_code (mstate m, char* addr)
+ }
+ #endif
+ 
+-#endif /* !(defined(X86_WIN32) || defined(X86_WIN64) || defined(_M_ARM64) || defined(__OS2__)) || defined (__CYGWIN__) || defined(__INTERIX) */
++#endif /* !(defined(_WIN32) || defined(__OS2__)) || defined (__CYGWIN__) || defined(__INTERIX) */
+ 
+ /* Allocate a chunk of memory with the given size.  Returns a pointer
+    to the writable address, and sets *CODE to the executable
+diff --git a/src/prep_cif.c b/src/prep_cif.c
+index 06c6544..1db3804 100644
+--- a/src/prep_cif.c
++++ b/src/prep_cif.c
+@@ -129,7 +129,7 @@ ffi_status FFI_HIDDEN ffi_prep_cif_core(ffi_cif *cif, ffi_abi abi,
+   cif->rtype = rtype;
+ 
+   cif->flags = 0;
+-#ifdef _M_ARM64
++#if (defined(_M_ARM64) || defined(__aarch64__)) && defined(_WIN32)
+   cif->is_variadic = isvariadic;
+ #endif
+ #if HAVE_LONG_DOUBLE_VARIANT
+-- 
+2.30.0.windows.2
+
