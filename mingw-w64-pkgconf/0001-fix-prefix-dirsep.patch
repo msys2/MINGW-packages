@@ -1,0 +1,138 @@
+From 4f73f6a1d6a2cb7e599bf136e551526c6531a3f1 Mon Sep 17 00:00:00 2001
+From: Christoph Reiter <reiter.christoph@gmail.com>
+Date: Sat, 20 Mar 2021 11:01:14 +0100
+Subject: [PATCH] Rework path handling on native Windows
+
+The current approach was to parse the .pc and, detect the prefix, throw
+everything together and at the end replace all \ with / to not produce invalid
+escape sequences.
+
+This has the problem that escaping in .pc files is ignored and no longer
+possible. Also in case the prefix path has a space in it the result would be
+invalid because of missing escaping.
+
+This changes the following things:
+
+* We no longer normalize values at the end. Instead we assume .pc files use "/"
+  as a directory separator or "\\", same format as under Unix. "\" alone no
+  longer works. This shouldn't be a problem since most build tools produce .pc
+  files with "/" like meson, cmake, autotools.
+
+* When injecting the prefix at runtime we convert the prefix to use "/" and
+  escape spaces so that in combination with the .pc content the result is a
+  valid escaped path value again.
+
+This patch has been used in MSYS2 for some months now.
+
+See #212
+---
+ libpkgconf/path.c | 13 ------------
+ libpkgconf/pkg.c  | 50 +++++++++++++++++++++++++++++++++++------------
+ 2 files changed, 38 insertions(+), 25 deletions(-)
+
+diff --git a/libpkgconf/path.c b/libpkgconf/path.c
+index 89d2ce0..5884ed7 100644
+--- a/libpkgconf/path.c
++++ b/libpkgconf/path.c
+@@ -331,18 +331,5 @@ pkgconf_path_relocate(char *buf, size_t buflen)
+ 		free(tmpbuf);
+ 	}
+ 
+-#ifdef _WIN32
+-	/*
+-	 * Rewrite any backslash path delimiters for best compatibility.
+-	 * Originally, we did this in cygwin/msys case, but now we build pkgconf
+-	 * natively on Windows without cygwin/msys, so do it in all cases.
+-	 */
+-	for (ti = buf; *ti != '\0'; ti++)
+-	{
+-		if (*ti == '\\')
+-			*ti = '/';
+-	}
+-#endif
+-
+ 	return true;
+ }
+diff --git a/libpkgconf/pkg.c b/libpkgconf/pkg.c
+index f302df3..3eafa6e 100644
+--- a/libpkgconf/pkg.c
++++ b/libpkgconf/pkg.c
+@@ -214,6 +214,37 @@ determine_prefix(const pkgconf_pkg_t *pkg, char *buf, size_t buflen)
+ 	return buf;
+ }
+ 
++/*
++ * Takes a real path and converts it to a pkgconf value. This means normalizing
++ * directory separators and escaping things (only spaces covered atm).
++ *
++ * This is useful for things like prefix/pcfiledir which might get injected
++ * at runtime and are not sourced from the .pc file.
++ *
++ * "C:\foo bar\baz" -> "C:/foo\ bar/baz"
++ * "/foo bar/baz" -> "/foo\ bar/baz"
++ */
++static char *
++convert_path_to_value(const char *path)
++{
++	char *buf = calloc((strlen(path) + 1) * 2, 1);
++	char *bptr = buf;
++	const char *i;
++
++	for (i = path; *i != '\0'; i++)
++	{
++		if (*i == PKG_DIR_SEP_S)
++			*bptr++ = '/';
++		else if (*i == ' ') {
++			*bptr++ = '\\';
++			*bptr++ = *i;
++		} else
++			*bptr++ = *i;
++	}
++
++	return buf;
++}
++
+ static void
+ remove_additional_separators(char *buf)
+ {
+@@ -238,16 +269,6 @@ remove_additional_separators(char *buf)
+ static void
+ canonicalize_path(char *buf)
+ {
+-#ifdef _WIN32
+-	char *p = buf;
+-
+-	while (*p) {
+-		if (*p == '\\')
+-			*p = '/';
+-		p++;
+-	}
+-#endif
+-
+ 	remove_additional_separators(buf);
+ }
+ 
+@@ -294,8 +315,10 @@ pkgconf_pkg_parser_value_set(void *opaque, const size_t lineno, const char *keyw
+ 
+ 		if (relvalue != NULL)
+ 		{
++			char *prefix_value = convert_path_to_value(relvalue);
+ 			pkg->orig_prefix = pkgconf_tuple_add(pkg->owner, &pkg->vars, "orig_prefix", canonicalized_value, true);
+-			pkg->prefix = pkgconf_tuple_add(pkg->owner, &pkg->vars, keyword, relvalue, false);
++			pkg->prefix = pkgconf_tuple_add(pkg->owner, &pkg->vars, keyword, prefix_value, false);
++			free(prefix_value);
+ 		}
+ 		else
+ 			pkgconf_tuple_add(pkg->owner, &pkg->vars, keyword, value, true);
+@@ -376,7 +399,10 @@ pkgconf_pkg_new_from_file(pkgconf_client_t *client, const char *filename, FILE *
+ 	pkg->owner = client;
+ 	pkg->filename = strdup(filename);
+ 	pkg->pc_filedir = pkg_get_parent_dir(pkg);
+-	pkgconf_tuple_add(client, &pkg->vars, "pcfiledir", pkg->pc_filedir, true);
++
++	char *pc_filedir_value = convert_path_to_value(pkg->pc_filedir);
++	pkgconf_tuple_add(client, &pkg->vars, "pcfiledir", pc_filedir_value, true);
++	free(pc_filedir_value);
+ 
+ 	/* make module id */
+ 	if ((idptr = strrchr(pkg->filename, PKG_DIR_SEP_S)) != NULL)
