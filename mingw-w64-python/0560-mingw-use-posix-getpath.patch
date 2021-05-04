@@ -138,6 +138,15 @@ diff -Naur Python-3.9.4-orig/Modules/getpath.c Python-3.9.4/Modules/getpath.c
              path += 2;
          }
          PyStatus status = joinpath(abs_path, path, abs_path_len);
+@@ -384,7 +384,7 @@
+ static PyStatus
+ absolutize(wchar_t **path_p)
+ {
+-    assert(!_Py_isabs(*path_p));
++    assert(!is_absolute(*path_p));
+ 
+     wchar_t abs_path[MAXPATHLEN+1];
+     wchar_t *path = *path_p;
 @@ -610,6 +644,11 @@
       * return the compiled-in defaults instead.
       */
@@ -216,20 +225,17 @@ diff -Naur Python-3.9.4-orig/Modules/getpath.c Python-3.9.4/Modules/getpath.c
          pathconfig->program_full_path = _PyMem_RawWcsdup(pathconfig->program_name);
          if (pathconfig->program_full_path == NULL) {
              return _PyStatus_NO_MEMORY();
-@@ -983,6 +1065,13 @@
+@@ -983,6 +1065,10 @@
+         }
          return _PyStatus_OK();
      }
- #endif /* __APPLE__ */
 +#ifdef MS_WINDOWS
 +    else if(GetWindowsModulePaths(pathconfig->program_full_path)) {
 +    }
 +#endif /* MS_WINDOWS */
-+     else if (calculate->path_env) {
-+         wchar_t *path = calculate->path_env;
-+         while (1) {
  
-     if (calculate->path_env) {
-         wchar_t *abs_path = NULL;
+ #ifdef __APPLE__
+     wchar_t *abs_path = NULL;
 @@ -1007,8 +1096,7 @@
  
  
@@ -249,27 +255,15 @@ diff -Naur Python-3.9.4-orig/Modules/getpath.c Python-3.9.4/Modules/getpath.c
              status = absolutize(&pathconfig->program_full_path);
              if (_PyStatus_EXCEPTION(status)) {
                  return status;
-@@ -1044,9 +1132,8 @@
- }
+@@ -1044,7 +1132,7 @@
+             break;
+         }
  
- 
--#if HAVE_READLINK
--static PyStatus
--resolve_symlinks(wchar_t **path_p)
-+#if defined(HAVE_READLINK) || defined(MS_WINDOWS)
-+PyStatus resolve_symlinks(wchar_t **path_p)
- {
-     wchar_t new_path[MAXPATHLEN + 1];
-     const size_t new_path_len = Py_ARRAY_LENGTH(new_path);
-@@ -1087,7 +1174,7 @@
-     }
-     return _PyStatus_OK();
- }
--#endif /* HAVE_READLINK */
-+#endif /* defined(HAVE_READLINK) || defined(MS_WINDOWS) */
- 
- 
- #ifdef WITH_NEXT_FRAMEWORK
+-        if (_Py_isabs(new_path)) {
++        if (is_absolute(new_path)) {
+             PyMem_RawFree(*path_p);
+             *path_p = _PyMem_RawWcsdup(new_path);
+             if (*path_p == NULL) {
 @@ -1139,6 +1226,7 @@
          status = _PyStatus_NO_MEMORY();
          goto done;
@@ -292,23 +286,36 @@ diff -Naur Python-3.9.4-orig/Modules/getpath.c Python-3.9.4/Modules/getpath.c
  
      calculate->argv0_path = _PyMem_RawWcsdup(pathconfig->program_full_path);
      if (calculate->argv0_path == NULL) {
-@@ -1191,7 +1280,7 @@
+@@ -1191,10 +1280,12 @@
      }
  #endif
  
--    status = resolve_symlinks(&calculate->argv0_path);
-+    status2 = resolve_symlinks(&calculate->argv0_path);
++#if defined(HAVE_READLINK)
+     status = resolve_symlinks(&calculate->argv0_path);
      if (_PyStatus_EXCEPTION(status)) {
          return status;
      }
++#endif
+ 
+     reduce(calculate->argv0_path);
+ 
 @@ -1322,6 +1411,7 @@
          res = _PyStatus_NO_MEMORY();
          goto done;
      }
-+    Py_NormalizeSepsW(zip_path);
++    Py_NormalizeSepsW(calculate->zip_path);
  
      /* Replace "00" with version */
      size_t len = wcslen(calculate->zip_path);
+@@ -1342,7 +1440,7 @@
+     while (1) {
+         wchar_t *delim = wcschr(defpath, DELIM);
+ 
+-        if (!_Py_isabs(defpath)) {
++        if (!is_absolute(defpath)) {
+             /* Paths are relative to prefix */
+             bufsz += prefixsz;
+         }
 @@ -1367,7 +1457,14 @@
      }
  
@@ -324,9 +331,12 @@ diff -Naur Python-3.9.4-orig/Modules/getpath.c Python-3.9.4/Modules/getpath.c
  
      /* Allocate the buffer */
      wchar_t *buf = PyMem_RawMalloc(bufsz * sizeof(wchar_t));
-@@ -1395,7 +1492,7 @@
+@@ -1395,9 +1492,9 @@
+     while (1) {
+         wchar_t *delim = wcschr(defpath, DELIM);
  
-         if (!_Py_isabs(defpath)) {
+-        if (!_Py_isabs(defpath)) {
++        if (!is_absolute(defpath)) {
              wcscat(buf, calculate->prefix);
 -            if (prefixsz >= 2 && calculate->prefix[prefixsz - 2] != SEP &&
 +            if (prefixsz >= 2 && !is_sep(calculate->prefix[prefixsz - 2]) &&
@@ -404,6 +414,15 @@ diff -Naur Python-3.9.4-orig/Modules/getpath.c Python-3.9.4/Modules/getpath.c
      memset(&calculate, 0, sizeof(calculate));
  
      status = calculate_init(&calculate, config);
+@@ -1750,7 +1749,7 @@
+ 
+     /* program_full_path must an either an empty string or an absolute path */
+     assert(wcslen(pathconfig->program_full_path) == 0
+-           || _Py_isabs(pathconfig->program_full_path));
++           || is_absolute(pathconfig->program_full_path));
+ 
+     status = _PyStatus_OK();
+ 
 diff -Naur Python-3.9.4-orig/Modules/posixmodule.c Python-3.9.4/Modules/posixmodule.c
 --- Python-3.9.4-orig/Modules/posixmodule.c	2021-04-04 08:56:53 +0000
 +++ Python-3.9.4/Modules/posixmodule.c	2021-04-25 13:03:43 +0000
