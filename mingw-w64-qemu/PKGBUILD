@@ -1,10 +1,10 @@
 _realname=qemu
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-_base_ver=5.2.0
+_base_ver=6.0.0
 _rc=
 pkgver=${_base_ver}${_rc//-/.}
-pkgrel=2
+pkgrel=1
 pkgdesc="QEMU - a generic and open source machine emulator and virtualizer (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
@@ -48,8 +48,8 @@ depends=(
 optdepends=(
   "${MINGW_PACKAGE_PREFIX}-spice: to enable spice usage"
 )
-source=(https://download.qemu.org/${_realname}-${pkgver}.tar.xz{,.sig})
-sha256sums=('cb18d889b628fbe637672b0326789d9b0e3b8027e0445b936537c78549df17bc' 'SKIP')
+source=(https://download.qemu.org/${_realname}-${pkgver}.tar.xz{,.sig} msys2.readme.txt msys2.examples.tests.sh)
+sha256sums=('87bc1a471ca24b97e7005711066007d443423d19aacda3d442558ae032fa30b9' 'SKIP' 'SKIP' 'SKIP')
 validpgpkeys=('CEACC9E15534EBABB82D3FA03353C9CEF108B584') # Michael Roth <flukshun@gmail.com>
 # tar cannot create links, to keep build running, manual extraction is required
 noextract=(${_realname}-${pkgver}.tar.xz)
@@ -92,14 +92,19 @@ build() {
 
   # configure failes to create links, which can be ignored
   # qemu enables all features if possible, so keep it simple
-  # configuration of paths for win32 is unpredictable:
-  #  => just place into /qemu and relocate in package()
   # For faster testing:
   #TARGETLIST="--target-list=x86_64-softmmu"
+  # configuration of paths for win32 - fixes in package():
+  # intention: leave all core files in one directory - lib/qemu
   ../${_realname}-${pkgver}/configure $TARGETLIST \
     --cross-prefix=${CARCH}-w64-mingw32- \
     --python=${MINGW_PREFIX}/bin/python \
-    --prefix=/qemu
+    --prefix=${MINGW_PREFIX} \
+    --bindir=${MINGW_PREFIX}/lib/qemu \
+    --datadir=${MINGW_PREFIX}/lib/qemu \
+    --localedir=${MINGW_PREFIX}/share/locale \
+    --mandir=${MINGW_PREFIX}/share/man \
+    --docdir=${MINGW_PREFIX}/share/doc/qemu
 
   # Finally build
   make
@@ -107,7 +112,9 @@ build() {
 
 check() {
   cd "${srcdir}"/build-${CARCH}
-  make test
+  # Tests are not performed in CI
+  # For local testing: perform, but do not fail
+  make test || true
 }
 
 package() {
@@ -115,56 +122,50 @@ package() {
   cd "${srcdir}"/build-${CARCH}
   make DESTDIR="${pkgdir}" install
 
-  # qemu was installed somewhere below ${pkgdir}, determine qemu installation dir
-  local P_QEMU=$(find ${pkgdir} -name qemu -type d)
+  # ${MINGW_PREFIX} was installed somewhere below ${pkgdir}, determine ...
+  local P_INSTALL=$(find "${pkgdir}" -name "$(basename ${MINGW_PREFIX})" -type d)
+  # Move directly to ${pkgdir}, if not already there
+  [ -d "${pkgdir}"/${MINGW_PREFIX} ] || mv "$P_INSTALL" "${pkgdir}"/
 
-  # Define and create target dirs for packaing
-  local P_M_LIB="${pkgdir}"/${MINGW_PREFIX}/lib
-  local P_M_BIN="${pkgdir}"/${MINGW_PREFIX}/bin
-  local P_M_SHARE="${pkgdir}"/${MINGW_PREFIX}/share
-  local P_M_MAN="${pkgdir}"/${MINGW_PREFIX}/share/man
-  local P_M_SHARE_QEMU="${pkgdir}"/${MINGW_PREFIX}/share/qemu
-  local P_M_QEMUDOC="${pkgdir}"/${MINGW_PREFIX}/share/doc/qemu
-  local P_M_QEMULICENSES="${pkgdir}"/${MINGW_PREFIX}/share/licenses/qemu
-  mkdir -p $P_M_LIB $P_M_BIN $P_M_SHARE $P_M_MAN $P_M_SHARE_QEMU $P_M_QEMUDOC $P_M_QEMULICENSES
+  # To enable usage relative paths for next operations
+  cd "${pkgdir}"/${MINGW_PREFIX}
 
-  # Move qemu from installation in $P_QEMU to correct $P_M_* dirs
-  mv $P_QEMU/applications $P_M_SHARE/
-  mv $P_QEMU/locale $P_M_SHARE/
-  mv $P_QEMU/icons $P_M_SHARE/
-  mv $P_QEMU/man* $P_M_MAN/
-  mv $P_QEMU/firmware $P_M_SHARE_QEMU/
-  # collect docs and move to $P_M_QEMUDOC
-  mv $P_QEMU/index.html $P_QEMU/system $P_QEMU/user \
-    $P_QEMU/specs $P_QEMU/tools $P_QEMU/interop \
-    $P_M_QEMUDOC/
-  # Now move the binaries incl keymaps
-  mv $P_QEMU $P_M_LIB/
-  rmdir $(dirname $P_QEMU)
+  # Move to standard dirs in share/
+  mv lib/qemu/applications share/
+  mv lib/qemu/icons share/
 
-  # Target /xxx/lib
-  local M_LIB=${MINGW_PREFIX}/lib
-  # Fix firmware descriptors in $P_M_SHARE_QEMU/firmware
-  find $P_M_SHARE_QEMU/firmware -type f -exec \
-    sed -i  "s%\(\"filename\": \"\).*edk2%\1$M_LIB/qemu/edk2%" {} \;
-  # For executables in ${MINGGW_PREFIX}/lib/qemu create wrappers in ${MINGGW_PREFIX}/bin
-  local P_M_LIBEXES=$(find $P_M_LIB -name "*.exe" ! -name "*w.exe")
-  local P_M_LIBEXE=""
-  for P_M_LIBEXE in $P_M_LIBEXES
+  # Fix firmware descriptors
+  # see https://bugzilla.redhat.com/show_bug.cgi?id=1728652#c7
+  mkdir -p share/qemu
+  mv lib/qemu/firmware share/qemu/
+  find share/qemu/firmware -type f -exec \
+    sed -i "s%\(\"filename\"\s*:\s*\"\).*edk2%\1${MINGW_PREFIX}/lib/qemu/edk2%" {} \;
+
+  # For executables in lib/qemu/ create wrappers in bin/
+  mkdir -p bin
+  local LIBEXES=$(find lib/qemu -name "*.exe" ! -name "*w.exe")
+  local LIBEXE=""
+  for LIBEXE in $LIBEXES
   do
-    local EXE=$(basename $P_M_LIBEXE)
-    local WRAPPER=$P_M_BIN/$EXE
-    echo "#!/bin/bash"                       >> $WRAPPER
-    echo "export PATH=\"$M_LIB/qemu:$PATH\"" >> $WRAPPER
-    echo "exec $M_LIB/qemu/$EXE \"\$@\""     >> $WRAPPER
+    local EXE=$(basename $LIBEXE)
+    local WRAPPER=bin/$EXE
+    echo "#!/bin/bash"                                    >> $WRAPPER
+    echo "export PATH=\"${MINGW_PREFIX}/lib/qemu:$PATH\"" >> $WRAPPER
+    echo "exec ${MINGW_PREFIX}/lib/qemu/$EXE \"\$@\""     >> $WRAPPER
     chmod u+x $WRAPPER
   done
 
-  # Add all licenses found in qemu sources
-  cd "${srcdir}"/${_realname}-${pkgver}
-  tar -c $(
-    find -iname "*COPYING*" -or -iname "*LICENSE*" |
+  # Add all licenses found in qemu sources to share/licences/qemu/
+  mkdir -p share/licenses/qemu
+  tar -C "${srcdir}"/${_realname}-${pkgver} -c $(
+    cd "${srcdir}"/${_realname}-${pkgver} &&
+      find -iname "*COPYING*" -or -iname "*LICENSE*" |
+      grep -v "\s" |
       egrep -v "meson.(test|msi|doc)" |
       egrep -v "(license.c|relicense.pl|license.doctree|LicenseCheck)"
-    ) | tar -C "$P_M_QEMULICENSES" -x
+    ) | tar -C share/licenses/qemu -x
+
+  # Add msys2 docs
+  cp -p "${srcdir}"/msys2.readme.txt share/doc/qemu/
+  cp -p "${srcdir}"/msys2.examples.tests.sh share/doc/qemu/
 }
