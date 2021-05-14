@@ -49,17 +49,29 @@ function execute {
 }
 
 function killvm {
-	local PIDS=$(ps | grep qemu-system | sed "s/^\s*//" | sed "s/\s.*//")
-	local PID
-	for PID in $PIDS
-	do
-		echo "Killing VM $PID"
-		kill $PID
-	done
+	# $ ps aux
+	#      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND
+	#     2053    1918    1918       2032  pty0      197609 18:53:23 /usr/bin/bash
+	#     2060    2053    1918       5904  pty0      197609 18:53:23 /mingw64/lib/qemu/qemu-system-x86_64
+	# VMPID is either PID of wrapper which called qemu-system-* or qemu-system-*
+	# In both cases it allows to filter for the correct qemu-system-*
+	# Filter for qemu-system-* and extract PID:
+	local QEMUPID=$(ps aux | grep qemu-system | grep $VMPID | sed "s/^\s*//" | sed "s/\s.*//")
+	if [ "" != "$QEMUPID" ]
+	then
+		echo "Killing background qemu $QEMUPID"
+		kill $QEMUPID
+	else
+		echo "No background qemu PID determined. Stopping $0"
+		ps aux
+		exit 1
+	fi
 	sleep 2
 }
 
 function executeVnc {
+	# Previous cmd was 'execute qemu-system-*'
+	local VMPID=$!
 	sleep 2
 	echo
 	echo "================================================================================"
@@ -71,6 +83,8 @@ function executeVnc {
 }
 
 function executeSpicy {
+	# Previous cmd was 'execute qemu-system-*'
+	local VMPID=$!
 	sleep 2
 	echo
 	echo "================================================================================"
@@ -571,13 +585,14 @@ execute qemu-system-aarch64 -kernel day21/bootstrap.elf -nographic -cpu cortex-a
 }
 
 function qemu2018day22 {
-#echo "Won't work, because root=/dev/hda is converted to root=d:/.../dev/hda somehow"
 download https://www.qemu-advent-calendar.org/2018/download/day22.tar.xz
 tar -xf day22.tar.xz
 cat day22/adv-cal.txt
+export MSYS2_ARG_CONV_EXCL='*'
 execute qemu-system-mips64 -net none -parallel none -M malta -device ES1370 \
         -device usb-kbd -device usb-mouse -device cirrus-vga,vgamem_mb=16 \
         -hda day22/ri-li.qcow2 -kernel day22/vmlinux -append root=/dev/hda
+unset MSYS2_ARG_CONV_EXCL
 }
 
 function qemu2018day23 {
@@ -873,16 +888,17 @@ execute qemu-system-i386 -hda fractal-mbr/phosphene.mbr $(accel)
 }
 
 function qemu2014day05 {
-# Won't work, because root=/dev/vda2 is converted to root=d:/.../dev/vda2 somehow
 download https://www.qemu-advent-calendar.org/2014/download/arm64.tar.xz
 tar -xf arm64.tar.xz
 cat arm64/README
 (
 	cd arm64 ; 
+	export MSYS2_ARG_CONV_EXCL='*'
 	execute qemu-system-aarch64 -m 1024 -cpu cortex-a57 -machine virt -nographic -kernel Image \
 		-append 'root=/dev/vda2 rw rootwait mem=1024M console=ttyAMA0,38400n8' \
 		-drive if=none,id=image,file=armv8.qcow2 -netdev user,id=user0,hostfwd=tcp::5555-:22 \
 		-device virtio-net-device,netdev=user0 -device virtio-blk-device,drive=image
+	unset MSYS2_ARG_CONV_EXCL
 )
 }
 
