@@ -9,7 +9,9 @@ import sys
 import tarfile
 import tempfile
 import typing
+from contextlib import contextmanager
 from pathlib import Path
+from sys import stdout
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__file__)
@@ -86,18 +88,29 @@ def run_pip_check(pkg: str) -> None:
     logger.info("All dependencies are correct satisfied for %s", pkg)
 
 
-def main():
-    print("::group:: Outputs")
-    for pkgloc in ARTIFACTS_LOCATION.glob("*.pkg.tar.*"):
-        pkgname = "-".join(pkgloc.name.split("-")[:-3])
-        logger.info("Pkgname: %s", pkgname)
-        logger.info("Installing Package.")
-        install_package(pkgloc, local=True)
-        rdeps = get_rdeps(pkgname)
-        for dep in rdeps:
-            install_package(dep, local=False)
+@contextmanager
+def gha_group(title: str) -> typing.Generator:
+    print(f"\n::group::{title}")
+    stdout.flush()
+    try:
+        yield
+    finally:
         print("::endgroup::")
-        run_pip_check(pkgname)
+        stdout.flush()
+
+
+def main():
+    for pkgloc in ARTIFACTS_LOCATION.glob("*.pkg.tar.*"):
+        with gha_group(f"Debug: {pkgloc.name}"):
+            pkgname = "-".join(pkgloc.name.split("-")[:-3])
+            logger.info("Pkgname: %s", pkgname)
+            logger.info("Installing Package.")
+            install_package(pkgloc, local=True)
+            rdeps = get_rdeps(pkgname)
+            for dep in rdeps:
+                install_package(dep, local=False)
+        with gha_group(f"Pip Output: {pkgloc.name}"):
+            run_pip_check(pkgname)
 
 
 def check_whether_we_should_run() -> bool:
