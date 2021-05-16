@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 
+import argparse
+import logging
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
 import typing
 from pathlib import Path
-import logging
-import subprocess
-import re
-import sys
-import argparse
-import tempfile
-import tarfile
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__file__)
@@ -76,13 +77,13 @@ def run_pip_check(pkg: str) -> None:
         text=True,
     )
     if p.returncode != 0:
-        logger.error("Pip Check Failed for %s",pkg)
+        logger.error("Pip Check Failed for %s", pkg)
         logger.error("Running `pip check` didn't suceed. Maybe missing dependencies?")
         logger.error("Here is what it failed.")
         logger.error(p.stdout)
         logger.error(p.stderr)
         sys.exit(1)
-    logger.info("All dependencies are correct satisfied for %s",pkg)
+    logger.info("All dependencies are correct satisfied for %s", pkg)
 
 
 def main():
@@ -97,8 +98,6 @@ def main():
             install_package(dep, local=False)
         print("::endgroup::")
         run_pip_check(pkgname)
-    else:
-        pass
 
 
 def check_whether_we_should_run() -> bool:
@@ -112,11 +111,14 @@ def check_whether_we_should_run() -> bool:
     # try using zstd, it's installed by default on GHA machines
     for pkgloc in ARTIFACTS_LOCATION.glob("*.pkg.tar.*"):
         with tempfile.TemporaryDirectory() as tempdir:
+            shutil.copy(pkgloc, tempdir)
             subprocess.run(
-                ["zstd", "-d", str(pkgloc.absolute())], check=True, cwd=tempdir
+                ["zstd", "-d", str(Path(tempdir, pkgloc.name))],
+                check=True,
+                cwd=tempdir,
             )
-            with open(Path(tempdir, pkgloc.stem), "rb") as f:
-                with tarfile.open(fileobj=f, mode="r") as tar:
+            with open(Path(tempdir, pkgloc.stem), "rb") as file:
+                with tarfile.open(fileobj=file, mode="r") as tar:
                     for mem in tar.getmembers():
                         if "mingw64/lib/python" in mem.name:
                             return True
