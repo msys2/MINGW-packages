@@ -43,27 +43,42 @@ function download {
 
 function execute {
 	echo "--------------------------------------------------------------------------------"
+	[ -n "$MSYS2_ARG_CONV_EXCL" ] && echo "export MSYS2_ARG_CONV_EXCL=\"$MSYS2_ARG_CONV_EXCL\""
 	echo ${@} | fold -s -
+	[ -n "$MSYS2_ARG_CONV_EXCL" ] && echo "unset MSYS2_ARG_CONV_EXCL"
 	echo "--------------------------------------------------------------------------------"
+	if [ -n "$KILLMSG" ]
+	then
+		echo
+		echo "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
+		echo "To continue, kill Qemu process (eg. using Windows Task Manager)"
+		echo "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
+		echo
+		sleep 5
+	fi
 	"${@}"
 }
 
 function killvm {
+	local ORIGIN=$1
 	# $ ps aux
 	#      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND
 	#     2053    1918    1918       2032  pty0      197609 18:53:23 /usr/bin/bash
 	#     2060    2053    1918       5904  pty0      197609 18:53:23 /mingw64/lib/qemu/qemu-system-x86_64
 	# VMPID is either PID of wrapper which called qemu-system-* or qemu-system-*
 	# In both cases it allows to filter for the correct qemu-system-*
-	# Filter for qemu-system-* and extract PID:
-	local QEMUPID=$(ps aux | grep qemu-system | grep $VMPID | sed "s/^\s*//" | sed "s/\s.*//")
-	if [ "" != "$QEMUPID" ]
+	# Filter for qemu-system-* and given VMPID and extract QEMUPID from line:
+	local QEMUPID=$(ps aux | grep -v grep | grep qemu-system | grep "\b$VMPID\b" | sed "s/^\s*//" | sed "s/\s.*//")
+	if [ -n "$VMPID" ] && [ -n "$QEMUPID" ]
 	then
-		echo "Killing background qemu $QEMUPID"
+		echo "Killing identified $ORIGIN Qemu process $QEMUPID"
 		kill $QEMUPID
-	else
-		echo "No background qemu PID determined. Stopping $0"
-		ps aux
+	elif ps aux | grep -v grep | grep qemu-system
+	then
+		echo
+		echo "Couldn't identify $ORIGIN Qemu process, but found unknown Qemu processes."
+		echo "Stopping $0"
+		echo
 		exit 1
 	fi
 	sleep 2
@@ -74,12 +89,12 @@ function executeVnc {
 	local VMPID=$!
 	sleep 2
 	echo
-	echo "================================================================================"
-	echo "Execute external vnc client using port 5905! VM gets killed pressing RETURN!"
-	echo "================================================================================"
+	echo "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
+	echo "Execute external vnc client using port 5905 - Kill VM / Continue pressing RETURN"
+	echo "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
 	echo
 	read TEST
-	killvm
+	killvm VNC
 }
 
 function executeSpicy {
@@ -87,18 +102,24 @@ function executeSpicy {
 	local VMPID=$!
 	sleep 2
 	echo
-	echo "================================================================================"
-	echo "For best desktop experiance in Linux VM use spice-vdagent after HD-Install"
-	echo "--------------------------------------------------------------------------------"
-	echo "* openSUSE/SLES: sudo zypper install spice-vdagent (already in LiveImage)"
-	echo "* Debian/Ubuntu: sudo apt install spice-vdagent"
-	echo "* CentOS/RHEL:   sudo yum install spice-vdagent"
-	echo
-	echo "        ==> Escape from spice-window by pressing F10 or Shift-L F12 <=="
-	echo "================================================================================"
+	if [ "$BLOCK" == "DVD" ]
+	then
+		echo "--------------------------------------------------------------------------------"
+		echo "openSUSE Leap Live was choosen as example because it includes spice guest tools."
+		echo "For optimal spice desktop experience guest tools installation is recommended:"
+		echo " * Linux: spice-vdagent (included in Linux distribution)"
+		echo " * Windows: spice-guest-tools - see https://www.spice-space.org/download.html"
+		echo "--------------------------------------------------------------------------------"
+		echo
+	fi
+	echo "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
+	echo "When screen of spice display blanks, enlarge to see progress. Please be patient!"
+	echo "            Escape from spice display by pressing F10 or Shift-L F12"
+	echo "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
 	echo
 	spicy -h localhost -p 5905 2> /dev/null
-	killvm
+	sleep 1
+	killvm SPICE
 }
 
 function installPackage {
@@ -150,6 +171,24 @@ function perform {
 		echo
 		$FUN
 	fi
+}
+
+function extractReadme {
+	local FILE=$1
+	[ -f "$FILE" ] || return 0
+	local TXT=0
+	local EOF
+	local LINE
+	cat $FILE | while read LINE
+	do
+		echo "$LINE" | grep EOF &> /dev/null && EOF=1 || EOF=0
+		if [ "$TXT" == "1" ]
+		then
+			[ "$EOF" == "1" ] && return || echo "$LINE"
+		else
+			[ "$EOF" == "1" ] && TXT=1
+		fi
+	done
 }
 
 function accel {
@@ -317,18 +356,14 @@ function qemu2020day07 {
 download https://www.qemu-advent-calendar.org/2020/download/day07.tar.gz
 tar -xf day07.tar.gz
 cat day07/README
-# -nic model=pcnet FAIL
-#execute qemu-system-i386 -hda day07/visopsys-0.9-usb.img -nic model=pcnet
-#execute qemu-system-i386 -nic model=help
-# -nic model=ne2k_pci PASSES
-execute qemu-system-i386 -hda day07/visopsys-0.9-usb.img -nic model=ne2k_pci
+execute qemu-system-i386 -drive file=day07/visopsys-0.9-usb.img,format=raw -nic model=ne2k_pci
 }
 
 function qemu2020day08 {
 download https://www.qemu-advent-calendar.org/2020/download/day08.tar.gz
 tar -xf day08.tar.gz
 cat day08/README
-execute qemu-system-x86_64 -hda day08/fountain.bin
+execute qemu-system-x86_64 -drive file=day08/fountain.bin,format=raw
 }
 
 function qemu2020day12 {
@@ -383,14 +418,15 @@ function qemu2020day18 {
 download https://www.qemu-advent-calendar.org/2020/download/day18.tar.gz
 tar -xf day18.tar.gz
 cat doom/README
-execute qemu-system-x86_64 -hda doom/doom.img
+execute qemu-system-x86_64 -drive file=doom/doom.img,format=raw
 }
 
 function qemu2020day19 {
 download https://www.qemu-advent-calendar.org/2020/download/day19.tar.gz
 tar -xf day19.tar.gz
 cat aflatoxin/adv-cal.txt
-execute qemu-system-i386 -net none -soundhw pcspk -drive file=aflatoxin/AFLAtoxin.bin,format=raw,if=floppy
+execute qemu-system-i386 -net none -audiodev dsound,id=dsound -machine pcspk-audiodev=dsound \
+	-drive file=aflatoxin/AFLAtoxin.bin,format=raw,if=floppy
 }
 
 function qemu2020day20 {
@@ -438,7 +474,8 @@ function qemu2018day01 {
 download https://www.qemu-advent-calendar.org/2018/download/day01.tar.xz
 tar -xf day01.tar.xz
 cat day01/adv-cal.txt
-execute qemu-system-i386 -net none -soundhw pcspk -drive file=day01/fbird.img,format=raw,if=floppy
+execute qemu-system-i386 -net none -audiodev dsound,id=dsound -machine pcspk-audiodev=dsound \
+	-drive file=day01/fbird.img,format=raw,if=floppy
 }
 
 function qemu2018day02 {
@@ -468,8 +505,8 @@ function qemu2018day05 {
 download https://www.qemu-advent-calendar.org/2018/download/day05.tar.xz
 tar -xf day05.tar.xz
 cat day05/readme.txt
-execute qemu-system-i386 -drive file=day05/pc-mos.img,format=raw,if=floppy -soundhw pcspk \
-	-rtc base="1994-12-05T09:00:00"
+execute qemu-system-i386 -drive file=day05/pc-mos.img,format=raw,if=floppy \
+	-audiodev dsound,id=dsound -machine pcspk-audiodev=dsound -rtc base="1994-12-05T09:00:00"
 }
 
 function qemu2018day06 {
@@ -491,7 +528,8 @@ function qemu2018day08 {
 download https://www.qemu-advent-calendar.org/2018/download/day08.tar.xz
 tar -xf day08.tar.xz
 cat day08/readme.txt
-execute qemu-system-i386 -m 32 -M isapc $(accel) -cpu pentium -no-acpi -soundhw pcspk \
+execute qemu-system-i386 -m 32 -M isapc $(accel) -cpu pentium -no-acpi \
+	-audiodev dsound,id=dsound -machine pcspk-audiodev=dsound \
 	-net nic,model=ne2k_isa -net user -drive if=ide,file=day08/hd.qcow2
 }
 
@@ -522,7 +560,7 @@ download https://www.qemu-advent-calendar.org/2018/download/day13.tar.xz
 tar -xf day13.tar.xz
 cat day13/adv-cal.txt
 execute qemu-system-mips -net none -parallel none -M malta -kernel day13/vmlinux \
-	-device usb-kbd -device usb-mouse -vga cirrus -soundhw es1370
+	-device usb-kbd -device usb-mouse -vga cirrus -device ES1370
 }
 
 function qemu2018day14 {
@@ -558,6 +596,7 @@ function qemu2018day18 {
 download https://www.qemu-advent-calendar.org/2018/download/day18.tar.xz
 tar -xf day18.tar.xz
 cat day18/adv-cal.txt
+local KILLMSG=1
 execute qemu-system-arm -M canon-a1100 -net none -display none -serial stdio -bios day18/barebox.canon-a1100.bin
 }
 
@@ -580,6 +619,7 @@ function qemu2018day21 {
 download https://www.qemu-advent-calendar.org/2018/download/day21.tar.xz
 tar -xf day21.tar.xz
 cat day21/README.txt
+local KILLMSG=1
 execute qemu-system-aarch64 -kernel day21/bootstrap.elf -nographic -cpu cortex-a57 -m 1024 \
 	-net none -M virt,virtualization=true
 }
@@ -606,14 +646,16 @@ function qemu2016day01 {
 download https://www.qemu-advent-calendar.org/2016/download/day01.tar.xz
 tar -xf day01.tar.xz
 cat mikeos/readme.txt
-execute qemu-system-i386 -drive file=mikeos/mikeos.flp,format=raw,if=floppy -soundhw pcspk
+execute qemu-system-i386 -drive file=mikeos/mikeos.flp,format=raw,if=floppy \
+	-audiodev dsound,id=dsound -machine pcspk-audiodev=dsound
 }
 
 function qemu2016day03 {
 download https://www.qemu-advent-calendar.org/2016/download/day03.tar.xz
 tar -xf day03.tar.xz
 cat freegem/readme.txt
-execute qemu-system-i386 $(accel) -m 32 -hda freegem/freegem.qcow2 -soundhw pcspk
+execute qemu-system-i386 $(accel) -m 32 -hda freegem/freegem.qcow2 \
+	-audiodev dsound,id=dsound -machine pcspk-audiodev=dsound
 }
 
 function qemu2016day04 {
@@ -638,7 +680,8 @@ function qemu2016day07 {
 download https://www.qemu-advent-calendar.org/2016/download/day07.tar.xz
 tar -xf day07.tar.xz
 cat sorry-ass/readme.txt
-execute qemu-system-i386 -drive file=sorry-ass/sorryass.bin,format=raw,if=floppy -soundhw pcspk
+execute qemu-system-i386 -drive file=sorry-ass/sorryass.bin,format=raw,if=floppy \
+	-audiodev dsound,id=dsound -machine pcspk-audiodev=dsound
 }
 
 function qemu2016day09 {
@@ -675,6 +718,7 @@ function qemu2016day14 {
 download https://www.qemu-advent-calendar.org/2016/download/day14.tar.xz
 tar -xf day14.tar.xz
 cat acorn/readme.txt
+local KILLMSG=1
 execute qemu-system-x86_64 $(accel) -net nic,model=virtio -net user,hostfwd=tcp::8080-:80 \
 	-smp 4 -nographic -m 128 -drive file=acorn/acorn.img,format=raw,if=ide -k en-us
 }
@@ -767,6 +811,7 @@ cat day24/readme.txt
 function qemu2014day24 {
 download https://www.qemu-advent-calendar.org/2014/download/day24.tar.xz
 tar -xf day24.tar.xz
+extractReadme day24/run
 (
 	cd day24 ; 
 	execute qemu-system-i386 $(accel) -kernel kernel \
@@ -777,6 +822,7 @@ tar -xf day24.tar.xz
 function qemu2014day23 {
 download https://www.qemu-advent-calendar.org/2014/download/pebble-qemu-preview.tar.xz
 tar -xf pebble-qemu-preview.tar.xz
+extractReadme pebble-qemu-preview/run
 cat pebble-qemu-preview/README
 execute qemu-system-x86_64 $(accel) -rtc base=localtime -vga std -m 256 -usb \
 	-hda pebble-qemu-preview/pebble_qemu_preview.vdi
@@ -785,6 +831,8 @@ execute qemu-system-x86_64 $(accel) -rtc base=localtime -vga std -m 256 -usb \
 function qemu2014day22 {
 download https://www.qemu-advent-calendar.org/2014/download/s390-moon-buggy.tar.xz
 tar -xf s390-moon-buggy.tar.xz
+extractReadme s390-moon-buggy/run
+local KILLMSG=1
 execute qemu-system-s390x -nographic -kernel s390-moon-buggy/s390-bb.kernel \
 	-initrd s390-moon-buggy/s390-moon-buggy.initrd
 }
@@ -792,6 +840,7 @@ execute qemu-system-s390x -nographic -kernel s390-moon-buggy/s390-bb.kernel \
 function qemu2014day20 {
 download https://www.qemu-advent-calendar.org/2014/download/helenos.tar.xz
 tar -xf helenos.tar.xz
+extractReadme helenos/run
 execute qemu-system-x86_64 $(accel) -net nic,model=e1000 \
 	-net user,hostfwd=::2223-:2223,hostfwd=::8080-:8080 \
 	-usb -device intel-hda -device hda-duplex -boot d -cdrom helenos/HelenOS-0.6.0-rc3-amd64.iso
@@ -800,12 +849,14 @@ execute qemu-system-x86_64 $(accel) -net nic,model=e1000 \
 function qemu2014day19 {
 download https://www.qemu-advent-calendar.org/2014/download/mandelbrot.tar.xz
 tar -xf mandelbrot.tar.xz
+extractReadme mandelbrot/run
 execute qemu-system-ppc64 -M mac99 -drive file=mandelbrot/mandelbrot.raw,format=raw
 }
 
 function qemu2014day18 {
 download https://www.qemu-advent-calendar.org/2014/download/ceph.tar.xz
 tar -xf ceph.tar.xz
+extractReadme ceph/run
 execute qemu-system-x86_64 $(accel) -m 1024M -drive file=ceph/ceph.qcow2,format=qcow2 \
 	-netdev user,id=net0,hostfwd=tcp::10022-:22 -device virtio-net-pci,netdev=net0
 }
@@ -813,62 +864,72 @@ execute qemu-system-x86_64 $(accel) -m 1024M -drive file=ceph/ceph.qcow2,format=
 function qemu2014day17 {
 download https://www.qemu-advent-calendar.org/2014/download/bb_debian.tar.xz
 tar -xf bb_debian.tar.xz
+extractReadme bb_debian/run
 execute qemu-system-i386 $(accel) -m 512 -vga std -device intel-hda -device hda-duplex bb_debian/bb_debian.qcow2
 }
 
 function qemu2014day16 {
 download https://www.qemu-advent-calendar.org/2014/download/tempest-showroom.tar.xz
 tar -xf tempest-showroom.tar.xz
+extractReadme tempest-showroom/run
 execute qemu-system-i386 $(accel) -cdrom tempest-showroom/tempest-showroom_v0.9.7.iso
 }
 
 function qemu2014day15 {
 download https://www.qemu-advent-calendar.org/2014/download/plan9.tar.xz
 tar -xf plan9.tar.xz
+extractReadme plan9/run
 execute qemu-system-i386 $(accel) -m 1024 plan9/plan9.qcow2
 }
 
 function qemu2014day14 {
 download https://www.qemu-advent-calendar.org/2014/download/invaders.tar.xz
 tar -xf invaders.tar.xz
+extractReadme invaders/run
 execute qemu-system-x86_64 $(accel) -kernel invaders/invaders.exec
 }
 
 function qemu2014day13 {
 download https://www.qemu-advent-calendar.org/2014/download/2nd-reality.tar.xz
 tar -xf 2nd-reality.tar.xz
+extractReadme 2nd-reality/run
 execute qemu-system-i386 -vga std,retrace=precise -device gus 2nd-reality/2nd-reality.qcow2
 }
 
 function qemu2014day12 {
 download https://www.qemu-advent-calendar.org/2014/download/oberon.tar.xz
 tar -xf oberon.tar.xz
+extractReadme oberon/run
 execute qemu-system-i386 $(accel) oberon/oberon.qcow2
 }
 
 function qemu2014day11 {
 download https://www.qemu-advent-calendar.org/2014/download/osv-redis.tar.xz
 tar -xf osv-redis.tar.xz
+extractReadme osv-redis/run
 execute qemu-system-x86_64 $(accel) -m 256 \
                         -netdev user,id=user0,hostfwd=tcp::18000-:8000,hostfwd=tcp::16379-:6379 \
                         -device virtio-net-pci,netdev=user0 \
                         osv-redis/osv-redis-memonly-v0.16.qemu.qcow2 &
-sleep 15
-echo "================================================================================"
-echo "Open Browser with http://localhost:18000/"
-echo "================================================================================"
+sleep 1
+echo "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
+echo "Open Browser with http://localhost:18000/ on 'Server started' message"
+echo "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
 wait
 }
 
 function qemu2014day10 {
 download https://www.qemu-advent-calendar.org/2014/download/512.tar.xz
 tar -xf 512.tar.xz
-execute qemu-system-x86_64 -cpu Nehalem $(accel) -vga std -soundhw pcspk -fda 512/512.img
+extractReadme 512/run
+execute qemu-system-x86_64 -cpu Nehalem $(accel) -vga std -audiodev dsound,id=dsound \
+	-machine pcspk-audiodev=dsound -drive file=512/512.img,if=floppy,format=raw
 }
 
 function qemu2014day09 {
 download https://www.qemu-advent-calendar.org/2014/download/ubuntu-core-alpha.tar.xz
 tar -xf ubuntu-core-alpha.tar.xz
+extractReadme ubuntu-core-alpha/run
 execute qemu-system-x86_64 $(accel) -m 1024 \
                         -drive if=virtio,file=ubuntu-core-alpha/ubuntu-core-alpha-01.img,format=qcow2 \
                         -netdev user,id=user0,hostfwd=tcp::18000-:80,hostfwd=tcp::12222-:22 \
@@ -878,18 +939,22 @@ execute qemu-system-x86_64 $(accel) -m 1024 \
 function qemu2014day07 {
 download https://www.qemu-advent-calendar.org/2014/download/qemu-xmas-minix3.tar.xz
 tar -xf qemu-xmas-minix3.tar.xz
+extractReadme qemu-xmas-minix3/run.sh
 execute qemu-system-x86_64 qemu-xmas-minix3/minix3.qcow2
 }
 
 function qemu2014day06 {
 download https://www.qemu-advent-calendar.org/2014/download/fractal-mbr.tar.xz
 tar -xf fractal-mbr.tar.xz
-execute qemu-system-i386 -hda fractal-mbr/phosphene.mbr $(accel)
+extractReadme fractal-mbr/run
+execute qemu-system-i386 -drive file=fractal-mbr/phosphene.mbr,format=raw $(accel)
 }
 
 function qemu2014day05 {
 download https://www.qemu-advent-calendar.org/2014/download/arm64.tar.xz
 tar -xf arm64.tar.xz
+extractReadme arm64/run
+local KILLMSG=1
 cat arm64/README
 (
 	cd arm64 ; 
@@ -905,18 +970,21 @@ cat arm64/README
 function qemu2014day04 {
 download https://www.qemu-advent-calendar.org/2014/download/stxmas.tar.xz
 tar -xf stxmas.tar.xz
-execute qemu-system-i386 -device ES1370 stxmas/stxmas.img
+extractReadme stxmas/run
+execute qemu-system-i386 -drive file=stxmas/stxmas.img,format=raw -device ES1370
 }
 
 function qemu2014day03 {
 download https://www.qemu-advent-calendar.org/2014/download/pi.tar.xz
 tar -xf pi.tar.xz
-execute qemu-system-i386 pi/pi.vfd
+extractReadme pi/run
+execute qemu-system-i386 -drive file=pi/pi.vfd,format=raw
 }
 
 function qemu2014day02 {
 download https://www.qemu-advent-calendar.org/2014/download/freedos.tar.xz
 tar -xf freedos.tar.xz
+extractReadme freedos/run
 execute qemu-system-i386 freedos/freedos.qcow2
 }
 
@@ -924,6 +992,7 @@ function qemu2014day01 {
 download https://www.qemu-advent-calendar.org/2014/download/qemu-xmas-slackware.tar.xz
 tar -xf qemu-xmas-slackware.tar.xz
 xzcat qemu-xmas-slackware/slackware.qcow2.xz > qemu-xmas-slackware/slackware.qcow2
+extractReadme qemu-xmas-slackware/run
 cat qemu-xmas-slackware/README
 execute qemu-system-x86_64 $(accel) -m 16M -drive if=ide,format=qcow2,file="qemu-xmas-slackware/slackware.qcow2" \
 	-netdev user,id=slirp -device ne2k_isa,netdev=slirp -serial stdio "$@"
@@ -1038,6 +1107,7 @@ case $BLOCK in
 		perform qemuInstalledDesktopSPICE2
 		;;
 	*)
+		BLOCK=DVD
 		DIR=$BASE/qemu-desktop
 		installPackage spice
 		installPackage spice-gtk
