@@ -18,7 +18,7 @@ logger = logging.getLogger(__file__)
 
 ARTIFACTS_LOCATION = Path("C:/_/artifacts")
 RDEPS_REGEX = re.compile(
-    r"Required By\s*:\s*(?P<rdeps>[\s\-_A-za-z1-9]*)Optional For\s*:\s*None"
+    r"Required By\s*:\s*(?P<rdeps>[\s\S]*)Optional For\s*:\s*"
 )
 
 
@@ -109,16 +109,19 @@ def main():
             rdeps = get_rdeps(pkgname)
             for dep in rdeps:
                 install_package(dep, local=False)
-        with gha_group(f"Pip Output: {pkgloc.name}"):
-            run_pip_check(pkgname)
+    with gha_group(f"Pip Output: {pkgloc.name}"):
+        run_pip_check(pkgname)
 
 
 def check_whether_we_should_run() -> bool:
     if not ARTIFACTS_LOCATION.exists():
         return False
     for pkgloc in ARTIFACTS_LOCATION.glob("*.pkg.tar.*"):
-        if "-python-" in pkgloc.name:
+        pkgname = "-".join(pkgloc.name.split("-")[:-3])
+        if "-python-" in pkgname:
             return True
+        elif pkgname == "mingw-w64-x86_64-python":
+            return False
     # now this is compilcated
     # need to find file listing in the package.
     # try using zstd, it's installed by default on GHA machines
