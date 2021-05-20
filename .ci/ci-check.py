@@ -57,7 +57,7 @@ def install_package(pkg: typing.Union[Path, str], local: bool) -> None:
 
 def get_rdeps(pkg: str) -> typing.List[str]:
     p = subprocess.run(
-        ["pacman", "-Sii", pkg],
+        ["pacman", "-Qi", pkg],
         capture_output=True,
         text=True,
         check=True,
