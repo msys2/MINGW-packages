@@ -139,6 +139,16 @@ list_packages() {
     return 0
 }
 
+install_packages() {
+    if [ -f .ci-sequential ]; then
+        for pkg in *.pkg.tar.*; do
+            pacman --noprogressbar --upgrade --noconfirm $pkg
+        done
+    else
+        pacman --noprogressbar --upgrade --noconfirm *.pkg.tar.*
+    fi
+}
+
 # Recipe quality
 check_recipe_quality() {
     # TODO: remove this option when not anymore needed

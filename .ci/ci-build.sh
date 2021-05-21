@@ -40,7 +40,7 @@ for package in "${packages[@]}"; do
     echo "::endgroup::"
 
     echo "::group::[install] ${package}"
-    execute 'Installing' yes:pacman --noprogressbar --upgrade '*.pkg.tar.*'
+    execute 'Installing' install_packages
     echo "::endgroup::"
 
     echo "::group::[diff] ${package}"
