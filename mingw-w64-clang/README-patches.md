@@ -15,6 +15,7 @@ Legend:
 - `"0008-enable-emutls-for-mingw.patch"` :grey_exclamation:
 - `"0010-mbig-obj-for-all.patch"` :arrow_up_small:
 - `"0011-nm-version-option.patch"` :arrow_down_small:
+- `"0012-windres.patch"` :arrow_down_small:
 - `"0101-Disable-fPIC-errors.patch"` :x:
 - `"0103-Use-posix-style-path-separators-with-MinGW.patch"` :x::x::x: - this one is really imporant
 - `"0104-link-pthread-with-mingw.patch"` :grey_exclamation:
