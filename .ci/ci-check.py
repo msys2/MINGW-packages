@@ -32,7 +32,7 @@ def convert_win2unix_path(winpath: typing.Union[Path, str]):
     return p.stdout.strip()
 
 
-def install_package(pkg: typing.Union[Path, str], local: bool) -> None:
+def install_package(pkg: typing.List[typing.Union[str, Path]], local: bool) -> None:
     logger.info("Installing %s", pkg)
     if local:
         command = [
@@ -40,36 +40,47 @@ def install_package(pkg: typing.Union[Path, str], local: bool) -> None:
             "--noprogressbar",
             "--upgrade",
             "--noconfirm",
-            convert_win2unix_path(pkg),
         ]
+        for _p in pkg:
+            command += [convert_win2unix_path(_p)]
     else:
         command = [
             "pacman",
             "-S",
             "--noconfirm",
-            pkg,
+            *pkg,
         ]
-    subprocess.run(
-        command,
-        check=True,
-    )
+    with gha_group(f"Installing: {pkg}"):
+        ret = subprocess.run(command)
+    if ret.returncode != 0:
+        logger.error("%s failed to run. Returned return code: %s", command, ret.returncode)
+        logger.info("Failed to Install, skipping the test.")
+        sys.exit(0)
 
 
 def get_rdeps(pkg: str) -> typing.List[str]:
     p = subprocess.run(
-        ["pacman", "-Qi", pkg],
+        ["pacman", "-Sii", pkg],
         capture_output=True,
         text=True,
-        check=True,
     )
+    if p.returncode != 0:
+        logger.info("Looks like a new package.")
+        p = subprocess.run(["pacman", "-Qi", pkg],
+            capture_output=True,
+            text=True,
+        )
     ret = p.stdout
-    rdeps_re = RDEPS_REGEX.search(ret)
-    if rdeps_re:
-        pkgs_str = rdeps_re.group("rdeps")
-        pkgs = [i.strip() for i in pkgs_str.split() if i != "None"]
-        return pkgs
-    else:
-        raise ValueError("Unable to parse Pacman output")
+    with gha_group(f"Debug pacman output: {pkg}"):
+        logger.info(ret)
+        rdeps_re = RDEPS_REGEX.search(ret)
+        if rdeps_re:
+            pkgs_str = rdeps_re.group("rdeps")
+            pkgs = [i.strip() for i in pkgs_str.split() if i != "None"]
+            logger.info("Rdeps parsed: %s", pkgs)
+            return pkgs
+        else:
+            raise ValueError("Unable to parse Pacman output")
 
 
 def run_pip_check(pkg: str) -> None:
@@ -100,15 +111,17 @@ def gha_group(title: str) -> typing.Generator:
 
 
 def main():
+    logger.info("Installing...")
+    install_package([str(i) for i in ARTIFACTS_LOCATION.glob("*.pkg.tar.*")], local=True)
     for pkgloc in ARTIFACTS_LOCATION.glob("*.pkg.tar.*"):
-        with gha_group(f"Debug: {pkgloc.name}"):
-            pkgname = "-".join(pkgloc.name.split("-")[:-3])
+        pkgname = "-".join(pkgloc.name.split("-")[:-3])
+        with gha_group(f"Installing rdeps of: {pkgname}"):
             logger.info("Pkgname: %s", pkgname)
             logger.info("Installing Package.")
-            install_package(pkgloc, local=True)
             rdeps = get_rdeps(pkgname)
-            for dep in rdeps:
-                install_package(dep, local=False)
+            if len(rdeps) == 0:
+                continue
+            install_package(rdeps, local=False)
     with gha_group(f"Pip Output: {pkgloc.name}"):
         run_pip_check(pkgname)
 
