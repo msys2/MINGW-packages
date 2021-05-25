@@ -1,0 +1,129 @@
+--- a/winpr/libwinpr/sspi/NTLM/ntlm.h
++++ b/winpr/libwinpr/sspi/NTLM/ntlm.h
+@@ -77,7 +77,8 @@
+ };
+ typedef enum _NTLM_STATE NTLM_STATE;
+ 
+-enum _NTLM_AV_ID
++#ifndef __MINGW32__
++enum _MSV1_0_AVID
+ {
+ 	MsvAvEOL,
+ 	MsvAvNbComputerName,
+@@ -87,11 +88,12 @@
+ 	MsvAvDnsTreeName,
+ 	MsvAvFlags,
+ 	MsvAvTimestamp,
+-	MsvAvSingleHost,
++	MsvAvRestrictions,
+ 	MsvAvTargetName,
+-	MsvChannelBindings
++	MsvAvChannelBindings
+ };
+-typedef enum _NTLM_AV_ID NTLM_AV_ID;
++typedef enum _MSV1_0_AVID MSV1_0_AVID;
++#endif
+ 
+ struct _NTLM_AV_PAIR
+ {
+--- a/winpr/libwinpr/sspi/NTLM/ntlm_av_pairs.c
++++ b/winpr/libwinpr/sspi/NTLM/ntlm_av_pairs.c
+@@ -71,12 +71,12 @@
+ 			return "MsvAvFlags";
+ 		case MsvAvTimestamp:
+ 			return "MsvAvTimestamp";
+-		case MsvAvSingleHost:
+-			return "MsvAvSingleHost";
++		case MsvAvRestrictions:
++			return "MsvAvRestrictions";
+ 		case MsvAvTargetName:
+ 			return "MsvAvTargetName";
+-		case MsvChannelBindings:
+-			return "MsvChannelBindings";
++		case MsvAvChannelBindings:
++			return "MsvAvChannelBindings";
+ 		default:
+ 			return "UNKNOWN";
+ 	}
+@@ -216,7 +216,7 @@
+ 	return (NTLM_AV_PAIR*)((PBYTE)pAvPair + offset);
+ }
+ 
+-NTLM_AV_PAIR* ntlm_av_pair_get(NTLM_AV_PAIR* pAvPairList, size_t cbAvPairList, NTLM_AV_ID AvId,
++NTLM_AV_PAIR* ntlm_av_pair_get(NTLM_AV_PAIR* pAvPairList, size_t cbAvPairList, MSV1_0_AVID AvId,
+                                size_t* pcbAvPairListRemaining)
+ {
+ 	UINT16 id;
+@@ -247,7 +247,7 @@
+ 	return pAvPair;
+ }
+ 
+-static BOOL ntlm_av_pair_add(NTLM_AV_PAIR* pAvPairList, size_t cbAvPairList, NTLM_AV_ID AvId,
++static BOOL ntlm_av_pair_add(NTLM_AV_PAIR* pAvPairList, size_t cbAvPairList, MSV1_0_AVID AvId,
+                              PBYTE Value, UINT16 AvLen)
+ {
+ 	size_t cbAvPair;
+@@ -619,7 +619,7 @@
+ 
+ 	if (context->SendSingleHostData)
+ 	{
+-		AvPairsCount++; /* MsvAvSingleHost */
++		AvPairsCount++; /* MsvAvRestrictions */
+ 		ntlm_compute_single_host_data(context);
+ 		AvPairsValueLength += context->SingleHostData.Size;
+ 	}
+@@ -635,7 +635,7 @@
+ 		 * SEC_CHANNEL_BINDINGS structure
+ 		 * http://msdn.microsoft.com/en-us/library/windows/desktop/dd919963/
+ 		 */
+-		AvPairsCount++; /* MsvChannelBindings */
++		AvPairsCount++; /* MsvAvChannelBindings */
+ 		AvPairsValueLength += 16;
+ 		ntlm_compute_channel_bindings(context);
+ 
+@@ -714,14 +714,14 @@
+ 
+ 	if (context->SendSingleHostData)
+ 	{
+-		if (!ntlm_av_pair_add(AuthenticateTargetInfo, cbAuthenticateTargetInfo, MsvAvSingleHost,
++		if (!ntlm_av_pair_add(AuthenticateTargetInfo, cbAuthenticateTargetInfo, MsvAvRestrictions,
+ 		                      (PBYTE)&context->SingleHostData, context->SingleHostData.Size))
+ 			goto fail;
+ 	}
+ 
+ 	if (!context->SuppressExtendedProtection)
+ 	{
+-		if (!ntlm_av_pair_add(AuthenticateTargetInfo, cbAuthenticateTargetInfo, MsvChannelBindings,
++		if (!ntlm_av_pair_add(AuthenticateTargetInfo, cbAuthenticateTargetInfo, MsvAvChannelBindings,
+ 		                      context->ChannelBindingsHash, 16))
+ 			goto fail;
+ 
+--- a/winpr/libwinpr/sspi/NTLM/ntlm_av_pairs.h
++++ b/winpr/libwinpr/sspi/NTLM/ntlm_av_pairs.h
+@@ -27,7 +27,7 @@
+ ULONG ntlm_av_pair_list_length(NTLM_AV_PAIR* pAvPairList, size_t cbAvPairList);
+ void ntlm_print_av_pair_list(NTLM_AV_PAIR* pAvPairList, size_t cbAvPairList);
+ PBYTE ntlm_av_pair_get_value_pointer(NTLM_AV_PAIR* pAvPair);
+-NTLM_AV_PAIR* ntlm_av_pair_get(NTLM_AV_PAIR* pAvPairList, size_t cbAvPairList, NTLM_AV_ID AvId,
++NTLM_AV_PAIR* ntlm_av_pair_get(NTLM_AV_PAIR* pAvPairList, size_t cbAvPairList, MSV1_0_AVID AvId,
+                                size_t* pcbAvPairListRemaining);
+ 
+ int ntlm_construct_challenge_target_info(NTLM_CONTEXT* context);
+--- a/winpr/libwinpr/wtsapi/wtsapi.c
++++ b/winpr/libwinpr/wtsapi/wtsapi.c
+@@ -52,9 +52,15 @@
+ static HMODULE g_WtsApi32Module = NULL;
+ static WtsApiFunctionTable WtsApi32_WtsApiFunctionTable = { 0 };
+ 
++#ifdef __MINGW32__
++#define WTSAPI32_LOAD_PROC(_name, _type)                                                   \
++	WtsApi32_WtsApiFunctionTable.p##_name = (_type)GetProcAddress(g_WtsApi32Module, "WT"   \
++	                                                                                  "S" #_name);
++#else
+ #define WTSAPI32_LOAD_PROC(_name, _type)                                                   \
+ 	WtsApi32_WtsApiFunctionTable.p##_name = (##_type)GetProcAddress(g_WtsApi32Module, "WT" \
+ 	                                                                                  "S" #_name);
++#endif
+ 
+ static BOOL WtsApi32_InitializeWtsApi(void)
+ {
