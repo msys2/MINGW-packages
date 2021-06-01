@@ -19,6 +19,7 @@ Legend:
 - `"0101-Disable-fPIC-errors.patch"` :x:
 - `"0103-Use-posix-style-path-separators-with-MinGW.patch"` :x::x::x: - this one is really imporant
 - `"0104-link-pthread-with-mingw.patch"` :grey_exclamation:
+- `"0105-Dont-mark-emutls-variables-as-DSO-local.patch"` :arrow_down_small:
 - `"0201-Provide-a-SEH-specific-__gcc_personality_seh0.patch"` :arrow_down_small:
 - `"0301-fix-including-the-personality-function-for-dwarf.patch"` :arrow_down_small:
 - `"0302-ignore-no-undefined-flag.patch"` :arrow_up_small:
