@@ -1,0 +1,114 @@
+--- Python-3.8.7/configure.ac.orig	2021-02-14 08:44:30.296278300 +0100
++++ Python-3.8.7/configure.ac	2021-02-14 08:44:39.824214800 +0100
+@@ -1320,6 +1320,9 @@
+ 
+ AC_MSG_RESULT($LDLIBRARY)
+ 
++AC_SUBST(WINDRES)
++AC_CHECK_TOOL(WINDRES, windres)
++
+ AC_SUBST(AR)
+ AC_CHECK_TOOLS(AR, ar aal, ar)
+ 
+@@ -5858,10 +5858,17 @@
+ case $host in
+   *-*-mingw*)
+     LIBS="$LIBS -lversion -lshlwapi -lpathcch"
++    RCFLAGS="$RCFLAGS -O COFF"
++    case $host in
++      i686*)  RCFLAGS="$RCFLAGS --target=pe-i386" ;;
++      x86_64*)  RCFLAGS="$RCFLAGS --target=pe-x86-64" ;;
++      *) ;;
++    esac
+   ;;
+   *)
+   ;;
+ esac
++AC_SUBST(RCFLAGS)
+ 
+ # Availability of -O2:
+ AC_MSG_CHECKING(for -O2)
+diff -Naur Python-3.8.0-orig/Makefile.pre.in Python-3.8.0/Makefile.pre.in
+--- Python-3.8.0-orig/Makefile.pre.in	2019-10-22 10:04:44.812737000 +0300
++++ Python-3.8.0/Makefile.pre.in	2019-10-22 10:04:51.177548200 +0300
+@@ -38,6 +38,7 @@
+ MAINCC=		@MAINCC@
+ LINKCC=		@LINKCC@
+ AR=		@AR@
++WINDRES=	@WINDRES@
+ READELF=	@READELF@
+ SOABI=		@SOABI@
+ LDVERSION=	@LDVERSION@
+@@ -119,6 +119,7 @@
+ PY_CORE_LDFLAGS=$(PY_LDFLAGS) $(PY_LDFLAGS_NODIST)
+ # Strict or non-strict aliasing flags used to compile dtoa.c, see above
+ CFLAGS_ALIASING=@CFLAGS_ALIASING@
++RCFLAGS=@RCFLAGS@
+ 
+ 
+ # Machine-dependent subdirectories
+@@ -257,6 +258,7 @@
+ 
+ PYTHON=		python$(EXE)
+ BUILDPYTHON=	python$(BUILDEXE)
++BUILDPYTHONW=	pythonw$(BUILDEXE)
+ 
+ PYTHON_FOR_REGEN?=@PYTHON_FOR_REGEN@
+ UPDATE_FILE=@PYTHON_FOR_REGEN@ $(srcdir)/Tools/scripts/update_file.py
+@@ -479,7 +481,7 @@
+ 
+ # Default target
+ all:		@DEF_MAKE_ALL_RULE@
+-build_all:	check-clean-src $(BUILDPYTHON) oldsharedmods sharedmods gdbhooks \
++build_all:	check-clean-src $(BUILDPYTHON) $(BUILDPYTHONW) oldsharedmods sharedmods gdbhooks \
+ 		Programs/_testembed python-config
+ 
+ # Check that the source is clean when building out of source.
+@@ -593,9 +595,24 @@
+ clinic: check-clean-src $(srcdir)/Modules/_blake2/blake2s_impl.c
+ 	$(PYTHON_FOR_REGEN) $(srcdir)/Tools/clinic/clinic.py --make --srcdir $(srcdir)
+ 
++pythonnt_rc.h:
++	@echo '#define PYTHON_DLL_NAME "$(DLLLIBRARY)"' >> $@
++
++python_exe.o: pythonnt_rc.h $(srcdir)/PC/python_exe.rc
++	$(WINDRES) $(RCFLAGS) -I$(srcdir)/Include -I$(srcdir)/PC -I. $(srcdir)/PC/python_exe.rc $@
++
++pythonw_exe.o: pythonnt_rc.h $(srcdir)/PC/pythonw_exe.rc
++	$(WINDRES) $(RCFLAGS) -I$(srcdir)/Include -I$(srcdir)/PC -I. $(srcdir)/PC/pythonw_exe.rc $@
++
++python_nt.o: pythonnt_rc.h $(srcdir)/PC/python_nt.rc
++	$(WINDRES) $(RCFLAGS) -I$(srcdir)/Include -I$(srcdir)/PC -I. $(srcdir)/PC/python_nt.rc $@
++
++$(BUILDPYTHONW): Programs/python.o $(LIBRARY) $(LDLIBRARY) $(PY3LIBRARY) pythonw_exe.o
++	$(LINKCC) $(PY_CORE_LDFLAGS) $(LINKFORSHARED) -municode -mwindows -o $@ Programs/python.o $(BLDLIBRARY) $(LIBS) $(MODLIBS) $(SYSLIBS) pythonw_exe.o
++
+ # Build the interpreter
+-$(BUILDPYTHON):	Programs/python.o $(LIBRARY) $(LDLIBRARY) $(PY3LIBRARY) $(EXPORTSYMS)
+-	$(LINKCC) $(PY_CORE_LDFLAGS) $(LINKFORSHARED) -o $@ Programs/python.o $(BLDLIBRARY) $(LIBS) $(MODLIBS) $(SYSLIBS)
++$(BUILDPYTHON):	Programs/python.o $(LIBRARY) $(LDLIBRARY) $(PY3LIBRARY) python_exe.o
++	$(LINKCC) $(PY_CORE_LDFLAGS) $(LINKFORSHARED) -municode -o $@ Programs/python.o $(BLDLIBRARY) $(LIBS) $(MODLIBS) $(SYSLIBS) python_exe.o
+ 
+ platform: $(BUILDPYTHON) pybuilddir.txt
+ 	$(RUNSHARED) $(PYTHON_FOR_BUILD) -c 'import sys ; from sysconfig import get_platform ; print("%s-%d.%d" % (get_platform(), *sys.version_info[:2]))' >platform
+@@ -705,10 +725,10 @@
+ 
+ # This rule builds the Cygwin Python DLL and import library if configured
+ # for a shared core library; otherwise, this rule is a noop.
+-$(DLLLIBRARY) libpython$(LDVERSION).dll.a: $(LIBRARY_OBJS)
++$(DLLLIBRARY) libpython$(LDVERSION).dll.a: $(LIBRARY_OBJS) python_nt.o
+ 	if test -n "$(DLLLIBRARY)"; then \
+ 		$(LDSHARED) -Wl,--out-implib=$@ -o $(DLLLIBRARY) $^ \
+-			$(LIBS) $(MODLIBS) $(SYSLIBS); \
++			$(LIBS) $(MODLIBS) $(SYSLIBS) python_nt.o; \
+ 	else true; \
+ 	fi
+ 
+@@ -1315,6 +1335,7 @@
+ 	done
+ 	if test "$(PYTHONFRAMEWORKDIR)" = "no-framework" ; then \
+ 		$(INSTALL_PROGRAM) $(BUILDPYTHON) $(DESTDIR)$(BINDIR)/python$(LDVERSION)$(EXE); \
++		$(INSTALL_PROGRAM) $(BUILDPYTHONW) $(DESTDIR)$(BINDIR)/python3w$(EXE); \
+ 	else \
+ 		$(INSTALL_PROGRAM) $(STRIPFLAG) Mac/pythonw $(DESTDIR)$(BINDIR)/python$(LDVERSION)$(EXE); \
+ 	fi
