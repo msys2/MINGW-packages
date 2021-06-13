@@ -33,9 +33,9 @@ install: ${TARGET}
 	mkdir ${DESTDIR}${INSTALL_PREFIX}
 	mkdir ${DESTDIR}${INSTALL_PREFIX}/bin
 	mkdir ${DESTDIR}${INSTALL_PREFIX}/lib
-	install -s ${TARGET} ${DESTDIR}${INSTALL_PREFIX}/bin
-	install -s ${IMPORTLIB} ${DESTDIR}${INSTALL_PREFIX}/lib
-	install -s ${STATICLIB} ${DESTDIR}${INSTALL_PREFIX}/lib
+	install ${TARGET} ${DESTDIR}${INSTALL_PREFIX}/bin
+	install ${IMPORTLIB} ${DESTDIR}${INSTALL_PREFIX}/lib
+	install ${STATICLIB} ${DESTDIR}${INSTALL_PREFIX}/lib
 
 .c.o:
 	${CC} ${CFLAGS} ${VERSION} -c $< -o $@

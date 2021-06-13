@@ -1,0 +1,102 @@
+# Maintainer: Jeroen Ooms <jeroen@berkeley.edu>
+
+_realname=tiledb
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=2.2.4
+pkgrel=2
+pkgdesc="Storage management library for sparse and dense array data (mingw-w64)"
+arch=(any)
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
+url="https://tiledb.com/"
+license=("MIT")
+depends=("${MINGW_PACKAGE_PREFIX}-aws-sdk-cpp"
+         "${MINGW_PACKAGE_PREFIX}-lz4"
+         "${MINGW_PACKAGE_PREFIX}-bzip2"
+         "${MINGW_PACKAGE_PREFIX}-zlib"
+         "${MINGW_PACKAGE_PREFIX}-zstd")
+makedepends=("${MINGW_PACKAGE_PREFIX}-catch"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-curl"
+             "${MINGW_PACKAGE_PREFIX}-gcc"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-spdlog")
+options=('strip' '!debug' 'staticlibs')
+source=(${_realname}-${pkgver}.tar.gz::"https://github.com/TileDB-Inc/TileDB/archive/${pkgver}.tar.gz"
+        "0001-spdlog-external-fmt-library.patch")
+sha256sums=('a9d1050dc51dcdf9bf1f59961bc957552bc39f51eb01000bf40487dd076c00e2'
+            '15c40c7fadb1dae51f7a1ed5b3407ee9292bf07f7bebe5ab7e2f2b8adde853bc')
+noextract=(${_realname}-${pkgver}.tar.gz)
+
+prepare() {
+  # Workaround for symlinks in tarball
+  MSYS="winsymlinks:lnk" tar -xf ${srcdir}/${_realname}-${pkgver}.tar.gz
+  cd "${srcdir}/${_realname}-${pkgver}"
+  patch -Np1 -i "${srcdir}/0001-spdlog-external-fmt-library.patch"
+}
+
+build() {
+  # Enable SSE2 (required) on i686 (these are enabled by default on x64)
+  if [ "$CARCH" == "i686" ]; then
+  export CFLAGS+=" -mfpmath=sse -msse2"
+  export CXXFLAGS+=" -mfpmath=sse -msse2"
+  fi
+
+  declare -a extra_config
+  if check_option "debug" "n"; then
+    extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  echo "Building static library"
+  [[ -d "${srcdir}/build-${CARCH}-static" ]] && rm -rf "${srcdir}/build-${CARCH}-static"
+  mkdir -p "${srcdir}/build-${CARCH}-static" && cd "${srcdir}/build-${CARCH}-static"
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake.exe \
+    -Wno-dev \
+    -G "Ninja" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    "${extra_config[@]}" \
+    -DTILEDB_STATIC=ON \
+    -DTILEDB_S3=ON \
+    -DBUILD_SHARED_LIBS=OFF \
+    ../${_realname}-${pkgver}
+
+  ${MINGW_PREFIX}/bin/cmake.exe --build ./
+
+  echo "Building shared library"
+  [[ -d "${srcdir}/build-${CARCH}-shared" ]] && rm -rf "${srcdir}/build-${CARCH}-shared"
+  mkdir -p "${srcdir}/build-${CARCH}-shared" && cd "${srcdir}/build-${CARCH}-shared"
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake.exe \
+    -Wno-dev \
+    -G "Ninja" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    "${extra_config[@]}" \
+    -DTILEDB_STATIC=OFF \
+    -DTILEDB_S3=ON \
+    -DBUILD_SHARED_LIBS=ON \
+    ../${_realname}-${pkgver}
+
+  ${MINGW_PREFIX}/bin/cmake.exe --build ./
+}
+
+package() {
+  cd "${srcdir}/build-${CARCH}-static/tiledb"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --build ./ --target install
+
+  cd "${srcdir}/build-${CARCH}-shared/tiledb"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --build ./ --target install
+
+  # Remove full path reference in cmake files
+  local _PREFIX_WIN="$(cygpath -wm ${MINGW_PREFIX})"
+  for cmfile in "${pkgdir}${MINGW_PREFIX}"/lib/cmake/TileDB/*.cmake; do
+    sed -e "s|${_PREFIX_WIN}|\$\{_IMPORT_PREFIX\}|g" -i "${cmfile}"
+  done
+
+  cd "${srcdir}/${_realname}-${pkgver}"
+  install -Dm644 LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+}

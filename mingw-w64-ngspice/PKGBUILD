@@ -1,4 +1,5 @@
 # Maintainer: Maciej Suminski <maciej.suminski@cern.ch>
+# Contributor: Unai Martinez-Corral <unai.martinezcorral@ehu.eus>
 #
 # Based on Arch ngspice PKGBUILD:
 # https://git.archlinux.org/svntogit/community.git/tree/trunk/PKGBUILD?h=packages/ngspice
@@ -10,20 +11,39 @@
 _realname=ngspice
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=32
+pkgver=34
 pkgrel=2
 pkgdesc="Mixed-level/Mixed-signal circuit simulator based on Spice3f5, Cider1b1, and Xspice (mingw-w64)"
 url='https://ngspice.sourceforge.io/'
 license=('BSD')
 arch=('any')
-makedepends=("${MINGW_PACKAGE_PREFIX}-gcc" "${MINGW_PACKAGE_PREFIX}-pkg-config")
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
+groups=("${MINGW_PACKAGE_PREFIX}-eda")
 conflicts=(${MINGW_PACKAGE_PREFIX}-${_realname}-git)
 replaces=(${MINGW_PACKAGE_PREFIX}-${_realname}-git)
-depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs")
-source=("https://downloads.sourceforge.net/project/${_realname}/ng-spice-rework/${pkgver}/${_realname}-${pkgver}.tar.gz"
-        "https://downloads.sourceforge.net/project/${_realname}/ng-spice-rework/${pkgver}/${_realname}-doc-${pkgver}.tar.gz")
-sha256sums=('3cd90c4e94516d87c5b4d02a3a6405b1136b25d05c871d4fee1fd7c4c0d03ef2'
-            'd1809b3b1f30f0d1a0d867d49d5ba7114fd105e1fe9bf793226fed3f9c0710f9')
+depends=(
+  "${MINGW_PACKAGE_PREFIX}-gcc-libs"
+)
+makedepends=(
+  "${MINGW_PACKAGE_PREFIX}-gcc"
+  "${MINGW_PACKAGE_PREFIX}-pkg-config"
+)
+source=(
+  "https://downloads.sourceforge.net/project/${_realname}/ng-spice-rework/${pkgver}/${_realname}-${pkgver}.tar.gz"
+  "https://downloads.sourceforge.net/project/${_realname}/ng-spice-rework/${pkgver}/${_realname}-doc-${pkgver}.tar.gz"
+  "no-explicit-lstdc++.patch"
+)
+sha256sums=(
+  '2263fffc6694754972af7072ef01cfe62ac790800dad651bc290bfcae79bd7b5'
+  'cbe7a42c4e3730ce86f2bdcc5c2eb95192e7daadf99e1c039b02dceaf7a12743'
+  '26c34504e11ee753855da3b6d5ff44f0247dbcedb9eb6fe5efcf6f50f2927c97'
+)
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+  patch -Np1 -i "${srcdir}/no-explicit-lstdc++.patch"
+  autoreconf -fiv
+}
 
 build() {
   [[ -d "${srcdir}/build-shared-${CARCH}" ]] && rm -rf "${srcdir}/build-shared-${CARCH}"
@@ -32,41 +52,53 @@ build() {
   # FS#45230, create so lib
   # shared lib sets flags and modifies headers, needs dedicated pass
   # adding --with-readline disables libngspice-0.dll
+  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+    LDFLAGS+=" -lomp"
+  fi
   ../${_realname}-${pkgver}/configure \
-              --prefix=${MINGW_PREFIX} \
-              --build=${MINGW_CHOST} \
-              --host=${MINGW_CHOST} \
-              --enable-openmp \
-              --enable-xspice \
-              --enable-cider \
-              --with-ngshared
+    --prefix=${MINGW_PREFIX} \
+    --build=${MINGW_CHOST} \
+    --host=${MINGW_CHOST} \
+    --disable-debug \
+    --enable-openmp \
+    --enable-xspice \
+    --enable-cider \
+    --with-ngshared
   make
 
   cd "${srcdir}/${_realname}-${pkgver}"
   [[ -d "${srcdir}/build-static-${CARCH}" ]] && rm -rf "${srcdir}/build-static-${CARCH}"
   mkdir -p "${srcdir}/build-static-${CARCH}" && cd "${srcdir}/build-static-${CARCH}"
 
+  # gcc is being weird
+  LDFLAGS+=" -lgdi32"
   ../${_realname}-${pkgver}/configure \
-              --prefix=${MINGW_PREFIX} \
-              --build=${MINGW_CHOST} \
-              --host=${MINGW_CHOST} \
-              --enable-xspice \
-              --enable-cider \
-              --enable-openmp
+    --prefix=${MINGW_PREFIX} \
+    --build=${MINGW_CHOST} \
+    --host=${MINGW_CHOST} \
+    --disable-debug \
+    --enable-xspice \
+    --enable-cider \
+    --enable-openmp \
+    --with-wingui
   make
 }
 
 package() {
   cd "${srcdir}/build-static-${CARCH}"
-  make install DESTDIR="${pkgdir}"
-  install -D -m644 "${srcdir}/${_realname}-${pkgver}/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+  make DESTDIR="${pkgdir}" install
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+
+  # FIX: config.h should not be installed. This should be upstreamed/patched in the makefiles.
+  rm "${pkgdir}${MINGW_PREFIX}"/include/config.h
 
   # pkg-conf file has to be copied manually.  Generated pkg-config file is the same for
   # static and shared builds.
   install -D -m644 "${srcdir}/build-shared-${CARCH}/ngspice.pc" "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/ngspice.pc"
 
-  # library files have to be copied manually
+  # additional files from the shared build have to be copied manually
   cd "${srcdir}/build-shared-${CARCH}"
-  install -D -m755 src/.libs/libngspice-0.dll "${pkgdir}${MINGW_PREFIX}/bin"
-  install -D -m755 src/.libs/libngspice.dll.a "${pkgdir}${MINGW_PREFIX}/lib"
+  install -Dm755 src/.libs/libngspice-0.dll "${pkgdir}${MINGW_PREFIX}/bin"
+  install -Dm755 src/.libs/libngspice.dll.a "${pkgdir}${MINGW_PREFIX}/lib"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}"/src/include/ngspice/sharedspice.h "${pkgdir}${MINGW_PREFIX}"/include/ngspice/sharedspice.h
 }
