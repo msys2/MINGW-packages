@@ -17,6 +17,7 @@ Legend:
 - `"0011-nm-version-option.patch"` :arrow_down_small:
 - `"0012-windres.patch"` :arrow_down_small:
 - `"0013-Dlltool-use-default-LLVM-target-unless-specified.patch"` :x:
+- `"0014-llvm-rc-Don-t-rewrite-the-arch-in-the-default-triple.patch"` :grey_question: - https://reviews.llvm.org/D104589
 - `"0101-Disable-fPIC-errors.patch"` :x:
 - `"0103-Use-posix-style-path-separators-with-MinGW.patch"` :x::x::x: - this one is really imporant
 - `"0104-link-pthread-with-mingw.patch"` :grey_exclamation:
