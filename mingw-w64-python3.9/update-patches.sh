@@ -22,7 +22,7 @@ die "Could not remove previous patches"
 source PKGBUILD || die "Can't source PKGBUILD"
 
 base_tag=refs/tags/v$pkgver
-msys2_branch=mingw-$_pybasever
+msys2_branch=mingw-v$pkgver
 url=https://github.com/msys2-contrib/cpython-mingw
 upstream_url=https://github.com/python/cpython
 
@@ -57,7 +57,13 @@ for p in $patches
 do
 	sed -i 's/^\(Subject: \[PATCH [0-9]*\/\)[1-9][0-9]*/\1N/' $p ||
 	die "Could not fix Subject: line in $p"
+	_cmd=$(grep -ci ".github/workflows" $p)
+	if [ "$_cmd" != "0" ]
+	then
+		rm -f $p
+	fi
 done &&
+patches="$(ls -1 0*.patch)" &&
 git add $patches ||
 die "Could not stage new patch set"
 
@@ -70,6 +76,9 @@ die "Could not update the patch set in PKGBUILD"
 
 updpkgsums ||
 die "Could not update the patch set checksums in PKGBUILD"
+
+# bump pkgrel
+sed "s/\(pkgrel\).*/pkgrel=$(($pkgrel + 1))/" -i PKGBUILD
 
 git add PKGBUILD ||
 die "Could not stage updates in PKGBUILD"
