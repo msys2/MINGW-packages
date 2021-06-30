@@ -35,6 +35,7 @@ Legend:
 - `"0311-backport-82de4e0.patch"` :arrow_down_small:
 - `"0312-LLD-COFF-Fix-autoexport-from-LTO-objects-with-comdat.patch"` :arrow_down_small:
 - `"0313-LLD-COFF-Fix-handling-of-LTO-comdats.patch"` :arrow_down_small:
+- `"0314-LLD-COFF-std-async-deferred-on-32-bit.patch"` :x:
 - `"0401-libcxx-fs.patch"` :arrow_down_small:
 - `"0402-make-the-visibility-attributes-consistent-for-__narr.patch"` :arrow_down_small:
 - `"0601-libunwind-Install-the-DLL-when-doing-ninja-install.patch"` :arrow_down_small:
