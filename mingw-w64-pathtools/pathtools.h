@@ -28,6 +28,10 @@ void sanitise_path(char * path);
    if IMPLEMENT_SYS_GET_EXECUTABLE_PATH is defined, otherwise uses argv0. */
 int get_executable_path(char const * argv0, char * result, ssize_t max_size);
 
+#if defined(_WIN32)
+int get_dll_path(char * result, unsigned long max_size);
+#endif
+
 /* Where possible, in-place removes occourances of '.' and 'path/..' */
 void simplify_path(char * path);
 

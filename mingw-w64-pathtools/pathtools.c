@@ -62,7 +62,7 @@ sanitise_path(char * path)
     *path_p = '/';
   }
   /* Replace any '//' with '/' */
-  path_p = path;
+  path_p = path + !!*path; /* skip first character, if any, to handle UNC paths correctly */
   while ((path_p = strstr (path_p, "//")) != NULL)
   {
     memmove (path_p, path_p + 1, path_size--);
@@ -177,6 +177,12 @@ simplify_path(char * path)
   size_t in_size = strlen (path);
   int it_ended_with_a_slash = (path[in_size - 1] == '/') ? 1 : 0;
   char * result = path;
+  if (path[0] == '/' && path[1] == '/') {
+    /* preserve UNC path */
+    path++;
+    in_size--;
+    result++;
+  }
   sanitise_path(result);
   char * result_p = result;
 
@@ -331,6 +337,40 @@ get_executable_path(char const * argv0, char * result, ssize_t max_size)
   result_size = strlen (result);
   return result_size;
 }
+
+#if defined(_WIN32)
+int
+get_dll_path(char * result, unsigned long max_size)
+{
+  HMODULE handle;
+  char * p;
+  int ret;
+
+  if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+      GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+      (LPCSTR) &get_dll_path, &handle))
+    {
+      return -1;
+    }
+
+  ret = GetModuleFileNameA(handle, result, max_size);
+  if (ret == 0 || ret == (int)max_size)
+    {
+      return -1;
+    }
+
+  /* Early conversion to unix slashes instead of more changes
+     everywhere else .. */
+  result[ret] = '\0';
+  p = result - 1;
+  while ((p = strchr (p + 1, '\\')) != NULL)
+    {
+      *p = '/';
+    }
+
+  return ret;
+}
+#endif
 
 char const *
 strip_n_prefix_folders(char const * path, size_t n)
