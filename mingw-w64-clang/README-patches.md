@@ -17,7 +17,8 @@ Legend:
 - `"0011-nm-version-option.patch"` :arrow_down_small:
 - `"0012-windres.patch"` :arrow_down_small:
 - `"0013-Dlltool-use-default-LLVM-target-unless-specified.patch"` :x:
-- `"0014-llvm-rc-Don-t-rewrite-the-arch-in-the-default-triple.patch"` :grey_question: - https://reviews.llvm.org/D104589
+- `"0014-llvm-rc-Don-t-rewrite-the-arch-in-the-default-triple.patch"` :arrow_down_small:
+- `"0015-Use-TerminateProcess-to-exit-without-running-destruc.patch"` :arrow_down_small:
 - `"0101-Disable-fPIC-errors.patch"` :x:
 - `"0103-Use-posix-style-path-separators-with-MinGW.patch"` :x::x::x: - this one is really imporant
 - `"0104-link-pthread-with-mingw.patch"` :grey_exclamation:
@@ -27,13 +28,14 @@ Legend:
 - `"0302-ignore-no-undefined-flag.patch"` :arrow_up_small:
 - `"0303-LLD-MinGW-Add-fatal-warnings-and-no-fatal-warnings-f.patch"` :arrow_up_small:
 - `"0304-ignore-new-bfd-options.patch"` :x:
-- `"0305-use-TerminateProcess-instead-of-exit.patch"` :grey_exclamation:
 - `"0306-LLD-MinGW-Pass-the-canExitEarly-parameter-through-pr.patch"` :arrow_down_small:
 - `"0307-lld-MinGW-Introduce-aliases-for-Bdynamic-and-Bstatic.patch"` :arrow_down_small:
 - `"0308-LLD-COFF-Fix-automatic-export-of-symbols-from-LTO-ob.patch"` :arrow_down_small:
 - `"0310-backport-2b01a41.patch"` :arrow_down_small:
 - `"0311-backport-82de4e0.patch"` :arrow_down_small:
 - `"0312-LLD-COFF-Fix-autoexport-from-LTO-objects-with-comdat.patch"` :arrow_down_small:
+- `"0313-LLD-COFF-Fix-handling-of-LTO-comdats.patch"` :arrow_down_small:
+- `"0314-LLD-COFF-std-async-deferred-on-32-bit.patch"` :x:
 - `"0401-libcxx-fs.patch"` :arrow_down_small:
 - `"0402-make-the-visibility-attributes-consistent-for-__narr.patch"` :arrow_down_small:
 - `"0601-libunwind-Install-the-DLL-when-doing-ninja-install.patch"` :arrow_down_small:
