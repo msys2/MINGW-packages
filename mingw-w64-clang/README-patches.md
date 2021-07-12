@@ -20,6 +20,7 @@ Legend:
 - `"0014-llvm-rc-Don-t-rewrite-the-arch-in-the-default-triple.patch"` :arrow_down_small:
 - `"0015-Use-TerminateProcess-to-exit-without-running-destruc.patch"` :arrow_down_small:
 - `"0016-llvm-rc-Make-commas-in-user-data-structs-optional.patch"` :arrow_down_small:
+- `"0017-X86-Teach-X86FloatingPoint-s-handleCall-to-only-eras.patch"` :arrow_down_small:
 - `"0101-Disable-fPIC-errors.patch"` :x:
 - `"0103-Use-posix-style-path-separators-with-MinGW.patch"` :x::x::x: - this one is really imporant
 - `"0104-link-pthread-with-mingw.patch"` :grey_exclamation:
