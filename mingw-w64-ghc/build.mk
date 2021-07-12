@@ -74,7 +74,7 @@ endif
 
 # Set to V = 0 to get prettier build output.
 # Please use V=1 (the default) when reporting GHC bugs.
-V=0
+V=1
 
 # Should all enabled warnings (see mk/warnings.mk) be turned into errors while
 # building stage 2?
@@ -112,3 +112,5 @@ V=0
 
 # Don't strip debug and other unneeded symbols from libraries and executables.
 STRIP_CMD = :
+
+utils/unlit_EXTRA_HC_OPTS += -v3 -optwindres-v
