@@ -19,10 +19,13 @@ Legend:
 - `"0013-Dlltool-use-default-LLVM-target-unless-specified.patch"` :x:
 - `"0014-llvm-rc-Don-t-rewrite-the-arch-in-the-default-triple.patch"` :arrow_down_small:
 - `"0015-Use-TerminateProcess-to-exit-without-running-destruc.patch"` :arrow_down_small:
+- `"0016-llvm-rc-Make-commas-in-user-data-structs-optional.patch"` :arrow_down_small:
+- `"0017-X86-Teach-X86FloatingPoint-s-handleCall-to-only-eras.patch"` :arrow_down_small:
 - `"0101-Disable-fPIC-errors.patch"` :x:
 - `"0103-Use-posix-style-path-separators-with-MinGW.patch"` :x::x::x: - this one is really imporant
 - `"0104-link-pthread-with-mingw.patch"` :grey_exclamation:
 - `"0105-Dont-mark-emutls-variables-as-DSO-local.patch"` :arrow_down_small:
+- `"0106-Rename-a-template-parameter-that-conflicted-with-a-c.patch"` :arrow_down_small:
 - `"0201-Provide-a-SEH-specific-__gcc_personality_seh0.patch"` :arrow_down_small:
 - `"0301-fix-including-the-personality-function-for-dwarf.patch"` :arrow_down_small:
 - `"0302-ignore-no-undefined-flag.patch"` :arrow_up_small:
@@ -35,7 +38,9 @@ Legend:
 - `"0311-backport-82de4e0.patch"` :arrow_down_small:
 - `"0312-LLD-COFF-Fix-autoexport-from-LTO-objects-with-comdat.patch"` :arrow_down_small:
 - `"0313-LLD-COFF-Fix-handling-of-LTO-comdats.patch"` :arrow_down_small:
-- `"0314-LLD-COFF-std-async-deferred-on-32-bit.patch"` :x:
+- `"0314-LLD-COFF-Support-linking-directly-against-DLLs-in-Mi.patch"` :arrow_down_small:
+- `"0315-LLD-COFF-Fix-up-missing-stdcall-decorations-in-MinGW.patch"` :arrow_down_small:
+- `"0316-LLD-COFF-Avoid-thread-exhaustion-on-32-bit-Windows-h.patch"` :arrow_down_small:
 - `"0401-libcxx-fs.patch"` :arrow_down_small:
 - `"0402-make-the-visibility-attributes-consistent-for-__narr.patch"` :arrow_down_small:
 - `"0601-libunwind-Install-the-DLL-when-doing-ninja-install.patch"` :arrow_down_small:
