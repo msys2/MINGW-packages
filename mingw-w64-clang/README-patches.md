@@ -22,6 +22,7 @@ Legend:
 - `"0016-llvm-rc-Make-commas-in-user-data-structs-optional.patch"` :arrow_down_small:
 - `"0017-X86-Teach-X86FloatingPoint-s-handleCall-to-only-eras.patch"` :arrow_down_small:
 - `"0018-llvm-rc-Allow-dashes-as-part-of-resource-name-strings.patch"` :arrow_down_small:
+- `"0019-MinGW-Mark-a-number-of-library-functions-unavailable.patch"` :arrow_down_small:
 - `"0101-Disable-fPIC-errors.patch"` :x:
 - `"0103-Use-posix-style-path-separators-with-MinGW.patch"` :x::x::x: - this one is really imporant
 - `"0104-link-pthread-with-mingw.patch"` :grey_exclamation:
