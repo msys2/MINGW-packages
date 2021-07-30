@@ -21,6 +21,8 @@ Legend:
 - `"0015-Use-TerminateProcess-to-exit-without-running-destruc.patch"` :arrow_down_small:
 - `"0016-llvm-rc-Make-commas-in-user-data-structs-optional.patch"` :arrow_down_small:
 - `"0017-X86-Teach-X86FloatingPoint-s-handleCall-to-only-eras.patch"` :arrow_down_small:
+- `"0018-llvm-rc-Allow-dashes-as-part-of-resource-name-strings.patch"` :arrow_down_small:
+- `"0019-MinGW-Mark-a-number-of-library-functions-unavailable.patch"` :arrow_down_small:
 - `"0101-Disable-fPIC-errors.patch"` :x:
 - `"0103-Use-posix-style-path-separators-with-MinGW.patch"` :x::x::x: - this one is really imporant
 - `"0104-link-pthread-with-mingw.patch"` :grey_exclamation:
@@ -41,6 +43,7 @@ Legend:
 - `"0314-LLD-COFF-Support-linking-directly-against-DLLs-in-Mi.patch"` :arrow_down_small:
 - `"0315-LLD-COFF-Fix-up-missing-stdcall-decorations-in-MinGW.patch"` :arrow_down_small:
 - `"0316-LLD-COFF-Avoid-thread-exhaustion-on-32-bit-Windows-h.patch"` :arrow_down_small:
+- `"0317-LLD-COFF-Make-export-all-symbols-work-as-intended-fo.patch"` :arrow_down_small:
 - `"0401-libcxx-fs.patch"` :arrow_down_small:
 - `"0402-make-the-visibility-attributes-consistent-for-__narr.patch"` :arrow_down_small:
 - `"0601-libunwind-Install-the-DLL-when-doing-ninja-install.patch"` :arrow_down_small:
