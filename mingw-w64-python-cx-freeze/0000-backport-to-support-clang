@@ -1,0 +1,131 @@
+diff --git a/setup.py b/setup.py
+index a2598eb..0a59f3c 100755
+--- a/setup.py
++++ b/setup.py
+@@ -13,13 +13,13 @@ import glob
+ import os
+ import subprocess
+ import sys
+-import sysconfig
+-from sysconfig import get_config_var
++from sysconfig import get_config_var, get_platform, get_python_version
+ 
+ from setuptools import setup, Command, Extension
+ import setuptools.command.build_ext
+ 
+ WIN32 = sys.platform == "win32"
++DARWIN = sys.platform == "darwin"
+ 
+ if sys.version_info < (3, 6, 0):
+     sys.exit("Python3 versions lower than 3.6.0 are not supported.")
+@@ -51,9 +51,9 @@ class build_ext(setuptools.command.build_ext.build_ext):
+                 if arg.startswith("/DELAYLOAD:"):
+                     lib_name = arg[len("/DELAYLOAD:") :]
+                     extra_args.remove(arg)
++                    dll_path = self._get_dll_path(lib_name)
++                    dll_name = os.path.basename(dll_path)
+                     if compiler_type == "msvc":
+-                        dll_path = self._get_dll_path(lib_name)
+-                        dll_name = os.path.basename(dll_path)
+                         extra_args.append(f"/DELAYLOAD:{dll_name}")
+                         if lib_name not in libraries:
+                             libraries.append(lib_name)
+@@ -63,6 +63,10 @@ class build_ext(setuptools.command.build_ext.build_ext):
+                         if lib_name in libraries:
+                             libraries.remove(lib_name)
+                         lib_dir, library = self._dlltool_delay_load(lib_name)
++                        for linker_option in self.compiler.linker_exe:
++                            if "clang" in linker_option:
++                                extra_args.append(f"-Wl,-delayload,{dll_name}")
++                                break
+                         libraries.append(library)
+                         library_dirs.append(lib_dir)
+             if compiler_type == "msvc":
+@@ -76,9 +80,8 @@ class build_ext(setuptools.command.build_ext.build_ext):
+         else:
+             library_dirs.append(get_config_var("LIBPL"))
+             abiflags = get_config_var("abiflags")
+-            python_version = sysconfig.get_python_version()
+-            libraries.append(f"python{python_version}{abiflags}")
+-            if get_config_var("LINKFORSHARED") and sys.platform != "darwin":
++            libraries.append(f"python{get_python_version()}{abiflags}")
++            if get_config_var("LINKFORSHARED") and not DARWIN:
+                 extra_args.extend(get_config_var("LINKFORSHARED").split())
+             if get_config_var("LIBS"):
+                 extra_args.extend(get_config_var("LIBS").split())
+@@ -88,11 +91,10 @@ class build_ext(setuptools.command.build_ext.build_ext):
+                 extra_args.extend(get_config_var("BASEMODLIBS").split())
+             if get_config_var("LOCALMODLIBS"):
+                 extra_args.extend(get_config_var("LOCALMODLIBS").split())
+-            # fix a bug using macOS on Github Actions
+-            if "--with-lto" in get_config_var("CONFIG_ARGS"):
+-                extra_args.append("-flto")
++            if DARWIN:
++                # macOS on Github Actions
+                 extra_args.append("-Wl,-export_dynamic")
+-            if sys.platform != "darwin":
++            else:
+                 extra_args.append("-s")
+                 extra_args.append("-Wl,-rpath,$ORIGIN/lib")
+                 extra_args.append("-Wl,-rpath,$ORIGIN/../lib")
+@@ -123,8 +125,8 @@ class build_ext(setuptools.command.build_ext.build_ext):
+         # Console-cp37-win32.exe, Console-cp39-win-amd64.exe,
+         # Console-cp38-linux-x86_64
+         ext_path = ext_name.split(".")
+-        py_version_nodot = sysconfig.get_config_var("py_version_nodot")
+-        platform_nodot = sysconfig.get_platform().replace(".", "")
++        py_version_nodot = get_config_var("py_version_nodot")
++        platform_nodot = get_platform().replace(".", "")
+         name_suffix = f"-cp{py_version_nodot}-{platform_nodot}"
+         exe_extension = ".exe" if WIN32 else ""
+         return os.path.join(*ext_path) + name_suffix + exe_extension
+@@ -142,34 +144,29 @@ class build_ext(setuptools.command.build_ext.build_ext):
+         return f"{name}.dll"
+ 
+     def _dlltool_delay_load(self, name):
+-        """Get the delay load library to use with mingw32 gcc compiler"""
+-        platform = sysconfig.get_platform()
+-        python_version = sysconfig.get_python_version()
+-        dir_name = f"libdl.{platform}-{python_version}"
++        """Get the delay load library to use with mingw32 gcc/clang compiler"""
++        dir_name = f"libdl.{get_platform()}-{get_python_version()}"
+         library_dir = os.path.join(self.build_temp, dir_name)
+         os.makedirs(library_dir, exist_ok=True)
+-        # Use gendef and dlltool to generate the delay library
++        # Use gendef and dlltool to generate the library (.a and .delay.a)
+         dll_path = self._get_dll_path(name)
+         def_name = os.path.join(library_dir, f"{name}.def")
+         def_data = subprocess.check_output(["gendef", "-", dll_path])
+         with open(def_name, "wb") as def_file:
+             def_file.write(def_data)
+         lib_path = os.path.join(library_dir, f"lib{name}.a")
+-        dlb_path = os.path.join(library_dir, f"lib{name}-dl.a")
+-        subprocess.check_call(
+-            [
+-                "dlltool",
+-                "--input-def",
+-                def_name,
+-                "--dllname",
+-                dll_path,
+-                "--output-lib",
+-                lib_path,
+-                "--output-delaylib",
+-                dlb_path,
+-            ]
+-        )
+-        return library_dir, f"{name}-dl"
++        library = f"{name}.delay"
++        dlb_path = os.path.join(library_dir, f"lib{library}.a")
++        dlltool = ["dlltool", "-d", def_name, "-D", dll_path, "-l", lib_path]
++        output_delaylib_args = ["-y", dlb_path]
++        try:
++            # GNU binutils dlltool support --output-delaylib
++            subprocess.check_call(dlltool + output_delaylib_args)
++        except subprocess.CalledProcessError:
++            # LLVM dlltool only supports generating an import library
++            subprocess.check_call(dlltool)
++            library = name
++        return library_dir, library
+ 
+     def run(self):
+         self.run_command("install_include")
