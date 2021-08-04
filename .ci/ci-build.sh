@@ -40,6 +40,8 @@ message 'Building packages'
 for package in "${packages[@]}"; do
     echo "::group::[build] ${package}"
     execute 'Fetch keys' "$DIR/fetch-validpgpkeys.sh"
+    # Ensure the toolchain is installed before building the package
+    execute 'Installing the toolchain' pacman -S --needed --noconfirm --noprogressbar ${MINGW_PACKAGE_PREFIX}-toolchain
     execute 'Building binary' makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild
     MINGW_ARCH=mingw64 execute 'Building source' makepkg-mingw --noconfirm --noprogressbar --allsource
     echo "::endgroup::"
@@ -65,7 +67,7 @@ for package in "${packages[@]}"; do
     for pkg in *.pkg.tar.*; do
         message "Uninstalling ${pkg}"
         pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
-        pacman -R --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
+        pacman -R --cascade --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
     done
     cd - > /dev/null
     echo "::endgroup::"
