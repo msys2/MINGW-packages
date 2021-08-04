@@ -31,6 +31,11 @@ define_build_order || failure 'Could not determine build order'
 message 'Building packages' "${packages[@]}"
 execute 'Approving recipe quality' check_recipe_quality
 
+message 'Adding an empty local repository'
+repo-add $PWD/artifacts/ci.db.tar.gz
+sed -i '1s|^|[ci]\nServer = file://'"$PWD"'/artifacts/\nSigLevel = Never\n|' /etc/pacman.conf
+pacman -Sy
+
 message 'Building packages'
 for package in "${packages[@]}"; do
     echo "::group::[build] ${package}"
@@ -49,6 +54,18 @@ for package in "${packages[@]}"; do
         message "File listing diff for ${pkg}"
         pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
         diff -Nur <(pacman -Fl "$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
+    done
+    cd - > /dev/null
+    echo "::endgroup::"
+
+    echo "::group::[uninstall] ${package}"
+    repo-add $PWD/artifacts/ci.db.tar.gz "${package}"/*.pkg.tar.*
+    pacman -Sy
+    cd "$package"
+    for pkg in *.pkg.tar.*; do
+        message "Uninstalling ${pkg}"
+        pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
+        pacman -R --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
     done
     cd - > /dev/null
     echo "::endgroup::"
