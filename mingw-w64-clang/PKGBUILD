@@ -262,9 +262,6 @@ prepare() {
 build() {
   cd "${srcdir}"
 
-  [[ -d build-${MSYSTEM} ]] && rm -rf build-${MSYSTEM}
-  mkdir build-${MSYSTEM} && cd build-${MSYSTEM}
-
   case "${CARCH}" in
     i?86|armv7)
       # lld needs all the address space it can get.
@@ -272,7 +269,7 @@ build() {
       ;;
   esac
 
-  local -a extra_config
+  local -a platform_config
   local -a common_cmake_args
 
   if check_option "debug" "y"; then
@@ -282,6 +279,9 @@ build() {
     common_cmake_args+=(-DCMAKE_BUILD_TYPE=Release)
   fi
   common_cmake_args+=(-Wno-dev
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX}
+    -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib
+    -DLLVM_HOST_TRIPLE="${CARCH}-w64-windows-gnu"
     -DPython3_EXECUTABLE=${MINGW_PREFIX}/bin/python.exe
     -DPython3_FIND_REGISTRY=NEVER
     -DPython3_ROOT_DIR=${MINGW_PREFIX})
@@ -293,7 +293,7 @@ build() {
   if [ "${_compiler}" == "clang" ]; then
     export CC='clang'
     export CXX='clang++'
-    extra_config+=(-DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON
+    platform_config+=(-DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON
       -DLLVM_ENABLE_LIBCXX=ON)
   fi
 
@@ -301,7 +301,7 @@ build() {
     # A bit hacky but it works
     local _clang_links="clang++;clang-cpp;as;c++;cc;cpp;g++;gcc;${MINGW_CHOST}-cc;${MINGW_CHOST}-c++;${MINGW_CHOST}-clang;${MINGW_CHOST}-clang++;${MINGW_CHOST}-g++;${MINGW_CHOST}-gcc"
 
-    extra_config+=(-DCLANG_DEFAULT_RTLIB=compiler-rt
+    platform_config+=(-DCLANG_DEFAULT_RTLIB=compiler-rt
       -DCLANG_DEFAULT_UNWINDLIB=libunwind
       -DCLANG_DEFAULT_CXX_STDLIB=libc++
       -DCLANG_DEFAULT_LINKER=lld
@@ -311,7 +311,6 @@ build() {
   fi
 
   local _projects="clang;clang-tools-extra;compiler-rt;lld;lldb;polly"
-  local -a platform_config
 
   case "${CARCH}" in
     x86_64)
@@ -331,11 +330,35 @@ build() {
       ;;
   esac
 
+  local -a libcxx_config
+  if (( _clangprefix )); then
+    libcxx_config+=(-DLIBCXX_USE_COMPILER_RT=ON
+      -DLIBCXXABI_USE_COMPILER_RT=ON
+      -DLIBCXXABI_USE_LLVM_UNWINDER=ON)
+  else
+    # Use newly built compiler for libcxx/libunwind because GCC/binutils doesn't play nicely
+    libcxx_config+=(-DCMAKE_AR="${srcdir}/build-${MSYSTEM}/bin/llvm-ar.exe"
+      -DCMAKE_ASM_COMPILER="${srcdir}/build-${MSYSTEM}/bin/clang.exe"
+      -DCMAKE_C_COMPILER="${srcdir}/build-${MSYSTEM}/bin/clang.exe"
+      -DCMAKE_CXX_COMPILER="${srcdir}/build-${MSYSTEM}/bin/clang++.exe"
+      -DCMAKE_RANLIB="${srcdir}/build-${MSYSTEM}/bin/llvm-ranlib.exe")
+  fi
+
+  libcxx_config+=(-DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON
+    -DLIBCXX_HAS_WIN32_THREAD_API=ON
+    -DLIBCXXABI_HAS_WIN32_THREAD_API=ON
+    -DLIBCXXABI_ENABLE_SHARED=OFF
+    -DLIBCXXABI_ENABLE_STATIC=ON
+    -DLIBUNWIND_USE_COMPILER_RT=ON
+    -DLLVM_ENABLE_LLD=ON
+    -DLLVM_ENABLE_PROJECTS="libcxx;libcxxabi;libunwind")
+
+  [[ -d build-${MSYSTEM} ]] && rm -rf build-${MSYSTEM}
+  mkdir build-${MSYSTEM} && cd build-${MSYSTEM}
+
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake.exe \
     -GNinja \
-    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
-    -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib \
     -DFFI_INCLUDE_DIR="${FFI_INCLUDE_DIR}" \
     -DLIBCLANG_BUILD_STATIC=ON \
     -DLIBOMP_FORTRAN_MODULES=$( (( _clangprefix )) && echo "OFF" || echo "ON" ) \
@@ -349,7 +372,6 @@ build() {
     -DLLVM_ENABLE_PROJECTS="${_projects}" \
     -DLLVM_ENABLE_SPHINX=ON \
     -DLLVM_ENABLE_THREADS=ON \
-    -DLLVM_HOST_TRIPLE="${CARCH}-w64-windows-gnu" \
     -DLLVM_INCLUDE_EXAMPLES=OFF \
     -DLLVM_INSTALL_UTILS=ON \
     -DLLVM_LINK_LLVM_DYLIB=ON \
@@ -357,7 +379,6 @@ build() {
     -DLLDB_EMBED_PYTHON_HOME=OFF \
     "${common_cmake_args[@]}" \
     "${platform_config[@]}" \
-    "${extra_config[@]}" \
     ../llvm
 
   ${MINGW_PREFIX}/bin/cmake.exe --build .
@@ -368,30 +389,6 @@ build() {
   sed -i.orig '/\(clang\|lld\|lldb\|polly\)\/cmake_install.cmake/d' tools/cmake_install.cmake
   sed -i.orig '/\(extra\|scan-build\|scan-view\)\/cmake_install.cmake/d' tools/clang/tools/cmake_install.cmake
   sed -i.orig '/\(compiler-rt\|libcxxabi\|libcxx\|openmp\|libunwind\)\/cmake_install.cmake/d' projects/cmake_install.cmake
-
-  # Use newly built compiler because GCC/binutils doesn't play nicely
-  if (( _clangprefix )); then
-    common_cmake_args+=(-DLIBCXX_USE_COMPILER_RT=ON
-      -DLIBCXXABI_USE_COMPILER_RT=ON
-      -DLIBCXXABI_USE_LLVM_UNWINDER=ON)
-  else
-    export CC="${srcdir}/build-${MSYSTEM}/bin/clang"
-    export CXX="${srcdir}/build-${MSYSTEM}/bin/clang++"
-    common_cmake_args+=(-DCMAKE_AR=${srcdir}/build-${MSYSTEM}/bin/llvm-ar
-      -DCMAKE_RANLIB=${srcdir}/build-${MSYSTEM}/bin/llvm-ranlib)
-  fi
-
-  common_cmake_args+=(-DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX}
-    -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib
-    -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON
-    -DLIBCXX_HAS_WIN32_THREAD_API=ON
-    -DLIBCXXABI_HAS_WIN32_THREAD_API=ON
-    -DLIBCXXABI_ENABLE_SHARED=OFF
-    -DLIBCXXABI_ENABLE_STATIC=ON
-    -DLIBUNWIND_USE_COMPILER_RT=ON
-    -DLLVM_ENABLE_LLD=ON
-    -DLLVM_ENABLE_PROJECTS="libcxx;libcxxabi;libunwind"
-    -DLLVM_HOST_TRIPLE="${CARCH}-w64-windows-gnu")
 
   cd "${srcdir}"
 
@@ -408,6 +405,7 @@ build() {
     -DLIBUNWIND_ENABLE_SHARED=ON \
     -DLIBUNWIND_ENABLE_STATIC=OFF \
     "${common_cmake_args[@]}" \
+    "${libcxx_config[@]}" \
     ../llvm
 
   ${MINGW_PREFIX}/bin/cmake.exe --build . -- unwind cxx
@@ -427,6 +425,7 @@ build() {
     -DLIBUNWIND_ENABLE_SHARED=OFF \
     -DLIBUNWIND_ENABLE_STATIC=ON \
     "${common_cmake_args[@]}" \
+    "${libcxx_config[@]}" \
     ../llvm
 
   ${MINGW_PREFIX}/bin/cmake.exe --build . -- unwind cxxabi cxx cxx_experimental
