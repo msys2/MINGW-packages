@@ -100,6 +100,7 @@ source=("https://github.com/llvm/llvm-project/releases/download/llvmorg-${pkgver
         "0319-LLD-MinGW-Support-both-opt-value-and-opt-value-for-m.patch"
         "0401-libcxx-fs.patch"
         "0402-make-the-visibility-attributes-consistent-for-__narr.patch"
+        "0403-HACK-for-clang32-changing-time_t.patch"
         "0601-libunwind-Install-the-DLL-when-doing-ninja-install.patch"
         "0710-backport-05b3716.patch"
         "0901-cast-to-make-gcc-happy.patch")
@@ -157,6 +158,7 @@ sha256sums=('129cb25cd13677aad951ce5c2deb0fe4afc1e9d98950f53b51bdcfb5a73afa0e'
             'e7eee06ac4a794f674e4de86e02fb9ab54700018054da61d78fb922469eb6516'
             '6cb5d425e36b24a8eb2776ba0e297ea0a986a4086f96a0e60ca3a4ebc1a9d386'
             '3abb69e6dc9ad367240409d2df3c3cd6ddc89325de994195fc7222493baaaa44'
+            '987651ebbd30d94da01be43636bf2738448f9cce8927137ecd002643ab270eea'
             '9ab6c628eccf0155cebdc73e4f5297820bef54d8f30022ed0c1cbb6ab8ad67b8'
             '63b09e0b58a3a100fdd348b5f38f594e3c94cd54030a13b821f7a91ece3e1de0'
             '11352ffbe7559a7170f2abd52b3552c877fbcf8fc82cff77b421e8b130a4dd66')
@@ -242,6 +244,12 @@ prepare() {
   apply_patch_with_msg \
     "0401-libcxx-fs.patch" \
     "0402-make-the-visibility-attributes-consistent-for-__narr.patch"
+
+  # XXX HACK for clang32 to allow the change of time_t from 32 to 64-bits
+  if [[ "${MSYSTEM}" == "CLANG32" ]]; then
+    apply_patch_with_msg \
+      "0403-HACK-for-clang32-changing-time_t.patch"
+  fi
 
   cd "${srcdir}/libunwind"
   apply_patch_with_msg \
@@ -352,6 +360,39 @@ build() {
     -DLIBUNWIND_USE_COMPILER_RT=ON
     -DLLVM_ENABLE_LLD=ON
     -DLLVM_ENABLE_PROJECTS="libcxx;libcxxabi;libunwind")
+
+  # XXX HACK for clang32 to allow the change of time_t from 32 to 64-bits
+  if [[ "${MSYSTEM}" == "CLANG32" ]]; then
+    [[ -d build-libcxx-shared-HACK ]] && rm -rf build-libcxx-shared-HACK
+    [[ -d bin-HACK ]] && rm -rf bin-HACK
+    [[ -d lib-HACK ]] && rm -rf lib-HACK
+    mkdir bin-HACK
+    mkdir lib-HACK
+    mkdir build-libcxx-shared-HACK && cd build-libcxx-shared-HACK
+
+    MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    ${MINGW_PREFIX}/bin/cmake.exe \
+      -GNinja \
+      -DCMAKE_CXX_FLAGS="${CXXFLAGS} -D_LIBCPP_BUILDING_LIBRARY -U_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS" \
+      -DLIBCXX_ENABLE_EXPERIMENTAL_LIBRARY=OFF \
+      -DLIBCXX_ENABLE_SHARED=ON \
+      -DLIBCXX_ENABLE_STATIC=OFF \
+      -DLIBUNWIND_ENABLE_SHARED=ON \
+      -DLIBUNWIND_ENABLE_STATIC=OFF \
+      "${common_cmake_args[@]}" \
+      "${libcxx_config[@]}" \
+      ../llvm
+
+    ${MINGW_PREFIX}/bin/cmake.exe --build . -- unwind cxx
+
+    cp lib/libc++.dll ../bin-HACK
+    cp lib/libc++.dll.a ../lib-HACK
+    cp lib/libc++abi.a ../lib-HACK
+    export PATH="${srcdir}/bin-HACK:$PATH"
+    export LDFLAGS+=" -L$(cygpath -m "${srcdir}/lib-HACK")"
+
+    cd "${srcdir}"
+  fi
 
   [[ -d build-${MSYSTEM} ]] && rm -rf build-${MSYSTEM}
   mkdir build-${MSYSTEM} && cd build-${MSYSTEM}

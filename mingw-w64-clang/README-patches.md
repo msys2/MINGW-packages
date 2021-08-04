@@ -49,6 +49,7 @@ Legend:
 - `"0319-LLD-MinGW-Support-both-opt-value-and-opt-value-for-m.patch"` :arrow_down_small:
 - `"0401-libcxx-fs.patch"` :arrow_down_small:
 - `"0402-make-the-visibility-attributes-consistent-for-__narr.patch"` :arrow_down_small:
+- `"0403-HACK-for-clang32-changing-time_t.patch"` :x::grey_exclamation:
 - `"0601-libunwind-Install-the-DLL-when-doing-ninja-install.patch"` :arrow_down_small:
 - `"0710-backport-05b3716.patch"` :arrow_down_small:
 - `"0901-cast-to-make-gcc-happy.patch"` :grey_exclamation:
