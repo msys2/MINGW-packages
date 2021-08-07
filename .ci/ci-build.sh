@@ -69,7 +69,11 @@ for package in "${packages[@]}"; do
     for pkg in *.pkg.tar.*; do
         installed_packages+=("$(echo "$pkg" | rev | cut -d- -f4- | rev)")
     done
-    pacman -R --recursive --unneeded --noconfirm --noprogressbar "${installed_packages[@]}"
+    if [ -f .ci-sequential ]; then
+        pacman -R --recursive --unneeded --noconfirm --noprogressbar "${installed_packages[-1]}"
+    else
+        pacman -R --recursive --unneeded --noconfirm --noprogressbar "${installed_packages[@]}"
+    fi
     unset installed_packages
     cd - > /dev/null
     echo "::endgroup::"
