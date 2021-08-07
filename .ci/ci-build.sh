@@ -46,33 +46,56 @@ for package in "${packages[@]}"; do
     MINGW_ARCH=mingw64 execute 'Building source' makepkg-mingw --noconfirm --noprogressbar --allsource
     echo "::endgroup::"
 
-    echo "::group::[install] ${package}"
-    execute 'Installing' install_packages
-    echo "::endgroup::"
+    if [ -f $package/.ci-sequential ]; then
+        cd "$package"
+        for pkg in *.pkg.tar.*; do
+            pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
+            echo "::group::[install] ${pkgname}"
+            pacman --noprogressbar --upgrade --noconfirm $pkg
+            echo "::endgroup::"
 
-    echo "::group::[diff] ${package}"
-    cd "$package"
-    for pkg in *.pkg.tar.*; do
-        message "File listing diff for ${pkg}"
-        pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
-        diff -Nur <(pacman -Fl "$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
-    done
-    cd - > /dev/null
-    echo "::endgroup::"
+            echo "::group::[diff] ${pkgname}"
+            message "File listing diff for ${pkgname}"
+            diff -Nur <(pacman -Fl "$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
+            echo "::endgroup::"
 
-    echo "::group::[uninstall] ${package}"
-    repo-add $PWD/artifacts/ci.db.tar.gz "${package}"/*.pkg.tar.*
-    pacman -Sy
-    message "Uninstalling $package"
-    cd "$package"
-    export installed_packages=()
-    for pkg in *.pkg.tar.*; do
-        installed_packages+=("$(echo "$pkg" | rev | cut -d- -f4- | rev)")
-    done
-    pacman -R --recursive --unneeded --noconfirm --noprogressbar "${installed_packages[@]}"
-    unset installed_packages
-    cd - > /dev/null
-    echo "::endgroup::"
+            echo "::group::[uninstall] ${pkgname}"
+            message "Uninstalling $pkgname"
+            repo-add $PWD/../artifacts/ci.db.tar.gz $PWD/$pkg
+            pacman -Sy
+            pacman -R --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
+            echo "::endgroup::"
+        done
+        cd - > /dev/null
+    else
+        echo "::group::[install] ${package}"
+        execute 'Installing' install_packages
+        echo "::endgroup::"
+
+        echo "::group::[diff] ${package}"
+        cd "$package"
+        for pkg in *.pkg.tar.*; do
+            message "File listing diff for ${pkg}"
+            pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
+            diff -Nur <(pacman -Fl "$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
+        done
+        cd - > /dev/null
+        echo "::endgroup::"
+
+        echo "::group::[uninstall] ${package}"
+        repo-add $PWD/artifacts/ci.db.tar.gz "${package}"/*.pkg.tar.*
+        pacman -Sy
+        message "Uninstalling $package"
+        cd "$package"
+        export installed_packages=()
+        for pkg in *.pkg.tar.*; do
+            installed_packages+=("$(echo "$pkg" | rev | cut -d- -f4- | rev)")
+        done
+        pacman -R --recursive --unneeded --noconfirm --noprogressbar "${installed_packages[@]}"
+        unset installed_packages
+        cd - > /dev/null
+        echo "::endgroup::"
+    fi
 
     mv "${package}"/*.pkg.tar.* artifacts
     mv "${package}"/*.src.tar.* artifacts
