@@ -140,13 +140,7 @@ list_packages() {
 }
 
 install_packages() {
-    if [ -f .ci-sequential ]; then
-        for pkg in *.pkg.tar.*; do
-            pacman --noprogressbar --upgrade --noconfirm $pkg
-        done
-    else
-        pacman --noprogressbar --upgrade --noconfirm *.pkg.tar.*
-    fi
+    pacman --noprogressbar --upgrade --noconfirm *.pkg.tar.*
 }
 
 # Recipe quality
