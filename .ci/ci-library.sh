@@ -139,6 +139,10 @@ list_packages() {
     return 0
 }
 
+install_packages() {
+    pacman --noprogressbar --upgrade --noconfirm *.pkg.tar.*
+}
+
 # Recipe quality
 check_recipe_quality() {
     # TODO: remove this option when not anymore needed

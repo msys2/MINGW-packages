@@ -1,0 +1,56 @@
+### Patches statuses
+
+Legend:
+- :grey_exclamation: - not meant to upstream, for compatibility with GCC only
+- :x: - not upstreamed
+- :grey_question: - sent but not merged yet
+- :arrow_up_small:  - upstreamed
+- :arrow_down_small:  - backported
+
+-----
+- `"0001-Use-posix-style-path-separators-with-MinGW.patch"` :x::x::x: - this one is really imporant
+- `"0002-Fix-GetHostTriple-for-mingw-w64-in-msys.patch"` :x:
+- `"0004-llvm-config-look-for-unversioned-shared-lib-on-win32.patch"` :grey_question: - https://reviews.llvm.org/D87521 https://reviews.llvm.org/D89009
+- `"0005-add-pthread-as-system-lib-for-mingw.patch"` :grey_exclamation:
+- `"0008-enable-emutls-for-mingw.patch"` :grey_exclamation:
+- `"0010-mbig-obj-for-all.patch"` :arrow_up_small:
+- `"0011-nm-version-option.patch"` :arrow_down_small:
+- `"0012-windres.patch"` :arrow_down_small:
+- `"0013-Dlltool-use-default-LLVM-target-unless-specified.patch"` :x:
+- `"0014-llvm-rc-Don-t-rewrite-the-arch-in-the-default-triple.patch"` :arrow_down_small:
+- `"0015-Use-TerminateProcess-to-exit-without-running-destruc.patch"` :arrow_down_small:
+- `"0016-llvm-rc-Make-commas-in-user-data-structs-optional.patch"` :arrow_down_small:
+- `"0017-X86-Teach-X86FloatingPoint-s-handleCall-to-only-eras.patch"` :arrow_down_small:
+- `"0018-llvm-rc-Allow-dashes-as-part-of-resource-name-strings.patch"` :arrow_down_small:
+- `"0019-MinGW-Mark-a-number-of-library-functions-unavailable.patch"` :arrow_down_small:
+- `"0020-llvm-rc-Allow-specifying-language-with-a-leading-0x-.patch"` :arrow_down_small:
+- `"0101-Disable-fPIC-errors.patch"` :x:
+- `"0103-Use-posix-style-path-separators-with-MinGW.patch"` :x::x::x: - this one is really imporant
+- `"0104-link-pthread-with-mingw.patch"` :grey_exclamation:
+- `"0105-Dont-mark-emutls-variables-as-DSO-local.patch"` :arrow_down_small:
+- `"0106-Rename-a-template-parameter-that-conflicted-with-a-c.patch"` :arrow_down_small:
+- `"0107-clang-MinGW-Let-the-last-of-mconsole-mwindows-have-e.patch"` :arrow_down_small:
+- `"0201-Provide-a-SEH-specific-__gcc_personality_seh0.patch"` :arrow_down_small:
+- `"0301-fix-including-the-personality-function-for-dwarf.patch"` :arrow_down_small:
+- `"0302-ignore-no-undefined-flag.patch"` :arrow_up_small:
+- `"0303-LLD-MinGW-Add-fatal-warnings-and-no-fatal-warnings-f.patch"` :arrow_up_small:
+- `"0304-ignore-new-bfd-options.patch"` :x:
+- `"0306-LLD-MinGW-Pass-the-canExitEarly-parameter-through-pr.patch"` :arrow_down_small:
+- `"0307-lld-MinGW-Introduce-aliases-for-Bdynamic-and-Bstatic.patch"` :arrow_down_small:
+- `"0308-LLD-COFF-Fix-automatic-export-of-symbols-from-LTO-ob.patch"` :arrow_down_small:
+- `"0310-backport-2b01a41.patch"` :arrow_down_small:
+- `"0311-backport-82de4e0.patch"` :arrow_down_small:
+- `"0312-LLD-COFF-Fix-autoexport-from-LTO-objects-with-comdat.patch"` :arrow_down_small:
+- `"0313-LLD-COFF-Fix-handling-of-LTO-comdats.patch"` :arrow_down_small:
+- `"0314-LLD-COFF-Support-linking-directly-against-DLLs-in-Mi.patch"` :arrow_down_small:
+- `"0315-LLD-COFF-Fix-up-missing-stdcall-decorations-in-MinGW.patch"` :arrow_down_small:
+- `"0316-LLD-COFF-Avoid-thread-exhaustion-on-32-bit-Windows-h.patch"` :arrow_down_small:
+- `"0317-LLD-COFF-Make-export-all-symbols-work-as-intended-fo.patch"` :arrow_down_small:
+- `"0318-LLD-MinGW-Accept-joined-format-for-stack.patch"` :arrow_down_small:
+- `"0319-LLD-MinGW-Support-both-opt-value-and-opt-value-for-m.patch"` :arrow_down_small:
+- `"0401-libcxx-fs.patch"` :arrow_down_small:
+- `"0402-make-the-visibility-attributes-consistent-for-__narr.patch"` :arrow_down_small:
+- `"0403-HACK-for-clang32-changing-time_t.patch"` :x::grey_exclamation:
+- `"0601-libunwind-Install-the-DLL-when-doing-ninja-install.patch"` :arrow_down_small:
+- `"0710-backport-05b3716.patch"` :arrow_down_small:
+- `"0901-cast-to-make-gcc-happy.patch"` :grey_exclamation:
