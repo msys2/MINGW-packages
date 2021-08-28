@@ -1,10 +1,16 @@
 _realname=qemu
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-_base_ver=6.0.0
-_rc=
-pkgver=${_base_ver}${_rc//-/.}
-pkgrel=6
+_base_ver="6.1.0"
+# QEMU Versioning of RC-SourcePackage and RC-Version differs
+# e.g. qemu-6.1.0-rc0.tar.xz contains 6.0.90, qemu-6.1.0-rc1.tar.xz contains 6.0.91
+# Unset _rc_no to create Release-Build
+#_rc_no="4"
+_rc_base_ver="6.0.9${_rc_no}"
+_rc_file_ver="rc${_rc_no}"
+_tarname=$( [ -z "${_rc_no}" ] && echo ${_realname}-${_base_ver} || echo ${_realname}-${_base_ver}-${_rc_file_ver} )
+pkgver=$( [ -z "${_rc_no}" ] && echo ${_base_ver} || echo ${_rc_base_ver} )
+pkgrel=1
 pkgdesc="QEMU - a generic and open source machine emulator and virtualizer (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
@@ -12,9 +18,11 @@ license=('GPL2' 'LGPL2')
 url="https://qemu.org/"
 options=('!emptydirs')
 makedepends=(
+  "${MINGW_PACKAGE_PREFIX}-meson"
   "${MINGW_PACKAGE_PREFIX}-ninja"
   "${MINGW_PACKAGE_PREFIX}-python"
   "${MINGW_PACKAGE_PREFIX}-python-sphinx"
+  "${MINGW_PACKAGE_PREFIX}-python-sphinx_rtd_theme"
   'perl' 'bison' 'bsdtar')
 depends=(
   "${MINGW_PACKAGE_PREFIX}-capstone"
@@ -42,26 +50,32 @@ depends=(
   "${MINGW_PACKAGE_PREFIX}-usbredir"
   "${MINGW_PACKAGE_PREFIX}-zstd"
 )
-source=("https://download.qemu.org/${_realname}-${pkgver}.tar.xz"{,.sig}
-  "https://gitlab.com/qemu-project/qemu/-/commit/1c96386.patch"
+optdepends=(
+  "${MINGW_PACKAGE_PREFIX}-gtk-vnc: Contains gvncviewer. For connections to Qemu VNC server"
+  "${MINGW_PACKAGE_PREFIX}-spice-gtk: Contains spicy. For connections to Qemu SPICE server"
+  "${MINGW_PACKAGE_PREFIX}-virt-viewer: Contains remote-viewer. For connections to Qemu SPICE or VNC server"
+)
+source=(
+  "https://download.qemu.org/${_tarname}.tar.xz"{,.sig}
   msys2.readme.txt
-  msys2.examples.tests.sh)
-sha256sums=('87bc1a471ca24b97e7005711066007d443423d19aacda3d442558ae032fa30b9'
-            'SKIP'
-            'fbc926b29350d53278b2481c6513f8f02f4efa5851e44b75dcaca65cdcf423b8'
-            '7d699824c1c89da7b2ef898c0eb99a4d9daeb5bfa72e516bebe188a127b46f39'
-            '0b6f2321ce2bf8fcc2ebe22a37b27879d661273564a68c32a589ce5c49063872')
+  msys2.examples.tests.sh
+)
+sha256sums=(
+  'eebc089db3414bbeedf1e464beda0a7515aad30f73261abc246c9b27503a3c96'
+  'SKIP'
+  'cefb3ff87299c104241561aac275bdff6031dbc75ea74d56e1018a9e3ca0e220'
+  '2af9452c5cf16871d99154dece8117925a0c1dab365c1c8766bfcbdd3c5e5ccf'
+)
 validpgpkeys=('CEACC9E15534EBABB82D3FA03353C9CEF108B584') # Michael Roth <flukshun@gmail.com>
 # tar cannot create links, to keep build running, manual extraction is required
-noextract=(${_realname}-${pkgver}.tar.xz)
+noextract=(${_tarname}.tar.xz)
 
 prepare() {
-  [[ -d "${srcdir}"/${_realname}-${pkgver} ]] && rm -rf "${srcdir}"/${_realname}-${pkgver}
+  [[ -d "${srcdir}"/${_tarname} ]] && rm -rf "${srcdir}"/${_tarname}
   # tar cannot create links here, therefore hide the failure
-  tar -xf ${srcdir}/${_realname}-${pkgver}.tar.xz -C ${srcdir} || true
+  tar -xf ${srcdir}/${_tarname}.tar.xz -C ${srcdir} || true
 
-  cd "${srcdir}/${_realname}-${pkgver}"
-  patch -Np1 -i "${srcdir}/1c96386.patch"
+  cd "${srcdir}/${_tarname}"
 }
 
 build() {
@@ -94,19 +108,17 @@ build() {
 
   # configure failes to create links, which can be ignored
   # qemu enables all features if possible, so keep it simple
+  #  -cross-prefix is necessary for build to succeed
   # For faster testing:
   #TARGETLIST="--target-list=x86_64-softmmu"
-  # configuration of paths for win32 - fixes in package():
-  # intention: leave all core files in one directory - lib/qemu
-  ../${_realname}-${pkgver}/configure $TARGETLIST \
+  ../${_tarname}/configure $TARGETLIST \
     --cross-prefix=${CARCH}-w64-mingw32- \
-    --python=${MINGW_PREFIX}/bin/python \
     --prefix=${MINGW_PREFIX} \
-    --bindir=${MINGW_PREFIX}/lib/qemu \
-    --datadir=${MINGW_PREFIX}/lib/qemu \
-    --localedir=${MINGW_PREFIX}/share/locale \
-    --mandir=${MINGW_PREFIX}/share/man \
-    --docdir=${MINGW_PREFIX}/share/doc/qemu
+    --bindir=bin \
+    --datadir=share/qemu \
+    --localedir=share/locale \
+    --mandir=share/man \
+    --docdir=share/doc/qemu
 
   # Finally build
   make
@@ -122,12 +134,6 @@ check() {
 package() {
   cd "${srcdir}"/build-${CARCH}
 
-  # Fix failure of make install introduced by Sphinx >=4.0.0
-  # Sphinx >=4.0.0 puts man pages to docs/(1|7|8)/ and not to docs/ as expected
-  # TODO Try to remove with next Qemu release
-  find docs -type f -regextype grep -regex "docs/[0-9]/.*" -exec \
-    cp -pv {} docs/ \;
-
   # Install to ${pkgdir}
   make DESTDIR="${pkgdir}" install
 
@@ -139,36 +145,22 @@ package() {
   # To enable usage relative paths for next operations
   cd "${pkgdir}"/${MINGW_PREFIX}
 
-  # Move to standard dirs in share/
-  mkdir -pv share
-  mv -v lib/qemu/applications share/
-  mv -v lib/qemu/icons share/
+  # Move content to standard dirs in share/
+  mkdir -pv share/qemu/icons
+  mv -v share/qemu/icons share/
+  mkdir -pv share/qemu/applications
+  mv -v share/qemu/applications share/
 
   # Fix firmware descriptors
   # see https://bugzilla.redhat.com/show_bug.cgi?id=1728652#c7
-  mkdir -pv share/qemu
-  mv -v lib/qemu/firmware share/qemu/
+  mkdir -pv share/qemu/firmware
   find share/qemu/firmware -type f -exec \
-    sed -i "s%\(\"filename\"\s*:\s*\"\).*edk2%\1${MINGW_PREFIX}/lib/qemu/edk2%" {} \;
-
-  # For executables in lib/qemu/ create wrappers in bin/
-  mkdir -pv bin
-  local LIBEXES=$(find lib/qemu -name "*.exe" ! -name "*w.exe")
-  local LIBEXE=""
-  for LIBEXE in $LIBEXES
-  do
-    local EXE=$(basename $LIBEXE)
-    local WRAPPER=bin/$EXE
-    echo "#!/bin/bash"                                     >> $WRAPPER
-    echo "export PATH=\"${MINGW_PREFIX}/lib/qemu:\$PATH\"" >> $WRAPPER
-    echo "exec ${MINGW_PREFIX}/lib/qemu/$EXE \"\$@\""      >> $WRAPPER
-    chmod u+x $WRAPPER
-  done
+    sed -i "s%\(\"filename\"\s*:\s*\"\).*edk2%\1${MINGW_PREFIX}/share/qemu/edk2%" {} \;
 
   # Add all licenses found in qemu sources to share/licences/qemu/
   mkdir -pv share/licenses/qemu
-  tar -C "${srcdir}"/${_realname}-${pkgver} -c $(
-    cd "${srcdir}"/${_realname}-${pkgver} &&
+  tar -C "${srcdir}"/${_tarname} -c $(
+    cd "${srcdir}"/${_tarname} &&
       find -iname "*COPYING*" -or -iname "*LICENSE*" |
       grep -v "\s" |
       egrep -v "meson.(test|msi|doc)" |
