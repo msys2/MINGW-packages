@@ -55,6 +55,9 @@ for package in "${packages[@]}"; do
             echo "::endgroup::"
 
             echo "::group::[diff] ${pkgname}"
+            message "Package info diff for ${pkgname}"
+            diff -Nur <(pacman -Si "${pkgname}") <(pacman -Qip "${pkg}") || true
+
             message "File listing diff for ${pkgname}"
             diff -Nur <(pacman -Fl "$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
             echo "::endgroup::"
@@ -75,8 +78,11 @@ for package in "${packages[@]}"; do
         echo "::group::[diff] ${package}"
         cd "$package"
         for pkg in *.pkg.tar.*; do
-            message "File listing diff for ${pkg}"
             pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
+            message "Package info diff for ${pkgname}"
+            diff -Nur <(pacman -Si "${pkgname}") <(pacman -Qip "${pkg}") || true
+
+            message "File listing diff for ${pkgname}"
             diff -Nur <(pacman -Fl "$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
         done
         cd - > /dev/null
