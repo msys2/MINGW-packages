@@ -63,14 +63,24 @@ _package_info() {
     done
 }
 
+# "foo>=1" -> "foo"
+_strip_version_reqs() {
+    echo "${1}" | sed -n 's/\([^ <=>]*\).*/\1/p'
+}
+
 # Package provides another
 _package_provides() {
     local package="${1}"
     local another="${2}"
     local pkgname provides
     _package_info "${package}" pkgname provides
-    for pkg_name in "${pkgname[@]}";  do [[ "${pkg_name}" = "${another}" ]] && return 0; done
-    for provided in "${provides[@]}"; do [[ "${provided}" = "${another}" ]] && return 0; done
+    for pkg_name in "${pkgname[@]}"; do
+        [[ "${pkg_name}" = "${another}" ]] && return 0;
+    done
+    for provided in "${provides[@]}"; do
+        provided="$(_strip_version_reqs "${provided}")"
+        [[ "${provided}" = "${another}" ]] && return 0;
+    done
     return 1
 }
 
@@ -84,6 +94,7 @@ _build_add() {
     started_packages+=("${package}")
     _package_info "${package}" depends makedepends
     for dependency in "${depends[@]}" "${makedepends[@]}"; do
+        dependency="$(_strip_version_reqs "${dependency}")"
         for unsorted_package in "${packages[@]}"; do
             _package_provides "${unsorted_package}" "${dependency}" && _build_add "${unsorted_package}"
         done
