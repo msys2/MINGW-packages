@@ -76,7 +76,8 @@ execute(){
 # Get changed packages in correct build order
 list_packages() {
     packages=()
-    for pkg in $($DIR/ci-get-build-order.py); do
+    _packages="$($DIR/ci-get-build-order.py)"
+    for pkg in $_packages; do
         packages+=("$pkg")
     done
 }

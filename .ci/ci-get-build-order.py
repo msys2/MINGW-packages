@@ -48,9 +48,9 @@ def get_pkginfo(package, packageset):
     for prop in props:
         script += f"echo \"${{{prop}[@]}}\" && printf '\\0'\n"
 
-    results = run(
-        "bash", "-c", script, env={"MINGW_PACKAGE_PREFIX": "mingw-w64"}
-    ).split("\0")[:-1]
+    shell = os.environ.get("SHELL", "bash")
+    env = {"MINGW_PACKAGE_PREFIX": "mingw-w64"}
+    results = run(shell, "-c", script, env=env).split("\0")[:-1]
     assert len(props) == len(results), "Length of props matches results"
 
     info = {}
@@ -71,8 +71,7 @@ def get_pkginfo(package, packageset):
 def get_build_order(packages, toadd=None, ordered=None):
     if toadd is None:
         toadd, ordered = {}, []
-        n = min(os.cpu_count(), 8)
-        ThreadPool(n).map(lambda x: get_pkginfo(x, toadd), packages)
+        ThreadPool(os.cpu_count()).map(lambda x: get_pkginfo(x, toadd), packages)
 
     for package in packages:
         if package in ordered or package not in toadd:
