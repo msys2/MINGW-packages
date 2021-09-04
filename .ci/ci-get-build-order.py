@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from multiprocessing.pool import ThreadPool
 
 import os
-import subprocess
 import re
+import subprocess
+import sys
 
 
 @dataclass
@@ -29,10 +30,6 @@ def list_changes(*git_args):
     return list(dict.fromkeys(x.split("::")[-1] for x in sorted(out)))
 
 
-def list_commits():
-    return list_changes("--pretty=format:%ai::[%h] %s")
-
-
 def list_packages():
     changes = list_changes("--pretty=format:", "--name-only")
     return [
@@ -44,26 +41,24 @@ def list_packages():
 
 def get_pkginfo(package, packageset):
     props = ["depends", "makedepends", "pkgname", "provides"]
-    script = f'set -e && source "{package}/PKGBUILD"\n'
+    script = f'source "{package}/PKGBUILD"\n'
     for prop in props:
         script += f"echo \"${{{prop}[@]}}\" && printf '\\0'\n"
 
     shell = os.environ.get("SHELL", "bash")
-    env = {"MINGW_PACKAGE_PREFIX": "mingw-w64"}
-    results = run(shell, "-c", script, env=env).split("\0")[:-1]
+    env = {**os.environ, "MINGW_PACKAGE_PREFIX": "mingw-w64"}
+    results = run(shell, "-ce", script, env=env).split("\0")[:-1]
     assert len(props) == len(results), "Length of props matches results"
 
     info = {}
-    version_re = re.compile(r"[<>=]")
+    extra_re = re.compile(r"[<>=:]")  # Remove version/description
     for prop, res in zip(props, results):
-        res = [x for x in res.strip().split() if x]
-        if prop in ("depends", "makedepends"):
-            res = [version_re.split(x)[0] for x in res]
+        res = [extra_re.split(x, 1)[0] for x in res.strip().split() if x]
         info[prop] = res
 
-    deps = sorted(set(info["depends"]) | set(info["makedepends"]))
+    deps = sorted(set((*info["depends"], *info["makedepends"])))
     pkg = PackageInfo(deps, False)
-    for alias in set((package, *info["pkgname"], *info["provides"])):
+    for alias in (package, *info["pkgname"], *info["provides"]):
         packageset[alias] = pkg
     return pkg
 
@@ -79,7 +74,7 @@ def get_build_order(packages, toadd=None, ordered=None):
 
         pkg = toadd[package]
         if pkg.processed:
-            print("WARN: Dependency cycle detected on", package)
+            print("warning: dependency cycle detected on", package)
             continue
         pkg.processed = True
 
@@ -90,4 +85,5 @@ def get_build_order(packages, toadd=None, ordered=None):
 
 if __name__ == "__main__":
     os.chdir(get_toplevel())
-    print(" ".join(get_build_order(list_packages())))
+    packages = "\n".join(get_build_order(list_packages()))
+    sys.stdout.buffer.write(packages.encode("utf-8"))  # Prevent CRLF newlines

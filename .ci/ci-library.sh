@@ -73,18 +73,14 @@ execute(){
     cd - > /dev/null
 }
 
-# Get changed packages in correct build order
-list_packages() {
-    packages=()
-    _packages="$($DIR/ci-get-build-order.py)"
-    for pkg in $_packages; do
-        packages+=("$pkg")
-    done
-}
-
 # Added commits
 list_commits()  {
     _list_changes commits '*' '#*::' --pretty=format:'%ai::[%h] %s'
+}
+
+# Get changed packages in correct build order
+list_packages() {
+    _as_list "packages" "*" "" "$($DIR/ci-get-build-order.py)"
 }
 
 install_packages() {
