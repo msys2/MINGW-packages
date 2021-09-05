@@ -47,7 +47,7 @@ def get_pkginfo(package, packageset):
 
     shell = os.environ.get("SHELL", "bash")
     env = {**os.environ, "MINGW_PACKAGE_PREFIX": "mingw-w64"}
-    results = run(shell, "-ce", script, env=env).split("\0")[:-1]
+    results = run(shell, "-c", script, env=env).split("\0")[:-1]
     assert len(props) == len(results), "Length of props matches results"
 
     info = {}
@@ -74,7 +74,7 @@ def get_build_order(packages, toadd=None, ordered=None):
 
         pkg = toadd[package]
         if pkg.processed:
-            print("warning: dependency cycle detected on", package)
+            print("warning: dependency cycle detected on", package, file=sys.stderr)
             continue
         pkg.processed = True
 
