@@ -11,6 +11,7 @@ import sys
 
 @dataclass
 class PackageInfo:
+    directory: str
     deps: list
     processed: bool
 
@@ -57,7 +58,7 @@ def get_pkginfo(package, packageset):
         info[prop] = res
 
     deps = sorted(set((*info["depends"], *info["makedepends"])))
-    pkg = PackageInfo(deps, False)
+    pkg = PackageInfo(package, deps, False)
     for alias in (package, *info["pkgname"], *info["provides"]):
         packageset[alias] = pkg
     return pkg
@@ -69,17 +70,19 @@ def get_build_order(packages, toadd=None, ordered=None):
         ThreadPool(os.cpu_count()).map(lambda x: get_pkginfo(x, toadd), packages)
 
     for package in packages:
-        if package in ordered or package not in toadd:
+        if package not in toadd:
             continue
 
         pkg = toadd[package]
-        if pkg.processed:
+        if pkg.directory in ordered:
+            continue
+        elif pkg.processed:
             print("warning: dependency cycle detected on", package, file=sys.stderr)
             continue
         pkg.processed = True
 
         get_build_order(pkg.deps, toadd, ordered)
-        ordered.append(package)
+        ordered.append(pkg.directory)
     return ordered
 
 
