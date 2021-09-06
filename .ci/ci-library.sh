@@ -97,6 +97,21 @@ check_recipe_quality() {
     saneman --format='\t%l:%c %p:%c %m' --verbose --no-terminal "${packages[@]}"
 }
 
+# List DLL dependencies
+list_dll_deps(){
+    local target="${1}"
+    echo "$(tput setaf 2)MSYS2 DLL dependencies:$(tput sgr0)"
+    find "$target" -regex ".*\.\(exe\|dll\)" -print0 | xargs -0 -r ldd | GREP_COLOR="1;35" grep --color=always "msys-.*\|" \
+    || echo "        None"
+}
+
+list_dll_bases(){
+    local target="${1}"
+    echo "$(tput setaf 2)MSYS2 DLL bases:$(tput sgr0)"
+    find "$target" -regex ".*\.\(exe\|dll\)" -print | rebase -iT - | GREP_COLOR="1;35" grep --color=always "msys-.*\|" \
+    || echo "        None"
+}
+
 # Status functions
 failure() { local status="${1}"; local items=("${@:2}"); _status failure "${status}." "${items[@]}"; exit 1; }
 success() { local status="${1}"; local items=("${@:2}"); _status success "${status}." "${items[@]}"; exit 0; }
