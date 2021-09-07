@@ -80,7 +80,8 @@ list_commits()  {
 
 # Get changed packages in correct build order
 list_packages() {
-    _as_list "packages" "*" "" "$($DIR/ci-get-build-order.py)"
+    # readarray doesn't work with a plain pipe
+    readarray -t packages < <("$DIR/ci-get-build-order.py")
 }
 
 install_packages() {
