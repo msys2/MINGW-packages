@@ -10,7 +10,6 @@ Legend:
 -----
 - `"0001-Use-posix-style-path-separators-with-MinGW.patch"` :x::x::x: - this one is really imporant
 - `"0002-Fix-GetHostTriple-for-mingw-w64-in-msys.patch"` :x:
-- `"0004-llvm-config-look-for-unversioned-shared-lib-on-win32.patch"` :grey_question: - https://reviews.llvm.org/D87521 https://reviews.llvm.org/D89009
 - `"0005-add-pthread-as-system-lib-for-mingw.patch"` :grey_exclamation:
 - `"0008-enable-emutls-for-mingw.patch"` :grey_exclamation:
 - `"0101-Disable-fPIC-errors.patch"` :x:
