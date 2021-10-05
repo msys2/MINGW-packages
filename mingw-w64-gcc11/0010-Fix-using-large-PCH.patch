@@ -1,0 +1,154 @@
+From 22a67f6b18d2854bcdf740833cf4e1a0555c7295 Mon Sep 17 00:00:00 2001
+From: Martin Richter <xricht17@stud.fit.vutbr.cz>
+Date: Wed, 5 Aug 2015 23:36:25 +0100
+Subject: [PATCH 10/15] Fix using large PCH
+
+The following patch fixes segfault when gt_pch_use_address
+fails (returns -1). fatal_error now correctly shows an error
+message and terminates the program.
+I have basicly only reordered reads, and placed them after
+the file mapping itself. Global pointers are changed only
+after gt_pch_use_address succeeds, so in case of failure
+they still contain valid addresses.
+
+This patch is meant for the master branch. However, it
+should not be hard to modify it for others.
+
+https://gcc.gnu.org/bugzilla/show_bug.cgi?id=14940
+https://sourceforge.net/p/mingw-w64/bugs/382/
+---
+ gcc/config/i386/host-mingw32.c | 10 ++-------
+ gcc/ggc-common.c               | 51 +++++++++++++++++++++++++++++++++---------
+ 2 files changed, 42 insertions(+), 19 deletions(-)
+
+diff --git a/gcc/config/i386/host-mingw32.c b/gcc/config/i386/host-mingw32.c
+index aa17378..631d9c4 100644
+--- a/gcc/config/i386/host-mingw32.c
++++ b/gcc/config/i386/host-mingw32.c
+@@ -44,9 +44,6 @@ static size_t mingw32_gt_pch_alloc_granularity (void);
+ 
+ static inline void w32_error(const char*, const char*, int, const char*);
+ 
+-/* FIXME: Is this big enough?  */
+-static const size_t pch_VA_max_size  = 128 * 1024 * 1024;
+-
+ /* Granularity for reserving address space.  */
+ static size_t va_granularity = 0x10000;
+ 
+@@ -85,9 +82,6 @@ static void *
+ mingw32_gt_pch_get_address (size_t size, int)
+ {
+   void* res;
+-  size = (size + va_granularity - 1) & ~(va_granularity - 1);
+-  if (size > pch_VA_max_size)
+-    return NULL;
+ 
+   /* FIXME: We let system determine base by setting first arg to NULL.
+      Allocating at top of available address space avoids unnecessary
+@@ -94,7 +88,7 @@ mingw32_gt_pch_get_address (size_t size, int)
+      If we allocate at bottom we need to reserve the address as early
+      as possible and at the same point in each invocation. */
+  
+-  res = VirtualAlloc (NULL, pch_VA_max_size,
++  res = VirtualAlloc (NULL, size,
+ 		      MEM_RESERVE | MEM_TOP_DOWN,
+ 		      PAGE_NOACCESS);
+   if (!res)
+@@ -144,7 +138,7 @@ mingw32_gt_pch_use_address (void *addr, size_t size, int fd,
+ 
+   /* Offset must be also be a multiple of allocation granularity for
+      this to work.  We can't change the offset. */ 
+-  if ((offset & (va_granularity - 1)) != 0 || size > pch_VA_max_size)
++  if ((offset & (va_granularity - 1)) != 0)
+     return -1;
+ 
+ 
+diff --git a/gcc/ggc-common.c b/gcc/ggc-common.c
+index 03fbe7d..3a5df8a 100644
+--- a/gcc/ggc-common.c
++++ b/gcc/ggc-common.c
+@@ -591,7 +591,9 @@ gt_pch_restore (FILE *f)
+   size_t i;
+   struct mmap_info mmi;
+   int result;
+-
++  long pch_tabs_off;
++  long pch_data_off;
++  
+   /* Delete any deletable objects.  This makes ggc_pch_read much
+      faster, as it can be sure that no GCable objects remain other
+      than the ones just read in.  */
+@@ -601,20 +601,24 @@ gt_pch_restore (FILE *f)
+     for (rti = *rt; rti->base != NULL; rti++)
+       memset (rti->base, 0, rti->stride);
+ 
+-  /* Read in all the scalar variables.  */
++  /* We need to read tables after mapping, or fatal_error will
++     segfault when gt_pch_use_address returns -1. Skip them for now.  */
++  pch_tabs_off = ftell(f);
++     
++  /* Skip all the scalar variables. */
+   for (rt = gt_pch_scalar_rtab; *rt; rt++)
+     for (rti = *rt; rti->base != NULL; rti++)
+-      if (fread (rti->base, rti->stride, 1, f) != 1)
+-	fatal_error (input_location, "cannot read PCH file: %m");
++      if (fseek (f, rti->stride, SEEK_CUR) != 0)
++        fatal_error (input_location, "cannot read PCH file: %m");
+ 
+-  /* Read in all the global pointers, in 6 easy loops.  */
++  /* Skip all the global pointers.  */
+   for (rt = gt_ggc_rtab; *rt; rt++)
+     for (rti = *rt; rti->base != NULL; rti++)
+       for (i = 0; i < rti->nelt; i++)
+-	if (fread ((char *)rti->base + rti->stride * i,
+-		   sizeof (void *), 1, f) != 1)
+-	  fatal_error (input_location, "cannot read PCH file: %m");
+-
++        if (fseek (f, sizeof (void *), SEEK_CUR) != 0)
++          fatal_error (input_location, "cannot read PCH file: %m");
++          
++  /* mmi still has to be read now.  */
+   if (fread (&mmi, sizeof (mmi), 1, f) != 1)
+     fatal_error (input_location, "cannot read PCH file: %m");
+ 
+@@ -617,12 +629,35 @@ gt_pch_restore (FILE *f)
+   if (result == 0)
+     {
+       if (fseek (f, mmi.offset, SEEK_SET) != 0
+-	  || fread (mmi.preferred_base, mmi.size, 1, f) != 1)
+-	fatal_error (input_location, "cannot read PCH file: %m");
++          || fread (mmi.preferred_base, mmi.size, 1, f) != 1)
++        fatal_error (input_location, "cannot read PCH file: %m");
+     }
+   else if (fseek (f, mmi.offset + mmi.size, SEEK_SET) != 0)
+     fatal_error (input_location, "cannot read PCH file: %m");
++
++  /* File mapping done, read tables now.  */
++  pch_data_off = ftell(f);
++
++  if (fseek (f, pch_tabs_off, SEEK_SET) != 0)
++    fatal_error (input_location, "cannot read PCH file: %m");
+ 
++  /* Read in all the scalar variables.  */
++  for (rt = gt_pch_scalar_rtab; *rt; rt++)
++    for (rti = *rt; rti->base != NULL; rti++)
++      if (fread (rti->base, rti->stride, 1, f) != 1)
++        fatal_error (input_location, "cannot read PCH file: %m");
++
++  /* Read in all the global pointers, in 6 easy loops.  */
++  for (rt = gt_ggc_rtab; *rt; rt++)
++    for (rti = *rt; rti->base != NULL; rti++)
++      for (i = 0; i < rti->nelt; i++)
++        if (fread ((char *)rti->base + rti->stride * i,
++            sizeof (void *), 1, f) != 1)
++          fatal_error (input_location, "cannot read PCH file: %m");
++
++  if (fseek (f, pch_data_off, SEEK_SET) != 0)
++    fatal_error (input_location, "cannot read PCH file: %m");
++            
+   ggc_pch_read (f, mmi.preferred_base);
+ 
+   gt_pch_restore_stringpool ();
+-- 
+2.8.1
+

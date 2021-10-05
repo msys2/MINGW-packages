@@ -1,0 +1,55 @@
+--- a/gcc/diagnostic-color.c	2018-01-03 16:03:58.000000000 +0600
++++ b/gcc/diagnostic-color.c	2018-08-02 16:33:22.679146900 +0600
+@@ -23,6 +23,7 @@
+ 
+ #ifdef __MINGW32__
+ #  include <windows.h>
++#  include <winternl.h>
+ #endif
+ 
+ #include "color-macros.h"
+@@ -210,10 +211,42 @@
+      to care about it either...  */
+   HANDLE h;
+   DWORD m;
+-
++  bool ret = false;
+   h = GetStdHandle (STD_ERROR_HANDLE);
+-  return (h != INVALID_HANDLE_VALUE) && (h != NULL)
++  ret = (h != INVALID_HANDLE_VALUE) && (h != NULL)
+ 	  && GetConsoleMode (h, &m);
++  if (!ret){
++    HMODULE ntdll = GetModuleHandle ("ntdll.dll");
++    if (ntdll != INVALID_HANDLE_VALUE){
++
++      typedef NTSTATUS NTAPI func_NtQueryObject (HANDLE, OBJECT_INFORMATION_CLASS,
++                                             PVOID, ULONG, PULONG);
++      func_NtQueryObject *fNtQueryObject =
++       (func_NtQueryObject*) GetProcAddress (ntdll, "NtQueryObject");
++      if (fNtQueryObject){
++
++        ULONG s = 0xffff * sizeof (WCHAR);
++        OBJECT_NAME_INFORMATION *oni = (OBJECT_NAME_INFORMATION*) xmalloc (s);
++        ULONG len;
++        /* mintty uses a named pipe like "ptyNNNN-to-master".  */
++        if (!fNtQueryObject (h, ObjectNameInformation, oni, s, &len))
++          {
++            wchar_t namedPipe[] = L"\\Device\\NamedPipe\\";
++            size_t l1 = sizeof (namedPipe) / 2 - 1;
++            wchar_t toMaster[] = L"-to-master";
++            size_t l2 = sizeof (toMaster) / 2 - 1;
++            USHORT name_length = oni->Name.Length / 2;
++            if (name_length > l1 + l2 &&
++                !memcmp (oni->Name.Buffer, namedPipe, l1 * 2) &&
++                !memcmp (oni->Name.Buffer + (name_length - l2), toMaster, l2 * 2))
++                ret = true;
++          }
++
++        free (oni);
++      }
++    }
++  }
++  return ret;
+ #else
+   char const *t = getenv ("TERM");
+   return t && strcmp (t, "dumb") != 0 && isatty (STDERR_FILENO);
