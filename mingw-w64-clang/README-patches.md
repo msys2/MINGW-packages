@@ -16,5 +16,6 @@ Legend:
 - `"0101-Disable-fPIC-errors.patch"` :x:
 - `"0103-Use-posix-style-path-separators-with-MinGW.patch"` :x::x::x: - this one is really imporant
 - `"0104-link-pthread-with-mingw.patch"` :grey_exclamation:
+- `"0105-clang-Tooling-Use-Windows-command-lines.patch"` :arrow_up_small: - https://reviews.llvm.org/D111195
 - `"0304-ignore-new-bfd-options.patch"` :x:
 - `"0901-cast-to-make-gcc-happy.patch"` :grey_exclamation:
