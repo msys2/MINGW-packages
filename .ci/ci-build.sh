@@ -53,10 +53,12 @@ for package in "${packages[@]}"; do
             grep -qFx "${package}" "$(dirname "$0")/ci-dont-install-list.txt" || pacman --noprogressbar --upgrade --noconfirm $pkg
             echo "::endgroup::"
 
-            echo "::group::[diff] ${pkgname}"
+            echo "::group::[meta-diff] ${pkgname}"
             message "Package info diff for ${pkgname}"
             diff -Nur <(pacman -Si "${pkgname}") <(pacman -Qip "${pkg}") || true
+            echo "::endgroup::"
 
+            echo "::group::[file-diff] ${pkgname}"
             message "File listing diff for ${pkgname}"
             diff -Nur <(pacman -Fl "$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
             echo "::endgroup::"
