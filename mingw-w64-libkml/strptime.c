@@ -95,7 +95,11 @@ static const u_char *find_string(const u_char *, int *, const char * const *,
 	const char * const *, int);
 
 #ifndef MO_MINGW32
-static int strncasecmp(const char *a, const char *b, size_t c);
+static int
+strncasecmp(const char *a, const char *b, size_t c)
+{
+    return _strnicmp(a, b, c);
+}
 #endif
 
 
@@ -602,11 +606,3 @@ find_string(const u_char *bp, int *tgt, const char * const *n1,
 	/* Nothing matched */
 	return NULL;
 }
-
-#ifndef MO_MINGW32
-static int
-strncasecmp(const char *a, const char *b, size_t c)
-{
-    return _strnicmp(a, b, c);
-}
-#endif
