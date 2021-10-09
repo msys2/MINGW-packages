@@ -6,7 +6,7 @@ pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
          "${MINGW_PACKAGE_PREFIX}-${_realname}-debug")
 _qtver=6.2.0
 pkgver=${_qtver/-/}
-pkgrel=1
+pkgrel=2
 arch=(any)
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 url='https://www.qt.io'
@@ -14,18 +14,21 @@ license=(GPL3 LGPL3 FDL custom)
 pkgdesc="A cross-platform application and UI framework (mingw-w64)"
 makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
              "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
              "${MINGW_PACKAGE_PREFIX}-double-conversion"
              "${MINGW_PACKAGE_PREFIX}-dbus"
              "${MINGW_PACKAGE_PREFIX}-freetype"
              "${MINGW_PACKAGE_PREFIX}-fontconfig"
+             "${MINGW_PACKAGE_PREFIX}-harfbuzz"
              "${MINGW_PACKAGE_PREFIX}-icu"
              "${MINGW_PACKAGE_PREFIX}-libjpeg-turbo"
-             "${MINGW_PACKAGE_PREFIX}-pcre2"
              "${MINGW_PACKAGE_PREFIX}-libpng"
              "${MINGW_PACKAGE_PREFIX}-md4c"
+             "${MINGW_PACKAGE_PREFIX}-openssl"
+             "${MINGW_PACKAGE_PREFIX}-pcre2"
              "${MINGW_PACKAGE_PREFIX}-sqlite3"
              "${MINGW_PACKAGE_PREFIX}-zlib"
-             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-zstd"
              "${MINGW_PACKAGE_PREFIX}-xmlstarlet"
              "${MINGW_PACKAGE_PREFIX}-vulkan-headers"
              "${MINGW_PACKAGE_PREFIX}-libmariadbclient"
@@ -36,10 +39,27 @@ options=('!strip')
 _pkgfn="${_realname/6-/}-everywhere-src-${_qtver}"
 source=("https://download.qt.io/official_releases/qt/${pkgver%.*}/$_qtver/submodules/$_pkgfn.tar.xz"
         001-appending-qt6-to-remove-qt5-conflict.patch
-        002-fix-qtdocs-helpers-cmake.patch)
+        002-fix-qtdocs-helpers-cmake.patch
+        003-adjust-qmake-conf-mingw.patch
+        004-qt-6.2.0-win32-g-Add-QMAKE_EXTENSION_IMPORTLIB-defaulting-to-.patch
+        005-Allow-overriding-CMAKE_FIND_LIBRARY_SUFFIXES-to-pref.patch
+        006-qt-6.2.0-dont-add-resource-files-to-qmake-libs.patch
+        007-Fix-crashes-in-rasterization-code-using-setjmp.patch)
 sha256sums=('fdfff0716d093bcb6bcd53746ce1d3c9701a6bf3326d47813866d43949b47769'
             '78757ddc0685a15df55e17742b74951e634ada305736310bad03823288f45203'
-            'b0267f3293984d9fbd012a1b22efe2a0990f95c1ed4a7d6fb46438f8f476f021')
+            'b0267f3293984d9fbd012a1b22efe2a0990f95c1ed4a7d6fb46438f8f476f021'
+            '68156b8b7717a0ce19c4b991942469171bfa048cd5c90765115a546e65669a1d'
+            'e8867fa643823b149b2f1937a4854752aa86191148ae8cf4667e32ed5b97a36c'
+            'b644586be741dabf66b79bcc2eed71727739f4b301e0ae7da35506b30605aeb5'
+            '4085a10b290b8e3d930de535cbad2ba3e643432cba433aa2b28fe664f86d38a3'
+            '7ca754db6546f0992307e76cf9c5c9e8d4146278b7989fd4df9a8bd45eb62611')
+
+# Use the right mkspecs file
+if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+  _platform=win32-clang-g++
+else
+  _platform=win32-g++
+fi
 
 # Helper macros to help make tasks easier #
 apply_patch_with_msg() {
@@ -55,7 +75,35 @@ prepare() {
 
   apply_patch_with_msg \
     001-appending-qt6-to-remove-qt5-conflict.patch \
-    002-fix-qtdocs-helpers-cmake.patch
+    002-fix-qtdocs-helpers-cmake.patch \
+    003-adjust-qmake-conf-mingw.patch \
+    004-qt-6.2.0-win32-g-Add-QMAKE_EXTENSION_IMPORTLIB-defaulting-to-.patch \
+    005-Allow-overriding-CMAKE_FIND_LIBRARY_SUFFIXES-to-pref.patch \
+    006-qt-6.2.0-dont-add-resource-files-to-qmake-libs.patch \
+    007-Fix-crashes-in-rasterization-code-using-setjmp.patch
+
+  local _ARCH_TUNE=
+  local _HARD_FLAGS=
+  case ${MINGW_CHOST} in
+    i686*)
+      _ARCH_TUNE="-march=i686 -mtune=core2"
+      if [ "${_enable_hardening}" = "yes" ]; then
+        _HARD_FLAGS="-Wl,--dynamicbase,--nxcompat,--no-seh"
+      fi
+    ;;
+    x86_64*)
+      _ARCH_TUNE="-march=nocona -mtune=core2"
+      if [ "${_enable_hardening}" = "yes" ]; then
+        _HARD_FLAGS="-Wl,--dynamicbase,--high-entropy-va,--nxcompat,--default-image-base-high"
+      fi
+    ;;
+  esac
+
+  BIGOBJ_FLAGS="-Wa,-mbig-obj"
+
+  # Append these ones ..
+  sed -i "s|^QMAKE_CFLAGS .*= \(.*\)$|QMAKE_CFLAGS            = \1 ${_ARCH_TUNE} ${BIGOBJ_FLAGS} ${LTCG_CFLAGS}|g" mkspecs/${_platform}/qmake.conf
+  sed -i "s|^QMAKE_LFLAGS           +=\(.*\)$|QMAKE_LFLAGS            += \1 ${_HARD_FLAGS}|g" mkspecs/common/gcc-base.conf
 }
 
 build() {
@@ -67,31 +115,36 @@ build() {
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   cmake \
     -GNinja \
-    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DQT_QMAKE_TARGET_MKSPEC=${_platform} \
     -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
     -DINSTALL_INCLUDEDIR=include/qt6 \
     -DINSTALL_ARCHDATADIR=share/qt6 \
     -DINSTALL_DATADIR=share/qt6 \
     -DINSTALL_MKSPECSDIR=share/qt6/mkspecs \
     -DINSTALL_DESCRIPTIONSDIR=share/qt6/modules \
-    -DQT_FEATURE_system_doubleconversion=ON \
-    -DQT_FEATURE_system_freetype=ON \
-    -DQT_FEATURE_system_jpeg=ON \
-    -DQT_FEATURE_system_pcre2=ON \
-    -DQT_FEATURE_system_png=ON \
-    -DQT_FEATURE_system_sqlite=ON \
-    -DQT_FEATURE_system_zlib=ON \
-    -DQT_FEATURE_openssl=ON \
-    -DQT_FEATURE_opengl=ON \
-    -DQT_FEATURE_opengl_desktop=ON \
-    -DQT_FEATURE_dbus=ON \
-    -DQT_FEATURE_icu=ON \
-    -DQT_FEATURE_fontconfig=ON \
-    -DQT_FEATURE_pkg_config=ON \
-    -DQT_FEATURE_vulkan=ON \
-    -DQT_FEATURE_sql_ibase=OFF \
-    -DQT_FEATURE_force_debug_info=ON \
-    -DQT_FEATURE_separate_debug_info=ON \
+    -DFEATURE_system_doubleconversion=ON \
+    -DFEATURE_system_freetype=ON \
+    -DFEATURE_fontconfig=OFF \
+    -DFEATURE_system_jpeg=ON \
+    -DFEATURE_system_harfbuzz=ON \
+    -DFEATURE_system_pcre2=ON \
+    -DFEATURE_system_png=ON \
+    -DFEATURE_system_sqlite=ON \
+    -DFEATURE_system_zlib=ON \
+    -DFEATURE_zstd=ON \
+    -DFEATURE_openssl=ON \
+    -DFEATURE_opengl=ON \
+    -DFEATURE_opengl_desktop=ON \
+    -DFEATURE_dbus=ON \
+    -DFEATURE_gstreamer=OFF \
+    -DFEATURE_glib=OFF \
+    -DFEATURE_icu=ON \
+    -DFEATURE_pkg_config=ON \
+    -DFEATURE_vulkan=ON \
+    -DFEATURE_sql_ibase=OFF \
+    -DFEATURE_force_debug_info=ON \
+    -DFEATURE_separate_debug_info=ON \
     ../${_pkgfn}
 
   export PATH=$PWD/bin:$PATH
@@ -104,14 +157,17 @@ package_qt6-base() {
            "${MINGW_PACKAGE_PREFIX}-dbus"
            "${MINGW_PACKAGE_PREFIX}-freetype"
            "${MINGW_PACKAGE_PREFIX}-fontconfig"
+           "${MINGW_PACKAGE_PREFIX}-harfbuzz"
            "${MINGW_PACKAGE_PREFIX}-icu"
            "${MINGW_PACKAGE_PREFIX}-libjpeg-turbo"
-           "${MINGW_PACKAGE_PREFIX}-pcre2"
            "${MINGW_PACKAGE_PREFIX}-libpng"
            "${MINGW_PACKAGE_PREFIX}-md4c"
+           "${MINGW_PACKAGE_PREFIX}-openssl"
+           "${MINGW_PACKAGE_PREFIX}-pcre2"
            "${MINGW_PACKAGE_PREFIX}-sqlite3"
+           "${MINGW_PACKAGE_PREFIX}-vulkan-loader"
            "${MINGW_PACKAGE_PREFIX}-zlib"
-           "${MINGW_PACKAGE_PREFIX}-vulkan-loader")
+           "${MINGW_PACKAGE_PREFIX}-zstd")
   optdepends=("${MINGW_PACKAGE_PREFIX}-libmariadbclient"
               $( [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-firebird2" )
               "${MINGW_PACKAGE_PREFIX}-postgresql")
