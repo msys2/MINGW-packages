@@ -4,14 +4,16 @@
 # Contributor: Renato Silva <br.renatosilva@gmail.com>
 # Contributor: wirx6 <wirx654@gmail.com>
 # Contributor: Kirill Müller <krlmlr@mailbox.org>
+# Contributor: Tim Stahlhut <stahta01@gmail.com>
 
 _enable_ada=yes
 _enable_objc=yes
 _enable_jit=yes
+_enable_bootada=no
 if [[ "$MSYSTEM" == "UCRT64" ]]; then
-# FIXME: how do we bootstrap that?
-_enable_ada=no
+  _enable_bootada=yes
 fi
+
 _threads="posix"
 _realname=gcc
 pkgbase=mingw-w64-${_realname}
@@ -28,7 +30,7 @@ pkgver=10.3.0
 #_majorver=${pkgver:0:1}
 #_sourcedir=${_realname}-${_majorver}-${_snapshot}
 _sourcedir=${_realname}-${pkgver}
-pkgrel=5
+pkgrel=6
 pkgdesc="GCC for the MinGW-w64"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64')
@@ -36,7 +38,8 @@ url="https://gcc.gnu.org"
 license=('GPL' 'LGPL' 'FDL' 'custom')
 groups=("${MINGW_PACKAGE_PREFIX}-toolchain")
 makedepends=("${MINGW_PACKAGE_PREFIX}-${_realname}"
-             $([[ "$_enable_ada" == "yes" ]] && echo "${MINGW_PACKAGE_PREFIX}-${_realname}-ada")
+             $( [ "$_enable_bootada" == "no" ] && [ "$_enable_ada" == "yes" ] && echo "${MINGW_PACKAGE_PREFIX}-${_realname}-ada")
+             $( [ "$_enable_bootada" == "yes" ] && [ "$_enable_ada" == "yes" ] && echo "mingw-w64-x86_64-${_realname}-ada")
              "${MINGW_PACKAGE_PREFIX}-binutils"
              "${MINGW_PACKAGE_PREFIX}-crt"
              "${MINGW_PACKAGE_PREFIX}-headers"
@@ -195,6 +198,13 @@ prepare() {
   # it might work at build time and could be important there but beyond that?!
   local MINGW_NATIVE_PREFIX=$(cygpath -am ${MINGW_PREFIX}/${MINGW_CHOST})
   sed -i "s#\\/mingw\\/#${MINGW_NATIVE_PREFIX//\//\\/}\\/#g" gcc/config/i386/mingw32.h
+
+  if [[ "$_enable_bootada" == "yes" ]]; then
+    # replace gnatmake with $(GNATMAKE) safest way I found to bootstrap Ada
+    sed -i 's| gnatmake | $(GNATMAKE) |g' gcc/ada/Make-generated.in
+
+    sed -i 's|(cd ./bldtools/oscons ; gnatmake -q xoscons)|(cd ./bldtools/oscons ; $(GNATMAKE) -q xoscons)|g' gcc/ada/gcc-interface/Makefile.in
+  fi
 }
 
 build() {
@@ -238,6 +248,15 @@ build() {
   local _LDFLAGS_FOR_TARGET="$LDFLAGS"
   LDFLAGS+=" -Wl,--disable-dynamicbase"
 
+  declare -a configure_building_opts
+
+  if [[ "$_enable_bootada" == "yes" ]]; then
+    configure_building_opts+=(CC='/mingw64/bin/gcc.exe -mcrtdll=ucrt -D_UCRT')
+    configure_building_opts+=(CXX='/mingw64/bin/g++.exe -mcrtdll=ucrt -D_UCRT')
+    configure_building_opts+=(GNATBIND='/mingw64/bin/gnatbind.exe')
+    configure_building_opts+=(GNATMAKE='/mingw64/bin/gnatmake.exe')
+  fi
+
   ../${_sourcedir}/configure \
     --prefix=${MINGW_PREFIX} \
     --with-local-prefix=${MINGW_PREFIX}/local \
@@ -246,6 +265,7 @@ build() {
     --target=${MINGW_CHOST} \
     --with-native-system-header-dir=${MINGW_PREFIX}/${MINGW_CHOST}/include \
     --libexecdir=${MINGW_PREFIX}/lib \
+    "${configure_building_opts[@]}" \
     --enable-bootstrap \
     --enable-checking=release \
     --with-arch=${_arch} \
