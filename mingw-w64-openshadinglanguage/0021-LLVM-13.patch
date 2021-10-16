@@ -1,0 +1,158 @@
+From 1748525ad56a9916af5c4a52f42db7e991a79721 Mon Sep 17 00:00:00 2001
+From: Larry Gritz <lg@larrygritz.com>
+Date: Fri, 8 Oct 2021 19:12:51 -0700
+Subject: [PATCH] Changes to work with LLVM 13
+
+And a few places to let it compile with clang 13's new warnings.
+
+Signed-off-by: Larry Gritz <lg@larrygritz.com>
+---
+ src/include/OSL/llvm_util.h        | 17 +++++++++--
+ src/liboslexec/llvm_util.cpp       | 45 ++++++++++++++++++++++++++----
+ src/liboslexec/runtimeoptimize.cpp |  2 --
+ 4 files changed, 62 insertions(+), 18 deletions(-)
+
+diff --git a/src/include/OSL/llvm_util.h b/src/include/OSL/llvm_util.h
+index fbf091d60..95df9632f 100644
+--- a/src/include/OSL/llvm_util.h
++++ b/src/include/OSL/llvm_util.h
+@@ -802,6 +802,9 @@ class OSLEXECPUBLIC LLVM_Util {
+                     llvm::Value *src, int srcalign, int len);
+ 
+     /// Dereference a pointer:  return *ptr
++    /// type is the type of the thing being pointed to.
++    llvm::Value *op_load (llvm::Type* type, llvm::Value *ptr);
++    // Blind pointer version that's deprecated as of LLVM13:
+     llvm::Value *op_load (llvm::Value *ptr);
+ 
+     llvm::Value *op_gather(llvm::Value *ptr, llvm::Value *index);
+@@ -830,17 +833,25 @@ class OSLEXECPUBLIC LLVM_Util {
+ 
+     /// Generate a GEP (get element pointer) where the element index is an
+     /// llvm::Value, which can be generated from either a constant or a
+-    /// runtime-computed integer element index.
++    /// runtime-computed integer element index. `type` is the type of the data
++    /// we're retrieving.
++    llvm::Value *GEP (llvm::Type* type, llvm::Value *ptr, llvm::Value *elem);
++    // Blind pointer version that's deprecated as of LLVM13:
+     llvm::Value *GEP (llvm::Value *ptr, llvm::Value *elem);
+ 
+     /// Generate a GEP (get element pointer) with an integer element
+-    /// offset.
++    /// offset. `type` is the type of the data we're retrieving.
++    llvm::Value *GEP (llvm::Type* type, llvm::Value *ptr, int elem);
++    // Blind pointer version that's deprecated as of LLVM13:
+     llvm::Value *GEP (llvm::Value *ptr, int elem);
+ 
+     /// Generate a GEP (get element pointer) with two integer element
+     /// offsets.  This is just a special (and common) case of GEP where
+     /// we have a 2-level hierarchy and we have fixed element indices
+-    /// that are known at compile time.
++    /// that are known at compile time.  `type` is the type of the data we're
++    /// retrieving.
++    llvm::Value *GEP (llvm::Type* type, llvm::Value *ptr, int elem1, int elem2);
++    // Blind pointer version that's deprecated as of LLVM13:
+     llvm::Value *GEP (llvm::Value *ptr, int elem1, int elem2);
+ 
+     // Arithmetic ops.  It auto-detects the type (int vs float).
+diff --git a/src/liboslexec/llvm_util.cpp b/src/liboslexec/llvm_util.cpp
+index 4d0e1752d..a1d31fe4d 100644
+--- a/src/liboslexec/llvm_util.cpp
++++ b/src/liboslexec/llvm_util.cpp
+@@ -3595,10 +3595,18 @@ LLVM_Util::op_memcpy (llvm::Value *dst, int dstalign,
+ 
+ 
+ 
++llvm::Value *
++LLVM_Util::op_load (llvm::Type* type, llvm::Value* ptr)
++{
++    return builder().CreateLoad (type, ptr);
++}
++
++
++
+ llvm::Value *
+ LLVM_Util::op_load (llvm::Value *ptr)
+ {
+-    return builder().CreateLoad (ptr);
++    return op_load(ptr->getType()->getPointerElementType(), ptr);
+ }
+ 
+ 
+@@ -4924,10 +4932,27 @@ LLVM_Util::op_store_mask (llvm::Value *llvm_mask, llvm::Value *native_mask_ptr)
+ 
+ 
+ 
++llvm::Value *
++LLVM_Util::GEP (llvm::Type* type, llvm::Value* ptr, llvm::Value* elem)
++{
++    return builder().CreateGEP(type, ptr, elem);
++}
++
++
++
+ llvm::Value *
+ LLVM_Util::GEP (llvm::Value *ptr, llvm::Value *elem)
+ {
+-    return builder().CreateGEP (ptr, elem);
++    return GEP(ptr->getType()->getScalarType()->getPointerElementType(), ptr,
++               elem);
++}
++
++
++
++llvm::Value *
++LLVM_Util::GEP (llvm::Type* type, llvm::Value* ptr, int elem)
++{
++    return builder().CreateConstGEP1_32(type, ptr, elem);
+ }
+ 
+ 
+@@ -4935,7 +4960,16 @@ LLVM_Util::GEP (llvm::Value *ptr, llvm::Value *elem)
+ llvm::Value *
+ LLVM_Util::GEP (llvm::Value *ptr, int elem)
+ {
+-    return builder().CreateConstGEP1_32 (ptr, elem);
++    return GEP(ptr->getType()->getScalarType()->getPointerElementType(), ptr,
++               elem);
++}
++
++
++
++llvm::Value *
++LLVM_Util::GEP(llvm::Type* type, llvm::Value* ptr, int elem1, int elem2)
++{
++    return builder().CreateConstGEP2_32 (type, ptr, elem1, elem2);
+ }
+ 
+ 
+@@ -4943,7 +4977,8 @@ LLVM_Util::GEP (llvm::Value *ptr, int elem)
+ llvm::Value *
+ LLVM_Util::GEP (llvm::Value *ptr, int elem1, int elem2)
+ {
+-    return builder().CreateConstGEP2_32 (nullptr, ptr, elem1, elem2);
++    return GEP(ptr->getType()->getScalarType()->getPointerElementType(), ptr,
++               elem1, elem2);
+ }
+ 
+ 
+diff --git a/src/liboslexec/runtimeoptimize.cpp b/src/liboslexec/runtimeoptimize.cpp
+index dfe554164..da67c712e 100644
+--- a/src/liboslexec/runtimeoptimize.cpp
++++ b/src/liboslexec/runtimeoptimize.cpp
+@@ -2284,7 +2284,6 @@ RuntimeOptimizer::optimize_instance ()
+     // passes, but we have a hard cutoff just to be sure we don't
+     // ever get into an infinite loop from an unforseen cycle where we
+     // end up inadvertently transforming A => B => A => etc.
+-    int totalchanged = 0;
+     int reallydone = 0;   // Force a few passes after we think we're done
+     int npasses = shadingsys().opt_passes();
+     for (m_pass = 0;  m_pass < npasses;  ++m_pass) {
+@@ -2345,7 +2344,6 @@ RuntimeOptimizer::optimize_instance ()
+         // If nothing changed, we're done optimizing.  But wait, it may be
+         // that after re-tracking variable lifetimes, we can notice new
+         // optimizations!  So force another pass, then we're really done.
+-        totalchanged += changed;
+         if (changed < 1) {
+             if (++reallydone > 3)
+                 break;
