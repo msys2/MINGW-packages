@@ -1,0 +1,167 @@
+From 0a6c242ff914437f5feb80ee638b592667a519b2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=D0=90=D0=BB=D0=B5=D0=BA=D1=81=D0=B5=D0=B9?=
+ <alexey.pawlow@gmail.com>
+Date: Thu, 17 Jun 2021 18:51:30 +0530
+Subject: [PATCH 019/N] MINGW defect winsock2 and setup _socket module
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Co-authored-by: Алексей <alexey.pawlow@gmail.com>
+---
+ Misc/config_mingw      |  3 +++
+ Modules/socketmodule.c |  8 ++++++--
+ configure.ac           | 28 +++++++++++++++++++++++-----
+ pyconfig.h.in          |  7 +++++--
+ setup.py               |  2 ++
+ 5 files changed, 39 insertions(+), 9 deletions(-)
+
+diff --git a/Misc/config_mingw b/Misc/config_mingw
+index 513065d..9be43fd 100644
+--- a/Misc/config_mingw
++++ b/Misc/config_mingw
+@@ -10,3 +10,6 @@ ac_cv_func_alarm=ignore
+ # files to ignore
+ ac_cv_file__dev_ptmx=ignore #NOTE: under MSYS environment device exist
+ ac_cv_file__dev_ptc=no
++
++# force detection of winsock2 functionality - require wxp or newer
++ac_cv_func_getpeername=yes
+diff --git a/Modules/socketmodule.c b/Modules/socketmodule.c
+index 8953185..d15bb4f 100644
+--- a/Modules/socketmodule.c
++++ b/Modules/socketmodule.c
+@@ -305,7 +305,7 @@ http://cvsweb.netbsd.org/bsdweb.cgi/src/lib/libc/net/getaddrinfo.c.diff?r1=1.82&
+ # endif
+ 
+ /* Macros based on the IPPROTO enum, see: https://bugs.python.org/issue29515 */
+-#ifdef MS_WINDOWS
++#ifdef _MSC_VER
+ #define IPPROTO_ICMP IPPROTO_ICMP
+ #define IPPROTO_IGMP IPPROTO_IGMP
+ #define IPPROTO_GGP IPPROTO_GGP
+@@ -336,7 +336,7 @@ http://cvsweb.netbsd.org/bsdweb.cgi/src/lib/libc/net/getaddrinfo.c.diff?r1=1.82&
+ #define IPPROTO_PGM IPPROTO_PGM  // WinSock2 only
+ #define IPPROTO_L2TP IPPROTO_L2TP  // WinSock2 only
+ #define IPPROTO_SCTP IPPROTO_SCTP  // WinSock2 only
+-#endif /* MS_WINDOWS */
++#endif /* _MSC_VER */
+ 
+ /* Provides the IsWindows7SP1OrGreater() function */
+ #include <versionhelpers.h>
+@@ -429,6 +429,10 @@ remove_unusable_flags(PyObject *m)
+   /* Do not include addrinfo.h for MSVC7 or greater. 'addrinfo' and
+    * EAI_* constants are defined in (the already included) ws2tcpip.h.
+    */
++#elif defined(__MINGW32__)
++  /* Do not include addrinfo.h as minimum supported version is
++   * _WIN32_WINNT >= WindowsXP(0x0501)
++   */
+ #else
+ #  include "addrinfo.h"
+ #endif
+diff --git a/configure.ac b/configure.ac
+index 7fcdd47..5459145 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -4443,21 +4443,36 @@ AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+ ],[])
+ AC_MSG_RESULT($was_it_defined)
+ 
++AC_CHECK_HEADERS([ws2tcpip.h])
+ AC_MSG_CHECKING(for addrinfo)
+ AC_CACHE_VAL(ac_cv_struct_addrinfo,
+-AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <netdb.h>]], [[struct addrinfo a]])],
++AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
++#ifdef HAVE_WS2TCPIP_H
++#  include <ws2tcpip.h>
++#else
++#  include <netdb.h>
++#endif]],
++    [[struct addrinfo a]])],
+   [ac_cv_struct_addrinfo=yes],
+   [ac_cv_struct_addrinfo=no]))
+ AC_MSG_RESULT($ac_cv_struct_addrinfo)
+ if test $ac_cv_struct_addrinfo = yes; then
+-	AC_DEFINE(HAVE_ADDRINFO, 1, [struct addrinfo (netdb.h)])
++	AC_DEFINE(HAVE_ADDRINFO, 1, [struct addrinfo])
+ fi
+ 
+ AC_MSG_CHECKING(for sockaddr_storage)
+ AC_CACHE_VAL(ac_cv_struct_sockaddr_storage,
+ AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+-#		include <sys/types.h>
+-#		include <sys/socket.h>]], [[struct sockaddr_storage s]])],
++#ifdef HAVE_WS2TCPIP_H
++#include <ws2tcpip.h>
++#endif
++#ifdef HAVE_SYS_TYPES_H
++#include <sys/types.h>
++#endif
++#ifdef HAVE_SYS_SOCKET_H
++#include <sys/socket.h>
++#endif]],
++    [[struct sockaddr_storage s]])],
+   [ac_cv_struct_sockaddr_storage=yes],
+   [ac_cv_struct_sockaddr_storage=no]))
+ AC_MSG_RESULT($ac_cv_struct_sockaddr_storage)
+@@ -5598,7 +5613,10 @@ fi
+ 
+ AC_CHECK_TYPE(socklen_t,,
+   AC_DEFINE(socklen_t,int,
+-            [Define to `int' if <sys/socket.h> does not define.]),[
++            [Define to `int' if <sys/socket.h> or <ws2tcpip.h> does not define.]),[
++#ifdef HAVE_WS2TCPIP_H
++#include <ws2tcpip.h>
++#endif
+ #ifdef HAVE_SYS_TYPES_H
+ #include <sys/types.h>
+ #endif
+diff --git a/pyconfig.h.in b/pyconfig.h.in
+index 5f63cae..b69a7c7 100644
+--- a/pyconfig.h.in
++++ b/pyconfig.h.in
+@@ -54,7 +54,7 @@
+ /* Define to 1 if you have the `acosh' function. */
+ #undef HAVE_ACOSH
+ 
+-/* struct addrinfo (netdb.h) */
++/* struct addrinfo */
+ #undef HAVE_ADDRINFO
+ 
+ /* Define to 1 if you have the `alarm' function. */
+@@ -1342,6 +1342,9 @@
+ /* Define if libssl has X509_VERIFY_PARAM_set1_host and related function */
+ #undef HAVE_X509_VERIFY_PARAM_SET1_HOST
+ 
++/* Define to 1 if you have the <ws2tcpip.h> header file. */
++#undef HAVE_WS2TCPIP_H
++
+ /* Define if the zlib library has inflateCopy */
+ #undef HAVE_ZLIB_COPY
+ 
+@@ -1658,7 +1661,7 @@
+ /* Define to `unsigned int' if <sys/types.h> does not define. */
+ #undef size_t
+ 
+-/* Define to `int' if <sys/socket.h> does not define. */
++/* Define to `int' if <sys/socket.h> or <ws2tcpip.h> does not define. */
+ #undef socklen_t
+ 
+ /* Define to `int' if <sys/types.h> doesn't define. */
+diff --git a/setup.py b/setup.py
+index 60f6243..c8242ac 100644
+--- a/setup.py
++++ b/setup.py
+@@ -1143,6 +1143,8 @@ class PyBuildExt(build_ext):
+             if MACOS:
+                 # Issue #35569: Expose RFC 3542 socket options.
+                 kwargs['extra_compile_args'] = ['-D__APPLE_USE_RFC_3542']
++            if MS_WINDOWS:
++                kwargs['libraries'] = ['ws2_32', 'iphlpapi']
+ 
+             self.add(Extension('_socket', ['socketmodule.c'], **kwargs))
+         elif self.compiler.find_library_file(self.lib_dirs, 'net'):
+-- 
+2.33.0
+

@@ -57,11 +57,6 @@ for p in $patches
 do
 	sed -i 's/^\(Subject: \[PATCH [0-9]*\/\)[1-9][0-9]*/\1N/' $p ||
 	die "Could not fix Subject: line in $p"
-	_cmd=$(grep -ci ".github/workflows" $p)
-	if [ "$_cmd" != "0" ]
-	then
-		rm -f $p
-	fi
 done &&
 patches="$(ls -1 0*.patch)" &&
 git add $patches ||

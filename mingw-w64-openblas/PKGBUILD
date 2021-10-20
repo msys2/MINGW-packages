@@ -4,11 +4,11 @@
 _realname=OpenBLAS
 pkgbase=mingw-w64-openblas
 pkgname="${MINGW_PACKAGE_PREFIX}-openblas"
-pkgver=0.3.13
+pkgver=0.3.18
 pkgrel=2
 pkgdesc="An optimized BLAS library based on GotoBLAS2 1.13 BSD, providing optimized blas, lapack, and cblas (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 url="https://www.openblas.net/"
 license=('BSD')
 provides=("${MINGW_PACKAGE_PREFIX}-${_realname}")
@@ -16,106 +16,87 @@ conflicts=("${MINGW_PACKAGE_PREFIX}-openblas-git")
 replaces=("${MINGW_PACKAGE_PREFIX}-${_realname}"
           "${MINGW_PACKAGE_PREFIX}-${_realname}-git")
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
-         "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran"
-         "${MINGW_PACKAGE_PREFIX}-libwinpthread")
-makedepends=("perl"
-             #"${MINGW_PACKAGE_PREFIX}-cmake"
-             "${MINGW_PACKAGE_PREFIX}-gcc-fortran")
+         "${MINGW_PACKAGE_PREFIX}-libwinpthread"
+         $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran")
+         )
+makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-fortran")
+             )
 options=('!buildflags')
 source=(${_realname}-${pkgver}.tar.gz::https://github.com/xianyi/OpenBLAS/archive/v${pkgver}.tar.gz
         001-defaultlib-not-for-gcc.patch
         002-lgfortran-requires-lquadmath.patch
-        004-fix-generate-cmake-config.patch)
+        004-fix-generate-cmake-config.patch
+        005-fix-clang32-compile-flags.patch
+        006-fix-cmake-detect-clang-64-bits.patch
+        007-support-building-both-static-shared.patch)
 install=${_realname}.install
-sha256sums=('79197543b17cc314b7e43f7a33148c308b0807cd6381ee77f77e15acf3e6459e'
-            'd9192818d0b0a9e7cbed7cc2572dfd380aa311be5ce4d012c0cb55211013db37'
-            'ab1c10a66b4d0332f2339f1169c0e3ebd48d9b8bf7afaec3f6a0d62099b52941'
-            '3021941b502010169fb77a6cd45158c95fa207795d4b9955f0f75974b16eb500')
+sha256sums=('1632c1e8cca62d8bed064b37747e331a1796fc46f688626337362bf0d16aeadb'
+            '6a73ee677d8d37509cd08f380b0359ee7fac2595fd64695dd054e838380a6a33'
+            'bad670a1a7b6482c9c4264c4457e34307b084e7e1a1dabb9ddbfcf49346bc705'
+            'cdef4aa30254b23a682ae90fd6db1e03f77c8f073fc00892371745d07ffc79a2'
+            '7c7910039746b505ae182ef5f0e6f18c7ffdfc47e9d11f529840cda25fefc367'
+            '238c57cd3d72c04d8322ba0e9dd148c68f5665776b3fcd51a047c45573d8baf4'
+            '5db3d553b5cd9539f03b0a5d9820a6da91d4f57e5501ba565741a12a4efeeb8b')
+
+# Helper macros to help make tasks easier #
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying $_patch"
+    patch -Np1 -i "${srcdir}/$_patch"
+  done
+}
 
 prepare() {
   cd ${srcdir}/${_realname}-${pkgver}
-  patch -p1 -i ${srcdir}/001-defaultlib-not-for-gcc.patch
-  patch -p1 -i ${srcdir}/002-lgfortran-requires-lquadmath.patch
-  patch -p1 -i ${srcdir}/004-fix-generate-cmake-config.patch
+  apply_patch_with_msg \
+    001-defaultlib-not-for-gcc.patch \
+    002-lgfortran-requires-lquadmath.patch \
+    004-fix-generate-cmake-config.patch \
+    005-fix-clang32-compile-flags.patch
+  # https://github.com/xianyi/OpenBLAS/pull/3410
+  apply_patch_with_msg \
+    006-fix-cmake-detect-clang-64-bits.patch
+  # https://github.com/xianyi/OpenBLAS/pull/3411
+  apply_patch_with_msg \
+    007-support-building-both-static-shared.patch
 }
 
 build() {
-  cp -rf "${srcdir}"/${_realname}-${pkgver} "${srcdir}"/build-${CARCH}
-  cd "${srcdir}"/build-${CARCH}
+  [[ -d "${srcdir}/build-${MSYSTEM}" ]] && rm -rf "${srcdir}/build-${MSYSTEM}"
+  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
+
+  declare -a _build_type
+  if check_option "debug" "n"; then
+    _build_type+=("Release")
+  else
+    _build_type+=("Debug")
+  fi
 
   unset CFLAGS
   unset CXXFLAGS
 
-  make LIBNAME=libopenblasp.a NO_LAPACK=0 DYNAMIC_ARCH=1   \
-       CC=${MINGW_PREFIX}/bin/gcc                                      \
-       FC=${MINGW_PREFIX}/bin/gfortran                                 \
-       OPENBLAS_INCLUDE_DIR=${MINGW_PREFIX}/include/${_realname}       \
-       USE_THREAD=1 NUM_THREADS=64 TARGET=CORE2
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake \
+    -G"Ninja" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DCMAKE_BUILD_TYPE=${_build_type} \
+    -DBUILD_SHARED_LIBS=ON \
+    -DDYNAMIC_ARCH=ON \
+    -DUSE_THREAD=ON \
+    -DNUM_THREADS=64 \
+    -DTARGET=CORE2 \
+    ../${_realname}-${pkgver}
 
-  # [[ -d build-${CARCH} ]] && rm -rf build-${CARCH}
-  # mkdir -p build-${CARCH} && cd build-${CARCH}
-  
-  # MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
-  # ${MINGW_PREFIX}/bin/cmake \
-    # -G"MSYS Makefiles" \
-    # -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
-    # -DDYNAMIC_ARCH=ON \
-    # -DCMAKE_BUILD_TYPE=Release \
-    # ../${_realname}-${pkgver}
-  # make
+  cmake --build .
 }
 
 package() {
-  cd "${srcdir}"/build-${CARCH}
-  #make DESTDIR=${pkgdir} install
+  cd "${srcdir}"/build-${MSYSTEM}
 
-  if [ -f libopenblas.dll ]; then
-    if [ -f exports/libopenblas.def ]; then
-      dlltool -D libopenblas.dll -d exports/libopenblas.def -l libopenblas.dll.a
-    else
-      echo "Cannot build export library" >&2
-      exit 1
-    fi
-  else
-    echo "DLL not found" >&2
-    exit 1
-  fi
-  mkdir -p "${pkgdir}${MINGW_PREFIX}/bin"
-  mkdir -p "${pkgdir}${MINGW_PREFIX}/lib"
-
-  make LIBNAME=libopenblasp.a \
-       DESTDIR="${pkgdir}" PREFIX="${MINGW_PREFIX}"  \
-       OPENBLAS_INCLUDE_DIR=${MINGW_PREFIX}/include/${_realname} \
-       install
-
-  if [ -f libopenblas.dll ]; then
-    cp -f libopenblas.dll "${pkgdir}${MINGW_PREFIX}/bin/"
-  else
-    echo "DLL not found" >&2
-    exit 1
-  fi
-
-  if [ -f libopenblas.dll.a ]; then
-    cp -f libopenblas.dll.a "${pkgdir}${MINGW_PREFIX}/lib/"
-  else
-    echo "Export library not found" >&2
-    exit 1
-  fi
-
-  if [ -f libopenblasp.a ]; then
-    rm -f "${pkgdir}${MINGW_PREFIX}/lib/libopenblasp.a"
-    rm -f "${pkgdir}${MINGW_PREFIX}/lib/libopenblas.a"
-    cp -f libopenblasp.a "${pkgdir}${MINGW_PREFIX}/lib/libopenblas.a"
-  else
-    echo "Static library not found" >&2
-    exit 1
-  fi
-
-  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
-  for _f in "${pkgdir}${MINGW_PREFIX}"/lib/cmake/openblas/*.cmake; do
-    sed -e "s|${PREFIX_WIN}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
-    sed -e "s|${MINGW_PREFIX}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
-  done
+  DESTDIR=${pkgdir} cmake --install .
 
   # Install License
   install -Dm0644 ${srcdir}/${_realname}-${pkgver}/LICENSE ${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE

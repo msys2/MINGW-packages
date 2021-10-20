@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__file__)
 
 TEMP_REPO_PATH = ARTIFACTS_LOCATION = Path("C:/_/artifacts")
-RDEPS_REGEX = re.compile(r"Repository\s*: mingw64[\n\S\s]*\nRequired By\s*:\s*(?P<rdeps>[\s\S]*)Optional For\s*:\s*")
+RDEPS_REGEX = re.compile(r"Repository\s*: \s*[\n\S\s]*\nRequired By\s*:\s*(?P<rdeps>[\s\S]*)Optional For\s*:\s*")
 
 
 def convert_win2unix_path(winpath: typing.Union[Path, str]):

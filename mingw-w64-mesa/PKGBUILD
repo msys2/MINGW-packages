@@ -3,11 +3,11 @@
 _realname=mesa
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=21.1.5
-pkgrel=1
+pkgver=21.2.4
+pkgrel=3
 pkgdesc="Open-source implementation of the OpenGL specification (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 makedepends=("${MINGW_PACKAGE_PREFIX}-llvm"
              "${MINGW_PACKAGE_PREFIX}-gcc"
              "${MINGW_PACKAGE_PREFIX}-python-mako"
@@ -15,7 +15,8 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-llvm"
              "${MINGW_PACKAGE_PREFIX}-pkg-config"
              "${MINGW_PACKAGE_PREFIX}-vulkan-loader"
              "${MINGW_PACKAGE_PREFIX}-spirv-tools"
-             "${MINGW_PACKAGE_PREFIX}-vulkan-validation-layers")
+             "${MINGW_PACKAGE_PREFIX}-vulkan-validation-layers"
+             "${MINGW_PACKAGE_PREFIX}-libelf")
 depends=("${MINGW_PACKAGE_PREFIX}-llvm"
          "${MINGW_PACKAGE_PREFIX}-zlib"
          "${MINGW_PACKAGE_PREFIX}-vulkan-loader")
@@ -25,10 +26,16 @@ url="https://www.mesa3d.org/"
 license=('MIT')
 options=('staticlibs' 'strip')
 source=(https://mesa.freedesktop.org/archive/${_realname}-${pkgver}.tar.xz{,.sig}
-        llvmwrapgen.sh)
-sha256sums=('022c7293074aeeced2278c872db4fa693147c70f8595b076cf3f1ef81520766d'
+        llvmwrapgen.sh
+        0001-swr-llvm-fix-swr-build-with-LLVM-13.patch
+        0002-swr-Fix-build-with-llvm-13.patch
+        0003-ucrt-fixes.patch)
+sha256sums=('fe6ede82d1ac02339da3c2ec1820a379641902fd351a52cc01153f76eff85b44'
             'SKIP'
-            '69f21522f20c10f5699dfe3e128aa88d4fedde816f6e8df1506d7470c44bf3da')
+            '69f21522f20c10f5699dfe3e128aa88d4fedde816f6e8df1506d7470c44bf3da'
+            'e5aa27b6aba3e75335bbd6d989c52dd42a8435ef87a1453267164e9612daee1a'
+            '37d1c37fd3a8563b9dd78ecd361e5a39440310facd1ed656ca1e12f667b54d6b'
+            '6baff82b5e80f6f47f7cb54af67efb02c5c4f10e99e3c0fa1dc180e9100f9872')
 validpgpkeys=('8703B6700E7EE06D7A39B8D6EDAE37B02CEB490D') # Emil Velikov <emil.l.velikov@gmail.com>
 validpgpkeys+=('946D09B5E4C9845E63075FF1D961C596A7203456') # Andres Gomez <tanty@igalia.com>
 validpgpkeys+=('E3E8F480C52ADD73B278EE78E1ECBE07D7D70895') # Juan Antonio Suárez Romero (Igalia, S.L.) <jasuarez@igalia.com>"
@@ -47,6 +54,12 @@ case ${MSYSTEM} in
   ;;
   UCRT64)
     _mach=ucrt-x86_64
+  ;;
+  CLANG32)
+    _mach=clang-x86
+  ;;
+  CLANG64)
+    _mach=clang-x86_64
   ;;
 esac
 
@@ -75,6 +88,15 @@ prepare() {
 
   cd ${srcdir}/${_realname}-${pkgver}
 
+  # https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/13267
+  # https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/11568
+  apply_patch_with_msg \
+    0001-swr-llvm-fix-swr-build-with-LLVM-13.patch \
+    0002-swr-Fix-build-with-llvm-13.patch
+
+  apply_patch_with_msg \
+    0003-ucrt-fixes.patch
+
 # Generate binary wrap for LLVM if llvm-config tool is busted
   if ! [ "$(${MINGW_PREFIX}/bin/llvm-config --has-rtti 2>&1)" = YES ] && ! [ "$(${MINGW_PREFIX}/bin/llvm-config --has-rtti 2>&1)" = NO ]; then
     nollvmconfig=1 llvm_static=false ${srcdir}/llvmwrapgen.sh
@@ -95,11 +117,18 @@ build() {
   -Dshared-llvm=enabled
   -Dosmesa=true
   -Dbuild-tests=true
-  -Dvulkan-drivers=swrast
+  -Dvulkan-drivers=swrast"
+
+# Enable RADV driver in x86_64 packages
+  if [ ! ${CARCH} = i686 ]; then
+    buildconf="${buildconf},amd"
+  fi
+
+  buildconf="${buildconf}
   -Dgallium-drivers=swrast,zink"
 
 # Enable swr driver in x86_64 packages
-  if [ ! ${_mach} = x86 ]; then
+  if [ ! ${CARCH} = i686 ]; then
     buildconf="${buildconf},swr
     -Dswr-arches=avx,avx2,skx,knl"
   fi
@@ -134,4 +163,10 @@ package() {
 # fix osmesa version in .pc file
   sed -e "s|8.0.0|${pkgver}|g" \
     -i ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/osmesa.pc
+
+# Fix JSON for RADV
+  if compgen -G "${pkgdir}${MINGW_PREFIX}/share/vulkan/icd.d/radeon_icd*.json" > /dev/null; then
+    sed -e "s|./vulkan_radeon|${MINGW_PREFIX}/bin/libvulkan_radeon|g" \
+      -i $(find ${pkgdir}${MINGW_PREFIX}/share/vulkan/icd.d -name "radeon_icd*.json" -print)
+  fi
 }

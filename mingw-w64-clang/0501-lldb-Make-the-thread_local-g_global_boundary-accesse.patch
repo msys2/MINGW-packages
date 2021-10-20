@@ -1,0 +1,89 @@
+From 7106f588567b59acb17c77f6116ba433b6226333 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Martin=20Storsj=C3=B6?= <martin@martin.st>
+Date: Fri, 8 Oct 2021 11:41:02 +0300
+Subject: [PATCH] [lldb] Make the thread_local g_global_boundary accessed from
+ a single file
+
+This makes the compiler generated code for accessing the thread local
+variable much simpler (no need for wrapper functions and weak pointers
+to potential init functions), and can avoid toolchain bugs regarding how
+to access TLS variables.
+
+In particular, this fixes LLDB when built with current GCC/binutils for
+MinGW, see https://github.com/msys2/MINGW-packages/issues/8868.
+
+Differential Revision: https://reviews.llvm.org/D111779
+---
+ include/lldb/Utility/ReproducerInstrumentation.h | 10 ++--------
+ source/Utility/ReproducerInstrumentation.cpp     | 11 ++++++++++-
+ 2 files changed, 12 insertions(+), 9 deletions(-)
+
+diff --git a/include/lldb/Utility/ReproducerInstrumentation.h b/include/lldb/Utility/ReproducerInstrumentation.h
+index 2b2d273a17a8f..6c5d27879d362 100644
+--- a/include/lldb/Utility/ReproducerInstrumentation.h
++++ b/include/lldb/Utility/ReproducerInstrumentation.h
+@@ -868,17 +868,14 @@ class Recorder {
+ 
+   /// Mark the current thread as a private thread and pretend that everything
+   /// on this thread is behind happening behind the API boundary.
+-  static void PrivateThread() { g_global_boundary = true; }
++  static void PrivateThread();
+ 
+ private:
+   static unsigned GetNextSequenceNumber() { return g_sequence++; }
+   unsigned GetSequenceNumber() const;
+ 
+   template <typename T> friend struct replay;
+-  void UpdateBoundary() {
+-    if (m_local_boundary)
+-      g_global_boundary = false;
+-  }
++  void UpdateBoundary();
+ 
+ #ifdef LLDB_REPRO_INSTR_TRACE
+   void Log(unsigned id) {
+@@ -902,9 +899,6 @@ class Recorder {
+   /// The sequence number for this pair of function and result.
+   unsigned m_sequence;
+ 
+-  /// Whether we're currently across the API boundary.
+-  static thread_local bool g_global_boundary;
+-
+   /// Global mutex to protect concurrent access.
+   static std::mutex g_mutex;
+ 
+diff --git a/source/Utility/ReproducerInstrumentation.cpp b/source/Utility/ReproducerInstrumentation.cpp
+index e5bd2ba4b6259..b3285f4b3776a 100644
+--- a/source/Utility/ReproducerInstrumentation.cpp
++++ b/source/Utility/ReproducerInstrumentation.cpp
+@@ -16,6 +16,9 @@
+ using namespace lldb_private;
+ using namespace lldb_private::repro;
+ 
++// Whether we're currently across the API boundary.
++static thread_local bool g_global_boundary = false;
++
+ void *IndexToObject::GetObjectForIndexImpl(unsigned idx) {
+   return m_mapping.lookup(idx);
+ }
+@@ -227,6 +230,13 @@ unsigned Recorder::GetSequenceNumber() const {
+   return m_sequence;
+ }
+ 
++void Recorder::PrivateThread() { g_global_boundary = true; }
++
++void Recorder::UpdateBoundary() {
++  if (m_local_boundary)
++    g_global_boundary = false;
++}
++
+ void InstrumentationData::Initialize(Serializer &serializer,
+                                      Registry &registry) {
+   InstanceImpl().emplace(serializer, registry);
+@@ -248,6 +258,5 @@ llvm::Optional<InstrumentationData> &InstrumentationData::InstanceImpl() {
+   return g_instrumentation_data;
+ }
+ 
+-thread_local bool lldb_private::repro::Recorder::g_global_boundary = false;
+ std::atomic<unsigned> lldb_private::repro::Recorder::g_sequence;
+ std::mutex lldb_private::repro::Recorder::g_mutex;
