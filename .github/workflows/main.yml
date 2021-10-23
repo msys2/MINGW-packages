@@ -1,21 +1,29 @@
 name: main
 
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
   pull_request:
 
 jobs:
   build:
+    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master'}}
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
         include: [
-          { msystem: MINGW64, arch: x86_64 },
-          { msystem: MINGW32, arch: i686   }
+          { msystem: MINGW64, toolchain: mingw-w64-x86_64-toolchain, can-fail: false },
+          { msystem: MINGW32, toolchain: mingw-w64-i686-toolchain, can-fail: false },
+          { msystem: UCRT64, toolchain: mingw-w64-ucrt-x86_64-toolchain, can-fail: false },
+          { msystem: CLANG64, toolchain: mingw-w64-clang-x86_64-toolchain, can-fail: true },
+          { msystem: CLANG32, toolchain: '', can-fail: true }
         ]
+    name: ${{ matrix.msystem }}
     steps:
-
       - uses: actions/checkout@v2
         with:
           path: temp
@@ -28,9 +36,24 @@ jobs:
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MSYS
-          install: git msys2-devel base-devel binutils mingw-w64-${{ matrix.arch }}-toolchain
+          msystem: ${{ matrix.msystem }}
+          install: VCS base-devel binutils pactoys-git ${{ matrix.toolchain }}
           update: true
+
+      - name: Add staging repo
+        shell: msys2 {0}
+        run: |
+          sed -i '1s|^|[staging]\nServer = https://repo.msys2.org/staging/\nSigLevel = Never\n[clang32]\nInclude = /etc/pacman.d/mirrorlist.clang32\n|' /etc/pacman.conf
+
+      - name: Update using staging
+        run: |
+          msys2 -c 'pacman --noconfirm -Suuy'
+          msys2 -c 'pacman --noconfirm -Suu'
+
+      - name: Install clang32 toolchain
+        if: ${{ matrix.msystem == 'CLANG32' }}
+        run: |
+          msys2 -c 'pacman --noconfirm --overwrite "*" -S --needed mingw-w64-clang-i686-toolchain'
 
       - name: Move Checkout
         run: |
@@ -38,12 +61,40 @@ jobs:
 
       - name: CI-Build
         shell: msys2 {0}
+        continue-on-error: ${{ matrix.can-fail }}
+        id: build
         run: |
           cd /C/_
-          MINGW_INSTALLS=${{ matrix.msystem }} ./.ci/ci-build.sh
+          MINGW_ARCH=${{ matrix.msystem }} ./.ci/ci-build.sh
 
       - name: "Upload binaries"
         uses: actions/upload-artifact@v2
+        continue-on-error: ${{ matrix.can-fail }}
         with:
           name: ${{ matrix.msystem }}-packages
           path: C:/_/artifacts/*.pkg.tar.*
+  check:
+    needs: [build]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/download-artifact@v2
+        continue-on-error: true
+        with:
+          name: MINGW64-packages
+          path: C:/_/artifacts
+      - name: Check whether to Run
+        id: check-run
+        run: |
+          python .ci/ci-check.py --whether-to-run
+      - uses: msys2/setup-msys2@v2
+        if: steps.check-run.outputs.run == 'true'
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-python-pip
+          release: false # since we aren't building anything
+      - name: Run Checks
+        if: steps.check-run.outputs.run == 'true'
+        shell: msys2 {0}
+        run: |
+          python .ci/ci-check.py

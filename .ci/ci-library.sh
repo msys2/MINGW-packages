@@ -50,47 +50,6 @@ _list_changes() {
     _as_list "${list_name}" "${filter}" "${strip}" "$(git log "${git_options[@]}" HEAD^.. | sort -u)"
 }
 
-# Get package information
-_package_info() {
-    local package="${1}"
-    local properties=("${@:2}")
-    for property in "${properties[@]}"; do
-        local -n nameref_property="${property}"
-        nameref_property=($(
-            MINGW_PACKAGE_PREFIX='mingw-w64' source "${package}/PKGBUILD"
-            declare -n nameref_property="${property}"
-            echo "${nameref_property[@]}"))
-    done
-}
-
-# Package provides another
-_package_provides() {
-    local package="${1}"
-    local another="${2}"
-    local pkgname provides
-    _package_info "${package}" pkgname provides
-    for pkg_name in "${pkgname[@]}";  do [[ "${pkg_name}" = "${another}" ]] && return 0; done
-    for provided in "${provides[@]}"; do [[ "${provided}" = "${another}" ]] && return 0; done
-    return 1
-}
-
-# Add package to build after required dependencies
-_build_add() {
-    local package="${1}"
-    local depends makedepends
-    for started_package in "${started_packages[@]}"; do
-        [[ "${started_package}" = "${package}" ]] && return 0
-    done
-    started_packages+=("${package}")
-    _package_info "${package}" depends makedepends
-    for dependency in "${depends[@]}" "${makedepends[@]}"; do
-        for unsorted_package in "${packages[@]}"; do
-            _package_provides "${unsorted_package}" "${dependency}" && _build_add "${unsorted_package}"
-        done
-    done
-    sorted_packages+=("${package}")
-}
-
 # Git configuration
 git_config() {
     local name="${1}"
@@ -114,29 +73,19 @@ execute(){
     cd - > /dev/null
 }
 
-# Sort packages by dependency
-define_build_order() {
-    local sorted_packages=()
-    for unsorted_package in "${packages[@]}"; do
-        _build_add "${unsorted_package}"
-    done
-    packages=("${sorted_packages[@]}")
-}
-
 # Added commits
 list_commits()  {
     _list_changes commits '*' '#*::' --pretty=format:'%ai::[%h] %s'
 }
 
-# Changed recipes
+# Get changed packages in correct build order
 list_packages() {
-    local _packages
-    _list_changes _packages '*/PKGBUILD' '%/PKGBUILD' --pretty=format: --name-only || return 1
-    for _package in "${_packages[@]}"; do
-        local find_case_sensitive="$(find -name "${_package}" -type d -print -quit)"
-        test -n "${find_case_sensitive}" && packages+=("${_package}")
-    done
-    return 0
+    # readarray doesn't work with a plain pipe
+    readarray -t packages < <("$DIR/ci-get-build-order.py")
+}
+
+install_packages() {
+    pacman --noprogressbar --upgrade --noconfirm *.pkg.tar.*
 }
 
 # Recipe quality
@@ -147,6 +96,21 @@ check_recipe_quality() {
         return 0
     fi
     saneman --format='\t%l:%c %p:%c %m' --verbose --no-terminal "${packages[@]}"
+}
+
+# List DLL dependencies
+list_dll_deps(){
+    local target="${1}"
+    echo "$(tput setaf 2)MSYS2 DLL dependencies:$(tput sgr0)"
+    find "$target" -regex ".*\.\(exe\|dll\)" -print0 | xargs -0 -r ldd | GREP_COLOR="1;35" grep --color=always "msys-.*\|" \
+    || echo "        None"
+}
+
+list_dll_bases(){
+    local target="${1}"
+    echo "$(tput setaf 2)MSYS2 DLL bases:$(tput sgr0)"
+    find "$target" -regex ".*\.\(exe\|dll\)" -print | rebase -iT - | GREP_COLOR="1;35" grep --color=always "msys-.*\|" \
+    || echo "        None"
 }
 
 # Status functions

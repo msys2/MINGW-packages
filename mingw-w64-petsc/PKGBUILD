@@ -1,14 +1,41 @@
 # Contributor: Oleg A. Khlybov <fougas@mail.ru>
 
+# The supplementary `petsc-build` package contains the distilled PETSc build tree
+# required at compile time by some packages (such as SLEPc).
+# Regular users should use the `petsc` package.
+
+# This package provides multiple library build flavors differentiated by
+# the 3-character suffix XYZ as follows:
+#
+#  * X is the scalar type based on the Netlib's SDCZ notation:
+#    - A for multiprecision or precision-neutral build
+#    - S for single precision real
+#    - D for double precision real
+#    - C for single precision complex
+#    - Z for double precision complex
+#
+#  * Y is the execution model:
+#    - S for sequential code
+#    - M for MPI parallel code
+#    - T for multithreaded code, either bare threading or OpenMP, OpenACC etc.
+#    - H for heterogeneous code with CUDA, OpenCL etc.
+#
+#  * Z is the build type:
+#    - O for optimized build
+#    - G for debugging build
+#
+# The suffix is used in the static and dynamic libraires as well as in PkgConfig .pc files.
+# That is the ZMO suffix designates the optimized MPI parallel double precision complex library flavor.
+# Consider the `pkg-config petsc-zmo --cflags` command to obtain the build-specific compilation flags.
+
+
 _realname=petsc
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}" "${MINGW_PACKAGE_PREFIX}-${_realname}-build")
-# The `petsc-build` package contains the distilled PETSc build tree
-# required at compile time by some packages (such as SLEPc).
-# Regular users should use the `petsc` package.
-pkgver=3.14.4
+pkgver=3.15.4
 pkgrel=1
 arch=('any')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
 pkgdesc='Sparse iterative (non)linear solver package (mingw-w64)'
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran"	
@@ -24,14 +51,14 @@ optdepends=("${MINGW_PACKAGE_PREFIX}-tcl: build & run test suite")
 options=('strip' 'staticlibs')
 license=('2-clause BSD')
 url="https://www.mcs.anl.gov/petsc/"
-source=("http://ftp.mcs.anl.gov/pub/petsc/release-snapshots/${_realname}-lite-${pkgver}.tar.gz"
+source=("https://ftp.mcs.anl.gov/pub/petsc/release-snapshots/${_realname}-lite-${pkgver}.tar.gz"
         'all.tcl'
         'tclbuildtest.tcl'
         'petsc.test'
         'petsc-mat.test'
         '0001-mpi-detection-override.patch')
 noextract=("${_realname}-lite-${pkgver}.tar.gz")
-sha256sums=('b030969816e02c251a6d010c07a90b69ade44932f9ddfac3090ff5e95ab97d5c'
+sha256sums=('1e62fb0859a12891022765d1e24660cfcd704291c58667082d81a0618d6b0047'
             'ec5072630e1c0309fe383669e9187790cd135a393c67bc4bc35cf60b0ba396ff'
             '15c7af25b91406d5fe5f26cfe00963b6cfde1c3dd466eb25f1b6fae299934966'
             '9662cc4104726c714f7961aba6f8c93bfb85f3d3f89b4908b0a55aedab41ca31'
@@ -47,10 +74,14 @@ prepare() {
   done
 }
 
+# Optimized build flavors
 builds='dso dto dmo zso zto zmo sso sto smo cso cto cmo'
 
+# Additional debugging build flavors, disabled by default due to huge library sizes
+# builds="$builds dsg dtg dmg zsg ztg zmg ssg stg smg csg ctg cmg"
+
 _petsc() {
-  opts="--with-single-library=0 --disable-shared --with-windows-graphics=0 --with-x=0 --with-openblas=1 --with-hwloc=1 --with-openblas-dir=$MINGW_PREFIX"
+  opts="--with-single-library=1 --disable-shared --with-windows-graphics=0 --with-x=0 --with-openblas=1 --with-hwloc=1 --with-openblas-dir=$MINGW_PREFIX"
   ld=gfortran
   pc="openblas hwloc"
   xflags=-msse # SSE support is required for proper FP trapping
@@ -123,13 +154,10 @@ build() {
     make PETSC_ARCH=${build} all
   	(
   		cd ${build}/lib
-  		lib=libpetsc-${build}
-  		rm -rf ${lib}.a
   	  case ${build} in
     		*o) strip -S *.a ;;
   	  esac
-  		ar crsT ${lib}.a libpetscts.a libpetscsnes.a libpetscksp.a libpetscdm.a libpetscmat.a libpetscvec.a libpetscsys.a
-  		${ld} -shared -Wl,--enable-auto-import -Wl,--export-all-symbols -o ${lib}.dll -Wl,--out-implib,${lib}.dll.a -Wl,--whole-archive ${lib}.a -Wl,--no-whole-archive ${ldflags} $(pkg-config ${pc} --libs)
+  		${ld} -shared -Wl,--enable-auto-import -Wl,--export-all-symbols -o lib${_realname}-${build}.dll -Wl,--out-implib,lib${_realname}.dll.a -Wl,--whole-archive lib${_realname}.a -Wl,--no-whole-archive ${ldflags} $(pkg-config ${pc} --libs)
   	)
   done
 }
@@ -173,7 +201,6 @@ _package() {
   		mkdir -p ${pkgdir}${MINGW_PREFIX}/include/${_realname}/${build}
   		cp *.{h,mod} ${pkgdir}${MINGW_PREFIX}/include/${_realname}/${build}
   	)
-    lib=${_realname}-${build}
     echo "
       prefix=${MINGW_PREFIX}
       libdir=\${prefix}/lib/${_realname}
@@ -184,9 +211,9 @@ _package() {
       Description: ${desc} PETSc build
       Requires.private: ${pc}
       Cflags: -I\${includedir}/${build} -I\${includedir} ${iflags}
-      Libs.private: -L\${libdir}/${build} -l${lib} ${ldflags} -lgfortran -lquadmath
-      Libs: -L\${libdir}/${build} -l${lib}
-    " | sed '/^\s*$/d;s/^\s*//' > ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/${lib}.pc
+      Libs.private: -L\${libdir}/${build} -l${_realname} ${ldflags} -lgfortran -lquadmath
+      Libs: -L\${libdir}/${build} -l${_realname}
+    " | sed '/^\s*$/d;s/^\s*//' > ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/${_realname}-${build}.pc
   done
 }
 

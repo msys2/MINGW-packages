@@ -1,0 +1,117 @@
+diff file generated from Sutou Kouhei PR -> https://github.com/luarocks/luarocks/pull/1230/files
+diff -Naur luarocks-3.7.0.orig/spec/util/test_env.lua luarocks-3.7.0/spec/util/test_env.lua
+--- luarocks-3.7.0.orig/spec/util/test_env.lua	2021-04-13 23:53:36.000000000 +0200
++++ luarocks-3.7.0/spec/util/test_env.lua	2021-07-25 17:43:16.413491100 +0200
+@@ -248,6 +248,8 @@
+          test_env.MINGW = true
+       elseif argument == "vs" then
+          test_env.MINGW = false
++	  elseif argument == "msys2_mingw_w64" then
++         test_env.MSYS2_MINGW_W64 = true
+       elseif argument:find("^lua_dir=") then
+          test_env.LUA_DIR = argument:match("^lua_dir=(.*)$")
+       elseif argument:find("^lua_interpreter=") then
+@@ -429,7 +431,9 @@
+       return execute_output("find " .. path .. " -type f -exec stat -f \"%z %N\" {} \\; | md5")
+    elseif test_env.TEST_TARGET_OS == "windows" then
+       return execute_output("\"" .. Q(test_env.testing_paths.win_tools .. "/find") .. " " .. Q(path)
+-         .. " -printf \"%s %p\"\" > temp_sum.txt && certUtil -hashfile temp_sum.txt && del temp_sum.txt")
++         .. " -printf \"%s %p\"\" > temp_sum.txt && "
++         .. "C:\\Windows\\System32\\certUtil -hashfile temp_sum.txt && "
++		 .. "del temp_sum.txt")
+    end
+ end
+ 
+@@ -823,10 +827,14 @@
+    if test_env.TEST_TARGET_OS == "windows" then
+       if test_env.MINGW then
+          table.insert(lines, [[SYSTEM = "mingw",]])
++	  elseif test_env.MSYS2_MINGW_W64 then
++         table.insert(lines, [[SYSTEM = "msys2_mingw_w64",]])
+       else
+          table.insert(lines, [[SYSTEM = "windows",]])
+       end
+-      table.insert(lines, ("WIN_TOOLS = %q,"):format(testing_paths.win_tools))
++      if not test_env.MSYS2_MINGW_W64 then
++         table.insert(lines, ("WIN_TOOLS = %q,"):format(testing_paths.win_tools))
++	  end
+    end
+ 
+    table.insert(lines, "}")
+diff -Naur luarocks-3.7.0.orig/src/luarocks/core/cfg.lua luarocks-3.7.0/src/luarocks/core/cfg.lua
+--- luarocks-3.7.0.orig/src/luarocks/core/cfg.lua	2021-04-13 23:53:36.000000000 +0200
++++ luarocks-3.7.0/src/luarocks/core/cfg.lua	2021-07-25 17:51:51.829906200 +0200
+@@ -414,6 +414,10 @@
+          defaults.makefile = "Makefile"
+          defaults.cmake_generator = "MSYS Makefiles"
+          defaults.local_cache = home.."/.cache/luarocks"
++		 defaults.variables.PWD = "cd"
++		 local pipe2 = io.popen("cygpath --windows /usr/bin/mkdir")
++         defaults.variables.MKDIR = pipe2:read("*l")
++		 pipe2:close()
+          defaults.variables.MAKE = "make"
+          defaults.variables.CC = "gcc"
+          defaults.variables.RC = "windres"
+@@ -745,7 +749,7 @@
+ 
+    local defaults = make_defaults(cfg.lua_version, processor, platforms, cfg.home)
+ 
+-   if platforms.windows and hardcoded.WIN_TOOLS then
++   if platforms.windows and not platforms.msys2_mingw_w64 and hardcoded.WIN_TOOLS then
+       local tools = { "SEVENZ", "CP", "FIND", "LS", "MD5SUM", "PWD", "RMDIR", "WGET", "MKDIR" }
+       for _, tool in ipairs(tools) do
+          defaults.variables[tool] = '"' .. hardcoded.WIN_TOOLS .. "/" .. defaults.variables[tool] .. '.exe"'
+diff -Naur luarocks-3.7.0.orig/src/luarocks/fs/msys2_mingw_w64.lua luarocks-3.7.0/src/luarocks/fs/msys2_mingw_w64.lua
+--- luarocks-3.7.0.orig/src/luarocks/fs/msys2_mingw_w64.lua	1970-01-01 01:00:00.000000000 +0100
++++ luarocks-3.7.0/src/luarocks/fs/msys2_mingw_w64.lua	2021-07-25 17:52:51.477791300 +0200
+@@ -0,0 +1,12 @@
++--- MSYS2 + Mingw-w64 implementation of filesystem and platform abstractions.
++local msys2_mingw_w64 = {}
++
++local unix_tools = require("luarocks.fs.unix.tools")
++
++msys2_mingw_w64.zip = unix_tools.zip
++msys2_mingw_w64.unzip = unix_tools.unzip
++msys2_mingw_w64.gunzip = unix_tools.gunzip
++msys2_mingw_w64.bunzip2 = unix_tools.bunzip2
++msys2_mingw_w64.copy_contents = unix_tools.copy_contents
++
++return msys2_mingw_w64
+\ No newline at end of file
+diff -Naur luarocks-3.7.0.orig/src/luarocks/fs/unix/tools.lua luarocks-3.7.0/src/luarocks/fs/unix/tools.lua
+--- luarocks-3.7.0.orig/src/luarocks/fs/unix/tools.lua	2021-04-13 23:53:36.000000000 +0200
++++ luarocks-3.7.0/src/luarocks/fs/unix/tools.lua	2021-07-25 17:54:45.618437900 +0200
+@@ -152,13 +152,13 @@
+    end
+ end
+ 
+-local function uncompress(default_ext, program, infile, outfile)
++local function uncompress(default_ext, program, uncompress_flag, infile, outfile)
+    assert(type(infile) == "string")
+    assert(outfile == nil or type(outfile) == "string")
+    if not outfile then
+       outfile = infile:gsub("%."..default_ext.."$", "")
+    end
+-   if fs.execute(fs.Q(program).." -c "..fs.Q(infile).." > "..fs.Q(outfile)) then
++   if fs.execute(fs.Q(program).." "..fs.Q(uncompress_flag).." -c "..fs.Q(infile).." > "..fs.Q(outfile)) then
+       return true
+    else
+       return nil, "failed extracting " .. infile
+@@ -171,7 +171,7 @@
+ -- If not given, name is derived from input file.
+ -- @return boolean: true on success; nil and error message on failure.
+ function tools.gunzip(infile, outfile)
+-   return uncompress("gz", "gunzip", infile, outfile)
++   return uncompress("gz", "gzip", "-d", infile, outfile)
+ end
+ 
+ --- Uncompresses a .bz2 file.
+@@ -180,7 +180,7 @@
+ -- If not given, name is derived from input file.
+ -- @return boolean: true on success; nil and error message on failure.
+ function tools.bunzip2(infile, outfile)
+-   return uncompress("bz2", "bunzip2", infile, outfile)
++   return uncompress("bz2", "bzip2", "-d", infile, outfile)
+ end
+ 
+ do
