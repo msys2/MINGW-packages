@@ -466,13 +466,11 @@ split_path_list(char const * path_list, char split_char, char *** arr)
   return path_count;
 }
 
-char *
-get_relocated_path_list(char const * from, char const * to_path_list)
+static char *
+get_relocated_path_list_ref(char const * from, char const * to_path_list, char *ref_path)
 {
-  char exe_path[MAX_PATH];
   char * temp;
-  get_executable_path (NULL, &exe_path[0], sizeof (exe_path) / sizeof (exe_path[0]));
-  if ((temp = strrchr (exe_path, '/')) != NULL)
+  if ((temp = strrchr (ref_path, '/')) != NULL)
   {
     temp[1] = '\0';
   }
@@ -487,16 +485,16 @@ get_relocated_path_list(char const * from, char const * to_path_list)
   }
   size_t count = split_path_list (to_path_list, split_char, &arr);
   int result_size = 1 + (count - 1); /* count - 1 is for ; delim. */
-  size_t exe_path_size = strlen (exe_path);
+  size_t ref_path_size = strlen (ref_path);
   size_t i;
   /* Space required is:
-     count * (exe_path_size + strlen (rel_to_datadir))
+     count * (ref_path_size + strlen (rel_to_datadir))
      rel_to_datadir upper bound is:
      (count * strlen (from)) + (3 * num_slashes (from))
      + strlen(arr[i]) + 1.
      .. pathalogically num_slashes (from) is strlen (from)
      (from = ////////) */
-  size_t space_required = (count * (exe_path_size + 4 * strlen (from))) + count - 1;
+  size_t space_required = (count * (ref_path_size + 4 * strlen (from))) + count - 1;
   for (i = 0; i < count; ++i)
   {
     space_required += strlen (arr[i]);
@@ -509,7 +507,7 @@ get_relocated_path_list(char const * from, char const * to_path_list)
     char * rel_to_datadir = get_relative_path (from, arr[i]);
     scratch[0] = '\0';
     arr[i] = scratch;
-    strcat (scratch, exe_path);
+    strcat (scratch, ref_path);
     strcat (scratch, rel_to_datadir);
     simplify_path (arr[i]);
     size_t arr_i_size = strlen (arr[i]);
@@ -539,19 +537,59 @@ get_relocated_path_list(char const * from, char const * to_path_list)
 }
 
 char *
+get_relocated_path_list(char const *from, char const *to_path_list)
+{
+  char exe_path[MAX_PATH];
+  get_executable_path (NULL, &exe_path[0], sizeof (exe_path) / sizeof (exe_path[0]));
+
+  return get_relocated_path_list_ref(from, to_path_list, exe_path);
+}
+
+char *
+get_relocated_path_list_lib(char const *from, char const *to_path_list)
+{
+  char dll_path[PATH_MAX];
+  get_dll_path (&dll_path[0], sizeof(dll_path)/sizeof(dll_path[0]));
+
+  return get_relocated_path_list_ref(from, to_path_list, dll_path);
+}
+
+static char *
+single_path_relocation_ref(const char *from, const char *to, char *ref_path)
+{
+#if defined(__MINGW32__)
+  if (strrchr (ref_path, '/') != NULL)
+  {
+     strrchr (ref_path, '/')[1] = '\0';
+  }
+  char * rel_to_datadir = get_relative_path (from, to);
+  strcat (ref_path, rel_to_datadir);
+  simplify_path (&ref_path[0]);
+  return malloc_copy_string(ref_path);
+#else
+  return malloc_copy_string(to);
+#endif
+}
+
+char *
 single_path_relocation(const char *from, const char *to)
 {
 #if defined(__MINGW32__)
   char exe_path[PATH_MAX];
   get_executable_path (NULL, &exe_path[0], sizeof(exe_path)/sizeof(exe_path[0]));
-  if (strrchr (exe_path, '/') != NULL)
-  {
-     strrchr (exe_path, '/')[1] = '\0';
-  }
-  char * rel_to_datadir = get_relative_path (from, to);
-  strcat (exe_path, rel_to_datadir);
-  simplify_path (&exe_path[0]);
-  return malloc_copy_string(exe_path);
+  return single_path_relocation_ref(from, to, exe_path);
+#else
+  return malloc_copy_string(to);
+#endif
+}
+
+char *
+single_path_relocation_lib(const char *from, const char *to)
+{
+#if defined(__MINGW32__)
+  char dll_path[PATH_MAX];
+  get_dll_path (&dll_path[0], sizeof(dll_path)/sizeof(dll_path[0]));
+  return single_path_relocation_ref(from, to, dll_path);
 #else
   return malloc_copy_string(to);
 #endif
@@ -566,6 +604,26 @@ pathlist_relocation(const char *from_path, const char *to_path_list)
   if (stored == 0)
   {
     char const * relocated = get_relocated_path_list(from_path, to_path_list);
+    strncpy (stored_path, relocated, PATH_MAX);
+    stored_path[PATH_MAX-1] = '\0';
+    free ((void *)relocated);
+    stored = 1;
+  }
+  return stored_path;
+#else
+  return (to_path_list);
+#endif
+}
+
+char *
+pathlist_relocation_lib(const char *from_path, const char *to_path_list)
+{
+#if defined(__MINGW32__)
+  static char stored_path[PATH_MAX];
+  static int stored = 0;
+  if (stored == 0)
+  {
+    char const * relocated = get_relocated_path_list_lib(from_path, to_path_list);
     strncpy (stored_path, relocated, PATH_MAX);
     stored_path[PATH_MAX-1] = '\0';
     free ((void *)relocated);
