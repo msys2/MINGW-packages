@@ -11,18 +11,19 @@ on:
 jobs:
   build:
     if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master'}}
-    runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
         include: [
-          { msystem: MINGW64, toolchain: mingw-w64-x86_64-toolchain, can-fail: false },
-          { msystem: MINGW32, toolchain: mingw-w64-i686-toolchain, can-fail: false },
-          { msystem: UCRT64, toolchain: mingw-w64-ucrt-x86_64-toolchain, can-fail: false },
-          { msystem: CLANG64, toolchain: mingw-w64-clang-x86_64-toolchain, can-fail: true },
-          { msystem: CLANG32, toolchain: '', can-fail: true }
+          { msystem: MINGW64, toolchain: mingw-w64-x86_64-toolchain, can-fail: false, runner: windows-latest },
+          { msystem: MINGW32, toolchain: mingw-w64-i686-toolchain, can-fail: false, runner: windows-latest },
+          { msystem: UCRT64, toolchain: mingw-w64-ucrt-x86_64-toolchain, can-fail: false, runner: windows-latest },
+          { msystem: CLANG64, toolchain: mingw-w64-clang-x86_64-toolchain, can-fail: true, runner: windows-latest },
+          { msystem: CLANG32, toolchain: '', can-fail: true, runner: windows-latest },
+          { msystem: CLANGARM64, toolchain: '', can-fail: true, runner: ['Windows', 'ARM64'] }
         ]
     name: ${{ matrix.msystem }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Get CPU Name
         run : |
@@ -32,23 +33,28 @@ jobs:
         with:
           path: temp
           fetch-depth: 0
+          persist-credentials: false
 
       # to match the autobuild environment
       - uses: actions/setup-python@v2
         with:
           python-version: '3.8'
+          architecture: 'x64'
 
       - uses: msys2/setup-msys2@v2
         with:
           msystem: ${{ matrix.msystem }}
           install: VCS base-devel binutils pactoys ${{ matrix.toolchain }}
           update: true
+          release: ${{ runner.arch != 'ARM64' }}
           location: 'D:\M'
 
       - name: Add staging repo
         shell: msys2 {0}
         run: |
-          sed -i '1s|^|[staging]\nServer = https://repo.msys2.org/staging/\nSigLevel = Never\n[clang32]\nInclude = /etc/pacman.d/mirrorlist.clang32\n|' /etc/pacman.conf
+          sed -i.bak '1s|^|[staging]\nServer = https://repo.msys2.org/staging/\nSigLevel = Never\n|' /etc/pacman.conf
+          grep -qF '[clang32]' /etc/pacman.conf || sed -i '1s|^|[clang32]\nInclude = /etc/pacman.d/mirrorlist.mingw\n|' /etc/pacman.conf
+          grep -qF '[clangarm64]' /etc/pacman.conf || sed -i '1s|^|[clangarm64]\nInclude = /etc/pacman.d/mirrorlist.mingw\n|' /etc/pacman.conf
 
       - name: Update using staging
         run: |
@@ -56,12 +62,13 @@ jobs:
           msys2 -c 'pacman --noconfirm -Suu'
 
       - name: Install clang32 toolchain
-        if: ${{ matrix.msystem == 'CLANG32' }}
+        if: ${{ matrix.msystem == 'CLANG32' || matrix.msystem == 'CLANGARM64' }}
         run: |
-          msys2 -c 'pacman --noconfirm --overwrite "*" -S --needed mingw-w64-clang-i686-toolchain'
+          msys2 -c 'pacman --noconfirm --overwrite "*" -S --needed mingw-w64-clang-${{ matrix.msystem == 'CLANG32' && 'i686' || 'aarch64' }}-toolchain'
 
       - name: Move Checkout
         run: |
+          If (Test-Path "C:\_") { rm -r -fo "C:\_" }
           Copy-Item -Path ".\temp" -Destination "C:\_" -Recurse
 
       - name: CI-Build
@@ -78,6 +85,16 @@ jobs:
         with:
           name: ${{ matrix.msystem }}-packages
           path: C:/_/artifacts/*.pkg.tar.*
+
+      - name: "Clean up runner"
+        if: ${{ always() }}
+        continue-on-error: true
+        run: |
+          If (Test-Path "C:\_") { rm -r -fo "C:\_" }
+          msys2 -c 'mv -f /etc/pacman.conf.bak /etc/pacman.conf'
+          msys2 -c 'pacman --noconfirm -Suuy'
+          msys2 -c 'pacman --noconfirm -Suu'
+
   check:
     needs: [build]
     runs-on: windows-latest
