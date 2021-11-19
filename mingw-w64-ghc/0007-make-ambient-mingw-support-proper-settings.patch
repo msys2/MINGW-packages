@@ -1,0 +1,339 @@
+diff --git a/compiler/GHC/Driver/Session.hs b/compiler/GHC/Driver/Session.hs
+index 5f4479939a242379b8df9e5e0e373ce199c7ab78..4ef877b7fafc61b288c91033c26054db1685fa68 100644
+--- a/compiler/GHC/Driver/Session.hs
++++ b/compiler/GHC/Driver/Session.hs
+@@ -4537,8 +4537,9 @@ compilerInfo dflags
+     showBool False = "NO"
+     platform  = targetPlatform dflags
+     isWindows = platformOS platform == OSMinGW32
++    useInplaceMinGW = toolSettings_useInplaceMinGW $ toolSettings dflags
+     expandDirectories :: FilePath -> Maybe FilePath -> String -> String
+-    expandDirectories topd mtoold = expandToolDir mtoold . expandTopDir topd
++    expandDirectories topd mtoold = expandToolDir useInplaceMinGW mtoold . expandTopDir topd
+
+
+ wordAlignment :: Platform -> Alignment
+diff --git a/compiler/GHC/Settings.hs b/compiler/GHC/Settings.hs
+index 73f3b97b546fee80bae607d6c6b52c2dbfd03116..679d0266fee31ab524a335afe8fb06cc2de22880 100644
+--- a/compiler/GHC/Settings.hs
++++ b/compiler/GHC/Settings.hs
+@@ -22,6 +22,7 @@ module GHC.Settings
+   , sLdSupportsFilelist
+   , sLdIsGnuLd
+   , sGccSupportsNoPie
++  , sUseInplaceMinGW
+   , sPgm_L
+   , sPgm_P
+   , sPgm_F
+@@ -89,6 +90,7 @@ data ToolSettings = ToolSettings
+   , toolSettings_ldSupportsFilelist      :: Bool
+   , toolSettings_ldIsGnuLd               :: Bool
+   , toolSettings_ccSupportsNoPie         :: Bool
++  , toolSettings_useInplaceMinGW         :: Bool
+
+   -- commands for particular phases
+   , toolSettings_pgm_L       :: String
+@@ -190,6 +192,8 @@ sLdIsGnuLd :: Settings -> Bool
+ sLdIsGnuLd = toolSettings_ldIsGnuLd . sToolSettings
+ sGccSupportsNoPie :: Settings -> Bool
+ sGccSupportsNoPie = toolSettings_ccSupportsNoPie . sToolSettings
++sUseInplaceMinGW :: Settings -> Bool
++sUseInplaceMinGW = toolSettings_useInplaceMinGW . sToolSettings
+
+ sPgm_L :: Settings -> String
+ sPgm_L = toolSettings_pgm_L . sToolSettings
+diff --git a/compiler/GHC/Settings/IO.hs b/compiler/GHC/Settings/IO.hs
+index 1e56d1c0877c5bbdf673f064ca3b14202679a657..7d9be2f403bc7335ea1967fffa71187990685fdf 100644
+--- a/compiler/GHC/Settings/IO.hs
++++ b/compiler/GHC/Settings/IO.hs
+@@ -35,12 +35,6 @@ initSettings
+   => String -- ^ TopDir path
+   -> ExceptT SettingsError m Settings
+ initSettings top_dir = do
+-  -- see Note [topdir: How GHC finds its files]
+-  -- NB: top_dir is assumed to be in standard Unix
+-  -- format, '/' separated
+-  mtool_dir <- liftIO $ findToolDir top_dir
+-        -- see Note [tooldir: How GHC finds mingw on Windows]
+-
+   let installed :: FilePath -> FilePath
+       installed file = top_dir </> file
+       libexec :: FilePath -> FilePath
+@@ -58,24 +52,31 @@ initSettings top_dir = do
+     Nothing -> throwE $ SettingsError_BadData $
+       "Can't parse " ++ show settingsFile
+   let mySettings = Map.fromList settingsList
++      getBooleanSetting :: String -> ExceptT SettingsError m Bool
++      getBooleanSetting key = either pgmError pure $
++        getRawBooleanSetting settingsFile mySettings key
++
++  -- On Windows, by mingw is often distributed with GHC,
++  -- so we look in TopDir/../mingw/bin,
++  -- as well as TopDir/../../mingw/bin for hadrian.
++  -- But we might be disabled, in which we we don't do that.
++  useInplaceMinGW <- getBooleanSetting "Use inplace MinGW toolchain"
++
++  -- see Note [topdir: How GHC finds its files]
++  -- NB: top_dir is assumed to be in standard Unix
++  -- format, '/' separated
++  mtool_dir <- liftIO $ findToolDir useInplaceMinGW top_dir
++        -- see Note [tooldir: How GHC finds mingw on Windows]
++
+   -- See Note [Settings file] for a little more about this file. We're
+   -- just partially applying those functions and throwing 'Left's; they're
+   -- written in a very portable style to keep ghc-boot light.
+   let getSetting key = either pgmError pure $
+         getRawFilePathSetting top_dir settingsFile mySettings key
+       getToolSetting :: String -> ExceptT SettingsError m String
+-      getToolSetting key = expandToolDir mtool_dir <$> getSetting key
+-      getBooleanSetting :: String -> ExceptT SettingsError m Bool
+-      getBooleanSetting key = either pgmError pure $
+-        getRawBooleanSetting settingsFile mySettings key
++      getToolSetting key = expandToolDir useInplaceMinGW mtool_dir <$> getSetting key
+   targetPlatformString <- getSetting "target platform string"
+   myExtraGccViaCFlags <- getSetting "GCC extra via C opts"
+-  -- On Windows, mingw is distributed with GHC,
+-  -- so we look in TopDir/../mingw/bin,
+-  -- as well as TopDir/../../mingw/bin for hadrian.
+-  -- It would perhaps be nice to be able to override this
+-  -- with the settings file, but it would be a little fiddly
+-  -- to make that possible, so for now you can't.
+   cc_prog <- getToolSetting "C compiler command"
+   cc_args_str <- getSetting "C compiler flags"
+   cxx_args_str <- getSetting "C++ compiler flags"
+@@ -162,6 +163,7 @@ initSettings top_dir = do
+       , toolSettings_ldSupportsFilelist      = ldSupportsFilelist
+       , toolSettings_ldIsGnuLd               = ldIsGnuLd
+       , toolSettings_ccSupportsNoPie         = gccSupportsNoPie
++      , toolSettings_useInplaceMinGW         = useInplaceMinGW
+
+       , toolSettings_pgm_L   = unlit_path
+       , toolSettings_pgm_P   = (cpp_prog, cpp_args)
+diff --git a/compiler/GHC/SysTools/BaseDir.hs b/compiler/GHC/SysTools/BaseDir.hs
+index 03169523c69103b17fb466ff43bbefde59238a31..c0a1fa2ceee74533d131c765de0bb91ee3c5c9dc 100644
+--- a/compiler/GHC/SysTools/BaseDir.hs
++++ b/compiler/GHC/SysTools/BaseDir.hs
+@@ -139,12 +139,16 @@ play nice with the system compiler instead.
+
+ -- | Expand occurrences of the @$tooldir@ interpolation in a string
+ -- on Windows, leave the string untouched otherwise.
+-expandToolDir :: Maybe FilePath -> String -> String
+-#if defined(mingw32_HOST_OS) && !defined(USE_INPLACE_MINGW_TOOLCHAIN)
+-expandToolDir (Just tool_dir) s = expandPathVar "tooldir" tool_dir s
+-expandToolDir Nothing         _ = panic "Could not determine $tooldir"
++expandToolDir
++  :: Bool -- ^ whether we are use the ambiant mingw toolchain
++  -> Maybe FilePath -- ^ tooldir
++  -> String -> String
++#if defined(mingw32_HOST_OS)
++expandToolDir False (Just tool_dir) s = expandPathVar "tooldir" tool_dir s
++expandToolDir False Nothing         _ = panic "Could not determine $tooldir"
++expandToolDir True  _               s = s
+ #else
+-expandToolDir _ s = s
++expandToolDir _ _ s = s
+ #endif
+
+ -- | Returns a Unix-format path pointing to TopDir.
+@@ -180,10 +184,11 @@ tryFindTopDir Nothing
+ -- tooldir can't be located, or returns @Just tooldirpath@.
+ -- If the distro toolchain is being used we treat Windows the same as Linux
+ findToolDir
+-  :: FilePath -- ^ topdir
++  :: Bool -- ^ whether we are use the ambiant mingw toolchain
++  -> FilePath -- ^ topdir
+   -> IO (Maybe FilePath)
+-#if defined(mingw32_HOST_OS) && !defined(USE_INPLACE_MINGW_TOOLCHAIN)
+-findToolDir top_dir = go 0 (top_dir </> "..") []
++#if defined(mingw32_HOST_OS)
++findToolDir False top_dir = go 0 (top_dir </> "..") []
+   where maxDepth = 3
+         go :: Int -> FilePath -> [FilePath] -> IO (Maybe FilePath)
+         go k path tried
+@@ -196,6 +201,7 @@ findToolDir top_dir = go 0 (top_dir </> "..") []
+               if oneLevel
+                 then return (Just path)
+                 else go (k+1) (path </> "..") tried
++findToolDir True _ = return Nothing
+ #else
+-findToolDir _ = return Nothing
++findToolDir _ _ = return Nothing
+ #endif
+diff --git a/configure.ac b/configure.ac
+index 560e8d6cb675e7b1c62cf65ee5b90803c2cdadfe..f5a1ea8d7a14dfceec18cbd44b831a54f3cde419 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -560,7 +560,6 @@ fi
+ AC_SUBST(CrossCompiling)
+ AC_SUBST(CrossCompilePrefix)
+ AC_SUBST(TargetPlatformFull)
+-AC_SUBST(EnableDistroToolchain)
+
+ dnl ** Which gcc to use?
+ dnl --------------------------------------------------------------
+diff --git a/hadrian/bindist/Makefile b/hadrian/bindist/Makefile
+index 84fb7f8bddc77cd5394671b5eefe9baacf68dbff..4276fe7a86113ff8558dd659f7067edbdd69d736 100644
+--- a/hadrian/bindist/Makefile
++++ b/hadrian/bindist/Makefile
+@@ -141,6 +141,7 @@ lib/settings :
+ 	@echo ',("LLVM llc command", "$(SettingsLlcCommand)")' >> $@
+ 	@echo ',("LLVM opt command", "$(SettingsOptCommand)")' >> $@
+ 	@echo ',("LLVM clang command", "$(SettingsClangCommand)")' >> $@
++	@echo ',("Use inplace MinGW toolchain", "$(SettingsUseDistroMINGW)")' >> $@
+ 	@echo
+ 	@echo ',("Use interpreter", "$(GhcWithInterpreter)")' >> $@
+ 	@echo ',("Support SMP", "$(GhcWithSMP)")' >> $@
+@@ -148,7 +149,7 @@ lib/settings :
+ 	@echo ',("Tables next to code", "$(TablesNextToCode)")' >> $@
+ 	@echo ',("Leading underscore", "$(LeadingUnderscore)")' >> $@
+ 	@echo ',("Use LibFFI", "$(UseLibffiForAdjustors)")' >> $@
+-	@echo ",(\"RTS expects libdw\", \"$(GhcRtsWithLibdw)\")" >> $@
++	@echo ',("RTS expects libdw", "$(GhcRtsWithLibdw)")' >> $@
+ 	@echo "]" >> $@
+
+ # We need to install binaries relative to libraries.
+diff --git a/hadrian/cfg/system.config.in b/hadrian/cfg/system.config.in
+index 2c341230cf823170b6ca89a095fcc5e5a828a49b..bae2051e77121ec3ba4c68ebccaec8082cb5dcfd 100644
+--- a/hadrian/cfg/system.config.in
++++ b/hadrian/cfg/system.config.in
+@@ -96,8 +96,6 @@ project-patch-level1  = @ProjectPatchLevel1@
+ project-patch-level2  = @ProjectPatchLevel2@
+ project-git-commit-id = @ProjectGitCommitId@
+
+-system-use-distro-mingw  = @SettingsUseDistroMINGW@
+-
+ # Compilation and linking flags:
+ #===============================
+
+@@ -164,6 +162,7 @@ settings-touch-command = @SettingsTouchCommand@
+ settings-clang-command = @SettingsClangCommand@
+ settings-llc-command = @SettingsLlcCommand@
+ settings-opt-command = @SettingsOptCommand@
++settings-use-distro-mingw = @SettingsUseDistroMINGW@
+
+ target-word-size = @TargetWordSize@
+ target-word-big-endian = @TargetWordBigEndian@
+diff --git a/hadrian/src/Oracles/Flag.hs b/hadrian/src/Oracles/Flag.hs
+index 5b41698be1d309cf41bcf3c039ae06f3d4db7c13..eb3115fdd750750d3dbe043ad9c960aa76ebd494 100644
+--- a/hadrian/src/Oracles/Flag.hs
++++ b/hadrian/src/Oracles/Flag.hs
+@@ -25,7 +25,6 @@ data Flag = ArSupportsAtFile
+           | HaveLibMingwEx
+           | UseSystemFfi
+           | BootstrapThreadedRts
+-          | SystemDistroMINGW
+           | UseLibffiForAdjustors
+
+ -- Note, if a flag is set to empty string we treat it as set to NO. This seems
+@@ -47,7 +46,6 @@ flag f = do
+             HaveLibMingwEx       -> "have-lib-mingw-ex"
+             UseSystemFfi         -> "use-system-ffi"
+             BootstrapThreadedRts -> "bootstrap-threaded-rts"
+-            SystemDistroMINGW    -> "system-use-distro-mingw"
+             UseLibffiForAdjustors -> "use-libffi-for-adjustors"
+     value <- lookupValueOrError configFile key
+     when (value `notElem` ["YES", "NO", ""]) . error $ "Configuration flag "
+diff --git a/hadrian/src/Oracles/Setting.hs b/hadrian/src/Oracles/Setting.hs
+index 73fd1ce27304de1fda722b135206bbd6dcdfff8b..ba12eec3f35597d4e4be31ec02c56cef72a8ab42 100644
+--- a/hadrian/src/Oracles/Setting.hs
++++ b/hadrian/src/Oracles/Setting.hs
+@@ -124,6 +124,7 @@ data SettingsFileSetting
+     | SettingsFileSetting_ClangCommand
+     | SettingsFileSetting_LlcCommand
+     | SettingsFileSetting_OptCommand
++    | SettingsFileSetting_DistroMinGW
+
+ -- | Look up the value of a 'Setting' in @cfg/system.config@, tracking the
+ -- result.
+@@ -213,6 +214,7 @@ settingsFileSetting key = lookupValueOrError configFile $ case key of
+     SettingsFileSetting_ClangCommand -> "settings-clang-command"
+     SettingsFileSetting_LlcCommand -> "settings-llc-command"
+     SettingsFileSetting_OptCommand -> "settings-opt-command"
++    SettingsFileSetting_DistroMinGW -> "settings-use-distro-mingw"
+
+ -- | An expression that looks up the value of a 'Setting' in @cfg/system.config@,
+ -- tracking the result.
+diff --git a/hadrian/src/Rules/Generate.hs b/hadrian/src/Rules/Generate.hs
+index eb7a780d97714c363a0dfa04564cc1c6bce6ae1f..65b0f27ad37a8698f4e744069a31680e809b0bbb 100644
+--- a/hadrian/src/Rules/Generate.hs
++++ b/hadrian/src/Rules/Generate.hs
+@@ -246,7 +246,6 @@ generateGhcPlatformH = do
+     hostOs         <- chooseSetting HostOs        TargetOs
+     hostVendor     <- chooseSetting HostVendor    TargetVendor
+     ghcUnreg       <- getFlag    GhcUnregisterised
+-    inplaceTools   <- getFlag    SystemDistroMINGW
+     return . unlines $
+         [ "#if !defined(__GHCPLATFORM_H__)"
+         , "#define __GHCPLATFORM_H__"
+@@ -274,8 +273,6 @@ generateGhcPlatformH = do
+         , ""
+         ]
+         ++
+-        [ "#define USE_INPLACE_MINGW_TOOLCHAIN 1" | inplaceTools ]
+-        ++
+         [ "#define UnregisterisedCompiler 1" | ghcUnreg ]
+         ++
+         [ ""
+@@ -330,6 +327,7 @@ generateSettings = do
+         , ("LLVM llc command", expr $ settingsFileSetting SettingsFileSetting_LlcCommand)
+         , ("LLVM opt command", expr $ settingsFileSetting SettingsFileSetting_OptCommand)
+         , ("LLVM clang command", expr $ settingsFileSetting SettingsFileSetting_ClangCommand)
++        , ("Use inplace MinGW toolchain", expr $ settingsFileSetting SettingsFileSetting_DistroMinGW)
+
+         , ("Use interpreter", expr $ yesNo <$> ghcWithInterpreter)
+         , ("Support SMP", expr $ yesNo <$> targetSupportsSMP)
+diff --git a/mk/config.mk.in b/mk/config.mk.in
+index 18199bddd256275907aba4187082a7f178ae5c78..6cdd6c07af054875959018a378bd37826662f014 100644
+--- a/mk/config.mk.in
++++ b/mk/config.mk.in
+@@ -487,6 +487,7 @@ SettingsTouchCommand = @SettingsTouchCommand@
+ SettingsClangCommand = @SettingsClangCommand@
+ SettingsLlcCommand = @SettingsLlcCommand@
+ SettingsOptCommand = @SettingsOptCommand@
++SettingsUseDistroMINGW = @SettingsUseDistroMINGW@
+
+ #-----------------------------------------------------------------------------
+ # C compiler
+diff --git a/mk/project.mk.in b/mk/project.mk.in
+index 4f82b1607a91ae3821306cd8d3e0123987655d2a..bf79614c24d855a33b75154db96933c8c3539d25 100644
+--- a/mk/project.mk.in
++++ b/mk/project.mk.in
+@@ -127,7 +127,6 @@ BuildVendor_CPP         = @BuildVendor_CPP@
+ # Valid options: YES/NO
+ #
+ LeadingUnderscore=@LeadingUnderscore@
+-SettingsUseDistroMINGW=@SettingsUseDistroMINGW@
+
+ # Pin a suffix on executables? If so, what (Windows only).
+ exeext0=@exeext_host@
+diff --git a/rts/include/ghc.mk b/rts/include/ghc.mk
+index 7bc4fc2d8bd1567a1ad0055637fbedbc11207e18..833055bfe9d9f233e42535735f79c0c461bbdb20 100644
+--- a/rts/include/ghc.mk
++++ b/rts/include/ghc.mk
+@@ -160,9 +160,6 @@ $$(includes_$1_H_PLATFORM) : rts/include/ghc.mk rts/include/Makefile | $$$$(dir
+ 	@echo "#define BUILD_VENDOR  \"$(BuildVendor_$1_CPP)\""     >> $$@
+ 	@echo "#define HOST_VENDOR  \"$(HostVendor_$1_CPP)\""       >> $$@
+ 	@echo                                                       >> $$@
+-ifeq "$$(SettingsUseDistroMINGW)" "YES"
+-	@echo "#define USE_INPLACE_MINGW_TOOLCHAIN 1"               >> $$@
+-endif
+ ifeq "$$(GhcUnregisterised)" "YES"
+ 	@echo "#define UnregisterisedCompiler 1"                    >> $$@
+ endif
+@@ -231,6 +228,7 @@ $(includes_SETTINGS) : rts/include/Makefile | $$(dir $$@)/.
+ 	@echo ',("LLVM llc command", "$(SettingsLlcCommand)")' >> $@
+ 	@echo ',("LLVM opt command", "$(SettingsOptCommand)")' >> $@
+ 	@echo ',("LLVM clang command", "$(SettingsClangCommand)")' >> $@
++	@echo ',("Use inplace MinGW toolchain", "$(SettingsUseDistroMINGW)")' >> $@
+ 	@echo
+ 	@echo ',("Use interpreter", "$(GhcWithInterpreter)")' >> $@
+ 	@echo ',("Support SMP", "$(GhcWithSMP)")' >> $@
+@@ -238,7 +236,7 @@ $(includes_SETTINGS) : rts/include/Makefile | $$(dir $$@)/.
+ 	@echo ',("Tables next to code", "$(TablesNextToCode)")' >> $@
+ 	@echo ',("Leading underscore", "$(LeadingUnderscore)")' >> $@
+ 	@echo ',("Use LibFFI", "$(UseLibffiForAdjustors)")' >> $@
+-	@echo ",(\"RTS expects libdw\", \"$(GhcRtsWithLibdw)\")" >> $@
++	@echo ',("RTS expects libdw", "$(GhcRtsWithLibdw)")' >> $@
+ 	@echo "]" >> $@
+
+
