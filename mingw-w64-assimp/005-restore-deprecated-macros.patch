@@ -1,0 +1,265 @@
+From 2fdf52488fba296beae885b4b6e983de375a8236 Mon Sep 17 00:00:00 2001
+From: RichardTea <31507749+RichardTea@users.noreply.github.com>
+Date: Tue, 23 Nov 2021 13:53:58 +0000
+Subject: [PATCH 1/3] float and integer material property bool conversion
+
+All reading float and integer material property values as bool
+Zero => False
+Non-Zero => True
+---
+ include/assimp/material.inl    | 41 +++++++++++++++++++++
+ test/unit/utMaterialSystem.cpp | 65 ++++++++++++++++++++++++++++++----
+ 2 files changed, 100 insertions(+), 6 deletions(-)
+
+diff --git a/include/assimp/material.inl b/include/assimp/material.inl
+index 693785c3c0..1aec6d8650 100644
+--- a/include/assimp/material.inl
++++ b/include/assimp/material.inl
+@@ -137,6 +137,47 @@ aiReturn aiMaterial::Get(const char* pKey,unsigned int type,
+     return ret;
+ }
+ 
++// ---------------------------------------------------------------------------
++// Specialisation for a single bool.
++// Casts floating point and integer to bool
++template <>
++AI_FORCE_INLINE
++        aiReturn
++        aiMaterial::Get(const char *pKey, unsigned int type,
++                unsigned int idx, bool &pOut) const {
++    const aiMaterialProperty *prop;
++    const aiReturn ret = ::aiGetMaterialProperty(this, pKey, type, idx,
++            (const aiMaterialProperty **)&prop);
++    if (AI_SUCCESS == ret) {
++
++        switch (prop->mType) {
++            // Type cannot be converted
++        default: return AI_FAILURE;
++
++        case aiPTI_Buffer: {
++            // Native bool value storage
++            if (prop->mDataLength < sizeof(bool)) {
++                return AI_FAILURE;
++            }
++            ::memcpy(&pOut, prop->mData, sizeof(bool));
++        } break;
++
++        case aiPTI_Float:
++        case aiPTI_Double:
++        case aiPTI_Integer: {
++            // Read as integer and cast to bool
++            int value = 0;
++            if (AI_SUCCESS == ::aiGetMaterialInteger(this, pKey, type, idx, &value)) {
++                pOut = static_cast<bool>(value);
++                return AI_SUCCESS;
++            }
++            return AI_FAILURE;
++        }
++        }
++    }
++    return ret;
++}
++
+ // ---------------------------------------------------------------------------
+ AI_FORCE_INLINE
+ aiReturn aiMaterial::Get(const char* pKey,unsigned int type,
+diff --git a/test/unit/utMaterialSystem.cpp b/test/unit/utMaterialSystem.cpp
+index 8db014d9c4..9df64ae3ba 100644
+--- a/test/unit/utMaterialSystem.cpp
++++ b/test/unit/utMaterialSystem.cpp
+@@ -125,13 +125,66 @@ TEST_F(MaterialSystemTest, testStringProperty) {
+ }
+ 
+ // ------------------------------------------------------------------------------------------------
+-TEST_F(MaterialSystemTest, testMaterialNameAccess) {
+-    aiMaterial *mat = new aiMaterial();
+-    EXPECT_NE(nullptr, mat);
+-
+-    aiString name = mat->GetName();
++TEST_F(MaterialSystemTest, testDefaultMaterialName) {
++    aiString name = pcMat->GetName();
+     const int retValue(strncmp(name.C_Str(), AI_DEFAULT_MATERIAL_NAME, name.length));
+     EXPECT_EQ(0, retValue);
++}
++
++// ------------------------------------------------------------------------------------------------
++TEST_F(MaterialSystemTest, testBoolProperty) {
++    const bool valTrue = true;
++    const bool valFalse = false;
++    EXPECT_EQ(AI_SUCCESS, pcMat->AddProperty(&valTrue, 1, "bool_true"));
++    EXPECT_EQ(AI_SUCCESS, pcMat->AddProperty(&valFalse, 1, "bool_false"));
++
++    bool read = false;
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("bool_true", 0, 0, read));
++    EXPECT_TRUE(read) << "read true bool";
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("bool_false", 0, 0, read));
++    EXPECT_FALSE(read) << "read false bool";
++}
+ 
+-    delete mat;
++// ------------------------------------------------------------------------------------------------
++TEST_F(MaterialSystemTest, testCastIntProperty) {
++    int value = 10;
++    EXPECT_EQ(AI_SUCCESS, pcMat->AddProperty(&value, 1, "integer"));
++    value = 0;
++    EXPECT_EQ(AI_SUCCESS, pcMat->AddProperty(&value, 1, "zero"));
++
++    // To float
++    float valFloat = 0.0f;
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("integer", 0, 0, valFloat));
++    EXPECT_EQ(10.0f, valFloat);
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("zero", 0, 0, valFloat));
++    EXPECT_EQ(0.0f, valFloat);
++
++    // To bool
++    bool valBool = false;
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("integer", 0, 0, valBool));
++    EXPECT_EQ(true, valBool);
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("zero", 0, 0, valBool));
++    EXPECT_EQ(false, valBool);
++}
++
++// ------------------------------------------------------------------------------------------------
++TEST_F(MaterialSystemTest, testCastFloatProperty) {
++    float value = 150392.63f;
++    EXPECT_EQ(AI_SUCCESS, pcMat->AddProperty(&value, 1, "float"));
++    value = 0;
++    EXPECT_EQ(AI_SUCCESS, pcMat->AddProperty(&value, 1, "zero"));
++
++    // To int
++    int valInt = 0.0f;
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("float", 0, 0, valInt));
++    EXPECT_EQ(150392, valInt);
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("zero", 0, 0, valInt));
++    EXPECT_EQ(0, valInt);
++
++    // To bool
++    bool valBool = false;
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("float", 0, 0, valBool));
++    EXPECT_EQ(true, valBool);
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("zero", 0, 0, valBool));
++    EXPECT_EQ(false, valBool);
+ }
+
+From 5143044cc84decd933bebd0a48b2c24e816b074a Mon Sep 17 00:00:00 2001
+From: RichardTea <31507749+RichardTea@users.noreply.github.com>
+Date: Tue, 23 Nov 2021 13:55:27 +0000
+Subject: [PATCH 2/3] redefine AI_MATKEY_GLTF_PBRSPECULARGLOSSINESS
+
+This key is deprecated but is used by Qt5 & Qt 6.2.1 QtQuick3D
+---
+ include/assimp/pbrmaterial.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/include/assimp/pbrmaterial.h b/include/assimp/pbrmaterial.h
+index b642a96e39..2103a31f07 100644
+--- a/include/assimp/pbrmaterial.h
++++ b/include/assimp/pbrmaterial.h
+@@ -61,7 +61,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ #define AI_MATKEY_GLTF_PBRMETALLICROUGHNESS_METALLIC_FACTOR AI_MATKEY_METALLIC_FACTOR
+ #define AI_MATKEY_GLTF_PBRMETALLICROUGHNESS_ROUGHNESS_FACTOR AI_MATKEY_ROUGHNESS_FACTOR
+ 
+-//#define AI_MATKEY_GLTF_PBRSPECULARGLOSSINESS "$mat.gltf.pbrSpecularGlossiness", 0, 0
++#define AI_MATKEY_GLTF_PBRSPECULARGLOSSINESS AI_MATKEY_GLOSSINESS_FACTOR
+ #define AI_MATKEY_GLTF_PBRSPECULARGLOSSINESS_GLOSSINESS_FACTOR AI_MATKEY_GLOSSINESS_FACTOR
+ 
+ // Use AI_MATKEY_SHADING_MODEL == aiShadingMode_Unlit instead
+
+From d18709b899de50f18d9d6ae7cb85f4233a715179 Mon Sep 17 00:00:00 2001
+From: RichardTea <31507749+RichardTea@users.noreply.github.com>
+Date: Tue, 23 Nov 2021 14:15:32 +0000
+Subject: [PATCH 3/3] Small float values should be true
+
+---
+ include/assimp/material.inl    | 15 ++++++++++-----
+ test/unit/utMaterialSystem.cpp | 28 ++++++++++++++++++++++++++++
+ 2 files changed, 38 insertions(+), 5 deletions(-)
+
+diff --git a/include/assimp/material.inl b/include/assimp/material.inl
+index 1aec6d8650..b299892b0b 100644
+--- a/include/assimp/material.inl
++++ b/include/assimp/material.inl
+@@ -163,16 +163,21 @@ AI_FORCE_INLINE
+         } break;
+ 
+         case aiPTI_Float:
+-        case aiPTI_Double:
+-        case aiPTI_Integer: {
+-            // Read as integer and cast to bool
+-            int value = 0;
+-            if (AI_SUCCESS == ::aiGetMaterialInteger(this, pKey, type, idx, &value)) {
++        case aiPTI_Double: {
++            // Read as float and cast to bool
++            float value = 0.0f;
++            if (AI_SUCCESS == ::aiGetMaterialFloat(this, pKey, type, idx, &value)) {
+                 pOut = static_cast<bool>(value);
+                 return AI_SUCCESS;
+             }
+             return AI_FAILURE;
+         }
++        case aiPTI_Integer: {
++            // Cast to bool
++            const int value = static_cast<int>(*prop->mData);
++            pOut = static_cast<bool>(value);
++            return AI_SUCCESS;
++        }
+         }
+     }
+     return ret;
+diff --git a/test/unit/utMaterialSystem.cpp b/test/unit/utMaterialSystem.cpp
+index 9df64ae3ba..363a4b1934 100644
+--- a/test/unit/utMaterialSystem.cpp
++++ b/test/unit/utMaterialSystem.cpp
+@@ -151,6 +151,8 @@ TEST_F(MaterialSystemTest, testCastIntProperty) {
+     EXPECT_EQ(AI_SUCCESS, pcMat->AddProperty(&value, 1, "integer"));
+     value = 0;
+     EXPECT_EQ(AI_SUCCESS, pcMat->AddProperty(&value, 1, "zero"));
++    value = -1;
++    EXPECT_EQ(AI_SUCCESS, pcMat->AddProperty(&value, 1, "negative"));
+ 
+     // To float
+     float valFloat = 0.0f;
+@@ -158,6 +160,8 @@ TEST_F(MaterialSystemTest, testCastIntProperty) {
+     EXPECT_EQ(10.0f, valFloat);
+     EXPECT_EQ(AI_SUCCESS, pcMat->Get("zero", 0, 0, valFloat));
+     EXPECT_EQ(0.0f, valFloat);
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("negative", 0, 0, valFloat));
++    EXPECT_EQ(-1.0f, valFloat);
+ 
+     // To bool
+     bool valBool = false;
+@@ -165,6 +169,8 @@ TEST_F(MaterialSystemTest, testCastIntProperty) {
+     EXPECT_EQ(true, valBool);
+     EXPECT_EQ(AI_SUCCESS, pcMat->Get("zero", 0, 0, valBool));
+     EXPECT_EQ(false, valBool);
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("negative", 0, 0, valBool));
++    EXPECT_EQ(true, valBool);
+ }
+ 
+ // ------------------------------------------------------------------------------------------------
+@@ -188,3 +194,25 @@ TEST_F(MaterialSystemTest, testCastFloatProperty) {
+     EXPECT_EQ(AI_SUCCESS, pcMat->Get("zero", 0, 0, valBool));
+     EXPECT_EQ(false, valBool);
+ }
++
++// ------------------------------------------------------------------------------------------------
++TEST_F(MaterialSystemTest, testCastSmallFloatProperty) {
++    float value = 0.0078125f;
++    EXPECT_EQ(AI_SUCCESS, pcMat->AddProperty(&value, 1, "float"));
++    value = 0;
++    EXPECT_EQ(AI_SUCCESS, pcMat->AddProperty(&value, 1, "zero"));
++
++    // To int
++    int valInt = 0.0f;
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("float", 0, 0, valInt));
++    EXPECT_EQ(0, valInt);
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("zero", 0, 0, valInt));
++    EXPECT_EQ(0, valInt);
++
++    // To bool
++    bool valBool = false;
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("float", 0, 0, valBool));
++    EXPECT_EQ(true, valBool);
++    EXPECT_EQ(AI_SUCCESS, pcMat->Get("zero", 0, 0, valBool));
++    EXPECT_EQ(false, valBool);
++}
