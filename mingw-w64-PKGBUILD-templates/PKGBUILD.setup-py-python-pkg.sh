@@ -58,7 +58,6 @@ prepare() {
       0002-A-less-important-fix.patch
   popd
 
-  rm -rf python-build-${CARCH} || true
   cp -r "${_realname}-${pkgver}" "python-build-${CARCH}"
 
   # Set version for setuptools_scm

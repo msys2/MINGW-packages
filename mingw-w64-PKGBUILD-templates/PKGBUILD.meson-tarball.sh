@@ -29,7 +29,6 @@ prepare() {
 }
 
 build() {
-  [[ -d build-${MINGW_CHOST} ]] && rm -rf build-${MINGW_CHOST}
   mkdir -p build-${MINGW_CHOST} && cd build-${MINGW_CHOST}
 
   MSYS2_ARG_CONV_EXCL="--prefix=" \
