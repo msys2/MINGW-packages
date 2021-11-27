@@ -1,7 +1,4 @@
 # Maintainer: Some One <some.one@some.email.com>
-#This value is here because some python package names have capital letters
-#while there is a strong preference for lowercase letters in ArchLinux and
-#MSYS packages.
 
 _realname=somepackage
 pkgbase=mingw-w64-python-${_realname}
@@ -12,88 +9,53 @@ pkgdesc="Some package (mingw-w64)"
 arch=('any')
 url='https://www.somepackage.org/'
 license=('LICENSE')
-validpgpkeys=('gpg_KEY')
 depends=("${MINGW_PACKAGE_PREFIX}-python")
 makedepends=("${MINGW_PACKAGE_PREFIX}-python"
              "${MINGW_PACKAGE_PREFIX}-python-setuptools")
-options=('staticlibs' 'strip' '!debug')
-#Ideally, you should download the sources from github or some other place besides
-#pypi, but that ideal is not always possible.
-_dtoken='aa/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-#Some Python packages software might use this instead
-#source=("https://pypi.python.org/packages/source/[first letter of the packages]/${_realname}/${_realname}-${pkgver}.tar.gz")
-#_dtoken would be the part of the URL between the /package and filename.
-# I did this to make it so you could just update the token to a new version instead of the complete
-# download URL.
-source=("https://pypi.python.org/packages/${_dtoken}/${_realname}-${pkgver}.tar.gz"
+source=("https://pypi.org/packages/source/${_realname::1}/${_realname}/${_realname}-${pkgver}.tar.gz"
         "0001-An-important-fix.patch"
         "0002-A-less-important-fix.patch")
-sha256sums=('SKIP'
-            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-            'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
-
-# Helper macros to help make tasks easier #
-apply_patch_with_msg() {
-  for _patch in "$@"
-  do
-    msg2 "Applying $_patch"
-    patch -Nbp1 -i "${srcdir}/$_patch"
-  done
-}
-
-del_file_exists() {
-  for _fname in "$@"
-  do
-    if [ -f $_fname ]; then
-      rm -rf $_fname
-    fi
-  done
-}
-# =========================================== #
+sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+            'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+            'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc')
 
 prepare() {
-  cd "${srcdir}"
-  pushd "${_realname}-${pkgver}"
-    apply_patch_with_msg 0001-A-really-important-fix.patch \
-      0002-A-less-important-fix.patch
-  popd
+  cd "${srcdir}/${_realname}-${pkgver}"
 
-  cp -r "${_realname}-${pkgver}" "python-build-${CARCH}"
+  patch -Np1 -i "${srcdir}/0001-A-really-important-fix.patch"
+  patch -Np1 -i "${srcdir}/0002-A-less-important-fix.patch"
 
+  ## (OPTIONAL) Only if setuptools-scm is used
   # Set version for setuptools_scm
   export SETUPTOOLS_SCM_PRETEND_VERSION=${pkgver}
 }
 
-# Note that build() is sometimes skipped because it's done in 
-# the packages setup.py install for simplicity if you can do so.
-# but sometimes, you want to do a check before install which would
-# also trigger the build.
 build() {
-  msg "Python build for ${CARCH}"  
-  cd "${srcdir}/python-build-${CARCH}"
-  ${MINGW_PREFIX}/bin/python setup.py build
+  cd "${srcdir}"
+  cp -r "${_realname}-${pkgver}" "python-build-${MSYSTEM}" && cd "python-build-${MSYSTEM}"
+
+  "${MINGW_PREFIX}"/bin/python setup.py build
 }
 
 check() {
-  msg "Python test for ${CARCH}"
-  cd "${srcdir}/python-build-${CARCH}"
-  ${MINGW_PREFIX}/bin/python setup.py check
+  cd "${srcdir}/python-build-${MSYSTEM}"
+
+  "${MINGW_PREFIX}"/bin/python setup.py check
 }
 
 package() {
-  cd "${srcdir}/python-build-${CARCH}"
+  cd "${srcdir}/python-build-${MSYSTEM}"
+
   MSYS2_ARG_CONV_EXCL="--prefix=;--install-scripts=;--install-platlib=" \
-  ${MINGW_PREFIX}/bin/python setup.py install --prefix=${MINGW_PREFIX} \
-    --root="${pkgdir}" --optimize=1 --skip-build
+    "${MINGW_PREFIX}"/bin/python setup.py install --prefix="${MINGW_PREFIX}" \
+      --root="${pkgdir}" --optimize=1 --skip-build
 
   install -Dm644 LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/python-${_realname}/LICENSE"
 
-  # This entire section should be removed if the package does NOT install
-  # anything in the /mingw*/bin directory.
-  ### begin section ###
-  # remove shebang line
+  ## (OPTIONAL) This entire section should be removed
+  ## if the package does NOT instal anything in the ${MINGW_PREFIX}/bin directory.
   for _f in "${pkgdir}${MINGW_PREFIX}"/bin/*-script.py; do
-    sed -e '1 { s/^#!.*$// }' -i ${_f}
+    # Remove shebang line
+    sed -e '1 { s/^#!.*$// }' -i "${_f}"
   done
-  #### end section ####
 }

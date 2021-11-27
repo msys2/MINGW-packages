@@ -9,7 +9,6 @@ pkgdesc="Some package (mingw-w64)"
 arch=('any')
 url='https://www.somepackage.org/'
 license=('LICENSE')
-validpgpkeys=('gpg_KEY')
 makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
              "${MINGW_PACKAGE_PREFIX}-ninja")
 source=("https://www.somepackage.org/${_realname}/${_realname}-${pkgver}.tar.gz"
@@ -27,8 +26,8 @@ prepare() {
 }
 
 build() {
-  cd "${srcdir}"/${_realname}-${pkgver}
-  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
+  cd "${srcdir}/${_realname}-${pkgver}"
+  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
 
   declare -a extra_config
   if check_option "debug" "n"; then
@@ -38,26 +37,26 @@ build() {
   fi
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
-    ${MINGW_PREFIX}/bin/cmake.exe \
+    "${MINGW_PREFIX}"/bin/cmake.exe \
       -GNinja \
-      -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+      -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
       "${extra_config[@]}" \
       -DBUILD_{SHARED,STATIC}_LIBS=ON \
       ../${_realname}-${pkgver}
 
-  ${MINGW_PREFIX}/bin/cmake.exe --build .
+  "${MINGW_PREFIX}"/bin/cmake.exe --build .
 }
 
 check() {
-  cd "${srcdir}"/build-${MSYSTEM}
+  cd "${srcdir}/build-${MSYSTEM}"
 
-  cmake --build . --target test
+  "${MINGW_PREFIX}"/bin/cmake.exe --build . --target test
 }
 
 package() {
-  cd "${srcdir}"/build-${MSYSTEM}
+  cd "${srcdir}/build-${MSYSTEM}"
 
-  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install .
+  DESTDIR="${pkgdir}" "${MINGW_PREFIX}"/bin/cmake.exe --install .
 
-  install -Dm644 ${srcdir}/${_realname}-${pkgver}/LICENSE ${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }

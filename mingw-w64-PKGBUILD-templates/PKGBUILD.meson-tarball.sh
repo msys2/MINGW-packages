@@ -9,11 +9,9 @@ pkgdesc="Some package (mingw-w64)"
 arch=('any')
 url='https://www.somepackage.org/'
 license=('LICENSE')
-validpgpkeys=('gpg_KEY')
 makedepends=("${MINGW_PACKAGE_PREFIX}-meson"
              "${MINGW_PACKAGE_PREFIX}-ninja"
              "${MINGW_PACKAGE_PREFIX}-pkg-config")
-options=('strip' 'staticlibs')
 source=("https://www.somepackage.org/${_realname}/${_realname}-${pkgver}.tar.gz"
         "0001-An-important-fix.patch"
         "0002-A-less-important-fix.patch")
@@ -29,27 +27,27 @@ prepare() {
 }
 
 build() {
-  mkdir -p build-${MINGW_CHOST} && cd build-${MINGW_CHOST}
+  mkdir -p build-${MSYSTEM} && cd build-${MSYSTEM}
 
   MSYS2_ARG_CONV_EXCL="--prefix=" \
-  meson \
-    --prefix="${MINGW_PREFIX}" \
-    --wrap-mode=nodownload \
-    --auto-features=enabled \
-    --buildtype=plain \
-    ../${_realname}-${pkgver}
+    meson \
+      --prefix="${MINGW_PREFIX}" \
+      --wrap-mode=nodownload \
+      --auto-features=enabled \
+      --buildtype=plain \
+      ../${_realname}-${pkgver}
 
   meson compile
 }
 
 check() {
-  cd "${srcdir}/build-${MINGW_CHOST}"
+  cd "${srcdir}/build-${MSYSTEM}"
 
   meson test
 }
 
 package() {
-  cd "${srcdir}/build-${MINGW_CHOST}"
+  cd "${srcdir}/build-${MSYSTEM}"
 
   DESTDIR="${pkgdir}" meson install
 
