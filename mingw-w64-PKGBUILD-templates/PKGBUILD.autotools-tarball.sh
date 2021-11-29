@@ -9,28 +9,26 @@ pkgdesc="Some package (mingw-w64)"
 arch=('any')
 url='https://www.somepackage.org/'
 license=('LICENSE')
-validpgpkeys=('gpg_KEY')
 source=("https://www.somepackage.org/${_realname}/${_realname}-${pkgver}.tar.gz"
         "0001-A-fix.patch")
 sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
 
 prepare() {
-  cd ${srcdir}/${_realname}-${pkgver}
+  cd "${srcdir}/${_realname}-${pkgver}"
 
-  patch -p1 -i ${srcdir}/0001-A-fix.patch
+  patch -p1 -i "${srcdir}/0001-A-fix.patch"
 }
 
 build() {
-  cd "${srcdir}"/${_realname}-${pkgver}
-  [[ -d "${srcdir}"/build-${CARCH} ]] && rm -rf "${srcdir}"/build-${CARCH}
-  mkdir -p "${srcdir}"/build-${CARCH} && cd "${srcdir}"/build-${CARCH}
+  cd "${srcdir}/${_realname}-${pkgver}"
+  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
 
-  ../${_realname}-${pkgver}/configure \
-    --prefix=${MINGW_PREFIX} \
-    --build=${MINGW_CHOST} \
-    --host=${MINGW_CHOST} \
-    --target=${MINGW_CHOST} \
+  ../"${_realname}-${pkgver}"/configure \
+    --prefix="${MINGW_PREFIX}" \
+    --build="${MINGW_CHOST}" \
+    --host="${MINGW_CHOST}" \
+    --target="${MINGW_CHOST}" \
     --enable-static \
     --enable-shared
 
@@ -38,15 +36,15 @@ build() {
 }
 
 check() {
-  cd "${srcdir}"/build-${CARCH}
+  cd "${srcdir}/build-${MSYSTEM}"
 
   make check
 }
 
 package() {
-  cd "${srcdir}"/build-${CARCH}
+  cd "${srcdir}/build-${MSYSTEM}"
 
   make install DESTDIR="${pkgdir}"
 
-  install -Dm644 ${srcdir}/${_realname}-${pkgver}/LICENSE ${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }
