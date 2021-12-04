@@ -1,0 +1,153 @@
+# Maintainer: Tetsuma Hoshino <t-hoshino@pony-e.jp>
+# Based on mingw-w64-arm-none-eabi-gcc
+
+# If you faced problem on build() phase, try to shorten paths to build (like below)
+#BUILDDIR=/d/b
+
+_realname=gcc
+_target=v850-none-eabi
+
+_enable_ada=yes
+
+pkgbase=mingw-w64-${_target}-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_target}-${_realname}")
+pkgver=11.2.0
+pkgrel=1
+pkgdesc='GNU Tools for V850 Microcontrollers - GCC (mingw-w64)'
+arch=('any')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
+license=('GPL')
+url='https://www.gnu.org/software/gcc/gcc.html'
+groups=("${MINGW_PACKAGE_PREFIX}-${_target}-toolchain")
+provides=("${MINGW_PACKAGE_PREFIX}-${_target}-gcc-ada")
+depends=(
+  "${MINGW_PACKAGE_PREFIX}-${_target}-binutils"
+  "${MINGW_PACKAGE_PREFIX}-${_target}-newlib"
+  "${MINGW_PACKAGE_PREFIX}-isl"
+  "${MINGW_PACKAGE_PREFIX}-mpc"
+  "${MINGW_PACKAGE_PREFIX}-zlib"
+  "${MINGW_PACKAGE_PREFIX}-zstd"
+)
+makedepends=(
+  "${MINGW_PACKAGE_PREFIX}-gmp"
+  "${MINGW_PACKAGE_PREFIX}-mpfr"
+  $([[ "$_enable_ada" == "yes" ]] && echo "${MINGW_PACKAGE_PREFIX}-gcc-ada")
+)
+options=('!emptydirs' '!strip')
+source=("https://ftp.gnu.org/gnu/gcc/gcc-${pkgver}/gcc-${pkgver}.tar.xz")
+sha256sums=('d08edc536b54c372a1010ff6619dd274c0f1603aa49212ba20f7aa2cda36fa8b')
+
+prepare() {
+  cd ${srcdir}/gcc-${pkgver}
+
+  mkdir gcc-build-${MINGW_CHOST}
+  mkdir gcc-build-nano-${MINGW_CHOST}
+}
+
+_build_gcc() {
+  local _languages=$1 # Comma separated list of languages support to build
+
+  local _GCC_LDFLAGS="${LDFLAGS} -Wl,--disable-dynamicbase"
+  ../configure \
+    --build=${MINGW_CHOST} \
+    --host=${MINGW_CHOST} \
+    --prefix=${MINGW_PREFIX} \
+    --target=${_target} \
+    --with-native-system-header-dir=${MINGW_PREFIX}/${MINGW_CHOST}/include \
+    --libexecdir=${MINGW_PREFIX}/lib \
+    --enable-languages=${_languages} \
+    --enable-plugins \
+    --disable-decimal-float \
+    --disable-libffi \
+    --disable-libgomp \
+    --disable-libmudflap \
+    --disable-libquadmath \
+    --disable-libssp \
+    --disable-libstdcxx-pch \
+    --disable-nls \
+    --disable-shared \
+    --disable-threads \
+    --disable-tls \
+    --disable-libada \
+    --with-gnu-as \
+    --with-gnu-ld \
+    --with-system-zlib \
+    --with-newlib \
+    --with-headers=${MINGW_PREFIX}/${_target}/include \
+    --with-python-dir=share/gcc-${_target} \
+    --with-gmp \
+    --with-mpfr \
+    --with-mpc \
+    --with-isl \
+    --with-libelf \
+    --enable-gnu-indirect_function \
+    --with-multilib-list=rmprofile \
+    --with-host-libstdcxx="-static-libgcc -Wl,-Bstatic,-lstdc++,-Bdynamic -lm" \
+    --enable-linker-plugin-flags='LDFLAGS=-static-libstdc++\ -static-libgcc\ '"${LDFLAGS// /\\ }"'\ -Wl,--stack,12582912' \
+    LDFLAGS="${_GCC_LDFLAGS}"
+
+  make INHIBIT_LIBC_CFLAGS='-DUSE_TM_CLONE_REGISTRY=0'
+
+  if [[ "${_languages}" == *ada* ]]; then
+    make -C gcc cross-gnattools
+    make -C gcc ada.all.cross
+  fi
+
+}
+
+build() {
+  local _languages="c,c++"
+  if [ "$_enable_ada" == "yes" ]; then
+    _languages+=",ada"
+  fi
+
+  cd ${srcdir}/gcc-${pkgver}/gcc-build-${MINGW_CHOST}
+
+  export CFLAGS_FOR_TARGET='-g -Os -ffunction-sections -fdata-sections'
+  export CXXFLAGS_FOR_TARGET='-g -Os -ffunction-sections -fdata-sections'
+  _build_gcc ${_languages}
+
+  # Build libstdc++ without exceptions support (the 'nano' variant)
+  cd ${srcdir}/gcc-${pkgver}/gcc-build-nano-${MINGW_CHOST}
+
+  export CFLAGS_FOR_TARGET='-g -Os -ffunction-sections -fdata-sections -fno-exceptions'
+  export CXXFLAGS_FOR_TARGET='-g -Os -ffunction-sections -fdata-sections -fno-exceptions'
+  # Only C and C++ are required for the nano build
+  _build_gcc "c,c++"
+}
+
+package() {
+  cd ${srcdir}/gcc-${pkgver}/gcc-build-${MINGW_CHOST}
+
+  make DESTDIR="${pkgdir}" install
+
+  cd ${srcdir}/gcc-${pkgver}/gcc-build-nano-${MINGW_CHOST}
+
+  mkdir ${pkgdir}/nano-install-${MINGW_CHOST}
+
+  make DESTDIR="${pkgdir}/nano-install-${MINGW_CHOST}" install
+
+  cd ${pkgdir}${MINGW_PREFIX}
+
+  # we need only libstdc nano files
+  multilibs=($(bin/${_target}-gcc -print-multi-lib 2>/dev/null))
+  for multilib in "${multilibs[@]}"; do
+    dir="${multilib%%;*}"
+    from_dir=${pkgdir}/nano-install-${MINGW_CHOST}${MINGW_PREFIX}/${_target}/lib/"$dir"
+    to_dir=${_target}/lib/"$dir"
+
+    cp -f "$from_dir"/libstdc++.a "$to_dir"/libstdc++_nano.a
+    cp -f "$from_dir"/libsupc++.a "$to_dir"/libsupc++_nano.a
+  done
+  rm -r ${pkgdir}/nano-install-${MINGW_CHOST}
+
+  # strip target binaries
+  find lib/gcc/${_target}/${pkgver} ${_target}/lib -type f -and \( -name \*.a -or -name \*.o \) -exec ${_target}-objcopy -R .comment -R .note -R .debug_info -R .debug_aranges -R .debug_pubnames -R .debug_pubtypes -R .debug_abbrev -R .debug_line -R .debug_str -R .debug_ranges -R .debug_loc '{}' \;
+
+  # strip host binaries
+  find bin/ lib/gcc/${_target}/${pkgver} -type f -and \( -executable \) -exec strip '{}' \;
+
+  # Remove files that conflict with host gcc package
+  rm -r share/man/man7
+  rm -r share/info
+}
