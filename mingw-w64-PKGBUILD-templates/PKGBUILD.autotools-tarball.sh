@@ -9,6 +9,7 @@ pkgdesc="Some package (mingw-w64)"
 arch=('any')
 url='https://www.somepackage.org/'
 license=('LICENSE')
+makedepends=("${MINGW_PACKAGE_PREFIX}-autotools")
 source=("https://www.somepackage.org/${_realname}/${_realname}-${pkgver}.tar.gz"
         "0001-A-fix.patch")
 sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
