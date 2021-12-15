@@ -1,8 +1,32 @@
 #!/bin/bash
 
 echo
-echo "Qemu examples/tests prepared to be executed with qemu/win32."
-echo "Executed commandlines will be printed to screen."
+echo "Qemu examples & tests."
+echo "----------------------"
+echo "Created to test Msys2 Qemu package, known to work for Cygwin and Linux, too."
+echo "Executed Qemu commandlines will be printed to screen."
+echo
+CONFIGFILE=~/.qemu.$(basename $0)
+CONFIGFILENAME="$(basename $CONFIGFILE)"
+if [ ! -f "$CONFIGFILE" ]
+then
+	DOWNLOADDIR=$(realpath .)
+	echo "Configuring current directory '$DOWNLOADDIR' as download directory."
+	read -p "Continue? (y|[n]) " TEST
+	echo
+	[ "y" == "$TEST" ] || exit
+	touch "$CONFIGFILE" || exit 1
+	touch "$DOWNLOADDIR/$CONFIGFILENAME" || exit 1
+	echo "$DOWNLOADDIR" > "$CONFIGFILE"
+fi
+DOWNLOADDIR=$(cat "$CONFIGFILE")
+echo "Configuration file: '$CONFIGFILE'"
+echo "Download directory: '$DOWNLOADDIR'"
+if ! mkdir -p "$DOWNLOADDIR" || ! touch "$DOWNLOADDIR/$CONFIGFILENAME"
+then
+	echo "Download directory '$DOWNLOADDIR' is not usable"
+	exit 1
+fi
 echo
 echo "On execution each test needs to download, most test only a few 10 MB or less,"
 echo "but several up to some 100MB."
@@ -11,6 +35,9 @@ read -p "Only accept reasonable downloads? ([y]|n) " TEST
 echo
 read -p "Clean after execution (removes all but downloads)? (y|[n]) " TEST
 [ "y" == "$TEST" ] && REMOVEEXECDIR=1
+echo
+read -p "Audio input (microphone) accessible? ([y]|n) " TEST
+[ "n" != "$TEST" ] && MICROPHONE=1
 echo
 echo "Name block of qemu examples to execute."
 echo "Choose year of qemu-advent-calender (2014, 2016, 2018, 2020) or qemu-desktop (DVD)"
@@ -58,8 +85,46 @@ function testImageInDir {
 	[ -f "$EXECDIR/testimage.qcow2" ] || qemu-img create -f qcow2 "$EXECDIR/testimage.qcow2" 20G &> /dev/null
 }
 
+function qWhich {
+	# Only use for identifying correct qemu-system-* path (because which fails), maybe buggy else!
+	local PATHTAIL="$PATH" PATHHEAD TESTDIR BINARY
+	while [[ $PATHTAIL =~ ^(:*)([^:]+)(:.*)?$ ]]
+	do
+		PATHHEAD="${BASH_REMATCH[2]}"
+		if [ "~" == "${PATHHEAD:0:1}" ]
+		then
+			TESTDIR="$(echo ~)${PATHHEAD:1}"
+		else
+			TESTDIR="$PATHHEAD"
+		fi
+		BINARY=$(ls "$TESTDIR/$1" 2> /dev/null | head)
+		if [ -n "$BINARY" ]
+		then
+			echo "$(dirname $BINARY)/$(basename $1)"
+			return 0
+		fi
+		PATHTAIL="${PATHTAIL:${#PATHHEAD}+1}"
+	done
+	return 1
+}
+
 function showMsys2ArgConvEnv {
 	[ -n "$MSYSTEM" ] && [ -n "$MSYS2_ARG_CONV_EXCL" ]
+}
+
+function toolexec {
+	local LINE PARAM
+	for PARAM in "${@}"
+	do
+		if [ "$PARAM" == "" ] || [[ $PARAM =~ ' ' ]]
+		then
+			PARAM="'$PARAM'"
+		fi
+		LINE="${LINE}${PARAM} "
+	done
+	echo "$LINE"
+	"${@}"
+	echo
 }
 
 function execute {
@@ -77,8 +142,11 @@ function execute {
 			LINE=""
 		fi
 
-		# Add quots to param, if param contains blanks
-		[[ $PARAM =~ ' ' ]] && PARAM="'$PARAM'"
+		# Add quots to param, if param is empty or contains blanks
+		if [ "$PARAM" == "" ] || [[ $PARAM =~ ' ' ]]
+		then
+			PARAM="'$PARAM'"
+		fi
 
 		LINE="${LINE}${INDENT}${PARAM}"
 
@@ -107,7 +175,7 @@ function isLinux {
 
 function isWindows {
 	( [ -n "$OS" ] && [[ $OS =~ Windows ]] ) ||
-	       [ -f "$(which qemu-system-x86_64).exe" ]
+	       [ -f "$(qWhich qemu-system-x86_64).exe" ]
 }
 
 function killBackgroundQemu {
@@ -143,7 +211,8 @@ function cygwinXlaunch {
 
 function executeVncForBackgroundQemu {
 	sleep 2
-	gvncviewer localhost:5 2> /dev/null
+	echo
+	toolexec gvncviewer localhost:5 2> /dev/null
 	sleep 1
 	killBackgroundQemu
 }
@@ -166,7 +235,7 @@ function executeSpicyForBackgroundQemu {
 	echo "            Escape from spice display by pressing F10 or Shift-L F12"
 	echo "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
 	echo
-	spicy -h localhost -p 5905 2> /dev/null
+	toolexec spicy -h localhost -p 5905 2> /dev/null
 	sleep 1
 	killBackgroundQemu
 }
@@ -180,19 +249,9 @@ function checkBinary {
 	BINARIES["gtk-vnc"]="gvncviewer"
 	BINARIES["spice-gtk"]="spicy"
 	BINARIES["p7zip"]="7z"
-	case "$PACKAGE" in
-		spice)
-			which libspice-server-1.dll &> /dev/null ||
-				find /usr/lib -type f -name "libspice-server.so*" |
-					grep spice &> /dev/null ||
-				echo spice-server
-			;;
-		*)
-			which $PACKAGE &> /dev/null ||
-				which ${BINARIES[$PACKAGE]} &> /dev/null ||
-				echo "$PACKAGE"
-			;;
-	esac
+	which $PACKAGE &> /dev/null ||
+		which ${BINARIES[$PACKAGE]} &> /dev/null ||
+		echo "$PACKAGE"
 }
 
 function require {
@@ -235,8 +294,8 @@ function perform {
 	local FUN=$1
 	if [ -n "$DIR" ]
 	then
-		[ -d "$DIR" ] || mkdir -p $DIR
-		cd $DIR
+		[ -d "$DIR" ] || mkdir -p "$DIR"
+		cd "$DIR"
 	else
 		echo "DIR missing"
 		exit 1
@@ -323,13 +382,18 @@ function accel {
 function firmware {
 	local FW_NAME="$1"
 
-	local BINDIR="$(dirname $(which qemu-system-x86_64))"
-	local QI_FW="/usr/share/qemu/firmware"
+	local BINDIR="$(dirname $(qWhich qemu-system-x86_64))"
+	local COMMON_FW="$BINDIR/../share/qemu"
+	local MSYS_FW_OLD="$BINDIR/../lib/qemu"
+	local DIST="$BINDIR"
+	local QI_FWDSC="/usr/share/qemu/firmware"
+	local CYG64_DIST="/cygdrive/c/Program Files/qemu"
+	local CYG32_DIST="/cygdrive/c/Program Files (x86)/qemu"
+
 	local FW_PATH DIR REALDIR
-	for DIR in "$BINDIR" "$BINDIR/../lib/qemu" "$BINDIR/../../lib/qemu" \
-		"$BINDIR/../share/qemu" "$BINDIR/../../share/qemu" \
-		"$( [ -L "$QI_FW" ] && [ -d "$(realpath $QI_FW)" ] && dirname $(realpath $QI_FW) )" \
-		"/cygdrive/c/Program Files/qemu" "/cygdrive/c/Program Files (x86)/qemu"
+	for DIR in "$COMMON_FW" "$MSYS_FW_OLD" "$DIST/share" "$DIST" \
+		"$( [ -L "$QI_FWDSC" ] && [ -d "$(realpath $QI_FWDSC)" ] && dirname $(realpath $QI_FWDSC) )" \
+		"$CYG64_DIST/share" "$CYG64_DIST" "$CYG32_DIST/share" "$CYG32_DIST"
 	do
 		if [ -d "$DIR" ]
 		then
@@ -356,9 +420,10 @@ function firmwareAvailable {
 }
 
 function audiodev {
-	local ID=$1
+	local ID=$1 APPEND=""
+	[ -z "$MICROPHONE" ] && APPEND=",in.voices=0"
 	qemu-system-x86_64 -audio-help 2> /dev/null | grep "^-audiodev" | head -n1 |
-		sed "s/ id=[a-z]*,/ id=$ID,/" | sed "s/\s*$//"
+		sed "s/ id=[a-z]*,/ id=$ID,/" | sed "s/\s*$/$APPEND/"
 }
 
 function pcspk {
@@ -373,6 +438,12 @@ function audio {
 	[ -z "$HDA_BUS" ] && HDA_BUS="intel-hda"
 	[[ $DEVICE =~ ^hda ]] && DEVICE="-device $HDA_BUS -device $DEVICE" || DEVICE="-device $DEVICE"
 	qemuMinVersion 4 2 && echo "$DRIVER $DEVICE,audiodev=audio0" || echo "$DEVICE"
+}
+
+function audioq35 {
+	local DEVICE="$1" DRIVER="$2"
+	[ -z "$DEVICE" ] && DEVICE="hda-output"
+	audio "$DEVICE" "$DRIVER" "ich9-intel-hda"
 }
 
 # UEFI-Pflash-Desktop (LiveImage)
@@ -391,7 +462,7 @@ echo "cp '$(firmware edk2-i386-vars.fd)' $TESTDIR/"
 echo
 cp "$(firmware edk2-i386-vars.fd)" $TESTDIR/
 firmwareAvailable edk2-x86_64-code.fd &&
-execute qemu-system-x86_64 -m 1536 $ACCEL $(audio) \
+execute qemu-system-x86_64 -M q35 -m 1536 $ACCEL $(audioq35) \
 	-drive "file=$(firmware edk2-x86_64-code.fd),if=pflash,format=raw,readonly=on" \
 	-drive file=$TESTDIR/edk2-i386-vars.fd,if=pflash,format=raw,readonly=off \
 	-cdrom $LIVE_IMAGE_FILE -drive file=$TESTDIR/testimage.qcow2,media=disk
@@ -416,7 +487,7 @@ firmwareAvailable edk2-i386-vars.fd edk2-x86_64-code.fd &&
 echo "cat '$(firmware edk2-i386-vars.fd)' '$(firmware edk2-x86_64-code.fd)' > $TESTDIR/edk2-x86_64.fd"
 echo
 cat "$(firmware edk2-i386-vars.fd)" "$(firmware edk2-x86_64-code.fd)" > $TESTDIR/edk2-x86_64.fd
-execute qemu-system-x86_64 -m 1536 $ACCEL $(audio) \
+execute qemu-system-x86_64 -M q35 -m 1536 $ACCEL $(audioq35) \
 	-bios $TESTDIR/edk2-x86_64.fd \
 	-cdrom $LIVE_IMAGE_FILE -drive file=$TESTDIR/testimage.qcow2,media=disk
 )
@@ -432,8 +503,8 @@ function qemuLiveDesktopUEFI_Bios_Noaccel {
 function qemuLiveDesktopSDL {
 download $LIVE_IMAGE_URL
 testImageInDir sdl
-execute qemu-system-x86_64 $(accel) -m 1536 \
-	-display sdl $(audio) \
+execute qemu-system-x86_64 -M q35 $(accel) -m 1536 \
+	-display sdl $(audioq35 hda-duplex) \
 	-cdrom $LIVE_IMAGE_FILE -drive file=sdl/testimage.qcow2,media=disk
 removeDir sdl
 }
@@ -442,8 +513,8 @@ removeDir sdl
 function qemuLiveDesktopGTK {
 download $LIVE_IMAGE_URL
 testImageInDir gtk
-execute qemu-system-x86_64 $(accel) -m 1536 \
-	-display gtk $(audio) \
+execute qemu-system-x86_64 -M q35 $(accel) -m 1536 \
+	-display gtk $(audioq35 hda-micro) \
 	-cdrom $LIVE_IMAGE_FILE -drive file=gtk/testimage.qcow2,media=disk
 removeDir gtk
 }
@@ -453,8 +524,8 @@ function qemuLiveDesktopVNC {
 download $LIVE_IMAGE_URL
 testImageInDir vnc
 cygwinXlaunch
-execute qemu-system-x86_64 $(accel) -m 1536 -pidfile $PIDFILE \
-	-display vnc=:05 -k de $(audio) \
+execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -pidfile $PIDFILE \
+	-display vnc=:05 -k de $(audioq35 hda-duplex) \
 	-cdrom $LIVE_IMAGE_FILE -drive file=vnc/testimage.qcow2,media=disk &
 executeVncForBackgroundQemu
 removeDir vnc
@@ -465,7 +536,7 @@ function qemuLiveDesktopSPICE {
 download $LIVE_IMAGE_URL
 testImageInDir spice
 cygwinXlaunch
-execute qemu-system-x86_64 $(accel) -m 1536 -pidfile $PIDFILE $(audio) \
+execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -pidfile $PIDFILE $(audioq35 hda-micro) \
 	-vga qxl -spice port=5905,addr=127.0.0.1,disable-ticketing=on \
 	-device virtio-serial -chardev spicevmc,id=spicechannel0,name=vdagent \
 	-device virtserialport,chardev=spicechannel0,name=com.redhat.spice.0 \
@@ -474,12 +545,42 @@ executeSpicyForBackgroundQemu
 removeDir spice
 }
 
+# Desktop (for qemu-img)
+function qemuLiveDesktopQemuImgOperations {
+download $LIVE_IMAGE_URL
+local ACCEL=$(accel)
+local TESTDIR="qemu-img"
+mkdir -p $TESTDIR
+echo
+toolexec qemu-img convert -f raw $LIVE_IMAGE_FILE -O qcow2 $TESTDIR/iso.qcow2
+toolexec qemu-img snapshot -c CONVERTED $TESTDIR/iso.qcow2
+toolexec qemu-img create -f qcow2 $TESTDIR/rebase.qcow2 20G
+toolexec qemu-img rebase -F qcow2 -b rebase.qcow2 -f qcow2 $TESTDIR/iso.qcow2
+toolexec qemu-img snapshot -c REBASED $TESTDIR/iso.qcow2
+toolexec qemu-img commit $TESTDIR/iso.qcow2
+toolexec qemu-img compare -f raw $LIVE_IMAGE_FILE -F qcow2 $TESTDIR/rebase.qcow2
+toolexec qemu-system-x86_64 -M q35 -m 1536 $ACCEL $TESTDIR/rebase.qcow2
+echo ">>> $TESTDIR/rebase.qcow2 was probably modified by qemu-system-x86_64 <<<"
+toolexec qemu-img compare -f raw $LIVE_IMAGE_FILE -F qcow2 $TESTDIR/rebase.qcow2
+toolexec qemu-img check $TESTDIR/rebase.qcow2
+toolexec qemu-img snapshot -l $TESTDIR/iso.qcow2
+toolexec qemu-img rebase -b '' -f qcow2 $TESTDIR/iso.qcow2
+toolexec rm $TESTDIR/rebase.qcow2
+toolexec qemu-img compare -f raw $LIVE_IMAGE_FILE -F qcow2 $TESTDIR/iso.qcow2
+toolexec qemu-img check $TESTDIR/iso.qcow2
+toolexec qemu-img snapshot -a REBASED $TESTDIR/iso.qcow2
+toolexec qemu-img compare -f raw $LIVE_IMAGE_FILE -F qcow2 $TESTDIR/iso.qcow2
+toolexec qemu-img snapshot -d REBASED $TESTDIR/iso.qcow2
+toolexec qemu-img snapshot -l $TESTDIR/iso.qcow2
+removeDir $TESTDIR
+}
+
 # Extended SDL-Desktop (HDImage)
 function qemuInstalledDesktopSDL {
 local IMAGE='d:\Qemu\test\test-usernet.qcow2'
 [ -f "$IMAGE" ] || return 0
-execute qemu-system-x86_64 $(accel) -m 1G \
-	-display sdl $(audio) \
+execute qemu-system-x86_64 -M q35 $(accel) -m 1G \
+	-display sdl $(audioq35 hda-micro) \
 	-netdev user,id=un0,hostfwd=tcp::2222-:22 -device virtio-net,netdev=un0 \
 	-drive file="$IMAGE",media=disk,if=none,id=drive0,discard=unmap,detect-zeroes=unmap \
 	-device virtio-scsi,id=scsi0 -device scsi-hd,bus=scsi0.0,drive=drive0
@@ -489,8 +590,8 @@ execute qemu-system-x86_64 $(accel) -m 1G \
 function qemuInstalledDesktopGTK {
 local IMAGE='/d/Qemu/test/test-usernet.qcow2'
 [ -f "$IMAGE" ] || return 0
-execute qemu-system-x86_64 $(accel) -m 1G \
-	-display gtk $(audio) \
+execute qemu-system-x86_64 -M q35 $(accel) -m 1G \
+	-display gtk $(audioq35 hda-duplex) \
 	-netdev user,id=un0,hostfwd=tcp::2222-:22 -device virtio-net,netdev=un0 \
 	-drive file="$IMAGE",media=disk,if=none,id=drive0,discard=unmap,detect-zeroes=unmap \
 	-device virtio-scsi,id=scsi0 -device scsi-hd,bus=scsi0.0,drive=drive0
@@ -501,8 +602,8 @@ function qemuInstalledDesktopVNC1 {
 local IMAGE='\Qemu\test\test-usernet.qcow2'
 [ -f "$IMAGE" ] || return 0
 cygwinXlaunch
-execute qemu-system-x86_64 $(accel) -m 1G -pidfile $PIDFILE \
-	-display vnc=:05 -k de $(audio) \
+execute qemu-system-x86_64 -M q35 $(accel) -m 1G -pidfile $PIDFILE \
+	-display vnc=:05 -k de $(audioq35 hda-micro) \
 	-netdev user,id=un0,hostfwd=tcp::2222-:22 -device virtio-net,netdev=un0 \
 	-drive file="$IMAGE",media=disk,if=none,id=drive0,discard=unmap,detect-zeroes=unmap \
 	-device virtio-scsi,id=scsi0 -device scsi-hd,bus=scsi0.0,drive=drive0 &
@@ -514,8 +615,8 @@ function qemuInstalledDesktopVNC2 {
 local IMAGE='d:\Qemu\test\test.qcow2'
 [ -f "$IMAGE" ] || return 0
 cygwinXlaunch
-execute qemu-system-x86_64 $(accel) -m 1G -pidfile $PIDFILE \
-	-display vnc=:05 -k de $(audio) \
+execute qemu-system-x86_64 -M q35 $(accel) -m 1G -pidfile $PIDFILE \
+	-display vnc=:05 -k de $(audioq35 hda-micro) \
 	-netdev tap,ifname=qemuTap05,id=tap0 -device virtio-net,netdev=tap0,mac=00:00:00:00:00:05 \
 	-drive file="$IMAGE",media=disk,if=none,id=drive0,discard=unmap,detect-zeroes=unmap \
 	-device virtio-scsi,id=scsi0 -device scsi-hd,bus=scsi0.0,drive=drive0 &
@@ -527,8 +628,8 @@ function qemuInstalledDesktopSPICE1 {
 local IMAGE='/d/Qemu/test/test-usernet.qcow2'
 [ -f "$IMAGE" ] || return 0
 cygwinXlaunch
-execute qemu-system-x86_64 $(accel) -m 1G -pidfile $PIDFILE \
-	-vga qxl -spice port=5905,addr=127.0.0.1,disable-ticketing=on $(audio) \
+execute qemu-system-x86_64 -M q35 $(accel) -m 1G -pidfile $PIDFILE \
+	-vga qxl -spice port=5905,addr=127.0.0.1,disable-ticketing=on $(audioq35 hda-duplex) \
 	-device virtio-serial -chardev spicevmc,id=spicechannel0,name=vdagent \
 	-device virtserialport,chardev=spicechannel0,name=com.redhat.spice.0 \
 	-usb -device qemu-xhci \
@@ -545,8 +646,8 @@ function qemuInstalledDesktopSPICE2 {
 local IMAGE='/d/Qemu/test/test.qcow2'
 [ -f "$IMAGE" ] || return 0
 cygwinXlaunch
-execute qemu-system-x86_64 $(accel) -m 1G -pidfile $PIDFILE \
-	-vga qxl -spice port=5905,addr=127.0.0.1,disable-ticketing=on $(audio) \
+execute qemu-system-x86_64 -M q35 $(accel) -m 1G -pidfile $PIDFILE \
+	-vga qxl -spice port=5905,addr=127.0.0.1,disable-ticketing=on $(audioq35 hda-duplex) \
 	-device virtio-serial -chardev spicevmc,id=spicechannel0,name=vdagent \
 	-device virtserialport,chardev=spicechannel0,name=com.redhat.spice.0 \
 	-usb -device qemu-xhci \
@@ -1180,14 +1281,9 @@ cat haiku/readme.txt
 (
 cd haiku
 tar -xf ../haiku-r1alpha4.1-vmdk.tar.xz
-echo "qemu-img convert -f vmdk -O qcow2 haiku-r1alpha4.vmdk haiku-r1alpha4.orig.qcow2"
-qemu-img convert -f vmdk -O qcow2 haiku-r1alpha4.vmdk haiku-r1alpha4.orig.qcow2
-echo "qemu-img create -f qcow2 -b haiku-r1alpha4.orig.qcow2 -F qcow2 haiku-r1alpha4.qcow2"
-qemu-img create -f qcow2 -b haiku-r1alpha4.orig.qcow2 -F qcow2 haiku-r1alpha4.qcow2
+qemu-img convert -f vmdk haiku-r1alpha4.vmdk -O qcow2 haiku-r1alpha4.qcow2
 execute qemu-system-i386 $(accel) $(audio hda-duplex) -m 512 \
 	-hda haiku-r1alpha4.qcow2 -hdb blank-bfs-2048mb.vmdk
-echo "qemu-img commit haiku-r1alpha4.qcow2"
-qemu-img commit haiku-r1alpha4.qcow2
 )
 removeDir haiku
 }
@@ -1255,7 +1351,7 @@ function qemu2014day22 {
 download https://www.qemu-advent-calendar.org/2014/download/s390-moon-buggy.tar.xz
 tar -xf s390-moon-buggy.tar.xz
 extractReadme s390-moon-buggy/run
-execute qemu-system-s390x -monitor none -kernel s390-moon-buggy/s390-bb.kernel \
+execute qemu-system-s390x -M s390-ccw-virtio -monitor none -kernel s390-moon-buggy/s390-bb.kernel \
 	-initrd s390-moon-buggy/s390-moon-buggy.initrd
 removeDir s390-moon-buggy
 }
@@ -1388,7 +1484,7 @@ unzip -o -q ../zork1.zip
 mkdir -p zork.img/EFI/BOOT
 mv BOOTX64.EFI zork.img/EFI/BOOT/
 mv -f startup.nsh Frotz.efi DATA/ZORK1.DAT zork.img/
-execute qemu-system-x86_64 $(accel) -name uefizork -bios OVMF-pure-efi.fd -usb \
+execute qemu-system-x86_64 $(accel) -name "uefi zork" -bios OVMF-pure-efi.fd -usb \
 	-device usb-storage,drive=zork -drive file=fat:rw:zork.img,id=zork,if=none,format=raw
 )
 removeDir qemu-xmas-uefi-zork
@@ -1461,11 +1557,10 @@ removeDir qemu-xmas-slackware
 }
 
 export PIDFILE=".qemupid.$(date +%s)"
-BASE="$(pwd)"
 determineAccel
 case $BLOCK in
 	2020)
-		DIR=$BASE/qemu-advent-calendar/2020
+		DIR="$DOWNLOADDIR/qemu-advent-calendar/2020"
 		require wget
 		perform qemu2020day01
 		# SKIP qemu2020day02 - contains qemu-5.2.0-rc4.tar.xz
@@ -1493,7 +1588,7 @@ case $BLOCK in
 		perform qemu2020day24
 		;;
 	2018)
-		DIR=$BASE/qemu-advent-calendar/2018
+		DIR="$DOWNLOADDIR/qemu-advent-calendar/2018"
 		require wget
 		perform qemu2018day01
 		perform qemu2018day02
@@ -1523,7 +1618,7 @@ case $BLOCK in
 		perform qemu2018day24
 		;;
 	2016)
-		DIR=$BASE/qemu-advent-calendar/2016
+		DIR="$DOWNLOADDIR/qemu-advent-calendar/2016"
 		require wget unzip p7zip
 		perform qemu2016day01
 		ignoreSize && perform qemu2016day02
@@ -1553,7 +1648,7 @@ case $BLOCK in
 		perform qemu2016day24
 		;;
 	2014)
-		DIR=$BASE/qemu-advent-calendar/2014
+		DIR="$DOWNLOADDIR/qemu-advent-calendar/2014"
 		require wget unzip
 		perform qemu2014day01
 		perform qemu2014day02
@@ -1581,9 +1676,8 @@ case $BLOCK in
 		perform qemu2014day24
 		;;
 	HD)
-		DIR=$BASE/qemu-desktop
-		require ${MINGW_PACKAGE_PREFIX}-spice ${MINGW_PACKAGE_PREFIX}-spice-gtk \
-			${MINGW_PACKAGE_PREFIX}-gtk-vnc
+		DIR="$DOWNLOADDIR/qemu-desktop"
+		require wget ${MINGW_PACKAGE_PREFIX}-spice-gtk ${MINGW_PACKAGE_PREFIX}-gtk-vnc
 		perform qemuInstalledDesktopSDL
 		perform qemuInstalledDesktopGTK
 		perform qemuInstalledDesktopVNC1
@@ -1593,9 +1687,8 @@ case $BLOCK in
 		;;
 	*)
 		BLOCK=DVD
-		DIR=$BASE/qemu-desktop
-		require wget ${MINGW_PACKAGE_PREFIX}-spice ${MINGW_PACKAGE_PREFIX}-spice-gtk \
-			${MINGW_PACKAGE_PREFIX}-gtk-vnc
+		DIR="$DOWNLOADDIR/qemu-desktop"
+		require wget ${MINGW_PACKAGE_PREFIX}-spice-gtk ${MINGW_PACKAGE_PREFIX}-gtk-vnc
 		perform qemuLiveDesktopSPICE
 		perform qemuLiveDesktopSDL
 		perform qemuLiveDesktopGTK
@@ -1604,6 +1697,7 @@ case $BLOCK in
 		perform qemuLiveDesktopUEFI_Pflash
 		perform qemuLiveDesktopUEFI_Bios_Noaccel
 		perform qemuLiveDesktopUEFI_Pflash_Noaccel
+		perform qemuLiveDesktopQemuImgOperations
 		;;
 esac
 
