@@ -7,8 +7,8 @@
 _realname=gdal
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=3.3.3
-pkgrel=4
+pkgver=3.4.1
+pkgrel=1
 pkgdesc="A translator library for raster geospatial data formats (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
@@ -35,6 +35,7 @@ depends=("${MINGW_PACKAGE_PREFIX}-cfitsio"
          "${MINGW_PACKAGE_PREFIX}-libpng"
          "${MINGW_PACKAGE_PREFIX}-libmariadbclient"
          "${MINGW_PACKAGE_PREFIX}-libspatialite"
+         "${MINGW_PACKAGE_PREFIX}-librasterlite2"
          "${MINGW_PACKAGE_PREFIX}-libtiff"
          "${MINGW_PACKAGE_PREFIX}-libwebp"
          "${MINGW_PACKAGE_PREFIX}-libxml2"
@@ -44,40 +45,41 @@ depends=("${MINGW_PACKAGE_PREFIX}-cfitsio"
          "${MINGW_PACKAGE_PREFIX}-poppler"
          "${MINGW_PACKAGE_PREFIX}-postgresql"
          "${MINGW_PACKAGE_PREFIX}-proj"
-         #"${MINGW_PACKAGE_PREFIX}-qhull"
          "${MINGW_PACKAGE_PREFIX}-sqlite3"
-         $([[ ${MINGW_PACKAGE_PREFIX} = *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-xerces-c")
+         "${MINGW_PACKAGE_PREFIX}-xerces-c"
          "${MINGW_PACKAGE_PREFIX}-xz")
-#optdepends=("${MINGW_PACKAGE_PREFIX}-postgresql")
 options=('strip' 'staticlibs')
 source=(https://download.osgeo.org/${_realname}/${pkgver}/${_realname}-${pkgver}.tar.xz
-        001-qhull-reentrant.patch
-        002-dont-define-msvcrt-version.patch)
-sha256sums=('1e8fc8b19c77238c7f4c27857d04857b65d8b7e8050d3aac256d70fa48a21e76'
-            'd331a4ca57ba9ecd533d2705273ca89b472902a880eb9edae9d0766bc8034519'
-            '2eb8b8d7321f5a75cc7ff29bf63ae8bda1c900f463b6577bac109503346275f4')
+        001-dont-define-msc-ver.patch
+        002-dont-define-msvcrt-version.patch
+        003-fix-cpl-dll-macro.patch
+        004-fix-missing-declspec.patch
+        005-fix-appslib-declspec.patch
+        006-fix-building-without-libtool.patch)
+sha256sums=('332f053516ca45101ef0f7fa96309b64242688a8024780a5d93be0230e42173d'
+            'd066e2b6cbf4fea2b81b94bb5ac43ca1aebd1ffb7dd4f8751104a9de86719562'
+            '2eb8b8d7321f5a75cc7ff29bf63ae8bda1c900f463b6577bac109503346275f4'
+            '81eb645716e505bdb7e5696b7fe32bc9eb84e5a98ae4ec52f48896d330007acd'
+            'dd45f5f23c80cdd453a8496c8a7b46cffc8193b5aee00bff534a61b2b592c20b'
+            'b0d61629621aba838a16e7f7f851291ba8e1bd5df245aa326f7bb1dbb809076e'
+            '5bf18b89ef029c7848c8daf0a8000236e501fbbc559975823e30b3a847f87a41')
 
 prepare() {
-  cd ${srcdir}/${_realname}-${pkgver}
-  patch -p1 -i ${srcdir}/001-qhull-reentrant.patch
+  cd ${_realname}-${pkgver}
+  patch -p1 -i ${srcdir}/001-dont-define-msc-ver.patch
   patch -p1 -i ${srcdir}/002-dont-define-msvcrt-version.patch
-
-  cd ${srcdir}
-  [[ -d ${srcdir}/build-${MSYSTEM} ]] && rm -rf ${srcdir}/build-${MSYSTEM}
-  cp -rf ${_realname}-${pkgver} build-${MSYSTEM}
-  cd "${srcdir}/build-${MSYSTEM}"
+  patch -p1 -i ${srcdir}/003-fix-cpl-dll-macro.patch
+  patch -p1 -i ${srcdir}/004-fix-missing-declspec.patch
+  patch -p1 -i ${srcdir}/005-fix-appslib-declspec.patch
+  patch -p1 -i ${srcdir}/006-fix-building-without-libtool.patch
 
   sed -i "s|/usr/local|${MINGW_PREFIX}|g" configure.ac
   sed -i "s|/usr|${MINGW_PREFIX}|g" configure.ac
-  sed -i "s|mandir='\${prefix}/man'|mandir='\${prefix}/share/man'|g" configure.ac
   for p in m4/*.m4
   do
     sed -i "s|/usr|${MINGW_PREFIX}|g" $p
   done
-  # bug: http://osgeo-org.1560.x6.nabble.com/gdal-dev-jpeg2000-jasper-error-compiling-gdal-2-1-from-git-release-branch-td5299100.html
-  sed -i -e 's@uchar@unsigned char@' frmts/jpeg2000/jpeg2000_vsil_io.cpp
 
-  touch config.rpath
   # for some reason autogen.sh's libtoolize call is commented out
   # but we need updated libtool for clang support
   libtoolize --force --copy
@@ -85,11 +87,12 @@ prepare() {
 }
 
 build() {
-  cd "${srcdir}/build-${MSYSTEM}"
+  [[ -d build-${MSYSTEM} ]] && rm -rf build-${MSYSTEM}
+  cp -r ${_realname}-${pkgver} build-${MSYSTEM}
 
+  cd build-${MSYSTEM}
   CFLAGS+=" -fno-strict-aliasing"
   CXXFLAGS+=" -std=c++17 -Wno-deprecated-declarations"
-
   # somehow the configure test for redeclaring sprintf succeeds but
   # then errors during the build with clang.
   CPPFLAGS+=" -DDONT_DEPRECATE_SPRINTF"
@@ -106,20 +109,21 @@ build() {
     --with-mysql=${MINGW_PREFIX}/bin/mariadb_config \
     --without-python \
     --without-perl \
+    --without-libtool \
     --with-qhull=internal
 
-  sed -i GDALmake.opt -e "s|EXE_DEP_LIBS.*|EXE_DEP_LIBS = \$\(GDAL_SLIB\)|g"
-  sed -i GNUmakefile -e "s|\$(GDAL_ROOT)\/||g"
-
   make
-  # make man
+  make static-lib
 }
 
 package () {
-  cd "${srcdir}/build-${MSYSTEM}"
+  cd build-${MSYSTEM}
   make DESTDIR="${pkgdir}" install
   make DESTDIR="${pkgdir}" install-man
 
+  # install static lib
+  install -Dm644 libgdal.a "${pkgdir}${MINGW_PREFIX}/lib/libgdal.a"
+
   # install license
-  install -D -m644 LICENSE.TXT "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+  install -Dm644 LICENSE.TXT "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }
