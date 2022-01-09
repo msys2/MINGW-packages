@@ -42,7 +42,6 @@ for package in "${packages[@]}"; do
     # Ensure the compiler is installed before building the package
     execute 'Installing the compiler' pacman -S --needed --noconfirm --noprogressbar $MINGW_PACKAGE_PREFIX-cc
     execute 'Building binary' makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild
-    execute 'Building source' makepkg-mingw --noconfirm --noprogressbar --allsource
     echo "::endgroup::"
 
     if [ -f $package/.ci-sequential ]; then
@@ -105,7 +104,6 @@ for package in "${packages[@]}"; do
     fi
 
     mv "${package}"/*.pkg.tar.* artifacts
-    mv "${package}"/*.src.tar.* artifacts
     unset package
 done
 success 'All packages built successfully'
