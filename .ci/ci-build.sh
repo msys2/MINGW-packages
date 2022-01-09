@@ -39,8 +39,8 @@ message 'Building packages'
 for package in "${packages[@]}"; do
     echo "::group::[build] ${package}"
     execute 'Fetch keys' "$DIR/fetch-validpgpkeys.sh"
-    # Ensure the toolchain is installed before building the package
-    execute 'Installing the toolchain' pacman -S --needed --noconfirm --noprogressbar $MINGW_PACKAGE_PREFIX-toolchain
+    # Ensure the compiler is installed before building the package
+    execute 'Installing the compiler' pacman -S --needed --noconfirm --noprogressbar $MINGW_PACKAGE_PREFIX-cc
     execute 'Building binary' makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild
     execute 'Building source' makepkg-mingw --noconfirm --noprogressbar --allsource
     echo "::endgroup::"
