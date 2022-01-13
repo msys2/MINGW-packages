@@ -39,10 +39,7 @@ message 'Building packages'
 for package in "${packages[@]}"; do
     echo "::group::[build] ${package}"
     execute 'Fetch keys' "$DIR/fetch-validpgpkeys.sh"
-    # Ensure the toolchain is installed before building the package
-    execute 'Installing the toolchain' pacman -S --needed --noconfirm --noprogressbar $MINGW_PACKAGE_PREFIX-toolchain
     execute 'Building binary' makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild
-    execute 'Building source' makepkg-mingw --noconfirm --noprogressbar --allsource
     echo "::endgroup::"
 
     if [ -f $package/.ci-sequential ]; then
@@ -105,7 +102,6 @@ for package in "${packages[@]}"; do
     fi
 
     mv "${package}"/*.pkg.tar.* artifacts
-    mv "${package}"/*.src.tar.* artifacts
     unset package
 done
 success 'All packages built successfully'
