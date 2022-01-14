@@ -11,7 +11,8 @@ url='https://www.somepackage.org/'
 license=('LICENSE')
 makedepends=("${MINGW_PACKAGE_PREFIX}-meson"
              "${MINGW_PACKAGE_PREFIX}-ninja"
-             "${MINGW_PACKAGE_PREFIX}-pkg-config")
+             "${MINGW_PACKAGE_PREFIX}-pkg-config"
+             "${MINGW_PACKAGE_PREFIX}-cc")
 source=("https://www.somepackage.org/${_realname}/${_realname}-${pkgver}.tar.gz"
         "0001-An-important-fix.patch"
         "0002-A-less-important-fix.patch")
