@@ -1,0 +1,122 @@
+>From 4db4e6b35be5793902d8820d2c8e4d1f1cbba80d Mon Sep 17 00:00:00 2001
+From: Tomas Kalibera <tomas.kalibera@gmail.com>
+Date: Thu, 13 Jan 2022 05:25:32 -0500
+Subject: [PATCH] c-family: Let stdio.h override built in printf format
+ [PR95130,PR92292]
+
+Mingw32 targets use ms_printf format for printf, but mingw-w64 when
+configured for UCRT uses gnu_format (via stdio.h).  GCC then checks both
+formats, which means that one cannot print a 64-bit integer without a
+warning.  All these lines issue a warning:
+
+  printf("Hello %"PRIu64"\n", x);
+  printf("Hello %I64u\n", x);
+  printf("Hello %llu\n", x);
+
+because each of them violates one of the formats.  Also, one gets a warning
+twice if the format string violates both formats.
+
+Fixed by disabling the built in format in case there are additional ones.
+
+gcc/c-family/ChangeLog:
+
+	PR c/95130
+	PR c/92292
+
+	* c-common.c (check_function_arguments): Pass also function
+	  declaration to check_function_format.
+
+	* c-common.h (check_function_format): Extra argument - function
+	  declaration.
+
+	* c-format.c (check_function_format): For builtin functions with a
+	  built in format and at least one more, do not check the first one.
+---
+ gcc/c-family/c-common.c |  2 +-
+ gcc/c-family/c-common.h |  2 +-
+ gcc/c-family/c-format.c | 32 ++++++++++++++++++++++++++++++--
+ 3 files changed, 32 insertions(+), 4 deletions(-)
+
+diff --git a/gcc/c-family/c-common.c b/gcc/c-family/c-common.c
+index 4a6a4edb763..00fc734d28e 100644
+--- a/gcc/c-family/c-common.c
++++ b/gcc/c-family/c-common.c
+@@ -6064,7 +6064,7 @@ check_function_arguments (location_t loc, const_tree fndecl, const_tree fntype,
+   /* Check for errors in format strings.  */
+ 
+   if (warn_format || warn_suggest_attribute_format)
+-    check_function_format (fntype, TYPE_ATTRIBUTES (fntype), nargs, argarray,
++    check_function_format (fndecl, fntype, TYPE_ATTRIBUTES (fntype), nargs, argarray,
+ 			   arglocs);
+ 
+   if (warn_format)
+diff --git a/gcc/c-family/c-common.h b/gcc/c-family/c-common.h
+index 8b7bf35e888..ee370eafbbc 100644
+--- a/gcc/c-family/c-common.h
++++ b/gcc/c-family/c-common.h
+@@ -856,7 +856,7 @@ extern void check_function_arguments_recurse (void (*)
+ 					      unsigned HOST_WIDE_INT);
+ extern bool check_builtin_function_arguments (location_t, vec<location_t>,
+ 					      tree, tree, int, tree *);
+-extern void check_function_format (const_tree, tree, int, tree *,
++extern void check_function_format (const_tree, const_tree, tree, int, tree *,
+ 				   vec<location_t> *);
+ extern bool attribute_fallthrough_p (tree);
+ extern tree handle_format_attribute (tree *, tree, tree, int, bool *);
+diff --git a/gcc/c-family/c-format.c b/gcc/c-family/c-format.c
+index afa77810a5c..bc2abee5146 100644
+--- a/gcc/c-family/c-format.c
++++ b/gcc/c-family/c-format.c
+@@ -1160,12 +1160,13 @@ decode_format_type (const char *s, bool *is_raw /* = NULL */)
+    attribute themselves.  */
+ 
+ void
+-check_function_format (const_tree fntype, tree attrs, int nargs,
++check_function_format (const_tree fndecl, const_tree fntype, tree attrs, int nargs,
+ 		       tree *argarray, vec<location_t> *arglocs)
+ {
+-  tree a;
++  tree a, aa;
+ 
+   tree atname = get_identifier ("format");
++  bool skipped_default_format = false;
+ 
+   /* See if this function has any format attributes.  */
+   for (a = attrs; a; a = TREE_CHAIN (a))
+@@ -1176,6 +1177,33 @@ check_function_format (const_tree fntype, tree attrs, int nargs,
+ 	  function_format_info info;
+ 	  decode_format_attr (fntype, atname, TREE_VALUE (a), &info,
+ 			      /*validated=*/true);
++
++	  /* Mingw32 targets have traditionally used ms_printf format for the
++	     printf function, and this format is built in GCC. But nowadays,
++	     if mingw-w64 is configured to target UCRT, the printf function
++	     uses the gnu_printf format (specified in the stdio.h header). This
++	     causes GCC to check both formats, which means that there is no way
++	     to e.g. print a long long unsigned without a warning (ms_printf
++	     warns for %llu and gnu_printf warns for %I64u). Also, GCC would warn
++	     twice about the same issue when both formats are violated, e.g.
++	     for %lu used to print long long unsigned.
++
++	     Hence, if there are multiple format specifiers, we skip the first
++	     one. See PR 95130, PR 92292.  */
++
++	  if (!skipped_default_format && fndecl)
++	    {
++	      for(aa = TREE_CHAIN (a); aa; aa = TREE_CHAIN(aa))
++		if (is_attribute_p ("format", get_attribute_name (aa)) &&
++		    fndecl && fndecl_built_in_p (fndecl, BUILT_IN_NORMAL))
++		  {
++			skipped_default_format = true;
++			break;
++		  }
++	      if (skipped_default_format)
++		continue;
++	    }
++
+ 	  if (warn_format)
+ 	    {
+ 	      /* FIXME: Rewrite all the internal functions in this file
+-- 
+2.25.1
+
