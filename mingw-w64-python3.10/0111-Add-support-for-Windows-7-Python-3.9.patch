@@ -1,0 +1,177 @@
+From 8f8495c95715bf679f5756e12e4787aada9c3613 Mon Sep 17 00:00:00 2001
+From: Naveen M K <naveen521kk@gmail.com>
+Date: Thu, 17 Jun 2021 18:52:39 +0530
+Subject: [PATCH 111/N] Add support for Windows 7 Python 3.9
+
+Signed-off-by: Naveen M K <naveen521kk@gmail.com>
+---
+ Modules/posixmodule.c | 22 +++++++++++------
+ PC/getpathp.c         | 57 +++++++++++++++++++++++++++++++++++++++----
+ configure.ac          |  2 +-
+ 3 files changed, 68 insertions(+), 13 deletions(-)
+
+diff --git a/Modules/posixmodule.c b/Modules/posixmodule.c
+index 65edb10..e31a2f8 100644
+--- a/Modules/posixmodule.c
++++ b/Modules/posixmodule.c
+@@ -20,7 +20,7 @@
+ 
+       FSCTL_GET_REPARSE_POINT is not exported with WIN32_LEAN_AND_MEAN. */
+ #  include <windows.h>
+-#  include <pathcch.h>
++#  include <shlwapi.h>
+ #endif
+ 
+ #ifdef __VXWORKS__
+@@ -4450,7 +4450,6 @@ os__path_splitroot_impl(PyObject *module, path_t *path)
+     wchar_t *buffer;
+     wchar_t *end;
+     PyObject *result = NULL;
+-    HRESULT ret;
+ 
+     buffer = (wchar_t*)PyMem_Malloc(sizeof(wchar_t) * (wcslen(path->wide) + 1));
+     if (!buffer) {
+@@ -4462,18 +4461,26 @@ os__path_splitroot_impl(PyObject *module, path_t *path)
+     }
+ 
+     Py_BEGIN_ALLOW_THREADS
+-    ret = PathCchSkipRoot(buffer, &end);
++    if (buffer[0] && buffer[1] == L':') {
++        if (buffer[2] == L'\\') {
++            end = &buffer[3];
++        } else {
++            end = &buffer[2];
++        }
++    } else {
++        end = PathSkipRootW(buffer);
++    }
+     Py_END_ALLOW_THREADS
+-    if (FAILED(ret)) {
++    if (!end || end == buffer) {
+         result = Py_BuildValue("sO", "", path->object);
+-    } else if (end != buffer) {
++    } else if (!*end) {
++        result = Py_BuildValue("Os", path->object, "");
++    } else {
+         size_t rootLen = (size_t)(end - buffer);
+         result = Py_BuildValue("NN",
+             PyUnicode_FromWideChar(path->wide, rootLen),
+             PyUnicode_FromWideChar(path->wide + rootLen, -1)
+         );
+-    } else {
+-        result = Py_BuildValue("Os", path->object, "");
+     }
+     PyMem_Free(buffer);
+ 
+@@ -4481,6 +4488,7 @@ os__path_splitroot_impl(PyObject *module, path_t *path)
+ }
+ 
+ 
++
+ #endif /* MS_WINDOWS */
+ 
+ 
+diff --git a/PC/getpathp.c b/PC/getpathp.c
+index 603a1eb..26ade03 100644
+--- a/PC/getpathp.c
++++ b/PC/getpathp.c
+@@ -90,7 +90,6 @@
+ #endif
+ 
+ #include <windows.h>
+-#include <pathcch.h>
+ #include <shlwapi.h>
+ 
+ #ifdef HAVE_SYS_TYPES_H
+@@ -250,14 +249,43 @@ ismodule(wchar_t *filename, int update_filename)
+    stuff as fits will be appended.
+ */
+ 
++static int _PathCchCombineEx_Initialized = 0;
++typedef HRESULT(__stdcall *PPathCchCombineEx) (PWSTR pszPathOut, size_t cchPathOut,
++                                               PCWSTR pszPathIn, PCWSTR pszMore,
++                                               unsigned long dwFlags);
++static PPathCchCombineEx _PathCchCombineEx;
++
+ static void
+ join(wchar_t *buffer, const wchar_t *stuff)
+ {
+-    if (FAILED(PathCchCombineEx(buffer, MAXPATHLEN+1, buffer, stuff, 0))) {
+-        Py_FatalError("buffer overflow in getpathp.c's join()");
++    if (_PathCchCombineEx_Initialized == 0) {
++        HMODULE pathapi = LoadLibraryExW(L"api-ms-win-core-path-l1-1-0.dll", NULL,
++                                         LOAD_LIBRARY_SEARCH_SYSTEM32);
++        if (pathapi) {
++            _PathCchCombineEx = (PPathCchCombineEx)GetProcAddress(pathapi, "PathCchCombineEx");
++        }
++        else {
++            _PathCchCombineEx = NULL;
++        }
++        _PathCchCombineEx_Initialized = 1;
++    }
++
++    if (_PathCchCombineEx) {
++        if (FAILED(_PathCchCombineEx(buffer, MAXPATHLEN+1, buffer, stuff, 0))) {
++            Py_FatalError("buffer overflow in getpathp.c's join()");
++        }
++    } else {
++        if (!PathCombineW(buffer, buffer, stuff)) {
++            Py_FatalError("buffer overflow in getpathp.c's join()");
++        }
+     }
+ }
+ 
++static int _PathCchCanonicalizeEx_Initialized = 0;
++typedef HRESULT(__stdcall *PPathCchCanonicalizeEx) (PWSTR pszPathOut, size_t cchPathOut,
++    PCWSTR pszPathIn, unsigned long dwFlags);
++static PPathCchCanonicalizeEx _PathCchCanonicalizeEx;
++
+ /* Call PathCchCanonicalizeEx(path): remove navigation elements such as "."
+    and ".." to produce a direct, well-formed path. */
+ static PyStatus
+@@ -267,8 +295,27 @@ canonicalize(wchar_t *buffer, const wchar_t *path)
+         return _PyStatus_NO_MEMORY();
+     }
+ 
+-    if (FAILED(PathCchCanonicalizeEx(buffer, MAXPATHLEN + 1, path, 0))) {
+-        return INIT_ERR_BUFFER_OVERFLOW();
++    if (_PathCchCanonicalizeEx_Initialized == 0) {
++        HMODULE pathapi = LoadLibraryExW(L"api-ms-win-core-path-l1-1-0.dll", NULL,
++                                         LOAD_LIBRARY_SEARCH_SYSTEM32);
++        if (pathapi) {
++            _PathCchCanonicalizeEx = (PPathCchCanonicalizeEx)GetProcAddress(pathapi, "PathCchCanonicalizeEx");
++        }
++        else {
++            _PathCchCanonicalizeEx = NULL;
++        }
++        _PathCchCanonicalizeEx_Initialized = 1;
++    }
++
++    if (_PathCchCanonicalizeEx) {
++        if (FAILED(_PathCchCanonicalizeEx(buffer, MAXPATHLEN + 1, path, 0))) {
++            return INIT_ERR_BUFFER_OVERFLOW();
++        }
++    }
++    else {
++        if (!PathCanonicalizeW(buffer, path)) {
++            return INIT_ERR_BUFFER_OVERFLOW();
++        }
+     }
+     return _PyStatus_OK();
+ }
+diff --git a/configure.ac b/configure.ac
+index e958d1f..44e1f74 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -6014,7 +6014,7 @@ AC_MSG_RESULT(done)
+ # For mingw build need additional library for linking
+ case $host in
+   *-*-mingw*)
+-    LIBS="$LIBS -lversion -lshlwapi -lpathcch"
++    LIBS="$LIBS -lversion -lshlwapi"
+     AC_PROG_AWK
+     if test "$AWK" = "gawk"; then
+       awk_extra_flag="--non-decimal-data"
+-- 
+2.34.1
+
