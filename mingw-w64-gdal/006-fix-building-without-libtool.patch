@@ -1,0 +1,168 @@
+diff -urN gdal-3.4.0-orig/GDALmake.opt.in gdal-3.4.0/GDALmake.opt.in
+--- gdal-3.4.0-orig/GDALmake.opt.in	2021-11-04 19:55:37 +0800
++++ gdal-3.4.0/GDALmake.opt.in	2021-11-19 23:19:18 +0800
+@@ -27,9 +27,10 @@
+ LD	=	$(LIBTOOL_LINK) @CXX@
+ RM	=	$(LIBTOOL_CLEAN) /bin/rm -f *.lo
+ INSTALL = 	$(LIBTOOL_INSTALL) $(GDAL_ROOT)/install-sh -c
+-INSTALL_LIB 	=	$(LIBTOOL_INSTALL) $(GDAL_ROOT)/install-sh -c
++INSTALL_BIN 	=	$(LIBTOOL_INSTALL) $(GDAL_ROOT)/install-sh -c -m 0755
++INSTALL_LIB 	=	$(LIBTOOL_INSTALL) $(GDAL_ROOT)/install-sh -c -m 0644
+ INSTALL_DATA	= 	$(GDAL_ROOT)/install-sh -c -m 0644
+-INSTALL_DIR	= 	$(GDAL_ROOT)/install-sh -d
++INSTALL_DIR	= 	mkdir -p
+ 
+ LIBS	=	@LIBS@ $(KAK_LIBS) $(DWG_LIBS) $(CURL_LIB) \
+ 		$(MRSID_LIBS) $(MRSID_LIDAR_LIBS) $(ECW_LIBS) $(INGRES_LIB) \
+@@ -121,7 +122,7 @@
+ endif
+ 
+ GDAL_INCLUDE	=	-iquote $(GDAL_ROOT)/port -iquote $(GDAL_ROOT)/gcore \
+-			-iquote $(GDAL_ROOT)/alg \
++			-iquote $(GDAL_ROOT)/alg -iquote $(GDAL_ROOT)/alg/marching_squares \
+                         -iquote $(GDAL_ROOT)/ogr -iquote $(GDAL_ROOT)/ogr/ogrsf_frmts \
+                         -iquote $(GDAL_ROOT)/gnm -iquote $(GDAL_ROOT)/apps
+ 
+@@ -140,9 +141,9 @@
+ GDAL_VERSION_REV   =    @GDAL_VERSION_REV@
+ 
+ GDAL_LIB	= 	$(GDAL_ROOT)/libgdal.a
+-GDAL_SLIB	=	$(GDAL_ROOT)/libgdal.$(SO_EXT)
+-GDAL_SLIB_LINK	=	-L$(GDAL_ROOT) -lgdal
+-#GDAL_SLIB_SONAME = -Wl,-soname,libgdal.$(SO_EXT).@GDAL_VERSION_MAJOR@
++GDAL_SLIB	=	$(GDAL_ROOT)/libgdal-$(LIBGDAL_CURRENT).$(SO_EXT)
++GDAL_SLIB_LINK	=	$(GDAL_ROOT)/$(GDAL_SLIB_SONAME)
++GDAL_SLIB_SONAME =	libgdal.$(SO_EXT).a
+ 
+ # Mac OS X Framework definition
+ MACOSX_FRAMEWORK = @MACOSX_FRAMEWORK@
+@@ -630,17 +631,16 @@
+ else # HAVE_LIBTOOL
+ 
+ ifeq ($(HAVE_LD_SHARED),yes)
+-CONFIG_LIBS	=	$(GDAL_SLIB_LINK)
++CONFIG_LIBS	=	$(GDAL_SLIB_LINK) $(LIBS)
+ ifeq ($(MACOSX_FRAMEWORK),yes)
+ CONFIG_LIBS_INS	=	-L$(INST_LIB)/unix/lib -lgdal
+ else
+-CONFIG_LIBS_INS	=	-L$(INST_LIB) -lgdal
++CONFIG_LIBS_INS	=	-L$(INST_LIB) -lgdal $(LIBS)
+ endif
+ EXE_DEP_LIBS	=	$(GDAL_SLIB)
+ else
+-CONFIG_LIBS	=	$(GDAL_LIBS) $(LIBS)
+-CONFIG_LIBS_INS	=	$(foreach LF,$(GDAL_LIBS),$(INST_LIB)/$(notdir $(LF)))\
+-			 $(LIBS)
++CONFIG_LIBS	=	$(GDAL_LIB) $(LIBS)
++CONFIG_LIBS_INS	=	-L$(INST_LIB) -lgdal $(LIBS)
+ EXE_DEP_LIBS	=	$(GDAL_LIB)
+ endif
+ 
+diff -urN gdal-3.4.0-orig/GNUmakefile gdal-3.4.0/GNUmakefile
+--- gdal-3.4.0-orig/GNUmakefile	2021-11-04 19:55:37 +0800
++++ gdal-3.4.0/GNUmakefile	2022-01-06 21:01:21 +0800
+@@ -3,7 +3,10 @@
+ GDAL_OBJ	=	frmts/o/*.o \
+ 			gcore/*.o \
+ 			port/*.o \
+-			alg/*.o \
++			alg/*.o
++
++GDAL_BIN_OBJ	=	alg/contour.o \
++			alg/viewshed.o \
+ 			apps/commonutils.o \
+ 			apps/gdalinfo_lib.o \
+ 			apps/gdalmdiminfo_lib.o \
+@@ -54,17 +57,28 @@
+ static-lib: lib-dependencies GDALmake.opt
+ 	$(MAKE) static-lib-stage2
+ 
+-static-lib-stage2: $(GDAL_OBJ)
++static-lib-stage2: $(GDAL_OBJ) $(GDAL_BIN_OBJ)
+ 	rm -f libgdal.a
+-	$(AR) r $(GDAL_LIB) $(GDAL_OBJ)
++	$(AR) r $(GDAL_LIB) $(GDAL_OBJ) $(GDAL_BIN_OBJ)
+ 
+ $(GDAL_LIB):	$(GDAL_OBJ) GDALmake.opt
+ 	rm -f libgdal.a
+ 	$(AR) r $(GDAL_LIB) $(GDAL_OBJ)
+ 	$(RANLIB) $(GDAL_LIB)
+ 
+-$(GDAL_SLIB):	$(GDAL_OBJ) $(GDAL_LIB)
+-	$(LD_SHARED) $(GDAL_SLIB_SONAME) $(GDAL_OBJ) $(GDAL_LIBS) $(LDFLAGS) $(LIBS) \
++#  split potentially long lines
++SORTED  := $(sort $(wildcard $(GDAL_OBJ)))
++NSORTED := $(words $(SORTED))
++#  mid left and right indices
++MIDL := $(shell echo $$(( $(NSORTED) / 2 )) )
++MIDR := $(shell echo $$(( $(MIDL) + 1 )) )
++
++$(GDAL_SLIB):	$(GDAL_OBJ) $(GDAL_BIN_OBJ) $(GDAL_LIB)
++	$(LD_SHARED) -Wl,--out-implib,$(GDAL_SLIB_LINK) \
++	$(wordlist 1,$(MIDL),$(SORTED)) \
++	$(wordlist $(MIDR),$(words $(SORTED)),$(SORTED)) \
++		$(GDAL_BIN_OBJ) \
++        	$(GDAL_LIBS) $(LDFLAGS) $(LIBS) \
+ 		-o $(GDAL_SLIB)
+ 
+ #  split potentially long lines
+@@ -74,10 +88,11 @@
+ MIDL := $(shell echo $$(( $(NSORTED) / 2 )) )
+ MIDR := $(shell echo $$(( $(MIDL) + 1 )) )
+ 
+-$(LIBGDAL):	$(GDAL_OBJ:.o=.lo)
++$(LIBGDAL):	$(GDAL_OBJ:.o=.lo) $(GDAL_BIN_OBJ:.o=.lo)
+ 	$(LD) $(LDFLAGS) $(LIBS) -o $@ \
+ 	$(wordlist 1,$(MIDL),$(SORTED)) \
+ 	$(wordlist $(MIDR),$(words $(SORTED)),$(SORTED)) \
++	    $(GDAL_BIN_OBJ) \
+ 	    -rpath $(INST_LIB) \
+ 	    -no-undefined \
+ 	    -version-info $(LIBGDAL_CURRENT):$(LIBGDAL_REVISION):$(LIBGDAL_AGE)
+@@ -275,14 +290,10 @@
+ ifeq ($(MACOSX_FRAMEWORK),yes)
+ 	$(INSTALL_LIB) $(GDAL_SLIB) $(DESTDIR)$(INST_LIB)/GDAL
+ else
+-	rm -f $(DESTDIR)$(INST_LIB)/$(GDAL_SLIB_B)
+-	rm -f $(DESTDIR)$(INST_LIB)/$(GDAL_SLIB_B).$(GDAL_VERSION_MAJOR)
+-	rm -f $(DESTDIR)$(INST_LIB)/$(GDAL_SLIB_B).$(GDAL_VER)
+-	$(INSTALL_LIB) $(GDAL_SLIB) $(DESTDIR)$(INST_LIB)/$(GDAL_SLIB_B).$(GDAL_VER)
+-	(cd $(DESTDIR)$(INST_LIB) ; \
+-	 ln -s $(GDAL_SLIB_B).$(GDAL_VER) $(GDAL_SLIB_B).$(GDAL_VERSION_MAJOR))
+-	(cd $(DESTDIR)$(INST_LIB) ; \
+-	 ln -s $(GDAL_SLIB_B).$(GDAL_VERSION_MAJOR) $(GDAL_SLIB_B))
++	rm -f $(DESTDIR)$(INST_BIN)/$(GDAL_SLIB_B)
++	rm -f $(DESTDIR)$(INST_LIB)/$(GDAL_SLIB_SONAME)
++	$(INSTALL_BIN) $(GDAL_SLIB) $(DESTDIR)$(INST_BIN)/$(GDAL_SLIB_B)
++	$(INSTALL_LIB) $(GDAL_ROOT)/$(GDAL_SLIB_SONAME) $(DESTDIR)$(INST_LIB)/$(GDAL_SLIB_SONAME)
+ 	$(INSTALL_DIR) $(DESTDIR)$(INST_LIB)/gdalplugins
+ endif
+ 
+diff -urN gdal-3.4.0-orig/alg/GNUmakefile gdal-3.4.0/alg/GNUmakefile
+--- gdal-3.4.0-orig/alg/GNUmakefile	2021-11-04 19:55:37 +0800
++++ gdal-3.4.0/alg/GNUmakefile	2021-11-21 10:07:05 +0800
+@@ -8,9 +8,9 @@
+ 		gdalgrid.o gdalcutline.o gdalproximity.o rasterfill.o \
+ 		gdalrasterpolygonenumerator.o \
+ 		gdalsievefilter.o gdalwarpkernel_opencl.o polygonize.o \
+-		contour.o gdaltransformgeolocs.o gdallinearsystem.o \
++		gdaltransformgeolocs.o gdallinearsystem.o \
+ 		gdal_octave.o gdal_simplesurf.o gdalmatching.o delaunay.o \
+-		gdalpansharpen.o gdalapplyverticalshiftgrid.o viewshed.o
++		gdalpansharpen.o gdalapplyverticalshiftgrid.o
+ 
+ ifeq ($(HAVE_GEOS),yes)
+ CPPFLAGS 	:=	-DHAVE_GEOS=1 $(GEOS_CFLAGS) $(CPPFLAGS)
+@@ -45,6 +45,12 @@
+ gdalgridsse.$(OBJ_EXT):   gdalgridsse.cpp
+ 	$(CXX) $(GDAL_INCLUDE) $(CXXFLAGS) $(WARN_OLD_STYLE_CAST) $(SSEFLAGS) $(CPPFLAGS) -c -o $@ $<
+ 
++contour.$(OBJ_EXT):   contour.cpp
++	$(CXX) $(GDAL_INCLUDE) $(CXXFLAGS) -iquote ../frmts/vrt -iquote ../frmts/mem $(CPPFLAGS) $(OPENCL_FLAGS) $(PROJ_FLAGS) $(PROJ_INCLUDE) -iquote marching_squares -c -o $@ $<
++
++viewshed.$(OBJ_EXT):   viewshed.cpp
++	$(CXX) $(GDAL_INCLUDE) $(CXXFLAGS) -iquote ../frmts/vrt -iquote ../frmts/mem $(CPPFLAGS) $(OPENCL_FLAGS) $(PROJ_FLAGS) $(PROJ_INCLUDE) -iquote marching_squares -c -o $@ $<
++
+ clean:
+ 	$(RM) *.o $(O_OBJ)
+ 
