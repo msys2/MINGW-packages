@@ -1,0 +1,590 @@
+From fd0133e2c1c792516096c74d4527be65c77d1cdd Mon Sep 17 00:00:00 2001
+From: Naveen M K <naveen521kk@gmail.com>
+Date: Fri, 18 Jun 2021 17:51:59 +0530
+Subject: [PATCH 112/N] CI: test the build and add some mingw specific tests
+
+Signed-off-by: Naveen M K <naveen521kk@gmail.com>
+---
+ .github/workflows/mingw.yml | 209 ++++++++++++++++++++++++
+ mingw_ignorefile.txt        |  34 ++++
+ mingw_smoketests.py         | 310 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 553 insertions(+)
+ create mode 100644 .github/workflows/mingw.yml
+ create mode 100644 mingw_ignorefile.txt
+ create mode 100644 mingw_smoketests.py
+
+diff --git a/.github/workflows/mingw.yml b/.github/workflows/mingw.yml
+new file mode 100644
+index 0000000..eb27adc
+--- /dev/null
++++ b/.github/workflows/mingw.yml
+@@ -0,0 +1,209 @@
++name: Build
++on: [push, pull_request, workflow_dispatch]
++
++jobs:
++  build:
++    runs-on: windows-2022
++    strategy:
++      fail-fast: false
++      matrix:
++        msystem: ['MINGW64','MINGW32','UCRT64','CLANG64']
++        include:
++          - msystem: MINGW64
++            prefix: mingw-w64-x86_64
++          - msystem: MINGW32
++            prefix: mingw-w64-i686
++          - msystem: UCRT64
++            prefix: mingw-w64-ucrt-x86_64
++          - msystem: CLANG64
++            prefix: mingw-w64-clang-x86_64
++          #- msystem: CLANG32
++          #  prefix: mingw-w64-clang-i686
++    steps:
++      - name: Setup git
++        run: |
++          git config --global core.autocrlf false
++          git config --global core.eol lf
++      - uses: actions/checkout@v2
++      - uses: msys2/setup-msys2@v2
++        with:
++          msystem: ${{ matrix.msystem }}
++          release: false
++          update: true
++          install: >-
++            make
++            binutils
++            autoconf
++            autoconf-archive
++            automake-wrapper
++            tar
++            gzip
++            ${{ matrix.prefix }}-toolchain
++            ${{ matrix.prefix }}-expat
++            ${{ matrix.prefix }}-bzip2
++            ${{ matrix.prefix }}-libffi
++            ${{ matrix.prefix }}-mpdecimal
++            ${{ matrix.prefix }}-ncurses
++            ${{ matrix.prefix }}-openssl
++            ${{ matrix.prefix }}-sqlite3
++            ${{ matrix.prefix }}-tcl
++            ${{ matrix.prefix }}-tk
++            ${{ matrix.prefix }}-zlib
++            ${{ matrix.prefix }}-xz
++            ${{ matrix.prefix }}-tzdata
++
++      - name: Build Python
++        shell: msys2 {0}
++        run: |
++          set -ex
++
++          if [ ${{ matrix.msystem }} == "CLANG64" ]
++          then
++            export CC=clang
++            export CXX=clang++
++          fi
++          autoreconf -vfi
++
++          rm -Rf _build && mkdir _build && cd _build
++
++          ../configure \
++            --prefix=${MINGW_PREFIX} \
++            --host=${MINGW_CHOST} \
++            --build=${MINGW_CHOST} \
++            --enable-shared \
++            --with-system-expat \
++            --with-system-ffi \
++            --with-system-libmpdec \
++            --without-ensurepip \
++            --without-c-locale-coercion \
++            --enable-loadable-sqlite-extensions \
++            --with-tzpath=${MINGW_PREFIX}/share/zoneinfo \
++            --enable-optimizations
++
++          make -j8
++
++      - name: Run Smoke Test (build)
++        shell: msys2 {0}
++        run: |
++          SMOKETESTS="$(pwd)/mingw_smoketests.py"
++          cd _build
++          ./python.exe "$SMOKETESTS"
++          MSYSTEM= ./python.exe "$SMOKETESTS"
++
++      - name: Run tests
++        shell: msys2 {0}
++        run: |
++          IGNOREFILE="$(pwd)/mingw_ignorefile.txt"
++          cd _build
++          MSYSTEM= ./python.exe -m test -j8 --ignorefile "$IGNOREFILE" -W
++
++      - name: Run broken tests
++        continue-on-error: true
++        shell: msys2 {0}
++        run: |
++          IGNOREFILE="$(pwd)/mingw_ignorefile.txt"
++          cd _build
++          MSYSTEM= ./python.exe -m test -j8 --matchfile "$IGNOREFILE" -W
++
++      - name: Install
++        shell: msys2 {0}
++        run: |
++          set -ex
++          cd _build
++
++          pkgdir=python_pkgdir
++
++          make -j1 install DESTDIR="${pkgdir}"
++
++          # Fix shebangs
++          _pybasever=$(./python.exe -c "import sys; print(sys.winver);")
++          for fscripts in 2to3 2to3-${_pybasever} idle3 idle${_pybasever} pydoc3 pydoc${_pybasever}; do
++              sed -i "s|$(cygpath -w ${MINGW_PREFIX} | sed 's|\\|\\\\|g')/bin/python${_pybasever}.exe|/usr/bin/env python${_pybasever}.exe|g" "${pkgdir}${MINGW_PREFIX}"/bin/${fscripts}
++          done
++          sed -i "s|#!${pkgdir}${MINGW_PREFIX}/bin/python${_pybasever}.exe|#!/usr/bin/env python${_pybasever}.exe|" "${pkgdir}${MINGW_PREFIX}"/lib/python${_pybasever}/config-${_pybasever}/python-config.py
++
++          # Create version-less aliases
++          cp "${pkgdir}${MINGW_PREFIX}"/bin/python3.exe "${pkgdir}${MINGW_PREFIX}"/bin/python.exe
++          cp "${pkgdir}${MINGW_PREFIX}"/bin/python3w.exe "${pkgdir}${MINGW_PREFIX}"/bin/pythonw.exe
++          cp "${pkgdir}${MINGW_PREFIX}"/bin/python3-config "${pkgdir}${MINGW_PREFIX}"/bin/python-config
++          cp "${pkgdir}${MINGW_PREFIX}"/bin/idle3 "${pkgdir}${MINGW_PREFIX}"/bin/idle
++          cp "${pkgdir}${MINGW_PREFIX}"/bin/pydoc3 "${pkgdir}${MINGW_PREFIX}"/bin/pydoc
++
++      - name: Run Smoke Test (installed)
++        shell: msys2 {0}
++        run: |
++          export PYTHONTZPATH="${MINGW_PREFIX}/share/zoneinfo"
++          SMOKETESTS="$(pwd)/mingw_smoketests.py"
++          cd _build
++          cd python_pkgdir/${MINGW_PREFIX}/bin
++          ./python.exe "$SMOKETESTS"
++          MSYSTEM= ./python.exe "$SMOKETESTS"
++
++      - name: Compress
++        if: always()
++        shell: msys2 {0}
++        run: |
++          cd _build
++          tar -zcf python.tar.gz python_pkgdir/
++
++      - name: Upload
++        uses: actions/upload-artifact@v2
++        if: always()
++        with:
++          name: build-${{ matrix.msystem }}
++          path: _build/python.tar.gz
++
++  cross:
++    runs-on: ubuntu-latest
++    container:
++      image: archlinux:base-devel
++    steps:
++      - uses: actions/checkout@v2
++      - name: Install deps
++        run: |
++          pacman --noconfirm -Suuy
++          pacman --needed --noconfirm -S mingw-w64-gcc autoconf-archive autoconf automake python zip
++
++      - name: Build
++        run: |
++          autoreconf -vfi
++
++          mkdir _build && cd _build
++
++          ../configure \
++            --host=x86_64-w64-mingw32 \
++            --build=x86_64-pc-linux-gnu \
++            --enable-shared \
++            --with-system-expat \
++            --with-system-ffi \
++            --with-system-libmpdec \
++            --without-ensurepip \
++            --without-c-locale-coercion \
++            --enable-loadable-sqlite-extensions
++
++          make -j8
++
++          make install DESTDIR="$(pwd)/install"
++
++      - name: 'Zip files'
++        run: |
++          zip -r install.zip _build/install
++
++      - name: Upload
++        uses: actions/upload-artifact@v2
++        with:
++          name: build-cross
++          path: install.zip
++
++  cross-test:
++    needs: [cross]
++    runs-on: windows-latest
++    steps:
++      - uses: actions/download-artifact@v2
++        with:
++          name: build-cross
++
++      - name: 'Run tests'
++        run: |
++          7z x install.zip
++          ./_build/install/usr/local/bin/python3.exe -c "import sysconfig, pprint; pprint.pprint(sysconfig.get_config_vars())"
+diff --git a/mingw_ignorefile.txt b/mingw_ignorefile.txt
+new file mode 100644
+index 0000000..dc3802e
+--- /dev/null
++++ b/mingw_ignorefile.txt
+@@ -0,0 +1,34 @@
++ctypes.test.test_loading.LoaderTest.test_load_dll_with_flags
++distutils.tests.test_bdist_dumb.BuildDumbTestCase.test_simple_built
++distutils.tests.test_cygwinccompiler.CygwinCCompilerTestCase.test_get_versions
++distutils.tests.test_util.UtilTestCase.test_change_root
++test.datetimetester.TestLocalTimeDisambiguation_Fast.*
++test.datetimetester.TestLocalTimeDisambiguation_Pure.*
++test.test_cmath.CMathTests.test_specific_values
++test.test_cmd_line_script.CmdLineTest.test_consistent_sys_path_for_direct_execution
++test.test_compileall.CommandLineTestsNoSourceEpoch.*
++test.test_compileall.CommandLineTestsWithSourceEpoch.*
++test.test_compileall.CompileallTestsWithoutSourceEpoch.*
++test.test_compileall.CompileallTestsWithSourceEpoch.*
++test.test_import.ImportTests.test_dll_dependency_import
++test.test_math.MathTests.*
++test.test_ntpath.NtCommonTest.test_import
++test.test_os.StatAttributeTests.test_stat_block_device
++test.test_os.TestScandir.test_attributes
++test.test_os.UtimeTests.test_large_time
++test.test_platform.PlatformTest.test_architecture_via_symlink
++test.test_regrtest.ProgramsTestCase.test_pcbuild_rt
++test.test_regrtest.ProgramsTestCase.test_tools_buildbot_test
++test.test_site._pthFileTests.*
++test.test_site.HelperFunctionsTests.*
++test.test_site.StartupImportTests.*
++test.test_ssl.*
++test.test_strptime.CalculationTests.*
++test.test_strptime.StrptimeTests.test_weekday
++test.test_strptime.TimeRETests.test_compile
++test.test_tools.test_i18n.Test_pygettext.test_POT_Creation_Date
++test.test_venv.BasicTest.*
++test.test_venv.EnsurePipTest.*
++# flaky
++test.test__xxsubinterpreters.*
++test.test_asyncio.test_subprocess.SubprocessProactorTests.test_stdin_broken_pipe
+\ No newline at end of file
+diff --git a/mingw_smoketests.py b/mingw_smoketests.py
+new file mode 100644
+index 0000000..70acbd1
+--- /dev/null
++++ b/mingw_smoketests.py
+@@ -0,0 +1,310 @@
++#!/usr/bin/env python3
++# Copyright 2017 Christoph Reiter
++#
++# Permission is hereby granted, free of charge, to any person obtaining
++# a copy of this software and associated documentation files (the
++# "Software"), to deal in the Software without restriction, including
++# without limitation the rights to use, copy, modify, merge, publish,
++# distribute, sublicense, and/or sell copies of the Software, and to
++# permit persons to whom the Software is furnished to do so, subject to
++# the following conditions:
++#
++# The above copyright notice and this permission notice shall be included
++# in all copies or substantial portions of the Software.
++#
++# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
++# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
++# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
++# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
++# CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
++# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
++# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++
++"""The goal of this test suite is collect tests for update regressions
++and to test msys2 related modifications like for path handling.
++Feel free to extend.
++"""
++
++import os
++import unittest
++import sysconfig
++
++if "MSYSTEM" in os.environ:
++    SEP = "/"
++else:
++    SEP = "\\"
++
++_UCRT = "clang" in sysconfig.get_platform() or "ucrt" in sysconfig.get_platform()
++
++
++class Tests(unittest.TestCase):
++
++    def test_zoneinfo(self):
++        # https://github.com/msys2-contrib/cpython-mingw/issues/32
++        import zoneinfo
++        self.assertTrue(any(os.path.exists(p) for p in zoneinfo.TZPATH))
++        zoneinfo.ZoneInfo("America/Sao_Paulo")
++
++    def test_userdir_path_sep(self):
++        # Make sure os.path and pathlib use the same path separators
++        from unittest import mock
++        from os.path import expanduser
++        from pathlib import Path
++
++        profiles = ["C:\\foo", "C:/foo"]
++        for profile in profiles:
++            with mock.patch.dict(os.environ, {"USERPROFILE": profile}):
++                self.assertEqual(expanduser("~"), os.path.normpath(expanduser("~")))
++                self.assertEqual(str(Path("~").expanduser()), expanduser("~"))
++                self.assertEqual(str(Path.home()), expanduser("~"))
++
++    def test_sysconfig_schemes(self):
++        # https://github.com/msys2/MINGW-packages/issues/9319
++        import sysconfig
++        from distutils.dist import Distribution
++        from distutils.command.install import install
++
++        names = ['scripts', 'purelib', 'platlib', 'data', 'include']
++        for scheme in ["nt", "nt_user"]:
++            for name in names:
++                c = install(Distribution({"name": "foobar"}))
++                c.user = (scheme == "nt_user")
++                c.finalize_options()
++                if name == "include":
++                    dist_path = os.path.dirname(getattr(c, "install_" + "headers"))
++                else:
++                    dist_path = getattr(c, "install_" + name)
++                sys_path = sysconfig.get_path(name, scheme)
++                self.assertEqual(dist_path, sys_path, (scheme, name))
++
++    def test_ctypes_find_library(self):
++        from ctypes.util import find_library
++        from ctypes import cdll
++        self.assertTrue(cdll.msvcrt)
++        if _UCRT:
++            self.assertIsNone(find_library('c'))
++        else:
++            self.assertEqual(find_library('c'), 'msvcrt.dll')
++
++    def test_ctypes_dlopen(self):
++        import ctypes
++        import sys
++        self.assertEqual(ctypes.RTLD_GLOBAL, 0)
++        self.assertEqual(ctypes.RTLD_GLOBAL,  ctypes.RTLD_LOCAL)
++        self.assertFalse(hasattr(sys, 'setdlopenflags'))
++        self.assertFalse(hasattr(sys, 'getdlopenflags'))
++        self.assertFalse([n for n in dir(os) if n.startswith("RTLD_")])
++
++    def test_time_no_unix_stuff(self):
++        import time
++        self.assertFalse([n for n in dir(time) if n.startswith("clock_")])
++        self.assertFalse([n for n in dir(time) if n.startswith("CLOCK_")])
++        self.assertFalse([n for n in dir(time) if n.startswith("pthread_")])
++        self.assertFalse(hasattr(time, 'tzset'))
++
++    def test_strftime(self):
++        import time
++        with self.assertRaises(ValueError):
++            time.strftime('%Y', (12345,) + (0,) * 8)
++
++    def test_sep(self):
++        self.assertEqual(os.sep, SEP)
++
++    def test_module_file_path(self):
++        import asyncio
++        import zlib
++        self.assertEqual(zlib.__file__, os.path.normpath(zlib.__file__))
++        self.assertEqual(asyncio.__file__, os.path.normpath(asyncio.__file__))
++
++    def test_importlib_frozen_path_sep(self):
++        import importlib._bootstrap_external
++        self.assertEqual(importlib._bootstrap_external.path_sep, SEP)
++
++    def test_os_commonpath(self):
++        self.assertEqual(
++            os.path.commonpath(
++                [os.path.join("C:", os.sep, "foo", "bar"),
++                 os.path.join("C:", os.sep, "foo")]),
++                 os.path.join("C:", os.sep, "foo"))
++
++    def test_pathlib(self):
++        import pathlib
++
++        p = pathlib.Path("foo") / pathlib.Path("foo")
++        self.assertEqual(str(p), os.path.normpath(p))
++
++    def test_modules_import(self):
++        import sqlite3
++        import ssl
++        import ctypes
++        import curses
++
++    def test_socket_inet_ntop(self):
++        import socket
++        self.assertTrue(hasattr(socket, "inet_ntop"))
++
++    def test_socket_inet_pton(self):
++        import socket
++        self.assertTrue(hasattr(socket, "inet_pton"))
++
++    def test_multiprocessing_queue(self):
++        from multiprocessing import Queue
++        Queue(0)
++
++    #def test_socket_timout_normal_error(self):
++    #    import urllib.request
++    #    from urllib.error import URLError
++
++    #    try:
++    #        urllib.request.urlopen(
++    #            'http://localhost', timeout=0.0001).close()
++    #    except URLError:
++    #        pass
++
++    def test_threads(self):
++        from concurrent.futures import ThreadPoolExecutor
++
++        with ThreadPoolExecutor(1) as pool:
++            for res in pool.map(lambda *x: None, range(10000)):
++                pass
++
++    def test_sysconfig(self):
++        import sysconfig
++        # This should be able to execute without exceptions
++        sysconfig.get_config_vars()
++
++    def test_sqlite_enable_load_extension(self):
++        # Make sure --enable-loadable-sqlite-extensions is used
++        import sqlite3
++        self.assertTrue(sqlite3.Connection.enable_load_extension)
++
++    def test_venv_creation(self):
++        import tempfile
++        import venv
++        import subprocess
++        import shutil
++        with tempfile.TemporaryDirectory() as tmp:
++            builder = venv.EnvBuilder()
++            builder.create(tmp)
++            assert os.path.exists(os.path.join(tmp, "bin", "activate"))
++            assert os.path.exists(os.path.join(tmp, "bin", "python.exe"))
++            assert os.path.exists(os.path.join(tmp, "bin", "python3.exe"))
++            subprocess.check_call([shutil.which("bash.exe"), os.path.join(tmp, "bin", "activate")])
++
++    def test_has_mktime(self):
++        from time import mktime, gmtime
++        mktime(gmtime())
++
++    def test_platform_things(self):
++        import sys
++        import sysconfig
++        import platform
++        import importlib.machinery
++        self.assertEqual(sys.implementation.name, "cpython")
++        self.assertEqual(sys.platform, "win32")
++        self.assertTrue(sysconfig.get_platform().startswith("mingw"))
++        self.assertTrue(sysconfig.get_config_var('SOABI').startswith("cpython-"))
++        ext_suffix = sysconfig.get_config_var('EXT_SUFFIX')
++        self.assertTrue(ext_suffix.endswith(".pyd"))
++        self.assertTrue("mingw" in ext_suffix)
++        self.assertEqual(sysconfig.get_config_var('SHLIB_SUFFIX'), ".pyd")
++        ext_suffixes = importlib.machinery.EXTENSION_SUFFIXES
++        self.assertTrue(ext_suffix in ext_suffixes)
++        self.assertTrue(".pyd" in ext_suffixes)
++        self.assertEqual(sys.winver, ".".join(map(str, sys.version_info[:2])))
++        self.assertEqual(platform.python_implementation(), "CPython")
++        self.assertEqual(platform.system(), "Windows")
++        self.assertTrue(isinstance(sys.api_version, int) and sys.api_version > 0)
++
++    def test_c_ext_build(self):
++        import tempfile
++        import sys
++        import subprocess
++        import textwrap
++        from pathlib import Path
++
++        with tempfile.TemporaryDirectory() as tmppro:
++            subprocess.check_call([sys.executable, "-m", "ensurepip", "--user"])
++            with Path(tmppro, "setup.py").open("w") as f:
++                f.write(
++                    textwrap.dedent(
++                        """\
++                                    from setuptools import setup, Extension
++
++                                    setup(
++                                        name='cwrapper',
++                                        version='1.0',
++                                        ext_modules=[
++                                            Extension(
++                                                'cwrapper',
++                                                sources=['cwrapper.c']),
++                                        ],
++                                    )
++                                """
++                    )
++                )
++            with Path(tmppro, "cwrapper.c").open("w") as f:
++                f.write(
++                    textwrap.dedent(
++                        """\
++                                    #include <Python.h>
++                                    static PyObject *
++                                    helloworld(PyObject *self, PyObject *args)
++                                    {
++                                        printf("Hello World\\n");
++                                        return Py_None;
++                                    }
++                                    static PyMethodDef
++                                    myMethods[] = {
++                                        { "helloworld", helloworld, METH_NOARGS, "Prints Hello World" },
++                                        { NULL, NULL, 0, NULL }
++                                    };
++                                    static struct PyModuleDef cwrapper = {
++                                        PyModuleDef_HEAD_INIT,
++                                        "cwrapper",
++                                        "Test Module",
++                                        -1,
++                                        myMethods
++                                    };
++
++                                    PyMODINIT_FUNC
++                                    PyInit_cwrapper(void)
++                                    {
++                                        return PyModule_Create(&cwrapper);
++                                    }
++                                """
++                    )
++                )
++            subprocess.check_call(
++                [sys.executable, "-c", "import struct"],
++            )
++            subprocess.check_call(
++                [
++                    sys.executable,
++                    "-m",
++                    "pip",
++                    "install",
++                    "wheel",
++                ],
++            )
++            subprocess.check_call(
++                [
++                    sys.executable,
++                    "-m",
++                    "pip",
++                    "install",
++                    tmppro,
++                ],
++            )
++            subprocess.check_call(
++                [sys.executable, "-c", "import cwrapper"],
++            )
++
++
++
++def suite():
++    return unittest.TestLoader().loadTestsFromName(__name__)
++
++
++if __name__ == '__main__':
++    unittest.main(defaultTest='suite')
+-- 
+2.34.1
+
