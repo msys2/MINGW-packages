@@ -24,15 +24,6 @@ _status() {
     printf "${items:+\t%s\n}" "${items:+${items[@]}}"
 }
 
-# Git configuration
-git_config() {
-    local name="${1}"
-    local value="${2}"
-    test -n "$(git config ${name})" && return 0
-    git config --global "${name}" "${value}" && return 0
-    failure 'Could not configure Git for makepkg'
-}
-
 # Run command with status
 execute(){
     local status="${1}"
