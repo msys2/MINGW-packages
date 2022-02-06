@@ -24,32 +24,6 @@ _status() {
     printf "${items:+\t%s\n}" "${items:+${items[@]}}"
 }
 
-# Convert lines to array
-_as_list() {
-    local -n nameref_list="${1}"
-    local filter="${2}"
-    local strip="${3}"
-    local lines="${4}"
-    local result=1
-    nameref_list=()
-    while IFS= read -r line; do
-        test -z "${line}" && continue
-        result=0
-        [[ "${line}" = ${filter} ]] && nameref_list+=("${line/${strip}/}")
-    done <<< "${lines}"
-    return "${result}"
-}
-
-# Changes since master or from head
-_list_changes() {
-    local list_name="${1}"
-    local filter="${2}"
-    local strip="${3}"
-    local git_options=("${@:4}")
-    _as_list "${list_name}" "${filter}" "${strip}" "$(git log "${git_options[@]}" upstream/master.. | sort -u)" ||
-    _as_list "${list_name}" "${filter}" "${strip}" "$(git log "${git_options[@]}" HEAD^.. | sort -u)"
-}
-
 # Git configuration
 git_config() {
     local name="${1}"
@@ -71,11 +45,6 @@ execute(){
         else ${command%%:*} | ${command#*:} ${arguments[@]}
     fi || failure "${status} failed"
     cd - > /dev/null
-}
-
-# Added commits
-list_commits()  {
-    _list_changes commits '*' '#*::' --pretty=format:'%ai::[%h] %s'
 }
 
 # Get changed packages in correct build order

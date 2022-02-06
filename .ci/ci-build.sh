@@ -21,9 +21,8 @@ sed -i 's/^CheckSpace/#CheckSpace/g' /etc/pacman.conf
 pacman --noconfirm -Fy
 
 # Detect
-list_commits  || failure 'Could not detect added commits'
 list_packages || failure 'Could not detect changed files'
-message 'Processing changes' "${commits[@]}"
+message 'Processing changes'
 test -z "${packages}" && success 'No changes in package recipes'
 
 # Build
