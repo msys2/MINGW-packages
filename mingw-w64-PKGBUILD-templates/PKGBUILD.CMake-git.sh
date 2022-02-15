@@ -6,6 +6,7 @@ pkgver=1.0.0.r849.gc56db2336
 pkgrel=1
 pkgdesc="Some package (mingw-w64)"
 arch=('any')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 url="https://github.com/someproject/somepackage"
 license=('LICENSE')
 makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"

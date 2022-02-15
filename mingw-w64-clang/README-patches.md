@@ -1,6 +1,7 @@
-### Patches statuses
+# Patches statuses
 
 Legend:
+
 - :grey_exclamation: - not meant to upstream, for compatibility with GCC only
 - :x: - not upstreamed
 - :grey_question: - sent but not merged yet
@@ -8,6 +9,7 @@ Legend:
 - :arrow_down_small:  - backported
 
 -----
+
 - `"0001-Use-posix-style-path-separators-with-MinGW.patch"` :x::x::x: - this one is really imporant
 - `"0002-Fix-GetHostTriple-for-mingw-w64-in-msys.patch"` :x:
 - `"0003-CMake-try-creating-symlink-first-on-windows.patch"` :x: (win symlinks don't play well with pacman packages)
@@ -16,7 +18,6 @@ Legend:
 - `"0101-Disable-fPIC-errors.patch"` :x:
 - `"0103-Use-posix-style-path-separators-with-MinGW.patch"` :x::x::x: - this one is really imporant
 - `"0104-link-pthread-with-mingw.patch"` :grey_exclamation:
-- `"0105-clang-Tooling-Use-Windows-command-lines.patch"` :arrow_up_small: - https://reviews.llvm.org/D111195
+- `"0105-clang-Tooling-Use-Windows-command-lines.patch"` :arrow_up_small: - [https://reviews.llvm.org/D111195]
 - `"0304-ignore-new-bfd-options.patch"` :x:
-- `"0501-lldb-Make-the-thread_local-g_global_boundary-accesse.patch"` :arrow_down_small: - https://reviews.llvm.org/D111779
 - `"0901-cast-to-make-gcc-happy.patch"` :grey_exclamation:
