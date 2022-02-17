@@ -1,21 +1,17 @@
 # Maintainer: Alexey Pavlov <alexpux@gmail.com>
 
-if [[ "${MINGW_PREFIX}" =~ /clang.* ]] ; then
-    # _toolset=clang creates dlls names without the `lib' prefix
-    _toolset=gcc
-else
-    _toolset=gcc
-fi
+# mingw logic lives in gcc.jam, so we always need to use the 'gcc' toolset
+_toolset=gcc
 
 _realname=boost
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 pkgver=1.78.0
 _boostver=${pkgver//./_}
-pkgrel=1
+pkgrel=3
 pkgdesc="Free peer-reviewed portable C++ source libraries (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
 url="https://www.boost.org/"
 license=('custom')
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
@@ -24,7 +20,10 @@ depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-xz"
          "${MINGW_PACKAGE_PREFIX}-zstd"
          "${MINGW_PACKAGE_PREFIX}-zlib")
+optdepends=("${MINGW_PACKAGE_PREFIX}-python: For Boost.Python"
+            "${MINGW_PACKAGE_PREFIX}-python-numpy: For Boost.Python (NumPy)")
 makedepends=("${MINGW_PACKAGE_PREFIX}-python"
+             "${MINGW_PACKAGE_PREFIX}-python-numpy"
              "${MINGW_PACKAGE_PREFIX}-cc"
              "lndir")
 options=('strip' 'buildflags' 'staticlibs')
@@ -151,6 +150,11 @@ setb2args() {
     -sZLIB_LIBPATH=${MINGW_PREFIX}/lib \
     -d2 \
     -q"
+    if [[ "${CARCH}" == "aarch64" ]]; then
+      # boost context does not yet have an implementation for Windows ARM64
+      # coroutine and fiber depend on context
+      b2args+=" --without-context --without-coroutine --without-fiber"
+    fi
 }
 
 build() {
@@ -165,9 +169,14 @@ build() {
   local _pyver=$(${MINGW_PREFIX}/bin/python -c "import sys;sys.stdout.write('.'.join(map(str, sys.version_info[:2])))")
 
   echo "using python : ${_pyver} : ${PREFIX_DEPS}/bin/python.exe : ${PREFIX_DEPS}/include/python${_pyver} : ${PREFIX_DEPS}/lib/python${_pyver}/config-${_pyver} ;" >> ./tools/build/src/user-config.jam
-  #echo "using gcc : : ${PREFIX_DEPS}/bin/g++.exe : <rc>${PREFIX_DEPS}/bin/windres.exe ;" >> ./tools/build/src/user-config.jam
+  # configure b2 to use c++ rather than g++, as the latter no longer exists in
+  # clang prefixes
+  echo "using gcc : : ${PREFIX_DEPS}/bin/c++.exe ;" >> ./tools/build/src/user-config.jam
 
-  ./bootstrap.sh --with-icu=${MINGW_PREFIX} --with-python=${MINGW_PREFIX} --with-toolset=$_toolset
+  ./tools/build/src/engine/build.sh --cxx="${CXX}" gcc
+  cp ./tools/build/src/engine/b2 .
+
+  ./bootstrap.sh --with-icu=${MINGW_PREFIX} --with-python=${MINGW_PREFIX} --with-toolset=$_toolset --with-bjam="$(pwd)/b2"
 
   setb2args
   ./b2 $b2args -j$(nproc)

@@ -7,11 +7,11 @@ pkgver=1.0.0
 pkgrel=1
 pkgdesc="Some package (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 url='https://www.somepackage.org/'
 license=('LICENSE')
 depends=("${MINGW_PACKAGE_PREFIX}-python")
-makedepends=("${MINGW_PACKAGE_PREFIX}-python-pyproject2setuppy")
+makedepends=("${MINGW_PACKAGE_PREFIX}-python-build" "${MINGW_PACKAGE_PREFIX}-python-installer")
 checkdepends=("${MINGW_PACKAGE_PREFIX}-python-pytest")
 source=("https://pypi.org/packages/source/${_realname::1}/${_realname}/${_realname}-${pkgver}.tar.gz"
         "0001-An-important-fix.patch"
@@ -36,7 +36,7 @@ build() {
   cd "${srcdir}"
   cp -r "${_realname}-${pkgver}" "python-build-${MSYSTEM}" && cd "python-build-${MSYSTEM}"
 
-  ${MINGW_PREFIX}/bin/python -m pyproject2setuppy.main build
+  ${MINGW_PREFIX}/bin/python -m build --wheel --skip-dependency-check --no-isolation
 }
 
 check() {
@@ -52,16 +52,9 @@ package() {
   msg "Python install for ${MSYSTEM}"
   cd "${srcdir}/python-build-${MSYSTEM}"
 
-  MSYS2_ARG_CONV_EXCL="--prefix=;--install-scripts=;--install-platlib=" \
-    ${MINGW_PREFIX}/bin/python -m pyproject2setuppy.main install --prefix=${MINGW_PREFIX} \
-    --root="${pkgdir}" --optimize=1 --skip-build
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+    ${MINGW_PREFIX}/bin/python -m installer --prefix=${MINGW_PREFIX} \
+    --destdir="${pkgdir}" dist/*.whl
 
   install -Dm644 LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/python-${_realname}/LICENSE"
-
-  ## (OPTIONAL) This entire section should be removed
-  ## if the package does NOT instal anything in the ${MINGW_PREFIX}/bin directory.
-  for _f in "${pkgdir}${MINGW_PREFIX}"/bin/*-script.py; do
-    # Remove shebang line
-    sed -e '1 { s/^#!.*$// }' -i "${_f}"
-  done
 }

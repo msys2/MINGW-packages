@@ -7,6 +7,7 @@ pkgver=1.0.0
 pkgrel=1
 pkgdesc="Some package (mingw-w64)"
 arch=('any')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 url='https://www.somepackage.org/'
 license=('LICENSE')
 depends=("${MINGW_PACKAGE_PREFIX}-python")

@@ -3,78 +3,102 @@
 _realname=superlu
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=5.2.2
-pkgrel=2
+pkgver=5.3.0
+pkgrel=1
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 pkgdesc="Sparse direct linear solver (mingw-w64)"
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-openblas")
 makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
-             "${MINGW_PACKAGE_PREFIX}-cc")
+             "${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             $( [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-fortran"))
 optdepends=("${MINGW_PACKAGE_PREFIX}-tcl: build & run test suite")
 options=('strip' 'staticlibs')
 license=('3-clause BSD')
 url='https://portal.nersc.gov/project/sparse/superlu/'
-source=("https://portal.nersc.gov/project/sparse/superlu/${_realname}_${pkgver}.tar.gz"
+source=("https://github.com/xiaoyeli/${_realname}/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz"
         'all.tcl'
         'tclbuildtest.tcl'
         'superlu.test'
-        '0001-pc-fix.patch')
-sha256sums=('470334a72ba637578e34057f46948495e601a5988a602604f5576367e606a28c'
+        '0001-pc-fix.patch'
+        '0002-cmake-fix-install.patch')
+sha256sums=('3e464afa77335de200aeb739074a11e96d9bef6d0b519950cfa6684c4be1f350'
             'ec5072630e1c0309fe383669e9187790cd135a393c67bc4bc35cf60b0ba396ff'
             '15c7af25b91406d5fe5f26cfe00963b6cfde1c3dd466eb25f1b6fae299934966'
             '5efeea2586552dcbccf238c4aed94d64525e33fb9eca8741b56a961a6fd8e144'
-            '86c7a2854632d83524d6f4e29d0dc08197de30c337e6e916922cb21623e1cfa7')
+            '86c7a2854632d83524d6f4e29d0dc08197de30c337e6e916922cb21623e1cfa7'
+            '9fa6033821a033c7b1573dfadb3c049d3dbe8c0762a68c001af9e4d958174ee9')
 
 prepare() {
   cd "${srcdir}/${_realname}-${pkgver}"
-  for p in ${source[*]:4}; do
-    patch -p1 -i "${srcdir}/$p"
-  done
+
+  patch -p1 -i "${srcdir}/0001-pc-fix.patch"
+
+  # https://github.com/xiaoyeli/superlu/pull/60
+  patch -p1 -i "${srcdir}/0002-cmake-fix-install.patch"
 }
 
 build() {
-  declare -a _btype
-  if check_option "debug" "y"; then
-    _btype=Debug
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
   else
-    _btype=Release
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
   fi
-  cd "${srcdir}"
-  mkdir -p build-${CARCH}s && cd build-${CARCH}s
+
+  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+    _extra_config+=("-DXSDK_ENABLE_Fortran=OFF")
+  fi
+
+  [[ -d "${srcdir}/build-${MSYSTEM}-static" ]] && rm -rf "${srcdir}/build-${MSYSTEM}-static"
+  mkdir -p "${srcdir}/build-${MSYSTEM}-static" && cd "${srcdir}/build-${MSYSTEM}-static"
+
   MSYS2_ARG_CONV_EXCL='-DCMAKE_INSTALL_PREFIX=' \
-    ${MINGW_PREFIX}/bin/cmake \
-      -G'MSYS Makefiles' \
+    ${MINGW_PREFIX}/bin/cmake.exe \
+      -G "Ninja" \
       -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
-      -DCMAKE_BUILD_TYPE=${_btype} \
+     "${_extra_config[@]}" \
       -DBUILD_SHARED_LIBS=OFF \
       -DBUILD_TESTING=OFF \
       -Denable_internal_blaslib=OFF \
       ../${_realname}-${pkgver}
-  make
-  cd "${srcdir}"
-  mkdir -p build-${CARCH} && cd build-${CARCH}
+
+  ${MINGW_PREFIX}/bin/cmake.exe --build ./
+
+  [[ -d "${srcdir}/build-${MSYSTEM}-shared" ]] && rm -rf "${srcdir}/build-${MSYSTEM}-shared"
+  mkdir -p "${srcdir}/build-${MSYSTEM}-shared" && cd "${srcdir}/build-${MSYSTEM}-shared"
+
   MSYS2_ARG_CONV_EXCL='-DCMAKE_INSTALL_PREFIX=' \
-    ${MINGW_PREFIX}/bin/cmake \
-      -G'MSYS Makefiles' \
+    ${MINGW_PREFIX}/bin/cmake.exe \
+      -G "Ninja" \
       -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
-      -DCMAKE_BUILD_TYPE=${_btype} \
+      "${_extra_config[@]}" \
       -DBUILD_SHARED_LIBS=ON \
       -DCMAKE_NEED_RESPONSE=ON \
       -DBUILD_TESTING=OFF \
       -Denable_internal_blaslib=OFF \
       ../${_realname}-${pkgver}
-  make
+
+  ${MINGW_PREFIX}/bin/cmake.exe --build ./
+}
+
+check() {
+  cd "${srcdir}/build-${MSYSTEM}-static"
+  ${MINGW_PREFIX}/bin/ctest.exe ./ || true
+
+  cd "${srcdir}/build-${MSYSTEM}-shared"
+  ${MINGW_PREFIX}/bin/ctest.exe ./ || true
 }
 
 package() {
-  cd "${srcdir}/build-${CARCH}s"
-  make DESTDIR="${pkgdir}" install
-  cd "${srcdir}/build-${CARCH}"
-  make DESTDIR="${pkgdir}" install
-  mkdir -p "${pkgdir}/${MINGW_PREFIX}"/bin
-  cp SRC/libsuperlu.dll "${pkgdir}/${MINGW_PREFIX}"/bin
+  cd "${srcdir}/build-${MSYSTEM}-static"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install ./
+
+  cd "${srcdir}/build-${MSYSTEM}-shared"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install ./
+
   mkdir -p "${pkgdir}/${MINGW_PREFIX}/share/test/${_realname}"
   cd "${pkgdir}${MINGW_PREFIX}/include"
   mkdir "${_realname}"
@@ -83,4 +107,13 @@ package() {
   cp {all,tclbuildtest}.tcl ${_realname}.test "${pkgdir}/${MINGW_PREFIX}/share/test/${_realname}"
   cd "${_realname}-${pkgver}/EXAMPLE"
   cp ?linsol.c g20.rua cg20.cua "${pkgdir}/${MINGW_PREFIX}/share/test/${_realname}"
+
+  # Remove full path reference in cmake
+  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
+  for _f in "${pkgdir}${MINGW_PREFIX}"/lib/cmake/${_realname}/*.cmake; do
+    sed -e "s|${PREFIX_WIN}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
+    sed -e "s|${MINGW_PREFIX}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
+  done
+
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE.txt" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE.txt"
 }
