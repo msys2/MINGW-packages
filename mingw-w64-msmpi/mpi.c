@@ -3,10 +3,10 @@
 #include <windows.h>
 
 #if defined(CC)
-	#define C "gcc.exe"
+	#define C "cc.exe"
 	#define E "MPICC"
 #elif defined(CXX)
-	#define C "g++.exe"
+	#define C "c++.exe"
 	#define E "MPICXX"
 #elif defined(FC)
 	#define C "gfortran.exe"
