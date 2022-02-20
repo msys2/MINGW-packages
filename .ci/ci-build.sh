@@ -81,6 +81,17 @@ for package in "${packages[@]}"; do
             diff -Nur <(pacman -Fl "$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
             echo "::endgroup::"
 
+            echo "::group::[runtime-dependencies] ${pkgname}"
+            message "Runtime dependencies for ${pkgname}"
+            declare -a binaries=($(pacman -Ql $pkgname | sed -e 's|^[^ ]* ||' | grep -E ${MINGW_PREFIX}/bin/[^/]+\.\(dll\|exe\)$))
+            if [ "${#binaries[@]}" -ne 0 ]; then
+                for binary in ${binaries[@]}; do
+                    echo "${binary}:"
+                    ntldd -R ${binary} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder"
+                done
+            fi
+            echo "::endgroup::"
+
             echo "::group::[uninstall] ${pkgname}"
             message "Uninstalling $pkgname"
             repo-add $PWD/../artifacts/ci.db.tar.gz $PWD/$pkg
@@ -103,6 +114,23 @@ for package in "${packages[@]}"; do
 
             message "File listing diff for ${pkgname}"
             diff -Nur <(pacman -Fl "$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
+        done
+        cd - > /dev/null
+        echo "::endgroup::"
+
+        echo "::group::[runtime-dependencies] ${package}"
+        cd "$package"
+        for pkg in *.pkg.tar.*; do
+            pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
+            message "Runtime dependencies for ${pkgname}"
+
+            declare -a binaries=($(pacman -Ql $pkgname | sed -e 's|^[^ ]* ||' | grep -E ${MINGW_PREFIX}/bin/[^/]+\.\(dll\|exe\)$))
+            if [ "${#binaries[@]}" -ne 0 ]; then
+                for binary in ${binaries[@]}; do
+                    echo "${binary}:"
+                    ntldd -R ${binary} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder"
+                done
+            fi
         done
         cd - > /dev/null
         echo "::endgroup::"
