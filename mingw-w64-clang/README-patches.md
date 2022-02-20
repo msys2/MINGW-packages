@@ -15,6 +15,7 @@ Legend:
 - `"0003-CMake-try-creating-symlink-first-on-windows.patch"` :x: (win symlinks don't play well with pacman packages)
 - `"0005-add-pthread-as-system-lib-for-mingw.patch"` :grey_exclamation:
 - `"0008-enable-emutls-for-mingw.patch"` :grey_exclamation:
+- `"0010-coff-fix-section-name-encoding.patch"` :grey_exclamation:
 - `"0101-Disable-fPIC-errors.patch"` :x:
 - `"0103-Use-posix-style-path-separators-with-MinGW.patch"` :x::x::x: - this one is really imporant
 - `"0104-link-pthread-with-mingw.patch"` :grey_exclamation:
