@@ -37,6 +37,7 @@ pacman -Sy
 message 'Building packages'
 for package in "${packages[@]}"; do
     echo "::group::[build] ${package}"
+    execute 'Clear cache' pacman -Scc --noconfirm
     execute 'Fetch keys' "$DIR/fetch-validpgpkeys.sh"
     execute 'Building binary' makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild
     echo "::endgroup::"
