@@ -11,8 +11,6 @@ DIR="$( cd "$( dirname "$0" )" && pwd )"
 # Configure
 source "$DIR/ci-library.sh"
 mkdir artifacts
-git_config user.email 'ci@msys2.org'
-git_config user.name  'MSYS2 Continuous Integration'
 git remote add upstream 'https://github.com/MSYS2/MINGW-packages'
 git fetch --quiet upstream
 # reduce time required to install packages by disabling pacman's disk space checking
