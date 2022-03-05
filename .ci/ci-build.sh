@@ -32,6 +32,9 @@ repo-add $PWD/artifacts/ci.db.tar.gz
 sed -i '1s|^|[ci]\nServer = file://'"$PWD"'/artifacts/\nSigLevel = Never\n|' /etc/pacman.conf
 pacman -Sy
 
+# Remove git and python
+pacman -R --recursive --unneeded --noconfirm --noprogressbar git python
+
 message 'Building packages'
 for package in "${packages[@]}"; do
     echo "::group::[build] ${package}"
