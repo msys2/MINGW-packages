@@ -25,6 +25,7 @@ message 'Processing changes'
 declare -a skipped_packages=()
 for package in "${packages[@]}"; do
     cd "${package}"
+    mingw_arch=("mingw32" "mingw64" "ucrt64" "clang64")
     . PKGBUILD
     if [[ ! " ${mingw_arch[*]} " =~ " ${MSYSTEM,,} " ]]; then
         skipped_packages+=("${package}")
