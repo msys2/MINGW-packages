@@ -1,10 +1,12 @@
 # Maintainer: Alexey Pavlov <alexpux@gmail.com>
 # Contributor: Ray Donnelly <mingw.android@gmail.com>
 
+_bootstrap=0
+
 _realname=cmake
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=3.22.2
+pkgver=3.22.3
 pkgrel=1
 pkgdesc="A cross-platform open-source make system (mingw-w64)"
 arch=('any')
@@ -17,6 +19,11 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-bzip2"
              "${MINGW_PACKAGE_PREFIX}-xz"
              "${MINGW_PACKAGE_PREFIX}-zstd"
              "${MINGW_PACKAGE_PREFIX}-cc"
+             $( (( _bootstrap )) || echo \
+               "${MINGW_PACKAGE_PREFIX}-cmake" \
+               "${MINGW_PACKAGE_PREFIX}-ninja")
+             $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || \
+               echo "${MINGW_PACKAGE_PREFIX}-gcc-fortran")
              $([[ ${MSYSTEM} == "CLANGARM64" ]] || \
                echo "${MINGW_PACKAGE_PREFIX}-qt6-base")
              $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || \
@@ -37,11 +44,13 @@ options=('staticlibs') # '!strip' 'debug'
 source=("https://github.com/Kitware/CMake/releases/download/v${pkgver}/${_realname}-${pkgver}.tar.gz"
         "0001-Disable-response-files-for-MSYS-Generator.patch"
         "0002-Do-not-install-Qt-bundle-in-cmake-gui.patch"
+        "0003-Fix-install-destinations.patch"
         "0004-Output-line-numbers-in-callstacks.patch"
         "0005-Default-to-ninja-generator.patch")
-sha256sums=('3c1c478b9650b107d452c5bd545c72e2fad4e37c09b89a1984b9a2f46df6aced'
+sha256sums=('9f8469166f94553b6978a16ee29227ec49a2eb5ceb608275dec40d8ae0d1b5a0'
             '25793edcbac05bb6d17fa9947b52ace4a6b5ccccf7758e22ae9ae022ed089061'
             'f6cf6a6f2729db2b9427679acd09520af2cd79fc26900b19a49cead05a55cd1a'
+            '149b9cdf29523d82533a29c2a180f747cd32eb39ea3c2ba0ebd13e286bcc08ac'
             '15fdf3fb1a0f1c153c8cfbdd2b5c64035b7a04de618bfe61d7d74ced0d6a5c4b'
             '426818278090704d2a12f62ef3dfd94c47b11fa2784bb842989b7f6a09ee7aa2')
 
@@ -71,6 +80,7 @@ prepare() {
   apply_patch_with_msg \
     0001-Disable-response-files-for-MSYS-Generator.patch \
     0002-Do-not-install-Qt-bundle-in-cmake-gui.patch \
+    0003-Fix-install-destinations.patch \
     0004-Output-line-numbers-in-callstacks.patch
 
   # We want cmake to default to something useful and not MSVC
@@ -82,42 +92,69 @@ build() {
   mkdir -p "${srcdir}/build-${MSYSTEM}"
   cd "${srcdir}/build-${MSYSTEM}"
 
-  local -a _qtconfig
-  if [[ "${MSYSTEM}" != "CLANGARM64" ]]; then
-     _qtconfig+=("--qt-gui" "--qt-qmake=${MINGW_PREFIX}/bin/qmake.exe")
+  if (( _bootstrap )); then
+    local -a _qtconfig
+    if [[ "${MSYSTEM}" != "CLANGARM64" ]]; then
+      _qtconfig+=("--qt-gui" "--qt-qmake=${MINGW_PREFIX}/bin/qmake.exe")
+    fi
+
+    MSYSTEM=MINGW FC=${MINGW_PREFIX}/bin/gfortran.exe \
+      "${srcdir}"/${_realname}-${pkgver}/configure  \
+      --prefix=${MINGW_PREFIX}                      \
+      --system-libs                                 \
+      --parallel=${NUMBER_OF_PROCESSORS}            \
+      --mandir=share/man                            \
+      --docdir=share/doc/cmake                      \
+      --sphinx-man --sphinx-html                    \
+      --bootstrap-system-jsoncpp                    \
+      --bootstrap-system-libuv                      \
+      --bootstrap-system-librhash                   \
+      ${_qtconfig[@]}
+
+    make
+  else
+    if check_option "debug" "y"; then
+      _build_type="Debug"
+    else
+      _build_type="Release"
+    fi
+    MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    ${MINGW_PREFIX}/bin/cmake.exe -Wno-dev \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+      -DCMAKE_BUILD_TYPE=${_build_type} \
+      -DCMAKE_USE_SYSTEM_LIBRARIES=ON \
+      -DSPHINX_MAN=ON \
+      -DSPHINX_HTML=ON \
+      -DBUILD_QtDialog=$([[ "${MSYSTEM}" != "CLANGARM64" ]] && echo "ON" || echo "OFF" ) \
+      ../${_realname}-${pkgver}
+    ${MINGW_PREFIX}/bin/cmake.exe --build .
   fi
 
-  MSYSTEM=MINGW FC=${MINGW_PREFIX}/bin/gfortran.exe \
-    "${srcdir}"/${_realname}-${pkgver}/configure  \
-    --prefix=${MINGW_PREFIX}                      \
-    --system-libs                                 \
-    --parallel=${NUMBER_OF_PROCESSORS}            \
-    --mandir=share/man                            \
-    --docdir=share/doc/cmake                      \
-    --sphinx-man --sphinx-html                    \
-    --bootstrap-system-jsoncpp                    \
-    --bootstrap-system-libuv                      \
-    --bootstrap-system-librhash                   \
-    ${_qtconfig[@]}
-
-  plain "Start building..."
-  make
 }
 
 check() {
   cd "${srcdir}/build-${MSYSTEM}"
-  ./bin/ctest.exe -j$(($(nproc)+1))
+  if (( _bootstrap )); then
+    ./bin/ctest.exe -j$(($(nproc)+1))
+  else
+    ${MINGW_PREFIX}/bin/ctest.exe -j$(($(nproc)+1))
+  fi
 }
 
 package() {
   cd "${srcdir}/build-${MSYSTEM}"
-  ./bin/cmake.exe \
-     -DCMAKE_INSTALL_PREFIX:PATH=${pkgdir}${MINGW_PREFIX} \
-     -DCMAKE_INSTALL_LOCAL_ONLY:BOOL=OFF -P cmake_install.cmake
-  install -d "${pkgdir}${MINGW_PREFIX}"/share/emacs/site-lisp/
+  if (( _bootstrap )); then
+    ./bin/cmake.exe \
+      -DCMAKE_INSTALL_PREFIX:PATH=${pkgdir}${MINGW_PREFIX} \
+      -DCMAKE_INSTALL_LOCAL_ONLY:BOOL=OFF -P cmake_install.cmake
+  else
+    DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install .
+  fi
 
   if [[ ${MINGW_PACKAGE_PREFIX} != *-clang-* ]] && \
      [[ ${MINGW_PACKAGE_PREFIX} != *-ucrt-* ]]; then
+    install -d "${pkgdir}${MINGW_PREFIX}"/share/emacs/site-lisp/
     ${MINGW_PREFIX}/bin/emacs -batch -f batch-byte-compile \
       "${pkgdir}${MINGW_PREFIX}"/share/emacs/site-lisp/cmake-mode.el
   fi
