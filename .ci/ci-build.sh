@@ -35,10 +35,12 @@ for package in "${packages[@]}"; do
         skipped_packages+=("${package}")
     fi
     cd - > /dev/null
+    unset package
 done
 
-for package in "${skipped_packages}"; do
+for package in "${skipped_packages[@]}"; do
     packages=(${packages[@]/"${package}"})
+    unset package
 done
 
 test -z "${packages}" && success 'No changes in package recipes'
