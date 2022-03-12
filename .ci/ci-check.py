@@ -83,6 +83,8 @@ def install_package(pkg: typing.Union[typing.List[str], Path]) -> typing.Generat
             "--refresh",
             "--sync",
             "--noconfirm",
+            "--needed",
+            "mingw-w64-x86_64-python-pip",
             get_pkg_name(pkg),
         ]
         uninstall_command = [
@@ -100,6 +102,8 @@ def install_package(pkg: typing.Union[typing.List[str], Path]) -> typing.Generat
                 "--sync",
                 "--refresh",
                 "--noconfirm",
+                "--needed",
+                "mingw-w64-x86_64-python-pip",
                 *pkg,
             ]
             uninstall_command = [
