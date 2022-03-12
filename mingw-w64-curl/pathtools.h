@@ -50,8 +50,11 @@ strip_n_suffix_folders(char * path, size_t n);
 
 char const * get_relocated_path (char const * from, char const * to, char const * actual_from);
 char * get_relocated_path_list(char const * from, char const * to_path_list);
+char * get_relocated_path_list_lib(char const * from, char const * to_path_list);
 
 char * single_path_relocation(const char *from, const char *to);
+char * single_path_relocation_lib(const char *from, const char *to);
 char * pathlist_relocation(const char *from_path, const char *to_path_list);
+char * pathlist_relocation_lib(const char *from_path, const char *to_path_list);
 
 #endif /* PATHTOOLS_H */
