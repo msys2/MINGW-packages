@@ -66,6 +66,14 @@ for package in "${packages[@]}"; do
     echo "::endgroup::"
 
     cd "$package"
+
+    for pkg in *.pkg.tar.*; do
+        pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
+        echo "::group::[repo-add] ${pkgname}"
+        repo-add "$PWD"/../artifacts/ci.db.tar.gz "$PWD/$pkg"
+        echo "::endgroup::"
+    done
+
     for pkg in *.pkg.tar.*; do
         pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
         echo "::group::[install] ${pkgname}"
@@ -102,7 +110,6 @@ for package in "${packages[@]}"; do
 
         echo "::group::[uninstall] ${pkgname}"
         message "Uninstalling $pkgname"
-        repo-add $PWD/../artifacts/ci.db.tar.gz $PWD/$pkg
         pacman -Sy
         pacman -R --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
         echo "::endgroup::"
