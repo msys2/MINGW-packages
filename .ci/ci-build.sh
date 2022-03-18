@@ -63,12 +63,12 @@ for package in "${packages[@]}"; do
     execute 'Clear cache' pacman -Scc --noconfirm
     execute 'Fetch keys' "$DIR/fetch-validpgpkeys.sh"
     execute 'Building binary' makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild
+    repo-add $PWD/artifacts/ci.db.tar.gz $PWD/$package/*.pkg.tar.*
+    pacman -Sy
+    cp $PWD/$package/*.pkg.tar.* $PWD/artifacts
     echo "::endgroup::"
 
     cd "$package"
-    repo-add $PWD/../artifacts/ci.db.tar.gz $PWD/*.pkg.tar.*
-    pacman -Sy
-    cp $PWD/*.pkg.tar.* $PWD/../artifacts
     for pkg in *.pkg.tar.*; do
         pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
         echo "::group::[install] ${pkgname}"
