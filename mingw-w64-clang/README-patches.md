@@ -14,6 +14,7 @@ Legend:
 - `"0003-Revert-CMake-try-creating-symlink-first-on-windows.patch"` :x: (win symlinks don't play well with pacman packages)
 - `"0005-add-pthread-as-system-lib-for-mingw.patch"` :grey_exclamation:
 - `"0008-enable-emutls-for-mingw.patch"` :grey_exclamation:
+- `"0010-lldb-Fix-building-standalone-LLDB-on-Windows.patch"` :arrow_down_small: - [https://reviews.llvm.org/D122523]
 - `"0104-link-pthread-with-mingw.patch"` :grey_exclamation:
 - `"0304-ignore-new-bfd-options.patch"` :x:
 - `"0405-Do-not-try-to-build-CTTestTidyModule-for-Windows-with-dylibs.patch"` :arrow_down_small:
