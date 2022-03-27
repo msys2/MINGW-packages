@@ -1,0 +1,204 @@
+From cefe6876d6e55ee8d544ab98216251ddd35ee7a9 Mon Sep 17 00:00:00 2001
+From: Nicolas Miller <nicolas.miller@codeplay.com>
+Date: Sat, 19 Feb 2022 20:28:38 +0200
+Subject: [PATCH] [llvm-objcopy][COFF] Fix section name encoding
+
+The section name encoding for `llvm-objcopy` had two main issues, the
+first is that the size used for the `snprintf` in the original code is
+incorrect because `snprintf` adds a null byte, so this code was only
+able to encode offsets of 6 digits - `/`, `\0` and 6 digits of the
+offset - rather than the 7 digits it should support.
+
+And the second part is that it didn't support the base64 encoding for
+offsets larger than 7 digits.
+
+This issue specifically showed up when using the `clang-offload-bundler`
+with a binary containing a lot of symbols/sections, since it uses
+`llvm-objcopy` to add the sections containing the offload code.
+
+Reviewed By: jhenderson
+
+Differential Revision: https://reviews.llvm.org/D118692
+
+(cherry picked from commit ddf528b7a092fd24647d7c6186ece7392c92de92)
+---
+ .../llvm-objcopy/COFF/section-name-encoding.s | 95 +++++++++++++++++++
+ tools/llvm-objcopy/CMakeLists.txt        |  1 +
+ tools/llvm-objcopy/COFF/Writer.cpp       | 21 ++--
+ tools/llvm-objcopy/COFF/Writer.h         |  2 +-
+ 4 files changed, 112 insertions(+), 7 deletions(-)
+ create mode 100644 test/tools/llvm-objcopy/COFF/section-name-encoding.s
+
+diff --git a/test/tools/llvm-objcopy/COFF/section-name-encoding.s b/test/tools/llvm-objcopy/COFF/section-name-encoding.s
+new file mode 100644
+index 000000000000..bd8b7c1bcf96
+--- /dev/null
++++ b/test/tools/llvm-objcopy/COFF/section-name-encoding.s
+@@ -0,0 +1,95 @@
++## Check that COFF section names of sections added by llvm-objcopy are properly
++## encoded.
++##
++## Encodings for different name lengths and string table index:
++##   [0, 8]:               raw name
++##   (8, 999999]:          base 10 string table index (/9999999)
++##   (999999, 0xFFFFFFFF]: base 64 string table index (##AAAAAA)
++##
++## Note: the names in the string table will be sorted in reverse
++## lexicographical order. Use a suffix letter (z, y, x, ...) to
++## get the preferred ordering of names in the test.
++##
++# REQUIRES: x86-registered-target
++##
++# RUN: echo DEADBEEF > %t.sec
++# RUN: llvm-mc -triple x86_64-pc-win32 -filetype=obj %s -o %t.obj
++# RUN: llvm-objcopy --add-section=s1234567=%t.sec     \
++# RUN:              --add-section=s1234567z=%t.sec    \
++# RUN:              --add-section=sevendigitx=%t.sec  \
++# RUN:              --add-section=doubleslashv=%t.sec \
++# RUN:              %t.obj %t
++# RUN: llvm-readobj --sections %t | FileCheck %s
++
++## Raw encoding
++
++# CHECK:   Section {
++# CHECK:     Number: 14
++# CHECK:     Name: s1234567 (73 31 32 33 34 35 36 37)
++# CHECK:   }
++
++## Base 10 encoding with a small offset, section name at the beginning of the
++## string table.
++
++## /4
++##
++# CHECK:   Section {
++# CHECK:     Number: 15
++# CHECK:     Name: s1234567z (2F 34 00 00 00 00 00 00)
++# CHECK:   }
++
++## Base 10 encoding with a 7 digit offset, section name after the y padding in
++## the string table.
++
++## /1000029 == 4 + 10 + (5 * (2 + (20 * 10 * 1000) + 1))
++##             v   |     |    v    ~~~~~~~~~~~~~~    v
++##    table size   v     v   "p0"      y pad         NULL separator
++##     "s1234567z\0"     # of pad sections
++##
++# CHECK:   Section {
++# CHECK:     Number: 16
++# CHECK:     Name: sevendigitx (2F 31 30 30 30 30 32 39)
++# CHECK:   }
++
++## Base 64 encoding, section name after the w padding in the string table.
++
++## //AAmJa4 == 1000029 + 12 + (5 * (2 + (9 * 20 * 10 * 1000) + 1)) == 38*64^3 + 9*64^2 + 26*64 + 56
++##             v         |     |    v    ~~~~~~~~~~~~~~~~~~    v
++## sevendigitx offset    v     v   "p0"       w pad            NULL separator
++##         "sevendigitx\0"     # of pad sections
++##
++## "2F 2F 41 41 6D 4A 61 34" is "//AAmJa4", which decodes to "0 0 38 9 26 56".
++##
++# CHECK:   Section {
++# CHECK:     Number: 17
++# CHECK:     Name: doubleslashv (2F 2F 41 41 6D 4A 61 34)
++# CHECK:   }
++
++## Generate padding sections to increase the string table size to at least
++## 1,000,000 bytes.
++.macro pad_sections2 pad
++  ## 10x \pad
++  .section p0\pad\pad\pad\pad\pad\pad\pad\pad\pad\pad; .long 1
++  .section p1\pad\pad\pad\pad\pad\pad\pad\pad\pad\pad; .long 1
++  .section p2\pad\pad\pad\pad\pad\pad\pad\pad\pad\pad; .long 1
++  .section p3\pad\pad\pad\pad\pad\pad\pad\pad\pad\pad; .long 1
++  .section p4\pad\pad\pad\pad\pad\pad\pad\pad\pad\pad; .long 1
++.endm
++
++.macro pad_sections pad
++  ## 20x \pad
++  pad_sections2 \pad\pad\pad\pad\pad\pad\pad\pad\pad\pad\pad\pad\pad\pad\pad\pad\pad\pad\pad\pad
++.endm
++
++## 1000x 'y'
++pad_sections yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
++
++## Generate padding sections to increase the string table size to at least
++## 10,000,000 bytes.
++.macro pad_sections_ex pad
++  ## 9x \pad
++  pad_sections \pad\pad\pad\pad\pad\pad\pad\pad\pad
++.endm
++
++## 1000x 'w'
++pad_sections_ex wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+diff --git a/tools/llvm-objcopy/CMakeLists.txt b/tools/llvm-objcopy/CMakeLists.txt
+index d14d2135f5db..94d897d75944 100644
+--- a/tools/llvm-objcopy/CMakeLists.txt
++++ b/tools/llvm-objcopy/CMakeLists.txt
+@@ -3,6 +3,7 @@ set(LLVM_LINK_COMPONENTS
+   Option
+   Support
+   MC
++  BinaryFormat
+   )
+ 
+ set(LLVM_TARGET_DEFINITIONS ObjcopyOpts.td)
+diff --git a/tools/llvm-objcopy/COFF/Writer.cpp b/tools/llvm-objcopy/COFF/Writer.cpp
+index cbd0e4261238..fcbfef96d860 100644
+--- a/tools/llvm-objcopy/COFF/Writer.cpp
++++ b/tools/llvm-objcopy/COFF/Writer.cpp
+@@ -116,7 +116,7 @@ void COFFWriter::layoutSections() {
+   }
+ }
+ 
+-size_t COFFWriter::finalizeStringTable() {
++Expected<size_t> COFFWriter::finalizeStringTable() {
+   for (const auto &S : Obj.getSections())
+     if (S.Name.size() > COFF::NameSize)
+       StrTabBuilder.add(S.Name);
+@@ -129,11 +129,16 @@ size_t COFFWriter::finalizeStringTable() {
+ 
+   for (auto &S : Obj.getMutableSections()) {
+     memset(S.Header.Name, 0, sizeof(S.Header.Name));
+-    if (S.Name.size() > COFF::NameSize) {
+-      snprintf(S.Header.Name, sizeof(S.Header.Name), "/%d",
+-               (int)StrTabBuilder.getOffset(S.Name));
+-    } else {
++    if (S.Name.size() <= COFF::NameSize) {
++      // Short names can go in the field directly.
+       memcpy(S.Header.Name, S.Name.data(), S.Name.size());
++    } else {
++      // Offset of the section name in the string table.
++      size_t Offset = StrTabBuilder.getOffset(S.Name);
++      if (!COFF::encodeSectionName(S.Header.Name, Offset))
++        return createStringError(object_error::invalid_section_index,
++                                 "COFF string table is greater than 64GB, "
++                                 "unable to encode section name offset");
+     }
+   }
+   for (auto &S : Obj.getMutableSymbols()) {
+@@ -219,7 +224,11 @@ Error COFFWriter::finalize(bool IsBigObj) {
+     Obj.PeHeader.CheckSum = 0;
+   }
+ 
+-  size_t StrTabSize = finalizeStringTable();
++  Expected<size_t> StrTabSizeOrErr = finalizeStringTable();
++  if (!StrTabSizeOrErr)
++    return StrTabSizeOrErr.takeError();
++
++  size_t StrTabSize = *StrTabSizeOrErr;
+ 
+   size_t PointerToSymbolTable = FileSize;
+   // StrTabSize <= 4 is the size of an empty string table, only consisting
+diff --git a/tools/llvm-objcopy/COFF/Writer.h b/tools/llvm-objcopy/COFF/Writer.h
+index eed43b3e5814..5758aadb5439 100644
+--- a/tools/llvm-objcopy/COFF/Writer.h
++++ b/tools/llvm-objcopy/COFF/Writer.h
+@@ -35,7 +35,7 @@ class COFFWriter {
+   Error finalizeRelocTargets();
+   Error finalizeSymbolContents();
+   void layoutSections();
+-  size_t finalizeStringTable();
++  Expected<size_t> finalizeStringTable();
+ 
+   Error finalize(bool IsBigObj);
+ 

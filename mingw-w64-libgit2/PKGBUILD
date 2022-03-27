@@ -2,47 +2,108 @@
 
 _realname=libgit2
 pkgbase=mingw-w64-${_realname}
-pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=1.1.0
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}-winhttp")
+pkgver=1.4.2
 pkgrel=1
 pkgdesc='A linkable library for Git (mingw-w64)'
 arch=('any')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 url='https://github.com/libgit2/libgit2'
 license=('GPL2' 'custom')
 options=('strip')
-depends=("${MINGW_PACKAGE_PREFIX}-curl"
-         "${MINGW_PACKAGE_PREFIX}-http-parser"
+depends=("${MINGW_PACKAGE_PREFIX}-http-parser"
          "${MINGW_PACKAGE_PREFIX}-libssh2"
-         "${MINGW_PACKAGE_PREFIX}-openssl"
+         "${MINGW_PACKAGE_PREFIX}-libiconv"
+         "${MINGW_PACKAGE_PREFIX}-pcre2"
          "${MINGW_PACKAGE_PREFIX}-zlib")
-makedepends=("${MINGW_PACKAGE_PREFIX}-cmake" "${MINGW_PACKAGE_PREFIX}-gcc")
-source=(${_realname}-${pkgver}.tar.gz::"https://github.com/libgit2/libgit2/archive/v${pkgver}.tar.gz")
+_openssl_depends=("${MINGW_PACKAGE_PREFIX}-openssl")
+makedepends=(
+  "${MINGW_PACKAGE_PREFIX}-cmake"
+  "${MINGW_PACKAGE_PREFIX}-ninja"
+  "${MINGW_PACKAGE_PREFIX}-cc"
+)
+source=(${_realname}-${pkgver}.tar.gz::"https://github.com/libgit2/libgit2/archive/v${pkgver}.tar.gz"
+        "0001-libgit2-1.4.2-rc-filename.patch")
 noextract=(${_realname}-${pkgver}.tar.gz)
-sha256sums=('41a6d5d740fd608674c7db8685685f45535323e73e784062cf000a633d420d1e')
+sha256sums=('901c2b4492976b86477569502a41c31b274b69adc177149c02099ea88404ef19'
+            'c7467d490d3c9d4ce1b59cb9b9674ade35680312593d94d201374a56b1d7e3d0')
 
 prepare() {
   tar --exclude tests/resources/testrepo-worktree/link_to_new.txt -zxf ${_realname}-${pkgver}.tar.gz
   cd ${_realname}-${pkgver}
+
+  patch -Np1 -i "${srcdir}/0001-libgit2-1.4.2-rc-filename.patch"
 }
 
-build() {
-  [[ -d "${srcdir}"/build-${MINGW_CHOST} ]] && rm -rf "${srcdir}"/build-${MINGW_CHOST}
-  mkdir -p "${srcdir}"/build-${MINGW_CHOST} && cd "${srcdir}"/build-${MINGW_CHOST}
+do_build() {
+  _variant=$1
+  _destdir="${srcdir}/build-${MSYSTEM}"
+  if [ "${_variant}" != "-openssl" ]; then
+    _destdir="${_destdir}${_variant}"
+  fi
+  [[ -d "${_destdir}" ]] && rm -rf "${_destdir}"
+  mkdir -p "${_destdir}" && cd "${_destdir}"
+
+  local -a _variant_config
+  if [ "${_variant}" = "-winhttp" ]; then
+    _variant_config+=("-DUSE_WINHTTP=ON")
+  elif [ "${_variant}" = "-openssl" ]; then
+    _variant_config+=("-DUSE_WINHTTP=OFF")
+  fi
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake.exe \
-    -G"MSYS Makefiles" \
+    -GNinja \
     -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
     -DCMAKE_BUILD_TYPE=Release \
-    -DPKG_CONFIG_WITHOUT_PREFIX=ON \
-    -DTHREADSAFE=ON \
-    -DWINHTTP=OFF \
+    -DUSE_SSH=ON \
+    -DUSE_ICONV=ON \
+    -DUSE_HTTP_PARSER=system \
+    -DREGEX_BACKEND=pcre2 \
+    "${_variant_config[@]}" \
     ../${_realname}-${pkgver}
 
-  make
+  ${MINGW_PREFIX}/bin/cmake --build .
 }
 
-package() {
-  cd ${srcdir}/build-${MINGW_CHOST}
-  make DESTDIR=${pkgdir} install
+build() {
+  do_build -openssl
+  do_build -winhttp
 }
+
+check() {
+  cd "${srcdir}"/build-${MSYSTEM}
+  ${MINGW_PREFIX}/bin/ctest . || true
+
+  cd "${srcdir}"/build-${MSYSTEM}-winhttp
+  ${MINGW_PREFIX}/bin/ctest . || true
+}
+
+package_libgit2() {
+  cd "${srcdir}"/build-${MSYSTEM}
+  depends=("${depends[@]}"
+           "${_openssl_depends[@]}")
+
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --build . --target install
+}
+
+package_libgit2-winhttp() {
+  cd "${srcdir}"/build-${MSYSTEM}-winhttp
+  depends=("${depends[@]}")
+  provides=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+  conflicts=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --build . --target install
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;

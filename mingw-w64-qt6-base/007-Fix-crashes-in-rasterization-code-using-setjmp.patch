@@ -1,0 +1,251 @@
+From a8f1c4b28f9f4d3b9dbebcacfa9ad3047332016f Mon Sep 17 00:00:00 2001
+From: Martchus <martchus@gmx.net>
+Date: Sat, 26 Jun 2021 22:24:12 +0200
+Subject: [PATCH 8/8] Fix crashes in rasterization code using setjmp
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+* Use C++ exceptions instead of setjmp to workaround crashes
+* The setjmp/longjmp code crashes when compiling for x86_64-w64-mingw32
+  with GCC 11 and optimizations enabled¹. It crashes when jumping back
+  to handle the case of insufficient memory. This change uses C++
+  exceptions instead (turning the compile unit into a C++ unit instead
+  of just using C) which should behave identical but don't seem to
+  crash.
+* Fix rendering certain SVGs and possibly other graphics
+
+Change-Id: I01937d13569dd01ab4cb1f608020544c93bc343c
+
+---
+
+¹ See https://bugreports.qt.io/browse/QTBUG-94692 for details.
+---
+ src/gui/CMakeLists.txt                        |  7 +++-
+ .../{qgrayraster.c => qgrayraster.cpp}        | 41 ++++++++-----------
+ src/gui/painting/qt_attribution.json          |  2 +-
+ 3 files changed, 24 insertions(+), 26 deletions(-)
+ rename src/gui/painting/{qgrayraster.c => qgrayraster.cpp} (98%)
+
+diff --git a/src/gui/CMakeLists.txt b/src/gui/CMakeLists.txt
+index 905afd4038..e4c23c4714 100644
+--- a/src/gui/CMakeLists.txt
++++ b/src/gui/CMakeLists.txt
+@@ -165,7 +165,7 @@ qt_internal_add_module(Gui
+         painting/qdrawingprimitive_sse2_p.h
+         painting/qemulationpaintengine.cpp painting/qemulationpaintengine_p.h
+         painting/qfixed_p.h
+-        painting/qgrayraster.c painting/qgrayraster_p.h
++        painting/qgrayraster.cpp painting/qgrayraster_p.h
+         painting/qicc.cpp painting/qicc_p.h
+         painting/qimagescale.cpp
+         painting/qmemrotate.cpp painting/qmemrotate_p.h
+@@ -279,6 +279,11 @@ qt_internal_add_module(Gui
+         "kernel/qt_gui_pch.h"
+ )
+ 
++# enable exceptions for painting/qgrayraster.cpp
++set_source_files_properties("painting/qgrayraster.cpp"
++    PROPERTIES COMPILE_FLAGS "-fexceptions" DISABLE_PRECOMPILE_HEADERS ON SKIP_PRECOMPILE_HEADERS ON
++)
++
+ # Resources:
+ set_source_files_properties("../3rdparty/icc/sRGB2014.icc"
+     PROPERTIES QT_RESOURCE_ALIAS "sRGB2014.icc"
+diff --git a/src/gui/painting/qgrayraster.c b/src/gui/painting/qgrayraster.cpp
+similarity index 98%
+rename from src/gui/painting/qgrayraster.c
+rename to src/gui/painting/qgrayraster.cpp
+index c6b9aa679e..8952343922 100644
+--- a/src/gui/painting/qgrayraster.c
++++ b/src/gui/painting/qgrayraster.cpp
+@@ -39,7 +39,7 @@
+ 
+ /***************************************************************************/
+ /*                                                                         */
+-/*  qgrayraster.c, derived from ftgrays.c                                  */
++/*  qgrayraster.cpp, derived from ftgrays.c                                */
+ /*                                                                         */
+ /*    A new `perfect' anti-aliasing renderer (body).                       */
+ /*                                                                         */
+@@ -157,17 +157,12 @@
+ #  include <vxWorksCommon.h>    /* needed for setjmp.h */
+ #endif
+ #include <string.h>             /* for qt_ft_memcpy() */
+-#include <setjmp.h>
+ #include <limits.h>
+ 
+ #define QT_FT_UINT_MAX  UINT_MAX
+ 
+ #define qt_ft_memset   memset
+ 
+-#define qt_ft_setjmp   setjmp
+-#define qt_ft_longjmp  longjmp
+-#define qt_ft_jmp_buf  jmp_buf
+-
+ #include <stddef.h>
+ typedef ptrdiff_t  QT_FT_PtrDist;
+ 
+@@ -177,6 +172,8 @@ typedef ptrdiff_t  QT_FT_PtrDist;
+ #define ErrRaster_Memory_Overflow   -4
+ #define ErrRaster_OutOfMemory       -6
+ 
++struct RasterMemoryOverflow {};
++
+ #define QT_FT_BEGIN_HEADER
+ #define QT_FT_END_HEADER
+ 
+@@ -310,8 +307,6 @@ QT_FT_END_STMNT
+     int  band_size;
+     int  band_shoot;
+ 
+-    qt_ft_jmp_buf  jump_buffer;
+-
+     void*       buffer;
+     long        buffer_size;
+ 
+@@ -333,12 +328,14 @@ QT_FT_END_STMNT
+ 
+   } TRaster, *PRaster;
+ 
++  extern "C" {
+   int q_gray_rendered_spans(TRaster *raster)
+   {
+     if ( raster && raster->worker )
+       return raster->worker->skip_spans > 0 ? 0 : -raster->worker->skip_spans;
+     return 0;
+   }
++  }
+ 
+   /*************************************************************************/
+   /*                                                                       */
+@@ -404,7 +401,6 @@ QT_FT_END_STMNT
+     ras.max_ey = ( ras.max_ey + 63 ) >> 6;
+   }
+ 
+-
+   /*************************************************************************/
+   /*                                                                       */
+   /* Record the current cell in the table.                                 */
+@@ -433,7 +429,7 @@ QT_FT_END_STMNT
+     }
+ 
+     if ( ras.num_cells >= ras.max_cells )
+-      qt_ft_longjmp( ras.jump_buffer, 1 );
++      throw RasterMemoryOverflow();
+ 
+     cell        = ras.cells + ras.num_cells++;
+     cell->x     = x;
+@@ -1506,7 +1502,7 @@ QT_FT_END_STMNT
+ 
+       QT_FT_TRACE5(( "  move to (%.2f, %.2f)\n",
+                      v_start.x / 64.0, v_start.y / 64.0 ));
+-      error = gray_move_to( &v_start, user );
++      error = gray_move_to( &v_start, static_cast<PWorker>(user) );
+       if ( error )
+         goto Exit;
+ 
+@@ -1528,7 +1524,7 @@ QT_FT_END_STMNT
+ 
+             QT_FT_TRACE5(( "  line to (%.2f, %.2f)\n",
+                            vec.x / 64.0, vec.y / 64.0 ));
+-            gray_render_line(user, UPSCALE(vec.x), UPSCALE(vec.y));
++            gray_render_line(static_cast<PWorker>(user), UPSCALE(vec.x), UPSCALE(vec.y));
+             continue;
+           }
+ 
+@@ -1557,7 +1553,7 @@ QT_FT_END_STMNT
+                                " with control (%.2f, %.2f)\n",
+                                vec.x / 64.0, vec.y / 64.0,
+                                v_control.x / 64.0, v_control.y / 64.0 ));
+-                gray_render_conic(user, &v_control, &vec);
++                gray_render_conic(static_cast<PWorker>(user), &v_control, &vec);
+                 continue;
+               }
+ 
+@@ -1571,7 +1567,7 @@ QT_FT_END_STMNT
+                              " with control (%.2f, %.2f)\n",
+                              v_middle.x / 64.0, v_middle.y / 64.0,
+                              v_control.x / 64.0, v_control.y / 64.0 ));
+-              gray_render_conic(user, &v_control, &v_middle);
++              gray_render_conic(static_cast<PWorker>(user), &v_control, &v_middle);
+ 
+               v_control = vec;
+               goto Do_Conic;
+@@ -1581,7 +1577,7 @@ QT_FT_END_STMNT
+                            " with control (%.2f, %.2f)\n",
+                            v_start.x / 64.0, v_start.y / 64.0,
+                            v_control.x / 64.0, v_control.y / 64.0 ));
+-            gray_render_conic(user, &v_control, &v_start);
++            gray_render_conic(static_cast<PWorker>(user), &v_control, &v_start);
+             goto Close;
+           }
+ 
+@@ -1616,7 +1612,7 @@ QT_FT_END_STMNT
+                              vec.x / 64.0, vec.y / 64.0,
+                              vec1.x / 64.0, vec1.y / 64.0,
+                              vec2.x / 64.0, vec2.y / 64.0 ));
+-              gray_render_cubic(user, &vec1, &vec2, &vec);
++              gray_render_cubic(static_cast<PWorker>(user), &vec1, &vec2, &vec);
+               continue;
+             }
+ 
+@@ -1625,7 +1621,7 @@ QT_FT_END_STMNT
+                            v_start.x / 64.0, v_start.y / 64.0,
+                            vec1.x / 64.0, vec1.y / 64.0,
+                            vec2.x / 64.0, vec2.y / 64.0 ));
+-            gray_render_cubic(user, &vec1, &vec2, &v_start);
++            gray_render_cubic(static_cast<PWorker>(user), &vec1, &vec2, &v_start);
+             goto Close;
+           }
+         }
+@@ -1634,7 +1630,7 @@ QT_FT_END_STMNT
+       /* close the contour with a line segment */
+       QT_FT_TRACE5(( "  line to (%.2f, %.2f)\n",
+                      v_start.x / 64.0, v_start.y / 64.0 ));
+-      gray_render_line(user, UPSCALE(v_start.x), UPSCALE(v_start.y));
++      gray_render_line(static_cast<PWorker>(user), UPSCALE(v_start.x), UPSCALE(v_start.y));
+ 
+    Close:
+       first = last + 1;
+@@ -1662,14 +1658,11 @@ QT_FT_END_STMNT
+   {
+     volatile int  error = 0;
+ 
+-    if ( qt_ft_setjmp( ras.jump_buffer ) == 0 )
+-    {
++    try {
+       error = QT_FT_Outline_Decompose( &ras.outline, &ras );
+       if ( !ras.invalid )
+         gray_record_cell( RAS_VAR );
+-    }
+-    else
+-    {
++    } catch (const RasterMemoryOverflow &) {
+       error = ErrRaster_Memory_Overflow;
+     }
+ 
+@@ -1934,7 +1927,7 @@ QT_FT_END_STMNT
+   static int
+   gray_raster_new( QT_FT_Raster*  araster )
+   {
+-    *araster = malloc(sizeof(TRaster));
++    *araster = static_cast<TRaster *>(malloc(sizeof(TRaster)));
+     if (!*araster) {
+         *araster = 0;
+         return ErrRaster_Memory_Overflow;
+diff --git a/src/gui/painting/qt_attribution.json b/src/gui/painting/qt_attribution.json
+index e2326a56c1..7b30969ec8 100644
+--- a/src/gui/painting/qt_attribution.json
++++ b/src/gui/painting/qt_attribution.json
+@@ -4,7 +4,7 @@
+         "Name": "Anti-aliasing rasterizer from FreeType 2",
+         "QDocModule": "qtgui",
+         "QtUsage": "Used in Qt GUI.",
+-        "Path": "qgrayraster.c",
++        "Path": "qgrayraster.cpp",
+ 
+         "Description": "FreeType is a freely available software library to render fonts.",
+         "Homepage": "http://www.freetype.org",
+-- 
+2.33.0

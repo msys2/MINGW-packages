@@ -1,56 +1,47 @@
 # Maintainer: Alexey Pavlov <alexpux@gmail.com>
 
-_variant=-openssl
-#_variant=-winssl
-#_variant=-gnutls
-
-if [ "${_variant}" = "-openssl" ]; then
-  _namesuff=
-else
-  _namesuff="${_variant}"
-fi
-
 _realname=curl
 pkgbase=mingw-w64-${_realname}
-pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}${_namesuff}"
-pkgver=7.74.0
-pkgrel=2
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}-gnutls"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}-winssl")
+pkgver=7.82.0
+pkgrel=1
 pkgdesc="Command line tool and library for transferring data with URLs. (mingw-w64)"
 arch=('any')
-url="https://curl.haxx.se/"
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
+url="https://curl.se/"
 license=("MIT")
-makedepends=("${MINGW_PACKAGE_PREFIX}-gcc"
-             "${MINGW_PACKAGE_PREFIX}-pkg-config")
+_cert_depends=("${MINGW_PACKAGE_PREFIX}-ca-certificates"
+               "${MINGW_PACKAGE_PREFIX}-libssh2")
+_openssl_depends=("${MINGW_PACKAGE_PREFIX}-openssl"
+                  "${MINGW_PACKAGE_PREFIX}-nghttp2")
+_gnutls_depends=("${MINGW_PACKAGE_PREFIX}-rtmpdump"
+                 "${MINGW_PACKAGE_PREFIX}-gnutls")
+makedepends=("${MINGW_PACKAGE_PREFIX}-autotools"
+             "${MINGW_PACKAGE_PREFIX}-cc"
+             "${_cert_depends[@]}"
+             "${_openssl_depends[@]}"
+             "${_gnutls_depends[@]}")
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-c-ares"
          "${MINGW_PACKAGE_PREFIX}-brotli"
          "${MINGW_PACKAGE_PREFIX}-libidn2"
-         "${MINGW_PACKAGE_PREFIX}-libmetalink"
          "${MINGW_PACKAGE_PREFIX}-libpsl"
-         "${MINGW_PACKAGE_PREFIX}-libssh2"
          "${MINGW_PACKAGE_PREFIX}-zlib"
-         "${MINGW_PACKAGE_PREFIX}-zstd"
-         $([[ "$_variant" == "-openssl" ]] && echo \
-            "${MINGW_PACKAGE_PREFIX}-ca-certificates" \
-            "${MINGW_PACKAGE_PREFIX}-openssl" \
-            "${MINGW_PACKAGE_PREFIX}-nghttp2")
-         $([[ "$_variant" == "-gnutls" ]] && echo \
-            "${MINGW_PACKAGE_PREFIX}-rtmpdump" \
-            "${MINGW_PACKAGE_PREFIX}-ca-certificates" \
-            "${MINGW_PACKAGE_PREFIX}-gnutls")
-         )
-if [ -n "${_namesuff}" ]; then
-  provides=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-  conflicts=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-fi
+         "${MINGW_PACKAGE_PREFIX}-zstd")
 options=('staticlibs')
-source=("${url}/download/${_realname}-${pkgver}.tar.bz2"{,.asc}
+source=("https://github.com/curl/curl/releases/download/${_realname}-${pkgver//./_}/${_realname}-${pkgver}.tar.xz"{,.asc}
+        "pathtools.c"
+        "pathtools.h"
         "0001-Make-cURL-relocatable.patch"
         "0002-nghttp2-static.patch"
         "0003-libpsl-static-libs.patch")
-sha256sums=('0f4d63e6681636539dc88fa8e929f934cd3a840c46e0bf28c73be11e521b77a5'
+sha256sums=('0aaa12d7bd04b0966254f2703ce80dd5c38dbbd76af0297d3d690cdce58a583c'
             'SKIP'
-            'b00b4f0fb904941b5278807ebe581dfe89b237a6a2ff6a89e39c1ba368c8b96a'
+            '703cd0cb74e714f9e66d26de11c109dd76fab07e723af8dde56a35ea65102e5f'
+            '4f9d325265ef6f4e90ad637dea41afa6995388c921fe961ad5dc895aca10318b'
+            'fb8237bf88775a93a8c55ee5ee8233c6e99b531c3713cbd0afc0552cb8b224c7'
             '79eec8a337e375d5102fef884030ceacd163a79e5c495e9a974a6b9a11b60c61'
             '7492d019036b5bec251bfbc3c0b40e5f16d3dd6b2515068835e087a6c21f19ad')
 validpgpkeys=('914C533DF9B2ADA2204F586D78E11C6B279D5C91'  # Daniel Stenberg
@@ -58,63 +49,94 @@ validpgpkeys=('914C533DF9B2ADA2204F586D78E11C6B279D5C91'  # Daniel Stenberg
               '4461EAF0F8E9097F48AF0555F9FEAFF9D34A1BDB')
 
 prepare() {
+  test ! -d "${startdir}/../mingw-w64-pathtools" || {
+    cmp "${startdir}/../mingw-w64-pathtools/pathtools.c" "${srcdir}/pathtools.c" &&
+    cmp "${startdir}/../mingw-w64-pathtools/pathtools.h" "${srcdir}/pathtools.h"
+  } || exit 1
+
   cd "${srcdir}/${_realname}-${pkgver}"
-  rm -f lib/pathtools.h lib/pathtools.c > /dev/null 2>&1 || true
+  cp -fHv "${srcdir}"/pathtools.[ch] lib/
   patch -p1 -i "${srcdir}/0001-Make-cURL-relocatable.patch"
   patch -p1 -i "${srcdir}/0002-nghttp2-static.patch"
   patch -p1 -i "${srcdir}/0003-libpsl-static-libs.patch"
   autoreconf -vfi
 }
 
-build() {
+do_build() {
+  _variant=$1
+  _destdir="${srcdir}/build-${MSYSTEM}"
+  if [ "${_variant}" != "-openssl" ]; then
+    _destdir="${_destdir}${_variant}"
+  fi
   local -a extra_config
   if check_option "debug" "y"; then
     extra_config+=( --enable-debug )
   else
     extra_config+=( --disable-debug )
   fi
-  mkdir -p "${srcdir}/build-${CARCH}"
+
   local -a _variant_config
   if [ "${_variant}" = "-winssl" ]; then
-    _variant_config+=("--without-ssl")
-    _variant_config+=("--without-gnutls")
-    _variant_config+=("--with-winssl")
+    _variant_config+=("--with-schannel")
     _variant_config+=('--without-nghttp2')
     _variant_config+=("--without-ca-bundle")
     _variant_config+=("--without-ca-path")
     _variant_config+=("--without-librtmp")
   elif [ "${_variant}" = "-gnutls" ]; then
     _variant_config+=("--with-default-ssl-backend=gnutls")
-    _variant_config+=("--without-ssl")
     _variant_config+=("--with-gnutls")
-    _variant_config+=("--with-winssl")
+    _variant_config+=("--with-schannel")
     _variant_config+=('--without-nghttp2')
     _variant_config+=("--with-ca-bundle=${MINGW_PREFIX}/ssl/certs/ca-bundle.crt")
     _variant_config+=("--with-librtmp")
   elif [ "${_variant}" = "-openssl" ]; then
     _variant_config+=("--with-default-ssl-backend=openssl")
-    _variant_config+=("--without-gnutls")
-    _variant_config+=("--with-ssl")
-    _variant_config+=("--with-winssl")
+    _variant_config+=("--with-openssl")
+    _variant_config+=("--with-schannel")
     _variant_config+=("--with-ca-bundle=${MINGW_PREFIX}/ssl/certs/ca-bundle.crt")
-    _variant_config+=("--with-nghttp2=${MINGW_PREFIX}/")
+    _variant_config+=("--with-nghttp2=${MINGW_PREFIX}")
     _variant_config+=("--without-librtmp")
   fi
-  cd "${srcdir}/build-${CARCH}"
+
+  mkdir -p "${_destdir}-static" && cd "${_destdir}-static"
   ../${_realname}-${pkgver}/configure \
     --prefix=${MINGW_PREFIX} \
     --build=${MINGW_CHOST} \
     --host=${MINGW_CHOST} \
     --target=${MINGW_CHOST} \
+    --disable-pthreads \
     --without-random \
     --enable-static \
+    --disable-shared \
+    --enable-sspi \
+    --enable-ldap \
+    --enable-ldaps \
+    --with-brotli \
+    --with-ldap-lib=wldap32 \
+    --with-libssh2 \
+    --with-zstd \
+    "${_variant_config[@]}" \
+    "${extra_config[@]}"
+# there's a bug with zsh completion generation script and Windows.
+# curl has to specified with the file extension.
+  sed -i "s|\/curl > \$\@|\/curl\$\{EXEEXT\} > \$\@|" scripts/Makefile
+  make
+
+  mkdir -p "${_destdir}-shared" && cd "${_destdir}-shared"
+  ../${_realname}-${pkgver}/configure \
+    --prefix=${MINGW_PREFIX} \
+    --build=${MINGW_CHOST} \
+    --host=${MINGW_CHOST} \
+    --target=${MINGW_CHOST} \
+    --disable-pthreads \
+    --without-random \
+    --disable-static \
     --enable-shared \
     --enable-sspi \
     --enable-ldap \
     --enable-ldaps \
     --with-brotli \
     --with-ldap-lib=wldap32 \
-    --with-libmetalink=${MINGW_PREFIX} \
     --with-libssh2 \
     --with-zstd \
     "${_variant_config[@]}" \
@@ -125,10 +147,59 @@ build() {
   make
 }
 
-package() {
-  cd "${srcdir}/build-${CARCH}"
+build() {
+  do_build -openssl
+  do_build -winssl
+  do_build -gnutls
+}
+
+do_package() {
+  cd "${srcdir}/build-${MSYSTEM}$1-static"
   make DESTDIR="${pkgdir}" install
-  
+
+  cd "${srcdir}/build-${MSYSTEM}$1-shared"
+  make DESTDIR="${pkgdir}" install
+
   local PREFIX_DEPS=$(cygpath -am ${MINGW_PREFIX})
   sed -s "s|${PREFIX_DEPS}|${MINGW_PREFIX}|g" -i ${pkgdir}${MINGW_PREFIX}/bin/curl-config
+  sed -s "s|${PREFIX_DEPS}|${MINGW_PREFIX}|g" -i ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/libcurl.pc
 }
+
+package_curl() {
+  depends=("${depends[@]}"
+           "${_cert_depends[@]}"
+           "${_openssl_depends[@]}")
+  conflicts=("${MINGW_PACKAGE_PREFIX}-${_realname}-winssl"
+             "${MINGW_PACKAGE_PREFIX}-${_realname}-gnutls")
+  do_package
+}
+
+package_curl-winssl() {
+  depends=("${depends[@]}"
+           "${MINGW_PACKAGE_PREFIX}-libssh2-wincng")
+  provides=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+  conflicts=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+             "${MINGW_PACKAGE_PREFIX}-${_realname}-gnutls")
+  do_package -winssl
+}
+
+package_curl-gnutls() {
+  provides=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+  depends=("${depends[@]}"
+           "${_cert_depends[@]}"
+           "${_gnutls_depends[@]}")
+  conflicts=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+             "${MINGW_PACKAGE_PREFIX}-${_realname}-winssl")
+  do_package -gnutls
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;

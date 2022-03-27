@@ -1,0 +1,176 @@
+# Contributor: Mehdi Chinoune <mehdi.chinoune@hotmail.com>
+
+if [[ $MINGW_PACKAGE_PREFIX == *-clang-* ]]; then
+  _clangprefix=1
+fi
+
+_realname=libc++
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}abi"
+         "${MINGW_PACKAGE_PREFIX}-libunwind")
+pkgver=13.0.1
+pkgrel=1
+url="https://libcxx.llvm.org/"
+arch=(any)
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
+license=("custom:Apache 2.0 with LLVM Exception")
+groups=($( (( _clangprefix )) && echo "${MINGW_PACKAGE_PREFIX}-toolchain"))
+makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-clang"
+             "${MINGW_PACKAGE_PREFIX}-lld"
+             "${MINGW_PACKAGE_PREFIX}-compiler-rt"
+             "${MINGW_PACKAGE_PREFIX}-python")
+options=('!debug' 'strip')
+_url=https://github.com/llvm/llvm-project/releases/download/llvmorg-${pkgver}
+source=("${_url}/llvm-${pkgver}.src.tar.xz"{,.sig}
+        "${_url}/libcxx-${pkgver}.src.tar.xz"{,.sig}
+        "${_url}/libcxxabi-${pkgver}.src.tar.xz"{,.sig}
+        "${_url}/libunwind-${pkgver}.src.tar.xz"{,.sig})
+sha256sums=('ec6b80d82c384acad2dc192903a6cf2cdbaffb889b84bfb98da9d71e630fc834'
+            'SKIP'
+            '2f446acc00bb7cfb4e866c2fa46d1b6dbf4e7d2ab62e3c3d84e56f7b9e28110f'
+            'SKIP'
+            'db5fa6093c786051e8b1c85527240924eceb6c95eeff0a2bbc57be8422b3cef1'
+            'SKIP'
+            'e206dbf1bbe058a113bffe189386ded99a160b2443ee1e2cd41ff810f78551ba'
+            'SKIP')
+validpgpkeys=('B6C8F98282B944E3B0D5C2530FC3042E345AD05D'  # Hans Wennborg, Google.
+              '474E22316ABF4785A88C6E8EA2C794A986419D8A') # Tom Stellard
+noextract=(libcxx-${pkgver}.src.tar.xz)
+
+prepare() {
+  plain "Extracting libcxx-${pkgver}.src.tar.xz due to symlink(s) without pre-existing target(s)"
+  cd "${srcdir}"
+  tar -xJf ${srcdir}/libcxx-${pkgver}.src.tar.xz -C ${srcdir} || true
+  # Rename Directories
+  for pkg in llvm libcxx libcxxabi libunwind; do
+    mv ${pkg}-$pkgver.src ${pkg}
+  done
+}
+
+build() {
+
+  if check_option "debug" "y"; then
+    _build_type="Debug"
+  else
+    _build_type="Release"
+  fi
+
+  local -a libcxx_config
+  if (( _clangprefix )); then
+    libcxx_config+=(-DLIBCXX_USE_COMPILER_RT=ON
+      -DLIBCXXABI_USE_COMPILER_RT=ON
+      -DLIBCXXABI_USE_LLVM_UNWINDER=ON)
+  fi
+
+  libcxx_config+=(-DCMAKE_AR="${MINGW_PREFIX}/bin/llvm-ar.exe"
+    -DCMAKE_ASM_COMPILER="${MINGW_PREFIX}/bin/clang.exe"
+    -DCMAKE_C_COMPILER="${MINGW_PREFIX}/bin/clang.exe"
+    -DCMAKE_CXX_COMPILER="${MINGW_PREFIX}/bin/clang++.exe"
+    -DCMAKE_RANLIB="${MINGW_PREFIX}/bin/llvm-ranlib.exe"
+    -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON
+    -DLIBCXX_HAS_WIN32_THREAD_API=ON
+    -DLIBCXXABI_HAS_WIN32_THREAD_API=ON
+    -DLIBCXXABI_ENABLE_SHARED=OFF
+    -DLIBCXXABI_ENABLE_STATIC=ON
+    -DLIBUNWIND_USE_COMPILER_RT=ON
+    -DLLVM_ENABLE_LLD=ON
+    -DLLVM_ENABLE_PROJECTS="libcxx;libcxxabi;libunwind")
+
+  # Shared
+  cd ${srcdir}
+  [[ -d build-libcxx-shared-${MSYSTEM} ]] && rm -rf build-libcxx-shared-${MSYSTEM}
+  mkdir build-libcxx-shared-${MSYSTEM} && cd build-libcxx-shared-${MSYSTEM}
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  cmake \
+    -GNinja \
+    -DCMAKE_BUILD_TYPE=${_build_type} \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib \
+    -DLLVM_HOST_TRIPLE="${CARCH}-w64-windows-gnu" \
+    -DPython3_EXECUTABLE=${MINGW_PREFIX}/bin/python.exe \
+    -DPython3_FIND_REGISTRY=NEVER \
+    -DPython3_ROOT_DIR=${MINGW_PREFIX} \
+    -DLIBCXX_ENABLE_EXPERIMENTAL_LIBRARY=OFF \
+    -DLIBCXX_ENABLE_SHARED=ON \
+    -DLIBCXX_ENABLE_STATIC=OFF \
+    -DLIBUNWIND_ENABLE_SHARED=ON \
+    -DLIBUNWIND_ENABLE_STATIC=OFF \
+    "${libcxx_config[@]}" \
+    -Wno-dev \
+    ../llvm
+
+  cmake --build . -- unwind cxx
+
+  # Static
+  cd "${srcdir}"
+  [[ -d build-libcxx-static-${MSYSTEM} ]] && rm -rf build-libcxx-static-${MSYSTEM}
+  mkdir build-libcxx-static-${MSYSTEM} && cd build-libcxx-static-${MSYSTEM}
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake.exe \
+    -GNinja \
+    -DCMAKE_BUILD_TYPE=${_build_type} \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib \
+    -DLLVM_HOST_TRIPLE="${CARCH}-w64-windows-gnu" \
+    -DPython3_EXECUTABLE=${MINGW_PREFIX}/bin/python.exe \
+    -DPython3_FIND_REGISTRY=NEVER \
+    -DPython3_ROOT_DIR=${MINGW_PREFIX} \
+    -DLIBCXX_ENABLE_SHARED=OFF \
+    -DLIBCXX_ENABLE_STATIC=ON \
+    -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON \
+    -DLIBUNWIND_ENABLE_SHARED=OFF \
+    -DLIBUNWIND_ENABLE_STATIC=ON \
+    "${libcxx_config[@]}" \
+    -Wno-dev \
+    ../llvm
+
+  cmake --build . -- unwind cxxabi cxx cxx_experimental
+}
+
+package_libc++() {
+  pkgdesc="C++ Standard Library (mingw-w64)"
+  url="https://libcxx.llvm.org/"
+  provides=($( (( _clangprefix )) && echo \
+             "${MINGW_PACKAGE_PREFIX}-gcc-libs" \
+             || true))
+  depends=($( (( _clangprefix )) && echo \
+             "${MINGW_PACKAGE_PREFIX}-libunwind" \
+             || echo "${MINGW_PACKAGE_PREFIX}-gcc-libs"))
+
+  DESTDIR="${pkgdir}" cmake --install "${srcdir}/build-libcxx-shared-${MSYSTEM}/projects/libcxx"
+  DESTDIR="${pkgdir}" cmake --install "${srcdir}/build-libcxx-static-${MSYSTEM}/projects/libcxx"
+}
+
+package_libc++abi() {
+  pkgdesc="C++ Standard Library Support (mingw-w64)"
+  url="https://libcxxabi.llvm.org/"
+  depends=($( (( _clangprefix )) || echo \
+             "${MINGW_PACKAGE_PREFIX}-gcc-libs"))
+
+  DESTDIR="${pkgdir}" cmake --install "${srcdir}/build-libcxx-static-${MSYSTEM}/projects/libcxxabi"
+}
+
+package_libunwind() {
+  pkgdesc='A new implementation of a stack unwinder for C++ exceptions (mingw-w64)'
+  url='https://llvm.org/'
+  depends=($( (( _clangprefix )) || echo "${MINGW_PACKAGE_PREFIX}-gcc-libs"))
+
+  DESTDIR="${pkgdir}" cmake --install "${srcdir}/build-libcxx-shared-${MSYSTEM}/projects/libunwind"
+  DESTDIR="${pkgdir}" cmake --install "${srcdir}/build-libcxx-static-${MSYSTEM}/projects/libunwind"
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;

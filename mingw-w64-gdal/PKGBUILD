@@ -7,15 +7,15 @@
 _realname=gdal
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=3.2.0
-pkgrel=2
+pkgver=3.3.3
+pkgrel=5
 pkgdesc="A translator library for raster geospatial data formats (mingw-w64)"
 arch=('any')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 url="https://gdal.org/"
 license=('custom')
-makedepends=("${MINGW_PACKAGE_PREFIX}-gcc"
-             "${MINGW_PACKAGE_PREFIX}-pkg-config"
-             "${MINGW_PACKAGE_PREFIX}-postgresql")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-autotools")
 depends=("${MINGW_PACKAGE_PREFIX}-cfitsio"
          "${MINGW_PACKAGE_PREFIX}-crypto++"
          "${MINGW_PACKAGE_PREFIX}-curl"
@@ -45,24 +45,27 @@ depends=("${MINGW_PACKAGE_PREFIX}-cfitsio"
          "${MINGW_PACKAGE_PREFIX}-proj"
          #"${MINGW_PACKAGE_PREFIX}-qhull"
          "${MINGW_PACKAGE_PREFIX}-sqlite3"
-         "${MINGW_PACKAGE_PREFIX}-xerces-c"
+         $([[ ${MINGW_PACKAGE_PREFIX} = *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-xerces-c")
          "${MINGW_PACKAGE_PREFIX}-xz")
 #optdepends=("${MINGW_PACKAGE_PREFIX}-postgresql")
 options=('strip' 'staticlibs')
-source=(https://download.osgeo.org/${_realname}/${pkgver}/${_realname}-${pkgver}.tar.gz
-        001-qhull-reentrant.patch)
-sha256sums=('66dbab444f9fad113245cef241e52c4ab3e1f315e59759820e16a67e94931347'
-            'd331a4ca57ba9ecd533d2705273ca89b472902a880eb9edae9d0766bc8034519')
+source=(https://download.osgeo.org/${_realname}/${pkgver}/${_realname}-${pkgver}.tar.xz
+        001-qhull-reentrant.patch
+        002-dont-define-msvcrt-version.patch)
+sha256sums=('1e8fc8b19c77238c7f4c27857d04857b65d8b7e8050d3aac256d70fa48a21e76'
+            'd331a4ca57ba9ecd533d2705273ca89b472902a880eb9edae9d0766bc8034519'
+            '2eb8b8d7321f5a75cc7ff29bf63ae8bda1c900f463b6577bac109503346275f4')
 
 prepare() {
   cd ${srcdir}/${_realname}-${pkgver}
   patch -p1 -i ${srcdir}/001-qhull-reentrant.patch
+  patch -p1 -i ${srcdir}/002-dont-define-msvcrt-version.patch
 
   cd ${srcdir}
-  [[ -d ${srcdir}/build-${MINGW_CHOST} ]] && rm -rf ${srcdir}/build-${MINGW_CHOST}
-  cp -rf ${_realname}-${pkgver} build-${MINGW_CHOST}
-  cd "${srcdir}/build-${MINGW_CHOST}"
-  
+  [[ -d ${srcdir}/build-${MSYSTEM} ]] && rm -rf ${srcdir}/build-${MSYSTEM}
+  cp -rf ${_realname}-${pkgver} build-${MSYSTEM}
+  cd "${srcdir}/build-${MSYSTEM}"
+
   sed -i "s|/usr/local|${MINGW_PREFIX}|g" configure.ac
   sed -i "s|/usr|${MINGW_PREFIX}|g" configure.ac
   sed -i "s|mandir='\${prefix}/man'|mandir='\${prefix}/share/man'|g" configure.ac
@@ -73,13 +76,22 @@ prepare() {
   # bug: http://osgeo-org.1560.x6.nabble.com/gdal-dev-jpeg2000-jasper-error-compiling-gdal-2-1-from-git-release-branch-td5299100.html
   sed -i -e 's@uchar@unsigned char@' frmts/jpeg2000/jpeg2000_vsil_io.cpp
 
+  touch config.rpath
+  # for some reason autogen.sh's libtoolize call is commented out
+  # but we need updated libtool for clang support
+  libtoolize --force --copy
   ./autogen.sh
 }
 
 build() {
-  cd "${srcdir}/build-${MINGW_CHOST}"
+  cd "${srcdir}/build-${MSYSTEM}"
 
   CFLAGS+=" -fno-strict-aliasing"
+  CXXFLAGS+=" -std=c++17 -Wno-deprecated-declarations"
+
+  # somehow the configure test for redeclaring sprintf succeeds but
+  # then errors during the build with clang.
+  CPPFLAGS+=" -DDONT_DEPRECATE_SPRINTF"
 
   ./configure \
     --build=${MINGW_CHOST} \
@@ -103,10 +115,13 @@ build() {
 }
 
 package () {
-  cd "${srcdir}/build-${MINGW_CHOST}"
+  cd "${srcdir}/build-${MSYSTEM}"
   make DESTDIR="${pkgdir}" install
   make DESTDIR="${pkgdir}" install-man
 
   # install license
   install -D -m644 LICENSE.TXT "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+
+  local PREFIX_WIN=$(cygpath -am ${MINGW_PREFIX})
+  sed -s "s|${PREFIX_WIN}|${MINGW_PREFIX}|g" -i "${pkgdir}${MINGW_PREFIX}"/bin/gdal-config
 }

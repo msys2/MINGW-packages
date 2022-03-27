@@ -1,0 +1,95 @@
+# Contributor: Mehdi Chinoune <mehdi.chinoune@hotmail.com>
+
+if [[ $MINGW_PACKAGE_PREFIX == *-clang-* ]]; then
+  _clangprefix=1
+fi
+
+_realname=openmp
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+pkgver=13.0.1
+pkgrel=1
+pkgdesc="LLVM OpenMP Library (mingw-w64)"
+url="https://openmp.llvm.org/"
+arch=(any)
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
+license=("custom:Apache 2.0 with LLVM Exception")
+groups=($( (( _clangprefix )) && echo "${MINGW_PACKAGE_PREFIX}-toolchain"))
+depends=($( (( _clangprefix )) || echo "${MINGW_PACKAGE_PREFIX}-gcc-libs"))
+makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-cc"
+             $( (( _clangprefix )) || echo "${MINGW_PACKAGE_PREFIX}-gcc-fortran")
+             "${MINGW_PACKAGE_PREFIX}-uasm")
+options=('!debug' 'strip')
+_url=https://github.com/llvm/llvm-project/releases/download/llvmorg-${pkgver}
+_pkgfn=$_realname-$pkgver.src
+source=($_url/$_pkgfn.tar.xz{,.sig}
+        "001-cast-to-make-gcc-happy.patch")
+sha256sums=('6b79261371616c31fea18cd3ee1797c79ee38bcaf8417676d4fa366a24c96b4f'
+            'SKIP'
+            '11352ffbe7559a7170f2abd52b3552c877fbcf8fc82cff77b421e8b130a4dd66')
+validpgpkeys=('B6C8F98282B944E3B0D5C2530FC3042E345AD05D'  # Hans Wennborg, Google.
+              '474E22316ABF4785A88C6E8EA2C794A986419D8A') # Tom Stellard
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+
+prepare() {
+  cd ${srcdir}/$_pkgfn
+
+  if (( ! _clangprefix )); then
+    apply_patch_with_msg \
+      "001-cast-to-make-gcc-happy.patch"
+  fi
+}
+
+build() {
+  cd ${srcdir}
+  [[ -d build-${MSYSTEM} ]] && rm -rf build-${MSYSTEM}
+  mkdir -p build-${MSYSTEM} && cd build-${MSYSTEM}
+
+  if check_option "debug" "y"; then
+    _build_type="Debug"
+  else
+    _build_type="Release"
+  fi
+
+  local -a platform_config
+  case "${CARCH}" in
+    x86_64)
+      export ASM_COMPILER_FLAGS=-win64
+      platform_config+=(-DLIBOMP_ASMFLAGS="${ASM_COMPILER_FLAGS}")
+      ;& # fall-through
+    i?86)
+      export ASM_COMPILER="${MINGW_PREFIX}/bin/uasm.exe"
+      platform_config+=(-DCMAKE_ASM_MASM_COMPILER="${ASM_COMPILER}")
+      ;;
+  esac
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  cmake \
+    -GNinja \
+    -DCMAKE_BUILD_TYPE=${_build_type} \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib \
+    -DLLVM_HOST_TRIPLE="${CARCH}-w64-windows-gnu" \
+    -DLIBOMP_FORTRAN_MODULES=$( (( _clangprefix )) && echo "OFF" || echo "ON" ) \
+    ${platform_config[@]} \
+    -Wno-dev \
+    ../$_pkgfn
+
+  cmake --build .
+}
+
+package() {
+  DESTDIR=${pkgdir} cmake --install build-${MSYSTEM}
+
+  install -d "$pkgdir${MINGW_PREFIX}"/share/licenses/${_realname}
+  install -Dm644 $_pkgfn/LICENSE* -t "$pkgdir${MINGW_PREFIX}"/share/licenses/${_realname}
+}

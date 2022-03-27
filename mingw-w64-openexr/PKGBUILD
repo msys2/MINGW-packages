@@ -5,16 +5,18 @@ pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-ilmbase"
          "${MINGW_PACKAGE_PREFIX}-${_realname}"
          "${MINGW_PACKAGE_PREFIX}-pyilmbase")
-pkgver=2.5.4
-pkgrel=4
+pkgver=2.5.7
+pkgrel=6
 pkgdesc="Openexr library for EXR images (mingw-w64)"
 arch=('any')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 url="https://www.openexr.com/"
 license=("custom")
 makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
              "${MINGW_PACKAGE_PREFIX}-boost"
              "${MINGW_PACKAGE_PREFIX}-fltk"
-             "${MINGW_PACKAGE_PREFIX}-gcc"
+             "${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-pkg-config"
              "${MINGW_PACKAGE_PREFIX}-python"
              "${MINGW_PACKAGE_PREFIX}-python-numpy")
@@ -26,15 +28,26 @@ source=(${_realname}-${pkgver}.tar.gz::https://github.com/openexr/openexr/archiv
         0006-cmake-soversion.patch
         0009-win-dwalookups.patch
         0012-exports.patch
-        0013-no-py2.patch)
-sha256sums=('dba19e9c6720c6f64fbc8b9d1867eaa75da6438109b941eefdc75ed141b6576d'
+        0013-no-py2.patch
+        0014-gcc-11-no-dllimport-with-delete.patch)
+sha256sums=('36ecb2290cba6fc92b2ec9357f8dc0e364b4f9a90d727bf9a57c84760695272d'
             '68bedb3a4acc6f62b1486c7c47c9025f5ce4131468e17445f0c716545ddd00c1'
             '460dcfd86b407241382ed4ba5a003ae251c9fdce68e7cfdea021b09898ad2705'
             'fba4e95d6921bcd253c8c644063b4c1334c84761a2a2232590d442ca81f8d7cd'
             '313b0c98abdd792b8213ec9685a5a7b095ec69faa528f6fd0946f23576b6ef07'
             '2ca841425ae676f75fa714a16f0124272224147fe40ea507ccc4bf74477f51ab'
             'da9e92f066e9b45583f2b12678a9f49fcbb7fa1f06805d9b472d39fa5f18a629'
-            '47e4e068439a1adaca41d7d7f966f65f1ae68b4dee1d1dd7c5778256edc3b3e8')
+            '47e4e068439a1adaca41d7d7f966f65f1ae68b4dee1d1dd7c5778256edc3b3e8'
+            '05f9717bd3b2f72a34b7f27411a4184eab8044de2ec8cfebea9bef8482b56652')
+
+# Helper macros to help make tasks easier #
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying $_patch"
+    patch -Np1 -i "${srcdir}/$_patch"
+  done
+}
 
 prepare(){
   cd "${srcdir}/${_realname}-${pkgver}"
@@ -42,16 +55,21 @@ prepare(){
   sed -i 's/#define ZLIB_WINAPI/\/\/#define ZLIB_WINAPI/g' OpenEXR/IlmImf/ImfZipCompressor.cpp
   sed -i 's/#define ZLIB_WINAPI/\/\/#define ZLIB_WINAPI/g' OpenEXR/IlmImf/ImfPxr24Compressor.cpp
 
-  patch -p1 -i ${srcdir}/0001-mingw-w64-fix.patch
-  patch -p1 -i ${srcdir}/0002-openexr-2.1.0-headers.patch
-  #patch -p1 -i ${srcdir}/0005-fix-dirs-in-pkgconfig.patch
-  patch -p1 -i ${srcdir}/0006-cmake-soversion.patch
-  patch -p1 -i ${srcdir}/0009-win-dwalookups.patch
-  patch -p1 -i ${srcdir}/0012-exports.patch
-  patch -p1 -i ${srcdir}/0013-no-py2.patch
+  apply_patch_with_msg \
+    0001-mingw-w64-fix.patch \
+    0002-openexr-2.1.0-headers.patch \
+    0006-cmake-soversion.patch \
+    0009-win-dwalookups.patch \
+    0012-exports.patch\
+    0013-no-py2.patch \
+    0014-gcc-11-no-dllimport-with-delete.patch
+  # 0005-fix-dirs-in-pkgconfig.patch
 }
 
 build() {
+  [[ -d "build-${MSYSTEM}" ]] && rm -rf "build-${MSYSTEM}"
+  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
+
   declare -a extra_config
   if check_option "debug" "n"; then
     extra_config+=("-DCMAKE_BUILD_TYPE=Release")
@@ -59,13 +77,10 @@ build() {
     extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
   fi
 
-  [[ -d "build-${MINGW_CHOST}" ]] && rm -rf "build-${MINGW_CHOST}"
-  mkdir -p "${srcdir}/build-${MINGW_CHOST}" && cd "${srcdir}/build-${MINGW_CHOST}"
-
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake \
-    -G"MSYS Makefiles" \
-    ${extra_config} \
+    -G"Ninja" \
+    ${extra_config[@]} \
     -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
     -DBUILD_SHARED_LIBS=ON \
     -DPython_EXECUTABLE=${MINGW_PREFIX}/bin/python.exe \
@@ -76,15 +91,16 @@ build() {
     -DPython3_FIND_REGISTRY=NEVER \
     ../${_realname}-${pkgver}
 
-  make
+  cmake --build .
 }
 
 package_ilmbase() {
   pkgdesc="Base libraries from ILM for OpenEXR (mingw-w64)"
-  depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs")
+  depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
+           "${MINGW_PACKAGE_PREFIX}-libwinpthread-git")
 
-  cd "${srcdir}/build-${MINGW_CHOST}/IlmBase"
-  make DESTDIR=${pkgdir} install
+  cd "${srcdir}/build-${MSYSTEM}/IlmBase"
+  DESTDIR=${pkgdir} cmake --install .
 }
 
 package_openexr() {
@@ -92,8 +108,8 @@ package_openexr() {
   depends=("${MINGW_PACKAGE_PREFIX}-ilmbase=${pkgver}"
            "${MINGW_PACKAGE_PREFIX}-zlib")
 
-  cd "${srcdir}/build-${MINGW_CHOST}/OpenEXR"
-  make DESTDIR=${pkgdir} install
+  cd "${srcdir}/build-${MSYSTEM}/OpenEXR"
+  DESTDIR=${pkgdir} cmake --install .
 }
 
 package_pyilmbase() {
@@ -102,36 +118,23 @@ package_pyilmbase() {
            "${MINGW_PACKAGE_PREFIX}-boost"
            "${MINGW_PACKAGE_PREFIX}-python-numpy")
 
-  cd "${srcdir}/build-${MINGW_CHOST}/PyIlmBase"
-  make DESTDIR=${pkgdir} install
-  
+  cd "${srcdir}/build-${MSYSTEM}/PyIlmBase"
+  DESTDIR=${pkgdir} cmake --install .
+
   # Install python modules
   local _py3ver=$(${MINGW_PREFIX}/bin/python -c "import sys;sys.stdout.write('.'.join(map(str, sys.version_info[:2])))")
 
   mkdir -p ${pkgdir}${MINGW_PREFIX}/lib/python${_py3ver}/site-packages
-  cp ${srcdir}/build-${MINGW_CHOST}/python${_py3ver//./_}/*.pyd ${pkgdir}${MINGW_PREFIX}/lib/python${_py3ver}/site-packages/
+  cp ${srcdir}/build-${MSYSTEM}/python${_py3ver//./_}/*.pyd ${pkgdir}${MINGW_PREFIX}/lib/python${_py3ver}/site-packages/
 }
 
-package_mingw-w64-i686-ilmbase() {
-  package_ilmbase
-}
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
 
-package_mingw-w64-i686-openexr() {
-  package_openexr
-}
-
-package_mingw-w64-i686-pyilmbase() {
-  package_pyilmbase
-}
-
-package_mingw-w64-x86_64-ilmbase() {
-  package_ilmbase
-}
-
-package_mingw-w64-x86_64-openexr() {
-  package_openexr
-}
-
-package_mingw-w64-x86_64-pyilmbase() {
-  package_pyilmbase
-}
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;

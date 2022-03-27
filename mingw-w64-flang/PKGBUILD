@@ -1,0 +1,118 @@
+_compiler=clang
+_realname=flang
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+pkgver=13.0.1
+pkgrel=1
+pkgdesc="Fortran frontend for LLVM (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
+url="https://flang.llvm.org/"
+license=("custom:Apache 2.0 with LLVM Exception")
+depends=("${MINGW_PACKAGE_PREFIX}-clang=${pkgver}"
+         "${MINGW_PACKAGE_PREFIX}-llvm=${pkgver}"
+         "${MINGW_PACKAGE_PREFIX}-mlir=${pkgver}")
+makedepends=("${MINGW_PACKAGE_PREFIX}-clang-tools-extra=${pkgver}"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-lld"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-pkg-config"
+             "gawk"
+             $([[ "$_compiler" == "clang" ]] && echo \
+               "${MINGW_PACKAGE_PREFIX}-compiler-rt" \
+               "${MINGW_PACKAGE_PREFIX}-libc++")
+             $([[ "$_compiler" == "gcc" ]] && echo \
+               "${MINGW_PACKAGE_PREFIX}-gcc")
+             )
+options=('!debug' 'strip')
+source=("https://github.com/llvm/llvm-project/releases/download/llvmorg-${pkgver}/flang-${pkgver}.src.tar.xz"{,.sig}
+        "0001-cast-cxx11-narrowing.patch"
+        "0002-cmake-22162.patch")
+sha256sums=('129587687253c82de1a3a5eed18c1e12f16c3ad44cb881129b10335555b90778'
+            'SKIP'
+            'f8babd240968599597cf2b906fad44b62e2d92ac7ea144530a3f9542e96e06b1'
+            '77fb0612217b6af7a122f586a9d0d334cd48bb201509bf72e8f8e6244616e895')
+validpgpkeys=('B6C8F98282B944E3B0D5C2530FC3042E345AD05D'  # Hans Wennborg, Google.
+              '474E22316ABF4785A88C6E8EA2C794A986419D8A') # Tom Stellard
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+
+prepare() {
+  cd "${srcdir}/flang-${pkgver}.src"
+
+  apply_patch_with_msg \
+    "0001-cast-cxx11-narrowing.patch" \
+    "0002-cmake-22162.patch"
+}
+
+build() {
+  cd "${srcdir}"
+
+  case "${CARCH}" in
+    i?86|armv7)
+      # lld needs all the address space it can get.
+      LDFLAGS+=" -Wl,--large-address-aware"
+      ;;
+  esac
+
+  local -a extra_args
+
+  if check_option "debug" "y"; then
+    extra_args+=(-DCMAKE_BUILD_TYPE=Debug)
+  else
+    extra_args+=(-DCMAKE_BUILD_TYPE=Release)
+  fi
+
+  if [ "${_compiler}" == "clang" ]; then
+    export CC='clang'
+    export CXX='clang++'
+    extra_args+=(-DLLVM_ENABLE_LLD=ON)
+  fi
+
+  # try to figure out a reasonable CMAKE_BUILD_PARALLEL_LEVEL
+  if [ -z "${CMAKE_BUILD_PARALLEL_LEVEL+x}" ]; then
+    # figure about 1 job per 2GB RAM
+    local _jobs=$(awk '{ if ($1 == "MemTotal:") { printf "%.0f", $2/(2*1024*1024) } }' /proc/meminfo)
+    # EXCEPT on GHA, which is being really difficult.
+    if (( _jobs < 1 )) || [ -n "${CI+x}" ]; then
+      _jobs=1
+    elif (( _jobs > $(nproc) + 2 )); then
+      _jobs=$(( $(nproc) + 2 ))
+    fi
+    export CMAKE_BUILD_PARALLEL_LEVEL=${_jobs}
+  fi
+
+  [[ -d build-${MSYSTEM} ]] && rm -rf build-${MSYSTEM}
+  mkdir build-${MSYSTEM} && cd build-${MSYSTEM}
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake.exe \
+    -GNinja \
+    -Wno-dev \
+    -DCLANG_DIR=${MINGW_PREFIX}/lib/cmake/clang \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib \
+    -DLLVM_ENABLE_ASSERTIONS=OFF \
+    -DLLVM_ENABLE_THREADS=ON \
+    -DLLVM_HOST_TRIPLE="${CARCH}-w64-windows-gnu" \
+    -DLLVM_LINK_LLVM_DYLIB=ON \
+    "${extra_args[@]}" \
+    ../flang-${pkgver}.src
+
+  ${MINGW_PREFIX}/bin/cmake.exe --build .
+}
+
+check() {
+  cd "${srcdir}"/build-${MSYSTEM}
+  ${MINGW_PREFIX}/bin/cmake.exe --build . -- check-flang || true
+}
+
+package() {
+  DESTDIR="${pkgdir}" cmake --install "${srcdir}/build-${MSYSTEM}"
+}

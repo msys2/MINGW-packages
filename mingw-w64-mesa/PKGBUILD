@@ -3,27 +3,40 @@
 _realname=mesa
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=20.3.3
+pkgver=22.0.0
 pkgrel=1
 pkgdesc="Open-source implementation of the OpenGL specification (mingw-w64)"
 arch=('any')
-makedepends=("${MINGW_PACKAGE_PREFIX}-llvm"
-             "${MINGW_PACKAGE_PREFIX}-gcc"
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-python-mako"
              "${MINGW_PACKAGE_PREFIX}-meson"
-             "${MINGW_PACKAGE_PREFIX}-pkg-config")
+             "${MINGW_PACKAGE_PREFIX}-pkg-config"
+             "${MINGW_PACKAGE_PREFIX}-libelf")
 depends=("${MINGW_PACKAGE_PREFIX}-llvm"
-         "${MINGW_PACKAGE_PREFIX}-zlib")
+         "${MINGW_PACKAGE_PREFIX}-zlib"
+         "${MINGW_PACKAGE_PREFIX}-vulkan-loader"
+         "${MINGW_PACKAGE_PREFIX}-libsystre"
+         "${MINGW_PACKAGE_PREFIX}-libwinpthread-git"
+         "${MINGW_PACKAGE_PREFIX}-zstd")
 optdepends=("${MINGW_PACKAGE_PREFIX}-opengl-man-pages: for the OpenGL API man pages"
-            "${MINGW_PACKAGE_PREFIX}-zstd: use ZSTD instead of zlib for certain compression tasks")
+            "${MINGW_PACKAGE_PREFIX}-vulkan-validation-layers: to debug applications using Vulkan graphics")
 url="https://www.mesa3d.org/"
 license=('MIT')
 options=('staticlibs' 'strip')
 source=(https://mesa.freedesktop.org/archive/${_realname}-${pkgver}.tar.xz{,.sig}
-        llvmwrapgen.sh)
-sha256sums=('f74e212d4838e982a10c203ffa998817d1855c5cf448ae87b58f96edea61d156'
+        llvmwrapgen.sh
+        0003-win32-Fixes-building-with-msys2-mingw-clang32-clang6.patch
+        0005-win32-The-opengl-headers-should-install-to-mesa-GL-s.patch
+        0006-win32-Fixes-32-bits-visual-studio-module-definition-.patch
+        0007-win32-Do-not-use-BUILD_GL32-we-use-def-file-to-expor.patch)
+sha256sums=('e6c41928b5b9917485bd67cec22d15e62cad7a358bf4c711a647979987601250'
             'SKIP'
-            '69f21522f20c10f5699dfe3e128aa88d4fedde816f6e8df1506d7470c44bf3da')
+            '69f21522f20c10f5699dfe3e128aa88d4fedde816f6e8df1506d7470c44bf3da'
+            '6b406df7b705ca015a3ef6567a73d9104cbd8970d13b77c30299f32ea84d5b75'
+            '747e3894d50511f611b4a4cbcc1aad13f70c251202ef33f151d1e18ce541e8eb'
+            '6fa9d642782d8ac733f50cc356e0802e0f3d540c6045270924707747933b79eb'
+            '5319ea618826cdafa1ddf1d9be8cb486eac73eddafec9b09b6652a0f08994efb')
 validpgpkeys=('8703B6700E7EE06D7A39B8D6EDAE37B02CEB490D') # Emil Velikov <emil.l.velikov@gmail.com>
 validpgpkeys+=('946D09B5E4C9845E63075FF1D961C596A7203456') # Andres Gomez <tanty@igalia.com>
 validpgpkeys+=('E3E8F480C52ADD73B278EE78E1ECBE07D7D70895') # Juan Antonio Suárez Romero (Igalia, S.L.) <jasuarez@igalia.com>"
@@ -33,12 +46,21 @@ validpgpkeys+=('57551DE15B968F6341C248F68D8E31AFC32428A6') # Eric Engestrom <eri
 
 noextract=(${_realname}-${pkgver}.tar.xz)
 
-case ${MINGW_CHOST} in
-  i686*)
+case ${MSYSTEM} in
+  MINGW32)
     _mach=x86
   ;;
-  x86_64*)
+  MINGW64)
     _mach=x86_64
+  ;;
+  UCRT64)
+    _mach=ucrt-x86_64
+  ;;
+  CLANG32)
+    _mach=clang-x86
+  ;;
+  CLANG64)
+    _mach=clang-x86_64
   ;;
 esac
 
@@ -67,6 +89,12 @@ prepare() {
 
   cd ${srcdir}/${_realname}-${pkgver}
 
+  apply_patch_with_msg \
+    0003-win32-Fixes-building-with-msys2-mingw-clang32-clang6.patch \
+    0005-win32-The-opengl-headers-should-install-to-mesa-GL-s.patch \
+    0006-win32-Fixes-32-bits-visual-studio-module-definition-.patch \
+    0007-win32-Do-not-use-BUILD_GL32-we-use-def-file-to-expor.patch
+
 # Generate binary wrap for LLVM if llvm-config tool is busted
   if ! [ "$(${MINGW_PREFIX}/bin/llvm-config --has-rtti 2>&1)" = YES ] && ! [ "$(${MINGW_PREFIX}/bin/llvm-config --has-rtti 2>&1)" = NO ]; then
     nollvmconfig=1 llvm_static=false ${srcdir}/llvmwrapgen.sh
@@ -77,23 +105,27 @@ build() {
   cd ${srcdir}/${_realname}-${pkgver}
   buildconf="${MINGW_PREFIX}/bin/meson ./build/windows-${_mach}
   --prefix=${MINGW_PREFIX}
-  --includedir=include/mesa
   --buildtype=release
   --backend=ninja
   -Dshared-glapi=enabled
+  -Degl=enabled
   -Dgles1=enabled
   -Dgles2=enabled
   -Dllvm=enabled
   -Dshared-llvm=enabled
-  -Dosmesa=gallium
-  -Dbuild-tests=true"
+  -Dosmesa=true
+  -Dbuild-tests=true
+  -Dvulkan-drivers=swrast,amd
+  -Dgallium-drivers=swrast,zink
+  -Dmicrosoft-clc=disabled
+  -Dcpp_rtti="
 
-# Enable swr driver in x86_64 package
-  if [ ${_mach} = x86_64 ]; then
-    buildconf="${buildconf}
-    -Dgallium-drivers=swrast,swr
-    -Dswr-arches=avx,avx2,skx,knl"
+# XXX: We have to explicitly submit LLVM RTTI support status to Mesa
+  rtti=false
+  if [ $(${MINGW_PREFIX}/bin/llvm-config --has-rtti 2>&1) = YES ]; then
+    rtti=true
   fi
+  buildconf="${buildconf}${rtti}"
 
 # Fallback to binary wrap if llvm-config tool is busted
   if ! [ "$(${MINGW_PREFIX}/bin/llvm-config --has-rtti 2>&1)" = YES ] && ! [ "$(${MINGW_PREFIX}/bin/llvm-config --has-rtti 2>&1)" = NO ]; then
@@ -124,4 +156,13 @@ package() {
 # fix osmesa version in .pc file
   sed -e "s|8.0.0|${pkgver}|g" \
     -i ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/osmesa.pc
+
+# Fix JSON for RADV
+  if compgen -G "${pkgdir}${MINGW_PREFIX}/share/vulkan/icd.d/radeon_icd*.json" > /dev/null; then
+    sed -e "s|./vulkan_radeon|${MINGW_PREFIX}/bin/libvulkan_radeon|g" \
+      -i $(find ${pkgdir}${MINGW_PREFIX}/share/vulkan/icd.d -name "radeon_icd*.json" -print)
+  fi
+
+  # Remove KHR include, fixes conflict with mingw-w64
+  rm -rf "${pkgdir}${MINGW_PREFIX}"/include/KHR
 }

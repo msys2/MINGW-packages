@@ -24,14 +24,15 @@ import sys
 import argparse
 import os
 import json
-import shutil
 from collections import OrderedDict
 import hashlib
 import time
+import shlex
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
-from typing import List, Iterator, Tuple, Dict, Optional, Union, Collection
+from typing import List, Iterator, Tuple, Dict, Optional, Union, Collection, Sequence, Any
 
 
 CacheEntry = Dict[str, Union[str, Collection[str]]]
@@ -47,6 +48,37 @@ def normalize_repo(repo: str) -> str:
 
 def normalize_path(path: str) -> str:
     return path.replace("\\", "/")
+
+
+def get_mingw_arch_list(msys2_root: str, dir: str, pkgbuild_path: str) -> List[str]:
+    assert not os.path.isabs(pkgbuild_path)
+    executable = os.path.join(msys2_root, 'usr', 'bin', 'bash.exe')
+    sub_commands = [
+        shlex.join(['source', pkgbuild_path]),
+        'echo -n "${mingw_arch[@]}"'
+    ]
+    env = os.environ.copy()
+    env["CHERE_INVOKING"] = "1"
+    env["MSYSTEM"] = "MSYS"
+    env["MSYS2_PATH_TYPE"] = "minimal"
+    out = subprocess.check_output(
+        [executable, '-lc', ';'.join(sub_commands)], universal_newlines=True, env=env, cwd=dir)
+    arch_list = out.strip().split()
+    if not arch_list:
+        arch_list = ["mingw32", "mingw64", "ucrt64", "clang64"]
+    assert arch_list
+    return arch_list
+
+
+def check_output_msys(msys2_root: str, args: Sequence[str], **kwargs: Any):
+    executable = os.path.join(msys2_root, 'usr', 'bin', 'bash.exe')
+    env = kwargs.pop("env", os.environ.copy())
+    env["CHERE_INVOKING"] = "1"
+    env["MSYSTEM"] = "MSYS"
+    env["MSYS2_PATH_TYPE"] = "minimal"
+    return subprocess.check_output(
+        [executable, '-lce'] + [shlex.join([str(a) for a in args])],
+        env=env, **kwargs)
 
 
 def get_cache_key(pkgbuild_path: str) -> str:
@@ -72,34 +104,31 @@ def get_cache_key(pkgbuild_path: str) -> str:
     return h.hexdigest()
 
 
-def get_srcinfo_for_pkgbuild(args: Tuple[str, str]) -> Optional[CacheTuple]:
+def get_srcinfo_for_pkgbuild(msys2_root: str, args: Tuple[str, str]) -> Optional[CacheTuple]:
     pkgbuild_path, mode = args
     pkgbuild_path = os.path.abspath(pkgbuild_path)
     git_cwd = os.path.dirname(pkgbuild_path)
     git_path = os.path.relpath(pkgbuild_path, git_cwd)
     key = get_cache_key(pkgbuild_path)
 
-    bash = shutil.which("bash")
-    if bash is None:
-        print("ERROR: bash not found")
-        return None
-
     print("Parsing %r" % pkgbuild_path)
     try:
         srcinfos = {}
 
         if mode == "mingw":
-            for name in ["mingw32", "mingw64"]:
+            for name in get_mingw_arch_list(msys2_root, git_cwd, git_path):
                 env = os.environ.copy()
-                env["MINGW_INSTALLS"] = name
-                srcinfos[name] = subprocess.check_output(
-                    [bash, "/usr/bin/makepkg-mingw",
+                env["MINGW_ARCH"] = name
+                srcinfos[name] = check_output_msys(
+                    msys2_root,
+                    ["/usr/bin/makepkg-mingw",
                     "--printsrcinfo", "-p", git_path],
                     cwd=git_cwd,
                     env=env).decode("utf-8")
         else:
-            srcinfos["msys"] = subprocess.check_output(
-                [bash, "/usr/bin/makepkg",
+            srcinfos["msys"] = check_output_msys(
+                msys2_root,
+                ["/usr/bin/makepkg",
                 "--printsrcinfo", "-p", git_path],
                 cwd=git_cwd).decode("utf-8")
 
@@ -146,7 +175,7 @@ def get_srcinfo_from_cache(args: Tuple[str, Cache]) -> Tuple[str, Optional[Cache
         return (pkgbuild_path, None)
 
 
-def iter_srcinfo(repo_path: str, mode: str, cache: Cache) -> Iterator[Optional[CacheTuple]]:
+def iter_srcinfo(msys2_root: str, repo_path: str, mode: str, cache: Cache) -> Iterator[Optional[CacheTuple]]:
     with ThreadPoolExecutor() as executor:
         to_parse: List[Tuple[str, str]] = []
         pool_iter = executor.map(
@@ -158,13 +187,14 @@ def iter_srcinfo(repo_path: str, mode: str, cache: Cache) -> Iterator[Optional[C
                 to_parse.append((pkgbuild_path, mode))
 
         print("Parsing PKGBUILD files...")
-        for srcinfo in executor.map(get_srcinfo_for_pkgbuild, to_parse):
+        for srcinfo in executor.map(partial(get_srcinfo_for_pkgbuild, msys2_root), to_parse):
             yield srcinfo
 
 
 def main(argv: List[str]) -> Optional[Union[int, str]]:
     parser = argparse.ArgumentParser(description="Create SRCINFOs for all packages in a repo", allow_abbrev=False)
     parser.add_argument('mode', choices=['msys', 'mingw'], help="The type of the repo")
+    parser.add_argument("msys2_root", help="The path to MSYS2")
     parser.add_argument("repo_path", help="The path to GIT repo")
     parser.add_argument("json_cache", help="The path to the json file used to fetch/store the results")
     parser.add_argument("--time-limit", action="store",
@@ -183,7 +213,7 @@ def main(argv: List[str]) -> Optional[Union[int, str]]:
         pass
 
     srcinfos = []
-    for entry in iter_srcinfo(args.repo_path, args.mode, cache):
+    for entry in iter_srcinfo(args.msys2_root, args.repo_path, args.mode, cache):
         if entry is None:
             continue
         srcinfos.append(entry)

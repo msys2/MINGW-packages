@@ -1,0 +1,185 @@
+From 411b95a6f59dcf9700b215bd22544adf345ac1a5 Mon Sep 17 00:00:00 2001
+From: Biswapriyo Nath <nathbappai@gmail.com>
+Date: Sat, 11 Sep 2021 18:16:23 +0530
+Subject: [PATCH] Fix pointer to integer cast warnings
+
+This fixes warning: cast to pointer from integer of different size.
+In Windows platform, long is 4 bytes. So, void* is first cast to
+intptr_t then to int.
+---
+ src/pulsecore/atomic.h          | 11 ++++++-----
+ src/pulsecore/poll-win32.c      |  4 ++--
+ src/pulsecore/protocol-native.c |  4 ++--
+ src/tests/extended-test.c       |  7 ++++---
+ src/tests/sync-playback.c       |  7 ++++---
+ 5 files changed, 18 insertions(+), 15 deletions(-)
+
+diff --git a/src/pulsecore/atomic.h b/src/pulsecore/atomic.h
+index 7911c05..2fa1470 100644
+--- a/src/pulsecore/atomic.h
++++ b/src/pulsecore/atomic.h
+@@ -21,6 +21,7 @@
+   License along with PulseAudio; if not, see <http://www.gnu.org/licenses/>.
+ ***/
+ 
++#include <stdint.h>
+ #include <pulsecore/macro.h>
+ 
+ /*
+@@ -103,10 +104,10 @@ static inline bool pa_atomic_cmpxchg(pa_atomic_t *a, int old_i, int new_i) {
+ }
+ 
+ typedef struct pa_atomic_ptr {
+-    volatile unsigned long value;
++    volatile uintptr_t value;
+ } pa_atomic_ptr_t;
+ 
+-#define PA_ATOMIC_PTR_INIT(v) { .value = (long) (v) }
++#define PA_ATOMIC_PTR_INIT(v) { .value = (uintptr_t) (v) }
+ 
+ #ifdef HAVE_ATOMIC_BUILTINS_MEMORY_MODEL
+ 
+@@ -117,7 +118,7 @@ static inline void* pa_atomic_ptr_load(const pa_atomic_ptr_t *a) {
+ }
+ 
+ static inline void pa_atomic_ptr_store(pa_atomic_ptr_t *a, void* p) {
+-    __atomic_store_n(&a->value, (unsigned long) p, __ATOMIC_SEQ_CST);
++    __atomic_store_n(&a->value, (uintptr_t) p, __ATOMIC_SEQ_CST);
+ }
+ 
+ #else
+@@ -128,14 +129,14 @@ static inline void* pa_atomic_ptr_load(const pa_atomic_ptr_t *a) {
+ }
+ 
+ static inline void pa_atomic_ptr_store(pa_atomic_ptr_t *a, void *p) {
+-    a->value = (unsigned long) p;
++    a->value = (uintptr_t) p;
+     __sync_synchronize();
+ }
+ 
+ #endif
+ 
+ static inline bool pa_atomic_ptr_cmpxchg(pa_atomic_ptr_t *a, void *old_p, void* new_p) {
+-    return __sync_bool_compare_and_swap(&a->value, (long) old_p, (long) new_p);
++    return __sync_bool_compare_and_swap(&a->value, (uintptr_t) old_p, (uintptr_t) new_p);
+ }
+ 
+ #elif defined(__NetBSD__) && defined(HAVE_SYS_ATOMIC_H)
+diff --git a/src/pulsecore/poll-win32.c b/src/pulsecore/poll-win32.c
+index c927e53..7f3799a 100644
+--- a/src/pulsecore/poll-win32.c
++++ b/src/pulsecore/poll-win32.c
+@@ -109,8 +109,8 @@ static HANDLE
+ HandleFromFd (int fd)
+ {
+   /* since socket() returns a HANDLE already, try that first */
+-  if (IsSocketHandle((HANDLE) fd))
+-    return ((HANDLE) fd);
++  if (IsSocketHandle(PA_INT_TO_PTR(fd)))
++    return PA_INT_TO_PTR(fd);
+ 
+   return ((HANDLE) _get_osfhandle(fd));
+ }
+diff --git a/src/pulsecore/protocol-native.c b/src/pulsecore/protocol-native.c
+index f8dad57..b1c898f 100644
+--- a/src/pulsecore/protocol-native.c
++++ b/src/pulsecore/protocol-native.c
+@@ -4715,7 +4715,7 @@ static void command_extension(pa_pdispatch *pd, uint32_t command, uint32_t tag,
+     CHECK_VALIDITY(c->pstream, m, tag, PA_ERR_NOEXTENSION);
+     CHECK_VALIDITY(c->pstream, m->load_once || idx != PA_INVALID_INDEX, tag, PA_ERR_INVALID);
+ 
+-    cb = (pa_native_protocol_ext_cb_t) (unsigned long) pa_hashmap_get(c->protocol->extensions, m);
++    cb = pa_hashmap_get(c->protocol->extensions, m);
+     CHECK_VALIDITY(c->pstream, cb, tag, PA_ERR_NOEXTENSION);
+ 
+     if (cb(c->protocol, m, c, tag, t) < 0)
+@@ -5414,7 +5414,7 @@ int pa_native_protocol_install_ext(pa_native_protocol *p, pa_module *m, pa_nativ
+     pa_assert(cb);
+     pa_assert(!pa_hashmap_get(p->extensions, m));
+ 
+-    pa_assert_se(pa_hashmap_put(p->extensions, m, (void*) (unsigned long) cb) == 0);
++    pa_assert_se(pa_hashmap_put(p->extensions, m, cb) == 0);
+     return 0;
+ }
+ 
+diff --git a/src/tests/extended-test.c b/src/tests/extended-test.c
+index 0d08fac..e855c77 100644
+--- a/src/tests/extended-test.c
++++ b/src/tests/extended-test.c
+@@ -31,6 +31,7 @@
+ 
+ #include <pulse/pulseaudio.h>
+ #include <pulse/mainloop.h>
++#include <pulsecore/macro.h>
+ 
+ #define NSTREAMS 4
+ #define SINE_HZ 440
+@@ -56,7 +57,7 @@ static const pa_buffer_attr buffer_attr = {
+ static void nop_free_cb(void *p) {}
+ 
+ static void underflow_cb(struct pa_stream *s, void *userdata) {
+-    int i = (int) (long) userdata;
++    int i = PA_PTR_TO_INT(userdata);
+ 
+     fprintf(stderr, "Stream %i finished\n", i);
+ 
+@@ -78,7 +79,7 @@ static void stream_state_callback(pa_stream *s, void *userdata) {
+ 
+         case PA_STREAM_READY: {
+ 
+-            int r, i = (int) (long) userdata;
++            int r, i = PA_PTR_TO_INT(userdata);
+ 
+             fprintf(stderr, "Writing data to stream %i.\n", i);
+ 
+@@ -135,7 +136,7 @@ static void context_state_callback(pa_context *c, void *userdata) {
+ 
+                 streams[i] = pa_stream_new_extended(c, name, formats, 1, NULL);
+                 fail_unless(streams[i] != NULL);
+-                pa_stream_set_state_callback(streams[i], stream_state_callback, (void*) (long) i);
++                pa_stream_set_state_callback(streams[i], stream_state_callback, PA_INT_TO_PTR(i));
+                 pa_stream_connect_playback(streams[i], NULL, &buffer_attr, PA_STREAM_START_CORKED, NULL, i == 0 ? NULL : streams[0]);
+ 
+                 pa_format_info_free(formats[0]);
+diff --git a/src/tests/sync-playback.c b/src/tests/sync-playback.c
+index 9ef038c..18afa18 100644
+--- a/src/tests/sync-playback.c
++++ b/src/tests/sync-playback.c
+@@ -31,6 +31,7 @@
+ 
+ #include <pulse/pulseaudio.h>
+ #include <pulse/mainloop.h>
++#include <pulsecore/macro.h>
+ 
+ #define NSTREAMS 4
+ #define SINE_HZ 440
+@@ -62,7 +63,7 @@ static const pa_buffer_attr buffer_attr = {
+ static void nop_free_cb(void *p) {}
+ 
+ static void underflow_cb(struct pa_stream *s, void *userdata) {
+-    int i = (int) (long) userdata;
++    int i = PA_PTR_TO_INT(userdata);
+ 
+     fprintf(stderr, "Stream %i finished\n", i);
+ 
+@@ -84,7 +85,7 @@ static void stream_state_callback(pa_stream *s, void *userdata) {
+ 
+         case PA_STREAM_READY: {
+ 
+-            int r, i = (int) (long) userdata;
++            int r, i = PA_PTR_TO_INT(userdata);
+ 
+             fprintf(stderr, "Writing data to stream %i.\n", i);
+ 
+@@ -134,7 +135,7 @@ static void context_state_callback(pa_context *c, void *userdata) {
+ 
+                 streams[i] = pa_stream_new(c, name, &sample_spec, NULL);
+                 fail_unless(streams[i] != NULL);
+-                pa_stream_set_state_callback(streams[i], stream_state_callback, (void*) (long) i);
++                pa_stream_set_state_callback(streams[i], stream_state_callback, PA_INT_TO_PTR(i));
+                 pa_stream_connect_playback(streams[i], NULL, &buffer_attr, PA_STREAM_START_CORKED, NULL, i == 0 ? NULL : streams[0]);
+             }
+ 
+-- 
+2.33.0
+

@@ -1,0 +1,130 @@
+From 98aa055b5bc7b3111efdf17122dc9c528aaae56c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20G=C3=B3rny?= <mgorny@gentoo.org>
+Date: Thu, 3 Feb 2022 17:19:26 +0100
+Subject: [PATCH] main: Implement --prefix option to override install path
+
+Implement a --prefix option that can be used to override platbase
+and base when expanding the paths from install scheme.  This can be used
+to install paths to a layout using another prefix than the one used
+to run installer.
+
+Gentoo use case for this is running installer inside a venv to prepare
+installation images for the real system.  The nixOS maintainers have
+also indicated interest in this feature.
+
+Fixes #98
+---
+ src/installer/__main__.py | 26 ++++++++++++++++++++++----
+ tests/test_main.py        | 30 ++++++++++++++++++++++++++++++
+ 2 files changed, 52 insertions(+), 4 deletions(-)
+
+diff --git a/src/installer/__main__.py b/src/installer/__main__.py
+index 6695d4b..1c0e40a 100644
+--- a/src/installer/__main__.py
++++ b/src/installer/__main__.py
+@@ -23,6 +23,13 @@ def main_parser() -> argparse.ArgumentParser:
+         type=str,
+         help="destination directory (prefix to prepend to each file)",
+     )
++    parser.add_argument(
++        "--prefix",
++        "-p",
++        metavar="path",
++        type=str,
++        help="override prefix to install packages to",
++    )
+     parser.add_argument(
+         "--compile-bytecode",
+         action="append",
+@@ -39,16 +46,27 @@ def main_parser() -> argparse.ArgumentParser:
+     return parser
+ 
+ 
+-def get_scheme_dict(distribution_name: str) -> Dict[str, str]:
++def get_scheme_dict(
++    distribution_name: str, prefix: Optional[str] = None
++) -> Dict[str, str]:
+     """Calculate the scheme dictionary for the current Python environment."""
+-    scheme_dict = sysconfig.get_paths()
++    vars = {}
++    if prefix is not None:
++        vars["base"] = vars["platbase"] = prefix
++
++    scheme_dict = sysconfig.get_paths(vars=vars)
+ 
+     # calculate 'headers' path, not currently in sysconfig - see
+     # https://bugs.python.org/issue44445. This is based on what distutils does.
+     # TODO: figure out original vs normalised distribution names
+     scheme_dict["headers"] = os.path.join(
+         sysconfig.get_path(
+-            "include", vars={"installed_base": sysconfig.get_config_var("base")}
++            "include",
++            vars={
++                "installed_base": prefix
++                if prefix is not None
++                else sysconfig.get_config_var("base")
++            },
+         ),
+         distribution_name,
+     )
+@@ -71,7 +89,7 @@ def main(cli_args: Sequence[str], program: Optional[str] = None) -> None:
+ 
+     with installer.sources.WheelFile.open(args.wheel) as source:
+         destination = installer.destinations.SchemeDictionaryDestination(
+-            get_scheme_dict(source.distribution),
++            get_scheme_dict(source.distribution, prefix=args.prefix),
+             sys.executable,
+             installer.utils.get_launcher_kind(),
+             bytecode_optimization_levels=bytecode_levels,
+diff --git a/tests/test_main.py b/tests/test_main.py
+index ca22892..bf9acd5 100644
+--- a/tests/test_main.py
++++ b/tests/test_main.py
+@@ -1,3 +1,5 @@
++import os
++
+ from installer.__main__ import get_scheme_dict, main
+ 
+ 
+@@ -6,6 +8,14 @@ def test_get_scheme_dict():
+     assert set(d.keys()) >= {"purelib", "platlib", "headers", "scripts", "data"}
+ 
+ 
++def test_get_scheme_dict_prefix():
++    d = get_scheme_dict(distribution_name="foo", prefix="/foo")
++    for key in ("purelib", "platlib", "headers", "scripts", "data"):
++        assert d[key].startswith(
++            f"{os.sep}foo"
++        ), f"{key} does not start with /foo: {d[key]}"
++
++
+ def test_main(fancy_wheel, tmp_path):
+     destdir = tmp_path / "dest"
+ 
+@@ -22,6 +32,26 @@ def test_main(fancy_wheel, tmp_path):
+     }
+ 
+ 
++def test_main_prefix(fancy_wheel, tmp_path):
++    destdir = tmp_path / "dest"
++
++    main([str(fancy_wheel), "-d", str(destdir), "-p", "/foo"], "python -m installer")
++
++    installed_py_files = list(destdir.rglob("*.py"))
++
++    for f in installed_py_files:
++        assert str(f.parent).startswith(
++            str(destdir / "foo")
++        ), f"path does not respect destdir+prefix: {f}"
++    assert {f.stem for f in installed_py_files} == {"__init__", "__main__", "data"}
++
++    installed_pyc_files = destdir.rglob("*.pyc")
++    assert {f.name.split(".")[0] for f in installed_pyc_files} == {
++        "__init__",
++        "__main__",
++    }
++
++
+ def test_main_no_pyc(fancy_wheel, tmp_path):
+     destdir = tmp_path / "dest"
+ 
