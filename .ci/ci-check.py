@@ -197,9 +197,11 @@ def main() -> None:
     for pkgloc in ARTIFACTS_LOCATION.glob("*.pkg.tar.*"):
         with install_package(pkgloc):
             pkgname = get_pkg_name(pkgloc)
+            with gha_group(f"Pip Output (without reverse dependencies): {pkgloc.name}"):
+                run_pip_check(pkgname)
             rdeps = get_rdeps(pkgname)
             with install_package(rdeps):
-                with gha_group(f"Pip Output: {pkgloc.name}"):
+                with gha_group(f"Pip Output (with reverse dependencies): {pkgloc.name}"):
                     run_pip_check(pkgname)
 
 
