@@ -63,68 +63,54 @@ for package in "${packages[@]}"; do
     execute 'Clear cache' pacman -Scc --noconfirm
     execute 'Fetch keys' "$DIR/fetch-validpgpkeys.sh"
     execute 'Building binary' makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild
+    repo-add $PWD/artifacts/ci.db.tar.gz $PWD/$package/*.pkg.tar.*
+    pacman -Sy
+    cp $PWD/$package/*.pkg.tar.* $PWD/artifacts
     echo "::endgroup::"
 
-    if [ -f $package/.ci-sequential ]; then
-        cd "$package"
-        for pkg in *.pkg.tar.*; do
-            pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
-            echo "::group::[install] ${pkgname}"
-            grep -qFx "${package}" "$(dirname "$0")/ci-dont-install-list.txt" || pacman --noprogressbar --upgrade --noconfirm $pkg
-            echo "::endgroup::"
-
-            echo "::group::[meta-diff] ${pkgname}"
-            message "Package info diff for ${pkgname}"
-            diff -Nur <(pacman -Si "${pkgname}") <(pacman -Qip "${pkg}") || true
-            echo "::endgroup::"
-
-            echo "::group::[file-diff] ${pkgname}"
-            message "File listing diff for ${pkgname}"
-            diff -Nur <(pacman -Fl "$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
-            echo "::endgroup::"
-
-            echo "::group::[uninstall] ${pkgname}"
-            message "Uninstalling $pkgname"
-            repo-add $PWD/../artifacts/ci.db.tar.gz $PWD/$pkg
-            pacman -Sy
-            pacman -R --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
-            echo "::endgroup::"
-        done
-        cd - > /dev/null
-    else
-        echo "::group::[install] ${package}"
-        grep -qFx "${package}" "$(dirname "$0")/ci-dont-install-list.txt" || execute 'Installing' install_packages
+    cd "$package"
+    for pkg in *.pkg.tar.*; do
+        pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
+        echo "::group::[install] ${pkgname}"
+        grep -qFx "${package}" "$DIR/ci-dont-install-list.txt" || pacman --noprogressbar --upgrade --noconfirm $pkg
         echo "::endgroup::"
 
-        echo "::group::[diff] ${package}"
-        cd "$package"
-        for pkg in *.pkg.tar.*; do
-            pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
-            message "Package info diff for ${pkgname}"
-            diff -Nur <(pacman -Si "${pkgname}") <(pacman -Qip "${pkg}") || true
-
-            message "File listing diff for ${pkgname}"
-            diff -Nur <(pacman -Fl "$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
-        done
-        cd - > /dev/null
+        echo "::group::[meta-diff] ${pkgname}"
+        message "Package info diff for ${pkgname}"
+        diff -Nur <(pacman -Si ${MSYSTEM,,}/"${pkgname}") <(pacman -Qip "${pkg}") || true
         echo "::endgroup::"
 
-        echo "::group::[uninstall] ${package}"
-        repo-add $PWD/artifacts/ci.db.tar.gz "${package}"/*.pkg.tar.*
-        pacman -Sy
-        message "Uninstalling $package"
-        cd "$package"
-        export installed_packages=()
-        for pkg in *.pkg.tar.*; do
-            installed_packages+=("$(echo "$pkg" | rev | cut -d- -f4- | rev)")
-        done
-        pacman -R --recursive --unneeded --noconfirm --noprogressbar "${installed_packages[@]}"
-        unset installed_packages
-        cd - > /dev/null
+        echo "::group::[file-diff] ${pkgname}"
+        message "File listing diff for ${pkgname}"
+        diff -Nur <(pacman -Fl ${MSYSTEM,,}/"$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
         echo "::endgroup::"
-    fi
 
-    mv "${package}"/*.pkg.tar.* artifacts
+        echo "::group::[runtime-dependencies] ${pkgname}"
+        message "Runtime dependencies for ${pkgname}"
+        declare -a binaries=($(pacman -Ql $pkgname | sed -e 's|^[^ ]* ||' | grep -E ${MINGW_PREFIX}/bin/[^/]+\.\(dll\|exe\)$))
+        if [ "${#binaries[@]}" -ne 0 ]; then
+            for binary in ${binaries[@]}; do
+                echo "${binary}:"
+                ntldd -R ${binary} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder" || true
+            done
+        fi
+        declare -a py_modules=($(pacman -Ql $pkgname | sed -e 's|^[^ ]* ||' | grep -E ${MINGW_PREFIX}/lib/python[0-9]\.[0-9]+/site-packages/.+\.pyd$))
+        if [ "${#py_modules[@]}" -ne 0 ]; then
+            for pyd in ${py_modules[@]}; do
+                echo "${pyd}:"
+                ntldd -R ${pyd} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder" || true
+            done
+        fi
+        echo "::endgroup::"
+
+        echo "::group::[uninstall] ${pkgname}"
+        message "Uninstalling $pkgname"
+        pacman -R --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
+        echo "::endgroup::"
+    done
+    cd - > /dev/null
+
+    rm -f "${package}"/*.pkg.tar.*
     unset package
 done
 success 'All packages built successfully'

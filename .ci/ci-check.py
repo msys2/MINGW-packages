@@ -83,6 +83,8 @@ def install_package(pkg: typing.Union[typing.List[str], Path]) -> typing.Generat
             "--refresh",
             "--sync",
             "--noconfirm",
+            "--needed",
+            "mingw-w64-x86_64-python-pip",
             get_pkg_name(pkg),
         ]
         uninstall_command = [
@@ -100,6 +102,8 @@ def install_package(pkg: typing.Union[typing.List[str], Path]) -> typing.Generat
                 "--sync",
                 "--refresh",
                 "--noconfirm",
+                "--needed",
+                "mingw-w64-x86_64-python-pip",
                 *pkg,
             ]
             uninstall_command = [
@@ -193,9 +197,11 @@ def main() -> None:
     for pkgloc in ARTIFACTS_LOCATION.glob("*.pkg.tar.*"):
         with install_package(pkgloc):
             pkgname = get_pkg_name(pkgloc)
+            with gha_group(f"Pip Output (without reverse dependencies): {pkgloc.name}"):
+                run_pip_check(pkgname)
             rdeps = get_rdeps(pkgname)
             with install_package(rdeps):
-                with gha_group(f"Pip Output: {pkgloc.name}"):
+                with gha_group(f"Pip Output (with reverse dependencies): {pkgloc.name}"):
                     run_pip_check(pkgname)
 
 
