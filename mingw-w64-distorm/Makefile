@@ -11,7 +11,7 @@ TARGET	=  ${LIB_NAME}${SHARED_EXT}
 STATICLIB	= ${LIB_NAME}${STATIC_EXT}
 IMPORTLIB	= ${LIB_NAME}${IMPORT_EXT}
 COBJS	= ../../src/mnemonics.o ../../src/textdefs.o ../../src/prefix.o ../../src/operands.o ../../src/insts.o ../../src/instructions.o ../../src/distorm.o ../../src/decoder.o
-CC	= gcc
+CC	= cc
 CFLAGS	= -O2 -Wall -DSUPPORT_64BIT_OFFSET -DDISTORM_STATIC
 WINDRES	= windres
 

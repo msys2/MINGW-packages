@@ -7,7 +7,7 @@ fi
 _realname=openmp
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-pkgver=13.0.1
+pkgver=14.0.4
 pkgrel=1
 pkgdesc="LLVM OpenMP Library (mingw-w64)"
 url="https://openmp.llvm.org/"
@@ -25,10 +25,12 @@ options=('!debug' 'strip')
 _url=https://github.com/llvm/llvm-project/releases/download/llvmorg-${pkgver}
 _pkgfn=$_realname-$pkgver.src
 source=($_url/$_pkgfn.tar.xz{,.sig}
-        "001-cast-to-make-gcc-happy.patch")
-sha256sums=('6b79261371616c31fea18cd3ee1797c79ee38bcaf8417676d4fa366a24c96b4f'
+        "001-cast-to-make-gcc-happy.patch"
+        "002-hacks-for-static-linking.patch")
+sha256sums=('d4b627e2668c3c1001b6c772297273dc67b42f2deec934a59650a55731f8d411'
             'SKIP'
-            '11352ffbe7559a7170f2abd52b3552c877fbcf8fc82cff77b421e8b130a4dd66')
+            '11352ffbe7559a7170f2abd52b3552c877fbcf8fc82cff77b421e8b130a4dd66'
+            '7238f009264bc1b162b73ca3a2a0b224b65ec3ed384304f3e5464032c4c026f4')
 validpgpkeys=('B6C8F98282B944E3B0D5C2530FC3042E345AD05D'  # Hans Wennborg, Google.
               '474E22316ABF4785A88C6E8EA2C794A986419D8A') # Tom Stellard
 
@@ -47,12 +49,12 @@ prepare() {
     apply_patch_with_msg \
       "001-cast-to-make-gcc-happy.patch"
   fi
+  apply_patch_with_msg 002-hacks-for-static-linking.patch
 }
 
 build() {
   cd ${srcdir}
-  [[ -d build-${MSYSTEM} ]] && rm -rf build-${MSYSTEM}
-  mkdir -p build-${MSYSTEM} && cd build-${MSYSTEM}
+  rm -rf build-${MSYSTEM}-{shared,static}
 
   if check_option "debug" "y"; then
     _build_type="Debug"
@@ -72,23 +74,27 @@ build() {
       ;;
   esac
 
-  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
-  cmake \
-    -GNinja \
-    -DCMAKE_BUILD_TYPE=${_build_type} \
-    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
-    -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib \
-    -DLLVM_HOST_TRIPLE="${CARCH}-w64-windows-gnu" \
-    -DLIBOMP_FORTRAN_MODULES=$( (( _clangprefix )) && echo "OFF" || echo "ON" ) \
-    ${platform_config[@]} \
-    -Wno-dev \
-    ../$_pkgfn
-
-  cmake --build .
+  for shared_libs in shared static; do
+    MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    ${MINGW_PREFIX}/bin/cmake \
+      -GNinja \
+      -DCMAKE_BUILD_TYPE=${_build_type} \
+      -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+      -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib \
+      -DLIBOMP_FORTRAN_MODULES="$( (( _clangprefix )) && echo OFF || echo ON )" \
+      -DLIBOMP_ENABLE_SHARED="$( [[ $shared_libs == static ]] && echo OFF || echo ON )" \
+      "${platform_config[@]}" \
+      -Wno-dev \
+      -S $_pkgfn \
+      -B "build-${MSYSTEM}-${shared_libs}"
+    ${MINGW_PREFIX}/bin/cmake --build "build-${MSYSTEM}-${shared_libs}"
+  done
+  unset shared_libs
 }
 
 package() {
-  DESTDIR=${pkgdir} cmake --install build-${MSYSTEM}
+  DESTDIR=${pkgdir} ${MINGW_PREFIX}/bin/cmake --install "${srcdir}/build-${MSYSTEM}-shared"
+  DESTDIR=${pkgdir} ${MINGW_PREFIX}/bin/cmake --install "${srcdir}/build-${MSYSTEM}-static"
 
   install -d "$pkgdir${MINGW_PREFIX}"/share/licenses/${_realname}
   install -Dm644 $_pkgfn/LICENSE* -t "$pkgdir${MINGW_PREFIX}"/share/licenses/${_realname}
