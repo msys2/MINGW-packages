@@ -5,14 +5,15 @@ pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 _pkgver=3.3.10
 pkgver=${_pkgver//-/.}
-pkgrel=2
+pkgrel=3
 pkgdesc="A library for computing the discrete Fourier transform (DFT) (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 url="https://www.fftw.org/"
-license=("GPL")
+license=("spdx:GPL-2.0-or-later")
 makedepends=("${MINGW_PACKAGE_PREFIX}-autotools"
              "${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
              $( [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || \
                echo "${MINGW_PACKAGE_PREFIX}-gcc-fortran"))
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs")
@@ -30,11 +31,31 @@ build() {
   fi
 
   for cur in ${precision}; do
-    [[ -d ${srcdir}/${MSYSTEM}-${cur} ]] && rm -rf ${srcdir}/${MSYSTEM}-${cur}
-    mkdir -p ${srcdir}/${MSYSTEM}-${cur} && cd ${srcdir}/${MSYSTEM}-${cur}
+    [[ -d "${srcdir}"/build-${MSYSTEM}-${cur} ]] && rm -rf "${srcdir}"/build-${MSYSTEM}-${cur}
+    mkdir -p "${srcdir}"/build-${MSYSTEM}-${cur} && cd "${srcdir}"/build-${MSYSTEM}-${cur}
 
-    msg "Building ${_realname} with ${cur} ..."
+    msg "Building ${_realname} for ${cur} precision ..."
 
+    # create FFTW3LibraryDepends.cmake by configuring (but not building) with cmake
+    local -a _config_cmake=""
+    if [ "${cur}" = "float" ]; then
+      _config_cmake="-DENABLE_FLOAT=ON"
+    elif [ "${cur}" = "long_double" ]; then
+      _config_cmake="-DENABLE_LONG_DOUBLE=ON"
+    elif [ "${cur}" = "quad" ]; then
+      _config_cmake="-DENABLE_QUAD_PRECISION=ON"
+    fi
+
+    MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+      "${MINGW_PREFIX}"/bin/cmake.exe \
+        -Wno-dev \
+        -GNinja \
+        ${_config_cmake} \
+        -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+        -DBUILD_SHARED_LIBS=ON \
+        ../${_realname}-${_pkgver}
+
+    # build library using autotools
     local -a _config=""
     if [[ ${MINGW_PACKAGE_PREFIX} != *-clang-aarch64* ]]; then
       _config+="--enable-sse2 --enable-avx --enable-avx-128-fma --enable-avx2"
@@ -52,7 +73,7 @@ build() {
     fi
 
     ../${_realname}-${_pkgver}/configure \
-      --prefix=${MINGW_PREFIX} \
+      --prefix="${MINGW_PREFIX}" \
       --build=${MINGW_CHOST} \
       --host=${MINGW_CHOST} \
       ${_config} \
@@ -69,8 +90,38 @@ build() {
 }
 
 package() {
+  local _SRC_PREFIX=$(cygpath -am ${srcdir}/${_realname}-${_pkgver})
+
   for cur in ${precision}; do
-    msg "Installing ${_realname} with ${cur} ..."
-    make DESTDIR="${pkgdir}" install -C ${srcdir}/${MSYSTEM}-${cur}
+    msg "Installing ${_realname} for ${cur} precision ..."
+    cd "${srcdir}"/build-${MSYSTEM}-${cur}
+
+    make DESTDIR="${pkgdir}" install -C "${srcdir}"/build-${MSYSTEM}-${cur}
+
+    # move .cmake files to correct directory
+    local _prec_prefix
+    local _file_prefix
+    case "${cur}" in
+      double)
+        _prec_prefix=fftw3
+        _file_prefix=FFTW3
+        ;;
+      float)
+        _prec_prefix=fftw3f
+        _file_prefix=FFTW3f
+        ;;
+      long_double)
+        _prec_prefix=fftw3l
+        _file_prefix=FFTW3l
+        ;;
+      quad)
+        _prec_prefix=fftw3q
+        _file_prefix=FFTW3q
+        ;;
+    esac
+    sed -e "s|IMPORTED_IMPLIB_RELEASE \"${_SRC_PREFIX}|IMPORTED_IMPLIB_RELEASE \"${MINGW_PREFIX}/lib|g" -i ./FFTW3LibraryDepends.cmake
+    sed -e "s|IMPORTED_LOCATION_RELEASE \"${_SRC_PREFIX}|IMPORTED_LOCATION_RELEASE \"${MINGW_PREFIX}/bin|g" -i ./FFTW3LibraryDepends.cmake
+    install -Dm644 ./FFTW3LibraryDepends.cmake "${pkgdir}"${MINGW_PREFIX}/lib/cmake/${_prec_prefix}/FFTW3LibraryDepends.cmake
+    mv "${pkgdir}"${MINGW_PREFIX}/lib/cmake/fftw3/${_file_prefix}*.cmake "${pkgdir}"${MINGW_PREFIX}/lib/cmake/${_prec_prefix}/
   done
 }
