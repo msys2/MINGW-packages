@@ -55,7 +55,8 @@ def get_mingw_arch_list(msys2_root: str, dir: str, pkgbuild_path: str) -> List[s
     executable = os.path.join(msys2_root, 'usr', 'bin', 'bash.exe')
     sub_commands = [
         shlex.join(['source', pkgbuild_path]),
-        'echo -n "${mingw_arch[@]}"'
+        '! declare -p mingw_arch &>/dev/null',
+        'echo -n "$? ${mingw_arch[@]}"'
     ]
     env = os.environ.copy()
     env["CHERE_INVOKING"] = "1"
@@ -63,10 +64,11 @@ def get_mingw_arch_list(msys2_root: str, dir: str, pkgbuild_path: str) -> List[s
     env["MSYS2_PATH_TYPE"] = "minimal"
     out = subprocess.check_output(
         [executable, '-lc', ';'.join(sub_commands)], universal_newlines=True, env=env, cwd=dir)
-    arch_list = out.strip().split()
-    if not arch_list:
+    first, *arch_list = out.strip().split()
+    list_exists = bool(int(first))
+    if not list_exists:
+        assert not arch_list
         arch_list = ["mingw32", "mingw64", "ucrt64", "clang64"]
-    assert arch_list
     return arch_list
 
 
