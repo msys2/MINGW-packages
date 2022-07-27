@@ -5,7 +5,6 @@ _realname=nss
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 pkgver=3.80
-_nsprver=4.34
 pkgrel=1
 pkgdesc="Mozilla Network Security Services (mingw-w64)"
 arch=('any')
@@ -15,12 +14,12 @@ license=(MPL2)
 depends=("${MINGW_PACKAGE_PREFIX}-nspr"
          "${MINGW_PACKAGE_PREFIX}-sqlite3"
          "${MINGW_PACKAGE_PREFIX}-zlib")
-makedepends=("${MINGW_PACKAGE_PREFIX}-cc" "zip" "perl")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "zip" "perl")
 options=('staticlibs' 'strip' '!emptydirs')
 source=(https://ftp.mozilla.org/pub/security/nss/releases/NSS_${pkgver//./_}_RTM/src/${_realname}-${pkgver}.tar.gz
         https://ftp.mozilla.org/pub/mozilla/libraries/win32/moztools-static.zip
-        nss.pc.in
-        nss-config.in
         nss-build.patch
         nsinstall.exe.manifest
         blank-cert8.db
@@ -29,8 +28,6 @@ source=(https://ftp.mozilla.org/pub/security/nss/releases/NSS_${pkgver//./_}_RTM
         nss-3.20.1-headers.patch)
 sha256sums=('c0bf1fd2c7e29a6b02b309622baafc443eec90c8934bb155da4bb98988784b6a'
             '1894bc68a0badd6e6f68f66abc4c6cd8e222791dd194f6b631ce536011ab6707'
-            'b9f1428ca2305bf30b109507ff335fa00bce5a7ce0434b50acd26ad7c47dd5bd'
-            'e44ac5095b4d88f24ec7b2e6a9f1581560bd3ad41a3d198596d67ef22f67adb9'
             '1c0a17203efa0da1260c5e5870ccdee45c3f3b8ef521e4b446324ae3307362c3'
             '838098b25a8044176b3139b4003594570c62a8d64f5470fbbd769f3bf44e0855'
             'e45105a21696a26c834cfaa3f664c42426c99546094e22fbe3a5e1dd3fbc1f33'
@@ -52,9 +49,9 @@ prepare() {
 }
 
 build() {
-  [[ -d "${srcdir}"/build-${CARCH} ]] && rm -rf "${srcdir}"/build-${CARCH}
-  mkdir -p "${srcdir}"/build-${CARCH} && cd "${srcdir}"/build-${CARCH}
-  cp -rf ${srcdir}/${_realname}-${pkgver}/* "${srcdir}"/build-${CARCH}
+  [[ -d "${srcdir}"/build-${MSYSTEM} ]] && rm -rf "${srcdir}"/build-${MSYSTEM}
+  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
+  cp -rf ${srcdir}/${_realname}-${pkgver}/* "${srcdir}"/build-${MSYSTEM}
 
   export BUILD_OPT=1
   export NSS_NO_SSL2_NO_EXPORT=1
@@ -66,7 +63,6 @@ build() {
   export NSPR_INCLUDE_DIR="`nspr-config --includedir`"
   export NSPR_LIB_DIR="`nspr-config --libdir`"
   export SQLITE_LIB_DIR="${MINGW_PREFIX}/lib"
-  export XCFLAGS="${CFLAGS} -Wno-unused-command-line-argument"
   export EXTRA_SHARED_LIBS="-lplc4 -lplds4 -lnspr4 -lz -lcrypt32 -lws2_32"
   local conf64=
   [[ "$CARCH" = "x86_64" ]] && {
@@ -74,18 +70,17 @@ build() {
   }
 
   make -j1 -C nss OS_TARGET=WINNT OS_RELEASE=5.0 XP_WIN=1 \
-    NSINSTALL="${srcdir}"/build-${CARCH}/nsinstall NS_USE_GCC=1 ${conf64} \
+    NSINSTALL="${srcdir}"/build-${MSYSTEM}/nsinstall NS_USE_GCC=1 ${conf64} \
     NSS_USE_SYSTEM_SQLITE=1 USE_SYSTEM_ZLIB=1 ZLIB_LIBS=${MINGW_PREFIX}/lib/libz.dll.a
 }
 
 package() {
-  cd "${srcdir}"/build-${CARCH}
+  cd "${srcdir}"/build-${MSYSTEM}
   install -d "${pkgdir}${MINGW_PREFIX}"/{bin,include/nss3,lib/{nss,pkgconfig}}
-  NSS_VMAJOR=$(grep '#define.*NSS_VMAJOR' nss/lib/nss/nss.h | awk '{print $3}')
-  NSS_VMINOR=$(grep '#define.*NSS_VMINOR' nss/lib/nss/nss.h | awk '{print $3}')
-  NSS_VPATCH=$(grep '#define.*NSS_VPATCH' nss/lib/nss/nss.h | awk '{print $3}')
 
-  sed ../nss.pc.in \
+  local _nsprver="$(pkgconf --modversion nspr)"
+
+  sed nss/pkg/pkg-config/nss.pc.in \
     -e "s,%libdir%,${MINGW_PREFIX}/lib,g" \
     -e "s,%prefix%,${MINGW_PREFIX},g" \
     -e "s,%exec_prefix%,${MINGW_PREFIX}/bin,g" \
@@ -95,14 +90,18 @@ package() {
     > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/nss.pc"
   cp -f ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/nss.pc ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/mozilla-nss.pc
 
-  sed ../nss-config.in \
+  local vmajor vminor vpatch
+  { read vmajor; read vminor; read vpatch; } \
+    < <(awk '/#define.*NSS_V(MAJOR|MINOR|PATCH)/ {print $3}' nss/lib/nss/nss.h)
+
+  sed nss/pkg/pkg-config/nss-config.in \
     -e "s,@libdir@,${MINGW_PREFIX}/lib,g" \
     -e "s,@prefix@,${MINGW_PREFIX}/bin,g" \
     -e "s,@exec_prefix@,${MINGW_PREFIX}/bin,g" \
     -e "s,@includedir@,${MINGW_PREFIX}/include/nss3,g" \
-    -e "s,@MOD_MAJOR_VERSION@,${NSS_VMAJOR},g" \
-    -e "s,@MOD_MINOR_VERSION@,${NSS_VMINOR},g" \
-    -e "s,@MOD_PATCH_VERSION@,${NSS_VPATCH},g" \
+    -e "s,@MOD_MAJOR_VERSION@,${vmajor},g" \
+    -e "s,@MOD_MINOR_VERSION@,${vminor},g" \
+    -e "s,@MOD_PATCH_VERSION@,${vpatch},g" \
     > "${pkgdir}${MINGW_PREFIX}/bin/nss-config"
   chmod 755 ${pkgdir}${MINGW_PREFIX}/bin/nss-config
 
