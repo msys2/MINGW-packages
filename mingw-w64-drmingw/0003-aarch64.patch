@@ -1,0 +1,213 @@
+diff -bur drmingw-0.9.5/CMakeLists.txt drmingw-0.9.5-c/CMakeLists.txt
+--- drmingw-0.9.5/CMakeLists.txt	2022-08-06 21:55:46.430772800 -0600
++++ drmingw-0.9.5-c/CMakeLists.txt	2022-08-06 21:57:48.400993200 -0600
+@@ -99,15 +99,23 @@
+     add_definitions (-DHAVE_WIN64=0)
+ endif ()
+ 
++# Require Windows 10 for Windows on ARM, Windows 7 for all else
++if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64.*|AARCH64.*|arm64.*|ARM64.*)")
++    SET(WINNT 0x0A00)
++else()
++    SET(WINNT 0x0601)
++endif()
++
+ # Put all executables into top-level bin subdirectory
+ set (CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+ set (CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+ set (CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+ 
+ add_definitions (
++
+     # minimum required OS version
+-    -D_WIN32_WINNT=0x0601
+-    -DWINVER=0x0601
++    -D_WIN32_WINNT=${WINNT}
++    -DWINVER=${WINNT}
+     # https://msdn.microsoft.com/en-gb/library/windows/desktop/ms683198.aspx
+     -DPSAPI_VERSION=1
+ 
+diff -bur drmingw-0.9.5/src/common/log.cpp drmingw-0.9.5-c/src/common/log.cpp
+--- drmingw-0.9.5/src/common/log.cpp	2022-08-06 21:55:15.102723500 -0600
++++ drmingw-0.9.5-c/src/common/log.cpp	2022-08-06 21:56:55.416543400 -0600
+@@ -92,7 +92,9 @@
+ 
+ static void
+ dumpContext(
+-#ifdef _WIN64
++#if defined(_M_ARM64)
++    const CONTEXT *pContext
++#elif defined(_WIN64)
+     const WOW64_CONTEXT *pContext
+ #else
+     const CONTEXT *pContext
+@@ -101,6 +103,22 @@
+ {
+     // Show the registers
+     lprintf("Registers:\n");
++#ifdef _M_ARM64
++    if (pContext->ContextFlags & CONTEXT_INTEGER) {
++        for(int i = 0 ; i < 28 ; i += 4)
++        {
++            lprintf("X%d=%016I64X X%d=%016I64X X%d=%016I64X X%d=%016I64X\n", i, pContext->X[i],
++                i+1, pContext->X[i+1], i+2, pContext->X[i+2], i+3, pContext->X[i+3]);
++        }
++        lprintf("X%d=%016I64X\n", 28, pContext->X[28]);
++    }
++
++    if (pContext->ContextFlags & CONTEXT_CONTROL) {
++         lprintf("pc=%016I64X sp=%016I64X fp=%016I64X \n",
++            pContext->Pc, pContext->Sp, pContext->Fp);
++    }
++
++#else
+     if (pContext->ContextFlags & CONTEXT_INTEGER) {
+         lprintf("eax=%08lx ebx=%08lx ecx=%08lx edx=%08lx esi=%08lx edi=%08lx\n", pContext->Eax,
+                 pContext->Ebx, pContext->Ecx, pContext->Edx, pContext->Esi, pContext->Edi);
+@@ -135,6 +153,7 @@
+                     pContext->EFlags);
+         }
+     }
++#endif    
+     lprintf("\n\n");
+ }
+ 
+@@ -149,6 +168,18 @@
+     STACKFRAME64 StackFrame;
+     ZeroMemory(&StackFrame, sizeof StackFrame);
+ 
++#ifdef _M_ARM64
++    USHORT processArch = 0;
++    USHORT machineArch = 0;
++    IsWow64Process2(hProcess, &processArch, &machineArch);
++
++    assert((pContext->ContextFlags & CONTEXT_FULL) == CONTEXT_FULL);
++    MachineType = IMAGE_FILE_MACHINE_ARM64;
++    dumpContext(pContext);
++    StackFrame.AddrPC.Offset = pContext->Pc;
++    StackFrame.AddrStack.Offset = pContext->Sp;
++    StackFrame.AddrFrame.Offset = pContext->Fp;
++#else
+     BOOL bWow64 = FALSE;
+     if (HAVE_WIN64) {
+         IsWow64Process(hProcess, &bWow64);
+@@ -180,6 +211,8 @@
+         StackFrame.AddrFrame.Offset = pContext->Rbp;
+ #endif
+     }
++#endif
++
+     StackFrame.AddrPC.Mode = AddrModeFlat;
+     StackFrame.AddrStack.Mode = AddrModeFlat;
+     StackFrame.AddrFrame.Mode = AddrModeFlat;
+diff -bur drmingw-0.9.5/src/exchndl/exchndl.cpp drmingw-0.9.5-c/src/exchndl/exchndl.cpp
+--- drmingw-0.9.5/src/exchndl/exchndl.cpp	2022-08-06 21:55:15.102723500 -0600
++++ drmingw-0.9.5-c/src/exchndl/exchndl.cpp	2022-08-06 21:56:55.416543400 -0600
+@@ -90,7 +90,9 @@
+ 
+         // XXX: In 64-bits WINE we can get context record that don't match the
+         // exception record somehow
+-#ifdef _WIN64
++#if defined(_M_ARM64)
++        PVOID ip = (PVOID)pContext->Pc;
++#elif defined(_WIN64)
+         PVOID ip = (PVOID)pContext->Rip;
+ #else
+         PVOID ip = (PVOID)pContext->Eip;
+diff -bur drmingw-0.9.5/tests/apps/fast_fail.c drmingw-0.9.5-c/tests/apps/fast_fail.c
+--- drmingw-0.9.5/tests/apps/fast_fail.c	2022-08-06 21:55:15.102723500 -0600
++++ drmingw-0.9.5-c/tests/apps/fast_fail.c	2022-08-06 21:56:55.432168600 -0600
+@@ -30,15 +30,26 @@
+ #include <windows.h>
+ 
+ #include "macros.h"
+-
+-#ifdef __MINGW32__
+-
+ #define PF_FASTFAIL_AVAILABLE 23
+ 
+ BOOL WINAPI IsProcessorFeaturePresent(DWORD ProcessorFeature);
+ 
+ #define FAST_FAIL_FATAL_APP_EXIT 7
+ 
++#if defined(__MINGW64__) && defined(_M_ARM64)
++static NO_RETURN FORCE_INLINE
++void __fastfail(unsigned int code) {
++    register unsigned int w0 __asm__ ("w0") = code;
++    asm volatile (
++        "brk #0xF003"
++         :
++         : "r" (w0)
++     );
++    __builtin_unreachable();
++}
++
++#elif defined(__MINGW32__)
++
+ static NO_RETURN FORCE_INLINE
+ void __fastfail(unsigned int code) {
+     asm volatile (
+diff -bur drmingw-0.9.5/tests/apps/int3.c drmingw-0.9.5-c/tests/apps/int3.c
+--- drmingw-0.9.5/tests/apps/int3.c	2022-08-06 21:55:15.118345900 -0600
++++ drmingw-0.9.5-c/tests/apps/int3.c	2022-08-06 21:56:55.447793000 -0600
+@@ -29,7 +29,9 @@
+ 
+ #include "macros.h"
+ 
+-#ifdef __MINGW32__
++#if defined(__MINGW64__) && defined(_M_ARM64)
++#define __debugbreak()  asm volatile ("brk #0xf000")
++#elif defined(__MINGW32__)
+ #define __debugbreak()  asm volatile ("int3")
+ #endif
+ 
+@@ -41,5 +43,5 @@
+     return 0;
+ }
+ 
+-// CHECK_STDERR: /  int3\.exe\!main\+0x[0-9a-f]+  \[.*\bint3\.c @ 39\]/
++// CHECK_STDERR: /  int3\.exe\!main\+0x[0-9a-f]+  \[.*\bint3\.c @ 41\]/
+ // CHECK_EXIT_CODE: 0x80000003
+diff -bur drmingw-0.9.5/tests/apps/nt_assert.c drmingw-0.9.5-c/tests/apps/nt_assert.c
+--- drmingw-0.9.5/tests/apps/nt_assert.c	2022-08-06 21:55:15.118345900 -0600
++++ drmingw-0.9.5-c/tests/apps/nt_assert.c	2022-08-06 21:56:55.447793000 -0600
+@@ -29,7 +29,17 @@
+ 
+ #include "macros.h"
+ 
+-#ifdef __MINGW32__
++#if defined(__MINGW64__) && defined(_M_ARM64)
++
++static NO_RETURN FORCE_INLINE
++void DbgRaiseAssertionFailure(void) {
++    asm volatile (
++        "brk #0xf001"
++    );
++    __builtin_unreachable();
++}
++
++#elif defined(__MINGW32__)
+ 
+ #undef DbgRaiseAssertionFailure
+ 
+diff -bur drmingw-0.9.5/tests/apps/ud2.c drmingw-0.9.5-c/tests/apps/ud2.c
+--- drmingw-0.9.5/tests/apps/ud2.c	2022-08-06 21:55:15.118345900 -0600
++++ drmingw-0.9.5-c/tests/apps/ud2.c	2022-08-06 21:56:55.463418700 -0600
+@@ -29,7 +29,9 @@
+ 
+ #include "macros.h"
+ 
+-#ifdef __MINGW32__
++#if defined(__MINGW64__) && defined(_M_ARM64)
++#define __ud2()  asm volatile ("udf #0xdead")
++#elif defined(__MINGW32__)
+ #define __ud2()  asm volatile ("ud2")
+ #endif
+ 
+@@ -41,5 +43,5 @@
+     return 0;
+ }
+ 
+-// CHECK_STDERR: /  ud2\.exe\!main\+0x[0-9a-f]+  \[.*\bud2\.c @ 39\]/
++// CHECK_STDERR: /  ud2\.exe\!main\+0x[0-9a-f]+  \[.*\bud2\.c @ 41\]/
+ // CHECK_EXIT_CODE: 0xC000001D
