@@ -1,0 +1,176 @@
+From 5d513ef6cf4646e64bbb1d5f8610afd530964588 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Martin=20Storsj=C3=B6?= <martin@martin.st>
+Date: Mon, 18 Jul 2022 00:11:37 +0300
+Subject: [PATCH] [LLD] [COFF] Add support for a new, mingw specific embedded
+ directive -exclude-symbols:
+
+This is an entirely new embedded directive - extending the GNU ld
+command line option --exclude-symbols to be usable in embedded
+directives too.
+
+(GNU ld.bfd also got support for the same new directive, currently in
+the latest git version, after the 2.39 branch.)
+
+This works as an inverse to the regular embedded dllexport directives,
+for cases when autoexport of all eligible symbols is performed.
+
+Differential Revision: https://reviews.llvm.org/D130120
+---
+ COFF/Driver.cpp                      | 10 +++++++++-
+ COFF/Driver.h                        |  2 ++
+ COFF/DriverUtils.cpp                 |  3 +++
+ COFF/MinGW.cpp                       |  6 ++++--
+ COFF/MinGW.h                         |  5 ++++-
+ test/COFF/exclude-symbols-embedded.s | 24 ++++++++++++++++++++++++
+ 6 files changed, 46 insertions(+), 4 deletions(-)
+ create mode 100644 test/COFF/exclude-symbols-embedded.s
+
+diff --git a/COFF/Driver.cpp b/COFF/Driver.cpp
+index 44406346dcec..11248d2faada 100644
+--- a/COFF/Driver.cpp
++++ b/COFF/Driver.cpp
+@@ -375,6 +375,14 @@ void LinkerDriver::parseDirectives(InputFile *file) {
+   for (StringRef inc : directives.includes)
+     addUndefined(inc);
+ 
++  // Handle /exclude-symbols: in bulk.
++  for (StringRef e : directives.excludes) {
++    SmallVector<StringRef, 2> vec;
++    e.split(vec, ',');
++    for (StringRef sym : vec)
++      excludedSymbols.insert(mangle(sym));
++  }
++
+   // https://docs.microsoft.com/en-us/cpp/preprocessor/comment-c-cpp?view=msvc-160
+   for (auto *arg : directives.args) {
+     switch (arg->getOption().getID()) {
+@@ -1309,7 +1317,7 @@ void LinkerDriver::maybeExportMinGWSymbols(const opt::InputArgList &args) {
+       return;
+   }
+ 
+-  AutoExporter exporter;
++  AutoExporter exporter(excludedSymbols);
+ 
+   for (auto *arg : args.filtered(OPT_wholearchive_file))
+     if (Optional<StringRef> path = doFindFile(arg->getValue()))
+diff --git a/COFF/Driver.h b/COFF/Driver.h
+index 902f122d4ade..3f6f98d1a060 100644
+--- a/COFF/Driver.h
++++ b/COFF/Driver.h
+@@ -53,6 +53,7 @@ extern COFFOptTable optTable;
+ struct ParsedDirectives {
+   std::vector<StringRef> exports;
+   std::vector<StringRef> includes;
++  std::vector<StringRef> excludes;
+   llvm::opt::InputArgList args;
+ };
+ 
+@@ -159,6 +160,7 @@ private:
+   std::vector<MemoryBufferRef> resources;
+ 
+   llvm::StringSet<> directivesExports;
++  llvm::DenseSet<StringRef> excludedSymbols;
+ 
+   COFFLinkerContext &ctx;
+ 
+diff --git a/COFF/DriverUtils.cpp b/COFF/DriverUtils.cpp
+index 505967f09115..ab69551034b9 100644
+--- a/COFF/DriverUtils.cpp
++++ b/COFF/DriverUtils.cpp
+@@ -899,6 +899,9 @@ ParsedDirectives ArgParser::parseDirectives(StringRef s) {
+     else if (tok.startswith_insensitive("/include:") ||
+              tok.startswith_insensitive("-include:"))
+       result.includes.push_back(tok.substr(strlen("/include:")));
++    else if (tok.startswith_insensitive("/exclude-symbols:") ||
++             tok.startswith_insensitive("-exclude-symbols:"))
++      result.excludes.push_back(tok.substr(strlen("/exclude-symbols:")));
+     else {
+       // Copy substrings that are not valid C strings. The tokenizer may have
+       // already copied quoted arguments for us, so those do not need to be
+diff --git a/COFF/MinGW.cpp b/COFF/MinGW.cpp
+index 190f4388902e..0689e44cc363 100644
+--- a/COFF/MinGW.cpp
++++ b/COFF/MinGW.cpp
+@@ -23,7 +23,9 @@ using namespace llvm::COFF;
+ using namespace lld;
+ using namespace lld::coff;
+ 
+-AutoExporter::AutoExporter() {
++AutoExporter::AutoExporter(
++    const llvm::DenseSet<StringRef> &manualExcludeSymbols)
++    : manualExcludeSymbols(manualExcludeSymbols) {
+   excludeLibs = {
+       "libgcc",
+       "libgcc_s",
+@@ -135,7 +137,7 @@ bool AutoExporter::shouldExport(const COFFLinkerContext &ctx,
+   // disallow import symbols.
+   if (!isa<DefinedRegular>(sym) && !isa<DefinedCommon>(sym))
+     return false;
+-  if (excludeSymbols.count(sym->getName()))
++  if (excludeSymbols.count(sym->getName()) || manualExcludeSymbols.count(sym->getName()))
+     return false;
+ 
+   for (StringRef prefix : excludeSymbolPrefixes.keys())
+diff --git a/COFF/MinGW.h b/COFF/MinGW.h
+index af40d1b5a6ec..113cd8327d28 100644
+--- a/COFF/MinGW.h
++++ b/COFF/MinGW.h
+@@ -13,6 +13,7 @@
+ #include "Symbols.h"
+ #include "lld/Common/LLVM.h"
+ #include "llvm/ADT/ArrayRef.h"
++#include "llvm/ADT/DenseSet.h"
+ #include "llvm/ADT/StringSet.h"
+ #include "llvm/Option/ArgList.h"
+ #include <vector>
+@@ -24,7 +25,7 @@ class COFFLinkerContext;
+ // symbols for MinGW.
+ class AutoExporter {
+ public:
+-  AutoExporter();
++  AutoExporter(const llvm::DenseSet<StringRef> &manualExcludeSymbols);
+ 
+   void addWholeArchive(StringRef path);
+   void addExcludedSymbol(StringRef symbol);
+@@ -35,6 +36,8 @@ public:
+   llvm::StringSet<> excludeLibs;
+   llvm::StringSet<> excludeObjects;
+ 
++  const llvm::DenseSet<StringRef> &manualExcludeSymbols;
++
+   bool shouldExport(const COFFLinkerContext &ctx, Defined *sym) const;
+ };
+
+diff --git a/test/COFF/exclude-symbols-embedded.s b/test/COFF/exclude-symbols-embedded.s
+new file mode 100644
+index 000000000000..9ea8ed479d20
+--- /dev/null
++++ b/test/COFF/exclude-symbols-embedded.s
+@@ -0,0 +1,24 @@
++// REQUIRES: x86
++// RUN: llvm-mc -filetype=obj -triple=i686-win32-gnu %s -o %t.o
++
++// RUN: lld-link -lldmingw -dll -out:%t.dll %t.o -noentry
++// RUN: llvm-readobj --coff-exports %t.dll | FileCheck --implicit-check-not=Name: %s
++
++// CHECK: Name:
++// CHECK: Name: sym1
++
++.global _sym1
++_sym1:
++  ret
++
++.global _sym2
++_sym2:
++  ret
++
++.global _sym3
++_sym3:
++  ret
++
++.section .drectve,"yn"
++.ascii " -exclude-symbols:sym2,unknownsym"
++.ascii " -exclude-symbols:unkonwnsym,sym3"
+-- 
+2.37.1.windows.1
+
