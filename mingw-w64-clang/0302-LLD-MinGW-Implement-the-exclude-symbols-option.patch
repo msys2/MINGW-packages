@@ -1,0 +1,150 @@
+From d1da6469f9ea9b078276ee2e098241f0440468be Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Martin=20Storsj=C3=B6?= <martin@martin.st>
+Date: Mon, 18 Jul 2022 23:43:02 +0300
+Subject: [PATCH] [LLD] [MinGW] Implement the --exclude-symbols option
+
+This adds support for the existing GNU ld command line option, which
+allows excluding individual symbols from autoexport (when linking a
+DLL and no symbols are marked explicitly as dllexported).
+
+Differential Revision: https://reviews.llvm.org/D130118
+---
+ COFF/Driver.cpp             |  7 +++++++
+ COFF/MinGW.cpp              |  4 ++++
+ COFF/MinGW.h                |  1 +
+ COFF/Options.td             |  2 ++
+ MinGW/Driver.cpp            |  2 ++
+ MinGW/Options.td            |  2 ++
+ test/COFF/exclude-symbols.s | 20 ++++++++++++++++++++
+ test/MinGW/driver.test      |  4 ++++
+ 8 files changed, 42 insertions(+)
+ create mode 100644 test/COFF/exclude-symbols.s
+
+diff --git a/COFF/Driver.cpp b/COFF/Driver.cpp
+index 4f7b9e469668..44406346dcec 100644
+--- a/COFF/Driver.cpp
++++ b/COFF/Driver.cpp
+@@ -1315,6 +1315,13 @@ void LinkerDriver::maybeExportMinGWSymbols(const opt::InputArgList &args) {
+     if (Optional<StringRef> path = doFindFile(arg->getValue()))
+       exporter.addWholeArchive(*path);
+ 
++  for (auto *arg : args.filtered(OPT_exclude_symbols)) {
++    SmallVector<StringRef, 2> vec;
++    StringRef(arg->getValue()).split(vec, ',');
++    for (StringRef sym : vec)
++      exporter.addExcludedSymbol(mangle(sym));
++  }
++
+   ctx.symtab.forEachSymbol([&](Symbol *s) {
+     auto *def = dyn_cast<Defined>(s);
+     if (!exporter.shouldExport(ctx, def))
+diff --git a/COFF/MinGW.cpp b/COFF/MinGW.cpp
+index 7a3a3853572f..190f4388902e 100644
+--- a/COFF/MinGW.cpp
++++ b/COFF/MinGW.cpp
+@@ -122,6 +122,10 @@ void AutoExporter::addWholeArchive(StringRef path) {
+   excludeLibs.erase(libName);
+ }
+ 
++void AutoExporter::addExcludedSymbol(StringRef symbol) {
++  excludeSymbols.insert(symbol);
++}
++
+ bool AutoExporter::shouldExport(const COFFLinkerContext &ctx,
+                                 Defined *sym) const {
+   if (!sym || !sym->getChunk())
+diff --git a/COFF/MinGW.h b/COFF/MinGW.h
+index 59c2581f661d..af40d1b5a6ec 100644
+--- a/COFF/MinGW.h
++++ b/COFF/MinGW.h
+@@ -27,6 +27,7 @@ public:
+   AutoExporter();
+ 
+   void addWholeArchive(StringRef path);
++  void addExcludedSymbol(StringRef symbol);
+ 
+   llvm::StringSet<> excludeSymbols;
+   llvm::StringSet<> excludeSymbolPrefixes;
+diff --git a/COFF/Options.td b/COFF/Options.td
+index 5135f4ea34af..c728279ef5cc 100644
+--- a/COFF/Options.td
++++ b/COFF/Options.td
+@@ -45,6 +45,8 @@ def diasdkdir : P<"diasdkdir", "Set the location of the DIA SDK">;
+ def entry   : P<"entry", "Name of entry point symbol">;
+ def errorlimit : P<"errorlimit",
+     "Maximum number of errors to emit before stopping (0 = no limit)">;
++def exclude_symbols  : P<"exclude-symbols", "Exclude symbols from automatic export">,
++    MetaVarName<"<symbol[,symbol,...]>">;
+ def export  : P<"export", "Export a function">;
+ // No help text because /failifmismatch is not intended to be used by the user.
+ def failifmismatch : P<"failifmismatch", "">;
+diff --git a/MinGW/Driver.cpp b/MinGW/Driver.cpp
+index 5920a5061d9c..37d2439c3925 100644
+--- a/MinGW/Driver.cpp
++++ b/MinGW/Driver.cpp
+@@ -398,6 +398,8 @@ bool mingw::link(ArrayRef<const char *> argsArr, llvm::raw_ostream &stdoutOS,
+     add("-delayload:" + StringRef(a->getValue()));
+   for (auto *a : args.filtered(OPT_wrap))
+     add("-wrap:" + StringRef(a->getValue()));
++  for (auto *a : args.filtered(OPT_exclude_symbols))
++    add("-exclude-symbols:" + StringRef(a->getValue()));
+ 
+   std::vector<StringRef> searchPaths;
+   for (auto *a : args.filtered(OPT_L)) {
+diff --git a/MinGW/Options.td b/MinGW/Options.td
+index bfdd4af28800..cc94b93e388a 100644
+--- a/MinGW/Options.td
++++ b/MinGW/Options.td
+@@ -62,6 +62,8 @@ def enable_stdcall_fixup: F<"enable-stdcall-fixup">,
+ defm entry: Eq<"entry", "Name of entry point symbol">, MetaVarName<"<entry>">;
+ def exclude_all_symbols: F<"exclude-all-symbols">,
+     HelpText<"Don't automatically export any symbols">;
++defm exclude_symbols: Eq<"exclude-symbols",
++    "Exclude symbols from automatic export">, MetaVarName<"<symbol[,symbol,...]>">;
+ def export_all_symbols: F<"export-all-symbols">,
+     HelpText<"Export all symbols even if a def file or dllexport attributes are used">;
+ defm fatal_warnings: B<"fatal-warnings",
+diff --git a/test/COFF/exclude-symbols.s b/test/COFF/exclude-symbols.s
+new file mode 100644
+index 000000000000..cd358712382d
+--- /dev/null
++++ b/test/COFF/exclude-symbols.s
+@@ -0,0 +1,20 @@
++// REQUIRES: x86
++// RUN: llvm-mc -filetype=obj -triple=i686-win32-gnu %s -o %t.o
++
++// RUN: lld-link -lldmingw -dll -out:%t.dll %t.o -noentry -exclude-symbols:sym2,unknownsym -exclude-symbols:unknownsym,sym3
++// RUN: llvm-readobj --coff-exports %t.dll | FileCheck --implicit-check-not=Name: %s
++
++// CHECK: Name:
++// CHECK: Name: sym1
++
++.global _sym1
++_sym1:
++  ret
++
++.global _sym2
++_sym2:
++  ret
++
++.global _sym3
++_sym3:
++  ret
+diff --git a/test/MinGW/driver.test b/test/MinGW/driver.test
+index c67717d1a000..9c56bfa42f6b 100644
+--- a/test/MinGW/driver.test
++++ b/test/MinGW/driver.test
+@@ -321,6 +321,10 @@ RUN: ld.lld -### -m i386pep foo.o -wrap foo1 --wrap foo2 2>&1 | FileCheck -check
+ RUN: ld.lld -### -m i386pep foo.o -wrap=foo1 --wrap=foo2 2>&1 | FileCheck -check-prefix WRAP %s
+ WRAP: -wrap:foo1 -wrap:foo2
+ 
++RUN: ld.lld -### -m i386pep foo.o -exclude-symbols sym1,sym2 --exclude-symbols sym3 2>&1 | FileCheck -check-prefix EXCLUDE_SYMBOLS %s
++RUN: ld.lld -### -m i386pep foo.o -exclude-symbols=sym1,sym2 --exclude-symbols=sym3 2>&1 | FileCheck -check-prefix EXCLUDE_SYMBOLS %s
++EXCLUDE_SYMBOLS: -exclude-symbols:sym1,sym2 -exclude-symbols:sym3
++
+ RUN: ld.lld -### -m i386pep foo.o 2>&1 | FileCheck -check-prefix DEMANGLE %s
+ RUN: ld.lld -### -m i386pep foo.o -demangle 2>&1 | FileCheck -check-prefix DEMANGLE %s
+ RUN: ld.lld -### -m i386pep foo.o --demangle 2>&1 | FileCheck -check-prefix DEMANGLE %s
+-- 
+2.37.1.windows.1
+
