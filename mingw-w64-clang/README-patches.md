@@ -15,8 +15,6 @@ Legend:
 - `"0003-add-pthread-as-system-lib-for-mingw.patch"` :grey_exclamation:
 - `"0004-enable-emutls-for-mingw.patch"` :grey_exclamation:
 - `"0005-export-out-of-tree-mlir-targets.patch"` :x:
-- `"0006-lldb-Fix-building-standalone-LLDB-on-Windows.patch"` :arrow_down_small: - [https://reviews.llvm.org/D122523]
-- `"0007-MinGW-Don-t-currently-set-visibility-hidden-when-bui.patch"` :arrow_down_small:
 - `"0008-COFF-Emit-embedded-exclude-symbols-directives-for-hi.patch"` :arrow_down_small:
 - `"0009-Use-hidden-visibility-when-building-for-MinGW-with-Clang.patch"` :arrow_down_small:
 - `"0101-link-pthread-with-mingw.patch"` :grey_exclamation:
