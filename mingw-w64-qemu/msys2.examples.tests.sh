@@ -145,8 +145,8 @@ function execute {
 			LINE=""
 		fi
 
-		# Add quots to param, if param is empty or contains blanks
-		if [ "$PARAM" == "" ] || [[ $PARAM =~ ' ' ]]
+		# Add quots to param, if param is empty or contains blanks or double quots
+		if [ -z "$PARAM" ] || [[ $PARAM =~ ' ' ]] || [[ $PARAM =~ '"' ]]
 		then
 			PARAM="'$PARAM'"
 		fi
@@ -518,15 +518,18 @@ function qemuLiveDesktopUEFI_Pflash {
 	echo "Instanciate VARS-Firmware to VM dir for r/w pflash access:"
 	firmwareAvailable edk2-i386-vars.fd &&
 	(
-		echo "cp '$(firmware edk2-i386-vars.fd)' $TESTDIR/"
+		echo "cp -p '$(firmware edk2-i386-vars.fd)' $TESTDIR/"
 		echo
-		cp "$(firmware edk2-i386-vars.fd)" $TESTDIR/
+		cp -p "$(firmware edk2-i386-vars.fd)" $TESTDIR/
 		firmwareAvailable edk2-x86_64-code.fd &&
 		execute qemu-system-x86_64 -M q35 -m 1536 $(audioq35) \
 			$( [ "$1" != "noaccel" ] && echo $(accel)) \
-			-drive "file=$(firmware edk2-x86_64-code.fd),if=pflash,format=raw,readonly=on" \
+			-drive file="$(firmware edk2-x86_64-code.fd)",if=pflash,format=raw,readonly=on \
 			-drive file=$TESTDIR/edk2-i386-vars.fd,if=pflash,format=raw,readonly=off \
-			-cdrom $LIVE_IMAGE_FILE -drive file=$TESTDIR/testimage.qcow2,media=disk
+			-drive id=hd0,if=none,file=$TESTDIR/testimage.qcow2,format=qcow2 \
+			-device ide-hd,drive=hd0,bus=ide.0,bootindex=0 \
+			-drive id=cd0,if=none,file=$LIVE_IMAGE_FILE,format=raw \
+			-device ide-cd,drive=cd0,bus=ide.1,bootindex=1
 	)
 	removeDir $TESTDIR
 }
@@ -550,7 +553,10 @@ function qemuLiveDesktopUEFI_Bios {
 		execute qemu-system-x86_64 -M q35 -m 1536 $(audioq35) \
 			$( [ "$1" != "noaccel" ] && echo $(accel)) \
 			-bios $TESTDIR/edk2-x86_64.fd \
-			-cdrom $LIVE_IMAGE_FILE -drive file=$TESTDIR/testimage.qcow2,media=disk
+			-drive id=hd0,if=none,file=$TESTDIR/testimage.qcow2,format=qcow2 \
+			-device ide-hd,drive=hd0,bus=ide.0,bootindex=0 \
+			-drive id=cd0,if=none,file=$LIVE_IMAGE_FILE,format=raw \
+			-device ide-cd,drive=cd0,bus=ide.1,bootindex=1
 	)
 	removeDir $TESTDIR
 }
@@ -678,57 +684,57 @@ function qemuLiveDesktopQemuImgConversions {
 
 	FMT=vmdk
 	local VMDK_IMAGE="$TESTDIR/$FMT"
-	local VMDK_IMAGE_OPTS="driver=$FMT,file.driver=file,file.filename=$TESTDIR/$FMT"
 	execute qemu-img convert -p -f raw "$ISO_IMAGE" -O vmdk "$VMDK_IMAGE"
 
 	FMT=qcow2
 	local QCOW2_OPTS_CRYPT="encrypt.format=luks,encrypt.key-secret=${FMT}secret"
 	local QCOW2_IMAGE="$TESTDIR/$FMT"
 	local QCOW2_SECRET="secret,id=${FMT}secret,file=$TESTDIR/.secret$FMT"
-	local QCOW2_IMAGE_OPTS="driver=$FMT,file.driver=file,file.filename=$TESTDIR/$FMT,$QCOW2_OPTS_CRYPT"
+	local QCOW2_IMAGE_OPTS="driver=$FMT,file.driver=file,file.filename=$TESTDIR/$FMT"
 	echo "Valid UTF-8 secret for $FMT" > "$TESTDIR/.secret$FMT"
-	execute qemu-img create --object "$QCOW2_SECRET" -o "$QCOW2_OPTS_CRYPT" -f qcow2 "$QCOW2_IMAGE" "$IMG_SIZE"
-	execute qemu-img convert -p -n --image-opts "$VMDK_IMAGE_OPTS" \
-		--object "$QCOW2_SECRET" --target-image-opts "$QCOW2_IMAGE_OPTS"
+	execute qemu-img create --object "$QCOW2_SECRET" \
+		-o "$QCOW2_OPTS_CRYPT" -f qcow2 "$QCOW2_IMAGE" "$IMG_SIZE"
+	execute qemu-img convert -p -n \
+		 -f vmdk "$VMDK_IMAGE" \
+		--object "$QCOW2_SECRET" --target-image-opts "$QCOW2_IMAGE_OPTS,$QCOW2_OPTS_CRYPT"
 
 	FMT=qcow
 	local QCOW_OPTS_CRYPT="encrypt.format=aes,encrypt.key-secret=${FMT}secret"
 	local QCOW_IMAGE="$TESTDIR/$FMT"
 	local QCOW_SECRET="secret,id=${FMT}secret,file=$TESTDIR/.secret$FMT"
-	local QCOW_IMAGE_OPTS="driver=$FMT,file.driver=file,file.filename=$TESTDIR/$FMT,$QCOW_OPTS_CRYPT"
+	local QCOW_IMAGE_OPTS="driver=$FMT,file.driver=file,file.filename=$TESTDIR/$FMT"
 	echo "Valid UTF-8 secret for $FMT" > "$TESTDIR/.secret$FMT"
-	execute qemu-img create --object "$QCOW_SECRET" -o "$QCOW_OPTS_CRYPT" -f qcow "$QCOW_IMAGE" "$IMG_SIZE"
-	execute qemu-img convert -p -n --object "$QCOW2_SECRET" --image-opts "$QCOW2_IMAGE_OPTS" \
-		--object "$QCOW_SECRET" --target-image-opts "$QCOW_IMAGE_OPTS"
+	execute qemu-img create --object "$QCOW_SECRET" \
+		-o "$QCOW_OPTS_CRYPT" -f qcow "$QCOW_IMAGE" "$IMG_SIZE"
+	execute qemu-img convert -p -n \
+		--object "$QCOW2_SECRET" --image-opts "$QCOW2_IMAGE_OPTS,$QCOW2_OPTS_CRYPT" \
+		--object "$QCOW_SECRET" --target-image-opts "$QCOW_IMAGE_OPTS,$QCOW_OPTS_CRYPT"
 
 	FMT=qed
 	local QED_IMAGE="$TESTDIR/$FMT"
-	execute qemu-img create -f qed "$QED_IMAGE" "$IMG_SIZE"
-	execute qemu-img convert -p -n --object "$QCOW_SECRET" --image-opts "$QCOW_IMAGE_OPTS" -O qed "$QED_IMAGE"
+	execute qemu-img convert -p \
+		--object "$QCOW_SECRET" --image-opts "$QCOW_IMAGE_OPTS,$QCOW_OPTS_CRYPT" \
+		-O qed "$QED_IMAGE"
 
 	FMT=vdi
 	local VDI_IMAGE="$TESTDIR/$FMT"
-	execute qemu-img create -f vdi "$VDI_IMAGE" "$IMG_SIZE"
-	execute qemu-img convert -p -n -f qed "$QED_IMAGE" -O vdi "$VDI_IMAGE"
+	execute qemu-img convert -p -f qed "$QED_IMAGE" -O vdi "$VDI_IMAGE"
 
 	FMT=vhdx
 	local VHDX_IMAGE="$TESTDIR/$FMT"
-	local VHDX_IMAGE_OPTS="driver=$FMT,file.driver=file,file.filename=$TESTDIR/$FMT"
 	local VHDX_OPTS="block_size=1M"
 	execute qemu-img create -o "$VHDX_OPTS" -f vhdx "$VHDX_IMAGE" "$IMG_SIZE"
 	execute qemu-img convert -p -n -f vdi "$VDI_IMAGE" -O vhdx "$VHDX_IMAGE"
 
 	FMT=vpc
 	local VPC_IMAGE="$TESTDIR/$FMT"
-	local VPC_IMAGE_OPTS="driver=$FMT,file.driver=file,file.filename=$TESTDIR/$FMT"
 	local VPC_OPTS="force_size=on"
 	execute qemu-img create -o "$VPC_OPTS" -f vpc "$VPC_IMAGE" "$IMG_SIZE"
 	execute qemu-img convert -p -n -f vhdx "$VHDX_IMAGE" -O vpc "$VPC_IMAGE"
 
 	FMT=raw
 	local RAW_IMAGE="$TESTDIR/$FMT"
-	execute qemu-img create -f raw "$RAW_IMAGE" "$IMG_SIZE"
-	execute qemu-img convert -p -n -f vpc "$VPC_IMAGE" -O raw "$RAW_IMAGE"
+	execute qemu-img convert -p -f vpc "$VPC_IMAGE" -O raw "$RAW_IMAGE"
 
 	# Correct transition check
 	execute qemu-img compare -p -f raw "$ISO_IMAGE" -F raw "$RAW_IMAGE"
