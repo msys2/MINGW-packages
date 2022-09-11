@@ -57,6 +57,9 @@ pacman -Sy
 # Remove git and python
 pacman -R --recursive --unneeded --noconfirm --noprogressbar git python
 
+# Enable linting
+export MAKEPKG_LINT_PKGBUILD=1
+
 message 'Building packages'
 for package in "${packages[@]}"; do
     echo "::group::[build] ${package}"
