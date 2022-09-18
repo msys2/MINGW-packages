@@ -65,7 +65,8 @@ for package in "${packages[@]}"; do
     echo "::group::[build] ${package}"
     execute 'Clear cache' pacman -Scc --noconfirm
     execute 'Fetch keys' "$DIR/fetch-validpgpkeys.sh"
-    execute 'Building binary' makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild
+    execute 'Prepare' makepkg-mingw --nobuild --nodeps --cleanbuild
+    execute 'Building binary' makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --noextract
     repo-add $PWD/artifacts/ci.db.tar.gz $PWD/$package/*.pkg.tar.*
     pacman -Sy
     cp $PWD/$package/*.pkg.tar.* $PWD/artifacts
