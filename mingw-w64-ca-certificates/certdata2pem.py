@@ -88,23 +88,39 @@ for line in open('certdata.txt', 'r', encoding='utf8'):
 if len(list(obj.items())) > 0:
     objects.append(obj)
 
+# Read blacklist.
+blacklist = []
+if os.path.exists('blacklist.txt'):
+    for line in open('blacklist.txt', 'r'):
+        line = line.strip()
+        if line.startswith('#') or len(line) == 0:
+            continue
+        item = line.split('#', 1)[0].strip()
+        blacklist.append(item)
+
 # Build up trust database.
 trustmap = dict()
 for obj in objects:
     if obj['CKA_CLASS'] != 'CKO_NSS_TRUST':
         continue
-    key = obj['CKA_LABEL'] + printable_serial(obj)
-    trustmap[key] = obj
-    print(" added trust", key)
+    if obj['CKA_LABEL'] in blacklist:
+        print("Certificate %s blacklisted, ignoring." % obj['CKA_LABEL'])
+    else:
+        key = obj['CKA_LABEL'] + printable_serial(obj)
+        trustmap[key] = obj
+        print(" added trust", key)
 
 # Build up cert database.
 certmap = dict()
 for obj in objects:
     if obj['CKA_CLASS'] != 'CKO_CERTIFICATE':
         continue
-    key = obj['CKA_LABEL'] + printable_serial(obj)
-    certmap[key] = obj
-    print(" added cert", key)
+    if obj['CKA_LABEL'] in blacklist:
+        print("Certificate %s blacklisted, ignoring." % obj['CKA_LABEL'])
+    else:
+        key = obj['CKA_LABEL'] + printable_serial(obj)
+        certmap[key] = obj
+        print(" added cert", key)
 
 def obj_to_filename(obj):
     label = obj['CKA_LABEL'][1:-1]

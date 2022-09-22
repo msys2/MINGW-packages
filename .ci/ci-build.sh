@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -eo pipefail
 
 # AppVeyor and Drone Continuous Integration for MSYS2
 # Author: Renato Silva <br.renatosilva@gmail.com>
@@ -11,8 +11,6 @@ DIR="$( cd "$( dirname "$0" )" && pwd )"
 # Configure
 source "$DIR/ci-library.sh"
 mkdir artifacts
-git_config user.email 'ci@msys2.org'
-git_config user.name  'MSYS2 Continuous Integration'
 git remote add upstream 'https://github.com/MSYS2/MINGW-packages'
 git fetch --quiet upstream
 # reduce time required to install packages by disabling pacman's disk space checking
@@ -21,11 +19,31 @@ sed -i 's/^CheckSpace/#CheckSpace/g' /etc/pacman.conf
 pacman --noconfirm -Fy
 
 # Detect
-list_commits  || failure 'Could not detect added commits'
 list_packages || failure 'Could not detect changed files'
-message 'Processing changes' "${commits[@]}"
+message 'Processing changes'
+
+declare -a skipped_packages=()
+for package in "${packages[@]}"; do
+    cd "${package}"
+    readarray -d $'\0' -t mingw_arch < <(\
+        set +eo pipefail
+        mingw_arch=("mingw32" "mingw64" "ucrt64" "clang64")
+        . PKGBUILD
+        [[ "${#mingw_arch[@]}" -gt 0 ]] && printf "%s\0" "${mingw_arch[@]}"
+    )
+    if [[ ! " ${mingw_arch[*]} " =~ " ${MSYSTEM,,} " ]]; then
+        skipped_packages+=("${package}")
+    fi
+    cd - > /dev/null
+    unset package
+done
+
+for package in "${skipped_packages[@]}"; do
+    packages=(${packages[@]/"${package}"})
+    unset package
+done
+
 test -z "${packages}" && success 'No changes in package recipes'
-define_build_order || failure 'Could not determine build order'
 
 # Build
 message 'Building packages' "${packages[@]}"
@@ -36,46 +54,66 @@ repo-add $PWD/artifacts/ci.db.tar.gz
 sed -i '1s|^|[ci]\nServer = file://'"$PWD"'/artifacts/\nSigLevel = Never\n|' /etc/pacman.conf
 pacman -Sy
 
+# Remove git and python
+pacman -R --recursive --unneeded --noconfirm --noprogressbar git python
+
+# Enable linting
+export MAKEPKG_LINT_PKGBUILD=1
+
 message 'Building packages'
 for package in "${packages[@]}"; do
     echo "::group::[build] ${package}"
+    execute 'Clear cache' pacman -Scc --noconfirm
     execute 'Fetch keys' "$DIR/fetch-validpgpkeys.sh"
-    # Ensure the toolchain is installed before building the package
-    execute 'Installing the toolchain' pacman -S --needed --noconfirm --noprogressbar $MINGW_PACKAGE_PREFIX-toolchain
     execute 'Building binary' makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild
-    MINGW_ARCH=mingw64 execute 'Building source' makepkg-mingw --noconfirm --noprogressbar --allsource
-    echo "::endgroup::"
-
-    echo "::group::[install] ${package}"
-    execute 'Installing' install_packages
-    echo "::endgroup::"
-
-    echo "::group::[diff] ${package}"
-    cd "$package"
-    for pkg in *.pkg.tar.*; do
-        message "File listing diff for ${pkg}"
-        pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
-        diff -Nur <(pacman -Fl "$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
-    done
-    cd - > /dev/null
-    echo "::endgroup::"
-
-    echo "::group::[uninstall] ${package}"
-    repo-add $PWD/artifacts/ci.db.tar.gz "${package}"/*.pkg.tar.*
+    repo-add $PWD/artifacts/ci.db.tar.gz $PWD/$package/*.pkg.tar.*
     pacman -Sy
-    message "Uninstalling $package"
-    cd "$package"
-    export installed_packages=()
-    for pkg in *.pkg.tar.*; do
-        installed_packages+=("$(echo "$pkg" | rev | cut -d- -f4- | rev)")
-    done
-    pacman -R --recursive --unneeded --noconfirm --noprogressbar "${installed_packages[@]}"
-    unset installed_packages
-    cd - > /dev/null
+    cp $PWD/$package/*.pkg.tar.* $PWD/artifacts
     echo "::endgroup::"
 
-    mv "${package}"/*.pkg.tar.* artifacts
-    mv "${package}"/*.src.tar.* artifacts
+    cd "$package"
+    for pkg in *.pkg.tar.*; do
+        pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
+        echo "::group::[install] ${pkgname}"
+        grep -qFx "${package}" "$DIR/ci-dont-install-list.txt" || pacman --noprogressbar --upgrade --noconfirm $pkg
+        echo "::endgroup::"
+
+        echo "::group::[meta-diff] ${pkgname}"
+        message "Package info diff for ${pkgname}"
+        diff -Nur <(pacman -Si ${MSYSTEM,,}/"${pkgname}") <(pacman -Qip "${pkg}") || true
+        echo "::endgroup::"
+
+        echo "::group::[file-diff] ${pkgname}"
+        message "File listing diff for ${pkgname}"
+        diff -Nur <(pacman -Fl ${MSYSTEM,,}/"$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
+        echo "::endgroup::"
+
+        echo "::group::[runtime-dependencies] ${pkgname}"
+        message "Runtime dependencies for ${pkgname}"
+        declare -a binaries=($(pacman -Ql $pkgname | sed -e 's|^[^ ]* ||' | grep -E ${MINGW_PREFIX}/bin/[^/]+\.\(dll\|exe\)$))
+        if [ "${#binaries[@]}" -ne 0 ]; then
+            for binary in ${binaries[@]}; do
+                echo "${binary}:"
+                ntldd -R ${binary} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder" || true
+            done
+        fi
+        declare -a py_modules=($(pacman -Ql $pkgname | sed -e 's|^[^ ]* ||' | grep -E ${MINGW_PREFIX}/lib/python[0-9]\.[0-9]+/site-packages/.+\.pyd$))
+        if [ "${#py_modules[@]}" -ne 0 ]; then
+            for pyd in ${py_modules[@]}; do
+                echo "${pyd}:"
+                ntldd -R ${pyd} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder" || true
+            done
+        fi
+        echo "::endgroup::"
+
+        echo "::group::[uninstall] ${pkgname}"
+        message "Uninstalling $pkgname"
+        pacman -R --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
+        echo "::endgroup::"
+    done
+    cd - > /dev/null
+
+    rm -f "${package}"/*.pkg.tar.*
     unset package
 done
 success 'All packages built successfully'

@@ -2,9 +2,9 @@
 
 :: cobenv.cmd
 :: Batch for setting GnuCOBOL Environment in Windows
-:: from MSYS2 MINGW32/MINGW64
+:: from MSYS2 environments
 ::
-:: Copyright (C) 2017 Free Software Foundation, Inc.
+:: Copyright (C) 2017, 2022 Free Software Foundation, Inc.
 :: Written by Simon Sobisch
 ::
 :: This file is part of GnuCOBOL.
@@ -21,6 +21,9 @@
 ::
 :: You should have received a copy of the GNU General Public License
 :: along with GnuCOBOL.  If not, see <https://www.gnu.org/licenses/>.
+
+set "_ce_myname=cobenv.cmd"
+set "_ce_myextname=%0"
 goto :evaluate_opts
 
 
@@ -28,18 +31,26 @@ goto :evaluate_opts
   echo.
   echo %_ce_myname% - set, show, store or restore GnuCOBOL environment
   echo.
-  echo usage: %_ce_myextname% [options]
-  echo  note: if no option is given %_ce_myname% defaults to --setenv
+  echo usage: %_ce_myextname% [COMMON_OPTIONS] OPTIONS
+  echo        %_ce_myextname% COMMAND
+  echo        %_ce_myextname%
+  echo  note: if neither OPTIONS nor COMMAND is passed, the behaviour depends
+  echo        on how %_ce_myname% was called: it always executes the option
+  echo        --setenv, when not executed from "cmd" a new cmd process is
+  echo        opened before this script ends and stays open.
   echo.
-  echo options:
-  echo   --help,    -h  display this information
+  echo COMMON_OPTIONS:
   echo   --verbose, -v  print the environment variables set / restored
   echo   --quiet,   -q  don't print anything
+  echo.
+  echo OPTIONS:
+  echo   --help,    -h  display this information
   echo   --setenv       store current environment and set environment
   echo                  according to MSYS2 package structure
   echo   --save         store current environment
   echo   --restore      restore environment to previous saved point
   echo   --showenv      show current environment
+  echo.
 goto :eof
 
 
@@ -62,13 +73,14 @@ goto :eof
   set "_ce_restore_library_path=%COB_LIBRARY_PATH%"
   set "_ce_restore_copy=%COB_COPY_DIR%"
   set "_ce_restore_config=%COB_CONFIG_DIR%"
+  if %_ce_verbose% lss 1 goto :eof
   call :output environment saved
 goto :eof
 
 
 :setenv
   if %_ce_verbose% geq 0 (
-     echo Setup GnuCOBOL environment - MinGW
+    echo Setup GnuCOBOL environment - MSYS2 package
   )
   if "%_ce_restore_path%"=="" (
     call :save
@@ -80,7 +92,13 @@ goto :eof
   set "COB_LIBRARY_PATH=%MINGW_ROOT_PATH%lib\gnucobol%COB_LIBRARY_PATH%"
   set "COB_COPY_DIR=%MINGW_ROOT_PATH%share\gnucobol\copy"
   set "COB_CONFIG_DIR=%MINGW_ROOT_PATH%share\gnucobol\config"
-  if %_ce_verbose% lss 0 goto :eof
+  :: common version info as summary:
+  if %_ce_verbose% geq 0 (
+    echo.
+    cobcrun -v --version | findstr -i "mingw gmp mpir"
+  )
+  if %_ce_verbose% lss 1 goto :eof
+  echo.
   call :output environment set
 goto :eof
 
@@ -101,7 +119,8 @@ goto :eof
     set "COB_LIBRARY_PATH="
     set "COB_COPY_DIR="
     set "COB_CONFIG_DIR="
-  )
+    goto :eof
+  ) 
   set "PATH=%_ce_restore_path%"
   set "COB_LIBRARY_PATH=%_ce_restore_library_path%"
   set "COB_COPY_DIR=%_ce_restore_copy%"
@@ -113,7 +132,7 @@ goto :eof
 
 
 :showenv
-  set _ce_verbose=1
+  set "_ce_verbose=1"
   call :output current environment
 goto :eof
 
@@ -124,34 +143,79 @@ goto :eof
 
 
 :evaluate_opts
-set "_ce_myname=cobenv.bat"
-set "_ce_myextname=%0"
-call :setcleanroot "%~dp0..\"
+set "_tmp=%~dp0"
+:: plain MSYS2 package
+if exist "%_tmp%..\bin" (
+  call :setcleanroot "%~dp0..\"
+) else (
+  call :setcleanroot "%~dp0"
+)
+set "_tmp="
+
+
 set _ce_verbose=0
 
-if /i [%2]==[--verbose] (
-  set _ce_verbose=1
-) else if /i [%2]==[-v] (
-  set _ce_verbose=1
-) else if /i [%2]==[--quiet] (
-  set _ce_verbose=-1
-) else if /i [%2]==[-q] (
-  set _ce_verbose=-1
-) else if not [%2]==[] (
-  shift
-) else (
-  if /i [%1]==[--verbose] (
-    set _ce_verbose=1  && shift
-  ) else if /i [%1]==[-v] (
-    set _ce_verbose=1  && shift
-  ) else if /i [%1]==[--quiet] (
-    set _ce_verbose=-1 && shift
-  ) else if /i [%1]==[-q] (
-    set _ce_verbose=-1 && shift
-  )
+if /i [%1]==[--verbose] (
+  set "_ce_verbose=1"  && shift /1
+) else if /i [%1]==[-v] (
+  set "_ce_verbose=1"  && shift /1
+) else if /i [%1]==[--quiet] (
+  set "_ce_verbose=-1" && shift /1
+) else if /i [%1]==[-q] (
+  set "_ce_verbose=-1" && shift /1
+)
+set "_ce_param=%1"
+if [%_ce_param%]==[] (
+  goto :start_env
+)
+set "_ce_param=%_ce_param:~0,1%"
+if not [%_ce_param%]==[-] (
+  goto :execute_command
 )
 
-if [%1]==[--restore] (
+if /i [%2]==[--verbose] (
+  set "_ce_verbose=1"  && shift /2
+) else if /i [%2]==[-v] (
+  set "_ce_verbose=1"  && shift /2
+) else if /i [%2]==[--quiet] (
+  set _"_ce_verbose=1" && shift /2
+) else if /i [%2]==[-q] (
+  set "_ce_verbose=-1" && shift /2
+)
+
+if not [%1] == [] (
+  goto :evaluate_opts_now
+)
+
+:start_env
+:: new cmd to stay open if not started directly from cmd.exe window
+echo %cmdcmdline% | find /i "%~0" >nul
+if %errorlevel% equ 0 (
+  set "_ce_verbose=-1"
+  call :setenv
+  cmd /k "echo GnuCOBOL developer prompt && echo. && (cobcrun -v --version | findstr -i "mingw gmp mpir")"
+) else (
+  call :setenv
+)
+goto :end
+
+:execute_command
+if not [%_ce_verbose%]==[1] (
+  set "_ce_verbose=-1"
+)
+setlocal
+call :setenv
+if [%_ce_verbose%]==[1] (
+  echo.&& echo executing: %1 %2 %3 %4 %5 %6 %7 %8 %9
+)
+call %1 %2 %3 %4 %5 %6 %7 %8 %9
+if [%_ce_verbose%]==[1] (
+  echo return code: %errorlevel%
+)
+goto :end
+
+:evaluate_opts_now
+if /i [%1]==[--restore] (
   call :restore
   call :unset_restore
 ) else if /i [%1]==[/restore] (
@@ -184,7 +248,8 @@ if [%1]==[--restore] (
   call :help
 )
 
+:end
 set "_ce_verbose="
 set "_ce_myname="
 set "_ce_myextname="
-
+set "_ce_param="

@@ -1,0 +1,191 @@
+From 20897cd296f35272c4fca4f0f5f7bb48e6242758 Mon Sep 17 00:00:00 2001
+From: Kai Tietz <ktietz@anaconda.com>
+Date: Wed, 21 Apr 2021 07:54:59 +0200
+Subject: [PATCH 13/15] add -m(no-)align-vector-insn option for i386
+
+---
+ gcc/config/i386/i386-options.cc |  9 +++++--
+ gcc/config/i386/i386.opt        |  8 ++++++
+ gcc/config/i386/mingw32.h       |  2 +-
+ gcc/config/i386/predicates.md   |  2 +-
+ gcc/config/i386/sse.md          | 43 +++++++++++++++++++++++++++++----
+ 5 files changed, 55 insertions(+), 9 deletions(-)
+
+diff --git a/gcc/config/i386/i386-options.cc b/gcc/config/i386/i386-options.cc
+index 32cc58a764b..07e33f3d344 100644
+--- a/gcc/config/i386/i386-options.cc
++++ b/gcc/config/i386/i386-options.cc
+@@ -384,6 +384,7 @@ ix86_target_string (HOST_WIDE_INT isa, HOST_WIDE_INT isa2,
+     { "-minline-stringops-dynamically",	MASK_INLINE_STRINGOPS_DYNAMICALLY },
+     { "-mms-bitfields",			MASK_MS_BITFIELD_LAYOUT },
+     { "-mno-align-stringops",		MASK_NO_ALIGN_STRINGOPS },
++    { "-mno-align-vector-insn",   MASK_NO_ALIGN_VECTOR_INSN },
+     { "-mno-fancy-math-387",		MASK_NO_FANCY_MATH_387 },
+     { "-mno-push-args",			MASK_NO_PUSH_ARGS },
+     { "-mno-red-zone",			MASK_NO_RED_ZONE },
+@@ -1100,8 +1101,12 @@ ix86_valid_target_attribute_inner_p (tree fndecl, tree args, char *p_strings[],
+ 		   MASK_INLINE_STRINGOPS_DYNAMICALLY),
+ 
+     IX86_ATTR_NO ("align-stringops",
+-		  OPT_mno_align_stringops,
+-		  MASK_NO_ALIGN_STRINGOPS),
++      OPT_mno_align_stringops,
++      MASK_NO_ALIGN_STRINGOPS),
++
++    IX86_ATTR_NO ("align-vector-insn",
++      OPT_mno_align_vector_insn,
++      MASK_NO_ALIGN_VECTOR_INSN),
+ 
+     IX86_ATTR_YES ("recip",
+ 		   OPT_mrecip,
+diff --git a/gcc/config/i386/i386.opt b/gcc/config/i386/i386.opt
+index a6b0e28f238..2ba61b0e4ea 100644
+--- a/gcc/config/i386/i386.opt
++++ b/gcc/config/i386/i386.opt
+@@ -241,6 +241,10 @@ malign-stringops
+ Target RejectNegative InverseMask(NO_ALIGN_STRINGOPS, ALIGN_STRINGOPS) Save
+ Align destination of the string operations.
+ 
++malign-vector-insn
++Target RejectNegative InverseMask(NO_ALIGN_VECTOR_INSN, ALIGN_VECTOR_INSN) Save
++Use aligned vector instruction
++
+ malign-data=
+ Target RejectNegative Joined Var(ix86_align_data_type) Enum(ix86_align_data) Init(ix86_align_data_type_compat)
+ Use the given data alignment.
+@@ -420,6 +424,10 @@ mpc80
+ Target RejectNegative
+ Set 80387 floating-point precision to 80-bit.
+ 
++mno-align-vector-insn
++Target Mask(NO_ALIGN_VECTOR_INSN) Save
++Uses unaligned over aligned vector instruction memonics
++
+ mpreferred-stack-boundary=
+ Target RejectNegative Joined UInteger Var(ix86_preferred_stack_boundary_arg)
+ Attempt to keep stack aligned to this power of 2.
+diff --git a/gcc/config/i386/mingw32.h b/gcc/config/i386/mingw32.h
+index 07dcd6ba97b..217230de7d1 100644
+--- a/gcc/config/i386/mingw32.h
++++ b/gcc/config/i386/mingw32.h
+@@ -30,7 +30,7 @@ along with GCC; see the file COPYING3.  If not see
+ #define TARGET_SUBTARGET_DEFAULT \
+ 	(MASK_80387 | MASK_IEEE_FP | MASK_FLOAT_RETURNS \
+ 	 | MASK_STACK_PROBE | MASK_ALIGN_DOUBLE \
+-	 | MASK_MS_BITFIELD_LAYOUT)
++	 | MASK_MS_BITFIELD_LAYOUT | MASK_NO_ALIGN_VECTOR_INSN)
+ 
+ /* See i386/crtdll.h for an alternative definition. _INTEGRAL_MAX_BITS
+    is for compatibility with native compiler.  */
+diff --git a/gcc/config/i386/predicates.md b/gcc/config/i386/predicates.md
+index a8cc17a054d..dacf9ae9564 100644
+--- a/gcc/config/i386/predicates.md
++++ b/gcc/config/i386/predicates.md
+@@ -1556,7 +1556,7 @@
+ ;; less than its natural alignment.
+ (define_predicate "misaligned_operand"
+   (and (match_code "mem")
+-       (match_test "MEM_ALIGN (op) < GET_MODE_BITSIZE (mode)")))
++       (match_test "TARGET_NO_ALIGN_VECTOR_INSN || MEM_ALIGN (op) < GET_MODE_BITSIZE (mode)")))
+ 
+ ;; Return true if OP is a parallel for an mov{d,q,dqa,ps,pd} vec_select,
+ ;; where one of the two operands of the vec_concat is const0_operand.
+diff --git a/gcc/config/i386/sse.md b/gcc/config/i386/sse.md
+index 5e93aa23b47..4bcc048a351 100644
+--- a/gcc/config/i386/sse.md
++++ b/gcc/config/i386/sse.md
+@@ -1705,7 +1705,8 @@
+ 	(vec_concat:V2DF (vec_select:DF (match_dup 2)
+ 					(parallel [(const_int 0)]))
+ 			 (match_operand:DF 3 "memory_operand")))]
+-  "TARGET_SSE2 && TARGET_SSE_UNALIGNED_LOAD_OPTIMAL
++  "TARGET_SSE2
++   && (TARGET_SSE_UNALIGNED_LOAD_OPTIMAL || TARGET_NO_ALIGN_VECTOR_INSN)
+    && ix86_operands_ok_for_move_multiple (operands, true, DFmode)"
+   [(set (match_dup 2) (match_dup 5))]
+   "operands[5] = adjust_address (operands[1], V2DFmode, 0);")
+@@ -1716,7 +1717,8 @@
+    (set (match_operand:V2DF 2 "sse_reg_operand")
+ 	(vec_concat:V2DF (match_operand:DF 4 "sse_reg_operand")
+ 			 (match_operand:DF 3 "memory_operand")))]
+-  "TARGET_SSE2 && TARGET_SSE_UNALIGNED_LOAD_OPTIMAL
++  "TARGET_SSE2
++   && (TARGET_SSE_UNALIGNED_LOAD_OPTIMAL || TARGET_NO_ALIGN_VECTOR_INSN)
+    && REGNO (operands[4]) == REGNO (operands[2])
+    && ix86_operands_ok_for_move_multiple (operands, true, DFmode)"
+   [(set (match_dup 2) (match_dup 5))]
+@@ -1730,7 +1732,8 @@
+    (set (match_operand:DF 2 "memory_operand")
+ 	(vec_select:DF (match_operand:V2DF 3 "sse_reg_operand")
+ 		       (parallel [(const_int 1)])))]
+-  "TARGET_SSE2 && TARGET_SSE_UNALIGNED_STORE_OPTIMAL
++  "TARGET_SSE2
++   && (TARGET_SSE_UNALIGNED_STORE_OPTIMAL || TARGET_NO_ALIGN_VECTOR_INSN)
+    && ix86_operands_ok_for_move_multiple (operands, false, DFmode)"
+   [(set (match_dup 4) (match_dup 1))]
+   "operands[4] = adjust_address (operands[0], V2DFmode, 0);")
+@@ -10310,7 +10313,8 @@
+ 	(vec_select:V2SF
+ 	  (match_operand:V4SF 1 "nonimmediate_operand" " v,v,m")
+ 	  (parallel [(const_int 0) (const_int 1)])))]
+-  "TARGET_SSE && !(MEM_P (operands[0]) && MEM_P (operands[1]))"
++  "TARGET_SSE && TARGET_ALIGN_VECTOR_INSN
++   && !(MEM_P (operands[0]) && MEM_P (operands[1]))"
+   "@
+    %vmovlps\t{%1, %0|%q0, %1}
+    %vmovaps\t{%1, %0|%0, %1}
+@@ -10319,6 +10323,21 @@
+    (set_attr "prefix" "maybe_vex")
+    (set_attr "mode" "V2SF,V4SF,V2SF")])
+ 
++(define_insn "sse_storelps_unalign"
++  [(set (match_operand:V2SF 0 "nonimmediate_operand"   "=m,v,v")
++  (vec_select:V2SF
++    (match_operand:V4SF 1 "nonimmediate_operand" " v,v,m")
++    (parallel [(const_int 0) (const_int 1)])))]
++  "TARGET_SSE && TARGET_NO_ALIGN_VECTOR_INSN
++   && !(MEM_P (operands[0]) && MEM_P (operands[1]))"
++  "@
++   %vmovlps\t{%1, %0|%q0, %1}
++   %vmovups\t{%1, %0|%0, %1}
++   %vmovlps\t{%1, %d0|%d0, %q1}"
++  [(set_attr "type" "ssemov")
++   (set_attr "prefix" "maybe_vex")
++   (set_attr "mode" "V2SF,V4SF,V2SF")])
++
+ (define_expand "sse_loadlps_exp"
+   [(set (match_operand:V4SF 0 "nonimmediate_operand")
+ 	(vec_concat:V4SF
+@@ -13131,7 +13150,7 @@
+ 	(vec_select:DF
+ 	  (match_operand:V2DF 1 "nonimmediate_operand" "x,x,m")
+ 	  (parallel [(const_int 0)])))]
+-  "!TARGET_SSE2 && TARGET_SSE
++  "!TARGET_SSE2 && TARGET_SSE && TARGET_ALIGN_VECTOR_INSN
+    && !(MEM_P (operands[0]) && MEM_P (operands[1]))"
+   "@
+    movlps\t{%1, %0|%0, %1}
+@@ -13140,6 +13159,20 @@
+   [(set_attr "type" "ssemov")
+    (set_attr "mode" "V2SF,V4SF,V2SF")])
+ 
++(define_insn "*vec_extractv2df_0_sse_unalign"
++  [(set (match_operand:DF 0 "nonimmediate_operand" "=m,x,x")
++  (vec_select:DF
++    (match_operand:V2DF 1 "nonimmediate_operand" "x,x,m")
++    (parallel [(const_int 0)])))]
++  "!TARGET_SSE2 && TARGET_SSE && TARGET_NO_ALIGN_VECTOR_INSN
++   && !(MEM_P (operands[0]) && MEM_P (operands[1]))"
++  "@
++   movlps\t{%1, %0|%0, %1}
++   movups\t{%1, %0|%0, %1}
++   movlps\t{%1, %0|%0, %q1}"
++  [(set_attr "type" "ssemov")
++   (set_attr "mode" "V2SF,V4SF,V2SF")])
++
+ (define_expand "sse2_loadhpd_exp"
+   [(set (match_operand:V2DF 0 "nonimmediate_operand")
+ 	(vec_concat:V2DF
+-- 
+2.35.3
+

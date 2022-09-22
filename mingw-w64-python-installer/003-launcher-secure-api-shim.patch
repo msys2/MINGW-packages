@@ -1,0 +1,85 @@
+--- simple_launcher/launcher.c.orig	2022-06-05 10:51:32.831156800 +0200
++++ simple_launcher/launcher.c	2022-06-05 10:51:39.799617800 +0200
+@@ -30,6 +30,82 @@
+ #include <stdio.h>
+ #include <windows.h>
+ #include <Shlwapi.h>
++#include <errno.h>
++
++static errno_t _mingw__wdupenv_s(wchar_t **buffer, size_t *numberOfElements,
++                                 const wchar_t *varname) {
++  size_t requiredSize = 0;
++  errno_t status = 0;
++  wchar_t *tmpBuffer = NULL;
++
++  // Reuse the error cases of _wgetenv_s
++  if (buffer == NULL) {
++    return _wgetenv_s(&requiredSize, NULL, 1, L"");
++  }
++
++  // XXX: We could reuse the error case of _wgetenv_s() here too, but it doesn't
++  // error out in case of NULL varname, despite saying so in the docs.
++  // So do it manually, which means no invalid parameter handler is called
++  if (varname == NULL) {
++    *buffer = NULL;
++    if (numberOfElements) {
++      *numberOfElements = 0;
++    }
++    errno = EINVAL;
++    return EINVAL;
++  }
++
++  while (1) {
++    // Implemented in a loop since the env var could change/get removed
++    // between allocating and fetching, so we have to retry.
++
++    if (requiredSize != 0) {
++      tmpBuffer = (wchar_t *)malloc(requiredSize * sizeof(wchar_t));
++      if (tmpBuffer == NULL) {
++        *buffer = NULL;
++        if (numberOfElements) {
++          *numberOfElements = 0;
++        }
++        return ENOMEM;
++      }
++    } else {
++      tmpBuffer = NULL;
++    }
++
++    status = _wgetenv_s(&requiredSize, tmpBuffer, requiredSize, varname);
++    if (status == 0 && requiredSize == 0) {
++      // env var doesn't exist
++      free(tmpBuffer);
++      tmpBuffer = NULL;
++      break;
++    } else if (status == 0 && tmpBuffer == NULL) {
++      // first call for getting the buffer size
++      continue;
++    } else if (status == ERANGE) {
++      // retry with larger buffer
++      free(tmpBuffer);
++      tmpBuffer = NULL;
++    } else {
++      // either we failed, or we are done
++      break;
++    }
++  };
++
++  if (status != 0) {
++    free(tmpBuffer);
++  } else {
++    *buffer = tmpBuffer;
++    if (numberOfElements) {
++      *numberOfElements = requiredSize;
++    }
++  }
++
++  return status;
++}
++
++#if defined(__MINGW32__) && !defined(_UCRT)
++#define _wdupenv_s _mingw__wdupenv_s
++#endif
+ 
+ #pragma comment (lib, "Shlwapi.lib")
+ 

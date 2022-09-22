@@ -4,14 +4,15 @@ _realname=poco
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 pkgver=1.10.1
-pkgrel=4
+pkgrel=8
 pkgdesc="POrtable COmponents C++ Libraries (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 url="https://pocoproject.org/"
 license=("boost")
-makedepends=("${MINGW_PACKAGE_PREFIX}-gcc"
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
              "${MINGW_PACKAGE_PREFIX}-pkg-config")
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-apr"
@@ -34,7 +35,7 @@ source=(https://pocoproject.org/releases/${_realname}-${pkgver}/${_realname}-${p
         012-fix-mingw-redefinition.patch
         100-fix-mingw-config.patch)
 sha256sums=('7f5931e0bb06bc2880a0f3867053a2fddf6c0d3e5dd96342a665460301fc34ca'
-            '35d59c5880f82b154ca850e6a9c9627aa34a497ccc2fb1c8f93bea2616b15e2d'
+            '9b44fa4af54808d1d1e938d4a7d405d2c61ce3f56c31648a4e30812905001e96'
             'ac05804b1c90d682333cb18dbc4aedc9e12508779e93edbd59d9b82d353b0013'
             '8c89571920fb5d0ecaae1b890854335fb5d310243baa4723233fe46544cf4f1b'
             '61979c75b5577b9b0bf3fb96045b3c299a38c5dfc5048895ade73400831eb975'
@@ -42,6 +43,13 @@ sha256sums=('7f5931e0bb06bc2880a0f3867053a2fddf6c0d3e5dd96342a665460301fc34ca'
             '028889a3bcd9a7886153e9ffc7058a8e91654f6dc4a821b6d53deb3dc9870318'
             'ea527ad21e3cf31140136a037add87610cd8cdbcdd96ba2aaf5d7b35d46786ce'
             'c12fc09a0fa925bf3912fbc98e297104f09630212fd027b818290df7ef157a6f')
+
+case ${MSYSTEM} in
+  CLANG*)
+    # work around lack of windmc in llvm
+    makedepends+=("binutils")
+      ;;
+esac
 
 prepare() {
   cd "${srcdir}"/${_realname}-${pkgver}-all
@@ -67,24 +75,55 @@ build() {
     ;;
   esac
 
-  CXXFLAGS+=" -std=c++11"
-  [[ -d ${srcdir}/build-${MINGW_CHOST} ]] && rm -rf ${srcdir}/build-${MINGW_CHOST}
-  mkdir -p "${srcdir}/build-${MINGW_CHOST}" && cd "${srcdir}/build-${MINGW_CHOST}"
+  case {$MSYSTEM} in
+    CLANG*)
+      makedepends+=("binutils")
+    ;;
+  esac
+
+  [[ -d "${srcdir}/build-${MSYSTEM}-static" ]] && rm -rf "${srcdir}/build-${MSYSTEM}-static"
+  mkdir -p "${srcdir}/build-${MSYSTEM}-static" && cd "${srcdir}/build-${MSYSTEM}-static"
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake \
-    -G"MSYS Makefiles" \
+    -GNinja \
     -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_FLAGS="${CPPFLAGS} -DPCRE_STATIC ${CFLAGS}" \
+    -DCMAKE_CXX_FLAGS="${CPPFLAGS} -DPCRE_STATIC ${CXXFLAGS}" \
+    -DBUILD_SHARED_LIBS=OFF \
     -DPOCO_UNBUNDLED=ON \
     -DENABLE_MONGODB=OFF \
     -DENABLE_DATA_ODBC=OFF \
     ../${_realname}-${pkgver}-all
 
-  make
+  ${MINGW_PREFIX}/bin/cmake.exe --build ./
+
+  [[ -d "${srcdir}/build-${MSYSTEM}-shared" ]] && rm -rf "${srcdir}/build-${MSYSTEM}-shared"
+  mkdir -p "${srcdir}/build-${MSYSTEM}-shared" && cd "${srcdir}/build-${MSYSTEM}-shared"
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake \
+    -GNinja \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_FLAGS="${CPPFLAGS} ${CFLAGS}" \
+    -DCMAKE_CXX_FLAGS="${CPPFLAGS} ${CXXFLAGS}" \
+    -DBUILD_SHARED_LIBS=ON \
+    -DPOCO_UNBUNDLED=ON \
+    -DENABLE_MONGODB=OFF \
+    -DENABLE_DATA_ODBC=OFF \
+    ../${_realname}-${pkgver}-all
+
+  ${MINGW_PREFIX}/bin/cmake.exe --build ./
 }
 
 package() {
-  cd "${srcdir}/build-${MINGW_CHOST}"
-  make destdir=${pkgdir} install
+  cd "${srcdir}/build-${MSYSTEM}-static"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install ./
+
+  cd "${srcdir}/build-${MSYSTEM}-shared"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install ./
+
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}-all/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }

@@ -3,10 +3,10 @@
 #include <windows.h>
 
 #if defined(CC)
-	#define C "gcc.exe"
+	#define C "cc.exe"
 	#define E "MPICC"
 #elif defined(CXX)
-	#define C "g++.exe"
+	#define C "c++.exe"
 	#define E "MPICXX"
 #elif defined(FC)
 	#define C "gfortran.exe"
@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
 #endif
 	if(!show) for(int x = 1; x < argc; ++x) args[i++] = argv[x];
 	args[i++] = lpath;
-	args[i++] = "-lmsmpi";
+	args[i++] = "-l:libmsmpi.dll.a";
 	args[i] = NULL;
 	if(show) {
 		for(int x = 0; args[x]; ++x) printf("%s ", args[x]);

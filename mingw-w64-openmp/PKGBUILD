@@ -1,0 +1,110 @@
+# Contributor: Mehdi Chinoune <mehdi.chinoune@hotmail.com>
+
+if [[ $MINGW_PACKAGE_PREFIX == *-clang-* ]]; then
+  _clangprefix=1
+fi
+
+_realname=openmp
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+_version=15.0.0
+_rc=""
+_tag=llvmorg-${_version}${_rc}
+pkgver=${_version}${_rc/-/}
+pkgrel=1
+pkgdesc="LLVM OpenMP Library (mingw-w64)"
+url="https://openmp.llvm.org/"
+arch=(any)
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
+license=("custom:Apache 2.0 with LLVM Exception")
+groups=($( (( _clangprefix )) && echo "${MINGW_PACKAGE_PREFIX}-toolchain"))
+depends=($( (( _clangprefix )) || echo "${MINGW_PACKAGE_PREFIX}-gcc-libs"))
+makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-cc"
+             $( (( _clangprefix )) || echo "${MINGW_PACKAGE_PREFIX}-gcc-fortran")
+             "${MINGW_PACKAGE_PREFIX}-uasm")
+options=('!debug' 'strip')
+_url=https://github.com/llvm/llvm-project/releases/download/${_tag}
+_pkgfn=$_realname-$pkgver.src
+source=($_url/$_pkgfn.tar.xz{,.sig}
+        ${_url}/cmake-${pkgver}.src.tar.xz{,.sig}
+        "001-cast-to-make-gcc-happy.patch"
+        "002-hacks-for-static-linking.patch")
+sha256sums=('7ee0d1c6a0426a34f102aa5c3a2c307807a4885ce347cb51fbc7e5effd6891c6'
+            'SKIP'
+            '2a3096c6d00f8d2fc588243db1b6a8c283a31e28a02f7e4c435a9a27ccf88e8f'
+            'SKIP'
+            '11352ffbe7559a7170f2abd52b3552c877fbcf8fc82cff77b421e8b130a4dd66'
+            '7238f009264bc1b162b73ca3a2a0b224b65ec3ed384304f3e5464032c4c026f4')
+validpgpkeys=('B6C8F98282B944E3B0D5C2530FC3042E345AD05D'  # Hans Wennborg, Google.
+              '474E22316ABF4785A88C6E8EA2C794A986419D8A'  # Tom Stellard
+              'D574BD5D1D0E98895E3BF90044F2485E45D59042') # Tobias Hieta
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+
+prepare() {
+  cd "${srcdir}"
+  mv cmake-$pkgver.src cmake
+
+  cd ${srcdir}/$_pkgfn
+  if (( ! _clangprefix )); then
+    apply_patch_with_msg \
+      "001-cast-to-make-gcc-happy.patch"
+  fi
+  apply_patch_with_msg 002-hacks-for-static-linking.patch
+}
+
+build() {
+  cd ${srcdir}
+  rm -rf build-${MSYSTEM}-{shared,static}
+
+  if check_option "debug" "y"; then
+    _build_type="Debug"
+  else
+    _build_type="Release"
+  fi
+
+  local -a platform_config
+  case "${CARCH}" in
+    x86_64)
+      export ASM_COMPILER_FLAGS=-win64
+      platform_config+=(-DLIBOMP_ASMFLAGS="${ASM_COMPILER_FLAGS}")
+      ;& # fall-through
+    i?86)
+      export ASM_COMPILER="${MINGW_PREFIX}/bin/uasm.exe"
+      platform_config+=(-DCMAKE_ASM_MASM_COMPILER="${ASM_COMPILER}")
+      ;;
+  esac
+
+  for shared_libs in shared static; do
+    MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    ${MINGW_PREFIX}/bin/cmake \
+      -GNinja \
+      -DCMAKE_BUILD_TYPE=${_build_type} \
+      -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+      -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib \
+      -DLIBOMP_FORTRAN_MODULES="$( (( _clangprefix )) && echo OFF || echo ON )" \
+      -DLIBOMP_ENABLE_SHARED="$( [[ $shared_libs == static ]] && echo OFF || echo ON )" \
+      "${platform_config[@]}" \
+      -Wno-dev \
+      -S $_pkgfn \
+      -B "build-${MSYSTEM}-${shared_libs}"
+    ${MINGW_PREFIX}/bin/cmake --build "build-${MSYSTEM}-${shared_libs}"
+  done
+  unset shared_libs
+}
+
+package() {
+  DESTDIR=${pkgdir} ${MINGW_PREFIX}/bin/cmake --install "${srcdir}/build-${MSYSTEM}-shared"
+  DESTDIR=${pkgdir} ${MINGW_PREFIX}/bin/cmake --install "${srcdir}/build-${MSYSTEM}-static"
+
+  install -d "$pkgdir${MINGW_PREFIX}"/share/licenses/${_realname}
+  install -Dm644 $_pkgfn/LICENSE* -t "$pkgdir${MINGW_PREFIX}"/share/licenses/${_realname}
+}

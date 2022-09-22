@@ -8,7 +8,7 @@ die () {
 }
 
 cd "$(dirname "$0")" ||
-die "Could not cd to mingw-w64-python3.9/"
+die "Could not cd to mingw-w64-python3.10/"
 
 git rev-parse --verify HEAD >/dev/null &&
 git update-index -q --ignore-submodules --refresh &&
@@ -57,11 +57,6 @@ for p in $patches
 do
 	sed -i 's/^\(Subject: \[PATCH [0-9]*\/\)[1-9][0-9]*/\1N/' $p ||
 	die "Could not fix Subject: line in $p"
-	_cmd=$(grep -ci ".github/workflows" $p)
-	if [ "$_cmd" != "0" ]
-	then
-		rm -f $p
-	fi
 done &&
 patches="$(ls -1 0*.patch)" &&
 git add $patches ||

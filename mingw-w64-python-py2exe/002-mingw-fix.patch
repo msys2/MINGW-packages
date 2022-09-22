@@ -1,0 +1,115 @@
+diff -urN py2exe-0.11.0.1-orig/py2exe/hooks.py py2exe-0.11.0.1/py2exe/hooks.py
+--- py2exe-0.11.0.1-orig/py2exe/hooks.py	2021-11-17 05:13:22.000000000 +0800
++++ py2exe-0.11.0.1/py2exe/hooks.py	2021-12-13 21:52:36.874427600 +0800
+@@ -18,6 +18,7 @@
+ _dummy_threading
+ _emx_link
+ _gestalt
++_posixshmem
+ _posixsubprocess
+ ce
+ clr
+@@ -29,6 +30,7 @@
+ os2
+ posix
+ pwd
++resource
+ site
+ termios
+ vms_lib
+diff -urN py2exe-0.11.0.1-orig/py2exe/runtime.py py2exe-0.11.0.1/py2exe/runtime.py
+--- py2exe-0.11.0.1-orig/py2exe/runtime.py	2021-11-17 05:13:22.000000000 +0800
++++ py2exe-0.11.0.1/py2exe/runtime.py	2021-12-13 21:52:49.452147000 +0800
+@@ -294,11 +294,11 @@
+     def get_runstub_bytes(self, target):
+         from distutils.util import get_platform
+         if target.exe_type in ("console_exe", "service"):
+-            run_stub = 'run-py%s.%s-%s.exe' % (sys.version_info[0], sys.version_info[1], get_platform())
++            run_stub = 'run-py%s%s-%s.exe' % (sys.version_info[0], sys.version_info[1], get_platform())
+         elif target.exe_type == "windows_exe":
+-            run_stub = 'run_w-py%s.%s-%s.exe' % (sys.version_info[0], sys.version_info[1], get_platform())
++            run_stub = 'run_w-py%s%s-%s.exe' % (sys.version_info[0], sys.version_info[1], get_platform())
+         elif target.exe_type == "ctypes_comdll":
+-            run_stub = 'run_ctypes_dll-py%s.%s-%s.dll' % (sys.version_info[0], sys.version_info[1], get_platform())
++            run_stub = 'run_ctypes_dll-py%s%s-%s.dll' % (sys.version_info[0], sys.version_info[1], get_platform())
+         else:
+             raise ValueError("Unknown exe_type %r" % target.exe_type)
+         ## if self.options.verbose:
+diff -urN py2exe-0.11.0.1-orig/source/MyLoadLibrary.c py2exe-0.11.0.1/source/MyLoadLibrary.c
+--- py2exe-0.11.0.1-orig/source/MyLoadLibrary.c	2021-11-17 05:13:22.000000000 +0800
++++ py2exe-0.11.0.1/source/MyLoadLibrary.c	2021-12-13 22:08:19.893365200 +0800
+@@ -256,7 +256,7 @@
+ 	else {
+ 		SetLastError(0);
+ 		proc = GetProcAddress(module, procname);
+-		if (proc == &GetModuleHandleExW)
++		if (proc == (FARPROC)&GetModuleHandleExW)
+ 			proc = (FARPROC)MyGetModuleHandleExW;
+ 	}
+ 	return proc;
+diff -urN py2exe-0.11.0.1-orig/source/_memimporter.c py2exe-0.11.0.1/source/_memimporter.c
+--- py2exe-0.11.0.1-orig/source/_memimporter.c	2021-11-17 05:13:22.000000000 +0800
++++ py2exe-0.11.0.1/source/_memimporter.c	2021-12-13 22:11:52.718538100 +0800
+@@ -1,4 +1,5 @@
+ // Need to define these to be able to use SetDllDirectory.
++#undef _WIN32_WINNT
+ #define _WIN32_WINNT 0x0502
+ #define NTDDI_VERSION 0x05020000
+ #include <Python.h>
+diff -urN py2exe-0.11.0.1-orig/source/python-dynload.c py2exe-0.11.0.1/source/python-dynload.c
+--- py2exe-0.11.0.1-orig/source/python-dynload.c	2021-11-17 05:13:22.000000000 +0800
++++ py2exe-0.11.0.1/source/python-dynload.c	2021-12-13 22:14:25.373269500 +0800
+@@ -31,7 +31,7 @@
+ 
+ #define FUNC(res, name, args) \
+   static res(*proc)args; \
+-  if (!proc) (FARPROC)proc = MyGetProcAddress(hmod_pydll, #name)
++  if (!proc) proc = (res(*)args)MyGetProcAddress(hmod_pydll, #name)
+ 
+ #define DATA(type, name)				\
+   static type pflag; \
+@@ -163,9 +163,9 @@
+   proc();
+ }
+ 
+-void Py_SetProgramName(wchar_t *name)
++void Py_SetProgramName(const wchar_t *name)
+ {
+-  FUNC(void, Py_SetProgramName, (wchar_t *));
++  FUNC(void, Py_SetProgramName, (const wchar_t *));
+   proc(name);
+ }
+ 
+diff -urN py2exe-0.11.0.1-orig/source/start.c py2exe-0.11.0.1/source/start.c
+--- py2exe-0.11.0.1-orig/source/start.c	2021-11-17 05:13:22.000000000 +0800
++++ py2exe-0.11.0.1/source/start.c	2021-12-13 22:17:30.914881800 +0800
+@@ -128,7 +128,8 @@
+ 		SystemError(GetLastError(), "Could not load script resource:");
+ 		return FALSE;
+ 	}
+-	p_script_info = (struct scriptinfo *)pScript = LockResource(hgbl);
++	struct scriptinfo *pScript;
++	p_script_info = pScript = LockResource(hgbl);
+ 	if (!pScript)  {
+ 		SystemError(GetLastError(), "Could not lock script resource:");
+ 		return FALSE;
+@@ -142,7 +143,7 @@
+ 	}
+ 
+ 	// let pScript point to the start of the python script resource
+-	pScript = p_script_info->zippath + strlen(p_script_info->zippath) + 1;
++	pScript = (struct scriptinfo *)p_script_info->zippath + strlen(p_script_info->zippath) + 1;
+ 
+ 	// get full pathname of the 'library.zip' file
+ 	if (p_script_info->zippath[0]) {
+@@ -307,8 +308,8 @@
+ 	int rc = 0;
+ 	HMODULE hmod_pydll;
+ 
+-/*	Py_NoSiteFlag = 1; /* Suppress 'import site' */
+-/*	Py_InspectFlag = 1; /* Needed to determine whether to exit at SystemExit */
++//	Py_NoSiteFlag = 1; /* Suppress 'import site' */
++//	Py_InspectFlag = 1; /* Needed to determine whether to exit at SystemExit */
+ 
+ 	calc_dirname(hmod_exe);
+ //	wprintf(L"modulename %s\n", modulename);
