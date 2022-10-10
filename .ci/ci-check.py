@@ -84,7 +84,7 @@ def install_package(pkg: typing.Union[typing.List[str], Path]) -> typing.Generat
             "--sync",
             "--noconfirm",
             "--needed",
-            "mingw-w64-x86_64-python-pip",
+            "mingw-w64-ucrt-x86_64-python-pip",
             get_pkg_name(pkg),
         ]
         uninstall_command = [
@@ -103,7 +103,7 @@ def install_package(pkg: typing.Union[typing.List[str], Path]) -> typing.Generat
                 "--refresh",
                 "--noconfirm",
                 "--needed",
-                "mingw-w64-x86_64-python-pip",
+                "mingw-w64-ucrt-x86_64-python-pip",
                 *pkg,
             ]
             uninstall_command = [
@@ -212,7 +212,7 @@ def check_whether_we_should_run() -> bool:
         pkgname = "-".join(pkgloc.name.split("-")[:-3])
         if "-python-" in pkgname:
             return True
-        elif pkgname == "mingw-w64-x86_64-python":
+        elif pkgname == "mingw-w64-ucrt-x86_64-python":
             return False
     # now this is compilcated
     # need to find file listing in the package.
@@ -228,7 +228,7 @@ def check_whether_we_should_run() -> bool:
             with open(Path(tempdir, pkgloc.stem), "rb") as file:
                 with tarfile.open(fileobj=file, mode="r") as tar:
                     for mem in tar.getmembers():
-                        if "mingw64/lib/python" in mem.name:
+                        if "ucrt64/lib/python" in mem.name:
                             return True
     return False
 
