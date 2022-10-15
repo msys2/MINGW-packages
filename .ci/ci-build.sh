@@ -39,7 +39,11 @@ for package in "${packages[@]}"; do
 done
 
 for package in "${skipped_packages[@]}"; do
-    packages=(${packages[@]/"${package}"})
+    for i in "${!packages[@]}"; do
+        if [[ ${packages[i]} == $package ]]; then
+            unset packages[i]
+        fi
+    done
     unset package
 done
 
