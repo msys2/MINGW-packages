@@ -246,9 +246,9 @@ if __name__ == "__main__":
     if args.run:
         res = check_whether_we_should_run()
         if res:
-            print("::set-output name=run::true")
+            print("run=true")
         else:
-            print("::set-output name=run::false")
+            print("run=false")
         sys.exit(0)
     else:
         main()
