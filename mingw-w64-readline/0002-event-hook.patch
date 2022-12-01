@@ -1,19 +1,19 @@
-diff -urN readline-8.2/input.c.orig readline-8.2/input.c
 --- readline-8.2/input.c.orig	2022-04-08 21:43:24.000000000 +0200
-+++ readline-8.2/input.c	2022-11-22 16:54:55.099070500 +0100
-@@ -176,6 +176,11 @@
++++ readline-8.2/input.c	2022-12-01 19:16:34.989739900 +0100
+@@ -176,6 +178,12 @@
  static unsigned char ibuffer[512];
  static int ibuffer_len = sizeof (ibuffer) - 1;
  
 +#if defined (__MINGW32__)
-+static int _win32_getch (void);
++#include <windows.h>
++static int _win32_getch (int *is_char);
 +static int _win32_kbhit (void);
 +#endif
 +
  #define any_typein (push_index != pop_index)
  
  int
-@@ -306,7 +311,7 @@
+@@ -306,7 +314,7 @@
  #if defined (__MINGW32__)
    /* Use getch/_kbhit to check for available console input, in the same way
       that we read it normally. */
@@ -22,7 +22,7 @@ diff -urN readline-8.2/input.c.orig readline-8.2/input.c
     result = 0;
  #endif
  
-@@ -404,7 +409,7 @@
+@@ -404,7 +412,7 @@
  
  #if defined (__MINGW32__)
    if (isatty (tty))
@@ -31,7 +31,7 @@ diff -urN readline-8.2/input.c.orig readline-8.2/input.c
  #endif
  
    return 0;
-@@ -799,6 +804,120 @@
+@@ -799,6 +807,141 @@
    return (c);
  }
  
@@ -41,11 +41,12 @@ diff -urN readline-8.2/input.c.orig readline-8.2/input.c
 +static int _win32_bufidx = 0;
 +
 +static int
-+_win32_getch_internal (int block)
++_win32_getch_internal (int block, int* is_char)
 +{
 +  INPUT_RECORD rec;
 +  DWORD evRead, waitResult;
 +  HANDLE hInput = (HANDLE) _get_osfhandle (fileno (rl_instream));
++  *is_char = 1;
 +
 +  if (_win32_bufidx > 0)
 +    return _win32_buf[--_win32_bufidx];
@@ -54,15 +55,17 @@ diff -urN readline-8.2/input.c.orig readline-8.2/input.c
 +
 +  do
 +    {
++      *is_char = 0;
 +      if (! block)
 +        {
 +          if (WaitForSingleObject(hInput, _keyboard_input_timeout/1000) != WAIT_OBJECT_0)
 +            return _WIN32_READ_NOCHAR;
 +        }
 +
-+      if (!ReadConsoleInput(hInput, &rec, 1, &evRead) || evRead != 1)
++      if (!ReadConsoleInputW(hInput, &rec, 1, &evRead) || evRead != 1)
 +        return EOF;
 +
++      *is_char = 1;
 +      switch (rec.EventType)
 +        {
 +          case KEY_EVENT:
@@ -71,49 +74,39 @@ diff -urN readline-8.2/input.c.orig readline-8.2/input.c
 +                rec.Event.KeyEvent.wVirtualKeyCode > VK_MENU)) ||
 +               (!rec.Event.KeyEvent.bKeyDown &&
 +                rec.Event.KeyEvent.wVirtualKeyCode == VK_MENU &&
-+                rec.Event.KeyEvent.uChar.AsciiChar))
++                rec.Event.KeyEvent.uChar.UnicodeChar))
 +              {
-+                if (rec.Event.KeyEvent.uChar.AsciiChar)
++                if (rec.Event.KeyEvent.uChar.UnicodeChar)
++                  return (int)rec.Event.KeyEvent.uChar.UnicodeChar;
++
++                *is_char = 0;
++                switch (rec.Event.KeyEvent.wVirtualKeyCode)
 +                  {
-+                    if (rec.Event.KeyEvent.uChar.AsciiChar < 0 ||
-+                        (rec.Event.KeyEvent.uChar.AsciiChar < 32 &&
-+                         !(rec.Event.KeyEvent.dwControlKeyState & (RIGHT_CTRL_PRESSED|LEFT_CTRL_PRESSED))))
-+                      {
-+                        char c = rec.Event.KeyEvent.uChar.AsciiChar;
-+                        if (GetOEMCP () == GetConsoleCP ())
-+                          OemToCharBuff (&c, &c, 1);
-+                        return (int)(unsigned char)c;
-+                      }
-+                    else
-+                      return (int)rec.Event.KeyEvent.uChar.UnicodeChar;
++                    case VK_UP:
++                      _win32_buf[_win32_bufidx++] = 'A';
++                      return 0340;
++                    case VK_DOWN:
++                      _win32_buf[_win32_bufidx++] = 'B';
++                      return 0340;
++                    case VK_RIGHT:
++                      _win32_buf[_win32_bufidx++] = 'C';
++                      return 0340;
++                    case VK_LEFT:
++                      _win32_buf[_win32_bufidx++] = 'D';
++                      return 0340;
++                    case VK_HOME:
++                      _win32_buf[_win32_bufidx++] = 'H';
++                      return 0340;
++                    case VK_END:
++                      _win32_buf[_win32_bufidx++] = 'F';
++                      return 0340;
++                    case VK_DELETE:
++                      _win32_buf[_win32_bufidx++] = 8;
++                      _win32_buf[_win32_bufidx++] = 'C';
++                      return 0340;
++                    default:
++                      break;
 +                  }
-+                else
-+                  switch (rec.Event.KeyEvent.wVirtualKeyCode)
-+                    {
-+                      case VK_UP:
-+                        _win32_buf[_win32_bufidx++] = 'H';
-+                        return 0340;
-+                      case VK_DOWN:
-+                        _win32_buf[_win32_bufidx++] = 'P';
-+                        return 0340;
-+                      case VK_RIGHT:
-+                        _win32_buf[_win32_bufidx++] = 'M';
-+                        return 0340;
-+                      case VK_LEFT:
-+                        _win32_buf[_win32_bufidx++] = 'K';
-+                        return 0340;
-+                      case VK_HOME:
-+                        _win32_buf[_win32_bufidx++] = 'G';
-+                        return 0340;
-+                      case VK_END:
-+                        _win32_buf[_win32_bufidx++] = 'O';
-+                        return 0340;
-+                      case VK_DELETE:
-+                        _win32_buf[_win32_bufidx++] = 'S';
-+                        return 0340;
-+                      default:
-+                        break;
-+                    }
 +              }
 +            break;
 +
@@ -124,7 +117,7 @@ diff -urN readline-8.2/input.c.orig readline-8.2/input.c
 +          default:
 +            break;
 +        }
-+   }
++    }
 +  while (1);
 +}
 +
@@ -132,27 +125,55 @@ diff -urN readline-8.2/input.c.orig readline-8.2/input.c
 +_win32_kbhit (void)
 +{
 +  int result;
++  int is_char;
 +
-+  result = _win32_getch_internal (0);
++  result = _win32_getch_internal (0, &is_char);
 +  if (result == _WIN32_READ_NOCHAR
 +      || result == EOF)
 +    return 0;
-+  _win32_buf[_win32_bufidx++] = result;
++
++  if (is_char)
++  {
++      char charbuf[5] = {0};
++      wchar_t unicode[2] = {result, 0};
++      int utf16_code_units = 1;
++      if (unicode[0] & 0xD800) /* outside BMP */
++        {
++          unicode[1] = _win32_getch_internal (0, &is_char);
++          utf16_code_units++;
++        }
++      /* convert to current codepage or UTF-8 byte sequence */
++      unsigned int codepage = CP_THREAD_ACP;
++      if (_rl_utf8locale)
++        codepage = CP_UTF8;
++      int len = WideCharToMultiByte (codepage, 0,
++                                     (wchar_t *) &unicode, utf16_code_units,
++                                     charbuf, 5, NULL, NULL);
++      for (int i=0; i<len; i++)
++        {
++          _win32_buf[_win32_bufidx++] = (unsigned char) charbuf[len-i-1];
++        }
++    }
++  else
++    {
++      _win32_buf[_win32_bufidx++] = 0x5b;
++      _win32_buf[_win32_bufidx++] = 0x1b;
++    }
 +
 +  return _win32_bufidx;
 +}
 +
 +static int
-+_win32_getch (void)
++_win32_getch (int *is_char)
 +{
-+  return _win32_getch_internal (1);
++  return _win32_getch_internal (1, is_char);
 +}
 +#endif
 +
  int
  rl_getc (FILE *stream)
  {
-@@ -818,8 +937,13 @@
+@@ -818,8 +961,11 @@
        /* We know at this point that _rl_caught_signal == 0 */
  
  #if defined (__MINGW32__)
@@ -160,10 +181,8 @@ diff -urN readline-8.2/input.c.orig readline-8.2/input.c
 -	return (_getch ());	/* "There is no error return." */
 +      if (isatty (fd))
 +        {
-+          int c = _win32_getch ();
-+          if (c == 0xe0)
-+            rl_execute_next (_win32_getch ());
-+          return (c);
++          int is_char;
++          return (_win32_getch (&is_char));
 +        }
  #endif
        result = 0;
