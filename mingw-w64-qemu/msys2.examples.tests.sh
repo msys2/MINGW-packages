@@ -22,10 +22,17 @@ fi
 DOWNLOADDIR="$(cat "$CONFIGFILE")"
 echo "Configuration file: '$CONFIGFILE'"
 echo "Download directory: '$DOWNLOADDIR'"
-if ! mkdir -p "$DOWNLOADDIR" || ! touch "$DOWNLOADDIR/$CONFIGFILENAME"
+
+function validDownloadDir {
+	mkdir -p "$DOWNLOADDIR" && touch "$DOWNLOADDIR/test" && rm "$DOWNLOADDIR/test"
+}
+
+if ! validDownloadDir
 then
-	echo "Download directory '$DOWNLOADDIR' is not usable"
-	exit 1
+	echo "Download directory '$DOWNLOADDIR' is not usable."
+	DOWNLOADDIR="$(realpath ~)/tmp-qemu-tests"
+	echo "Trying '$DOWNLOADDIR' as fallback."
+	validDownloadDir || exit 1
 fi
 echo
 echo "On execution each test needs to download, most test only a few 10 MB or less,"
@@ -778,7 +785,7 @@ function qemuElevatedInstallWinGuestAgent {
 		local QGA_VSS="QEMU Guest Agent VSS Provider"
 		local QGA_RUN QGA_REG QGA_VSS_RUN QGA_VSS_REG TEST
 		echo
-		echo "Do NOT execute this test!"
+		echo "Better NOT execute this test!"
 		echo "Finally tested Msys2 QEMU Guest Agent will replace current QEMU Guest Agent."
 		echo "Current service settings should be restored using tested Msys2 QEMU Guest Agent."
 		echo
@@ -814,6 +821,7 @@ function qemuElevatedInstallWinGuestAgent {
 				then
 					echo
 					echo "Send test requests to $QGA now!"
+					echo "E.g. send '{\"execute\":\"guest-info\"}'"
 					read -p "All test requests sent? RETURN " TEST
 					net stop "$QGA"
 				fi
