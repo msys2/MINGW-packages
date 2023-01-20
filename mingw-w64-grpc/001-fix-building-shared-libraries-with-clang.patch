@@ -1,0 +1,151 @@
+diff --git a/src/core/lib/gprpp/time.cc b/src/core/lib/gprpp/time.cc
+index 2c9e96d421..45d4e0f74d 100644
+--- a/src/core/lib/gprpp/time.cc
++++ b/src/core/lib/gprpp/time.cc
+@@ -150,9 +150,13 @@ int64_t TimespanToMillisRoundDown(gpr_timespec ts) {
+ 
+ }  // namespace
+ 
+-thread_local Timestamp::Source* Timestamp::thread_local_time_source_{
++thread_local Timestamp::Source* Timestamp::thread_local_time_source_var_{
+     NoDestructSingleton<GprNowTimeSource>::Get()};
+ 
++Timestamp::Source*& Timestamp::thread_local_time_source_() {
++  return thread_local_time_source_var_;
++}
++
+ Timestamp ScopedTimeCache::Now() {
+   if (!cached_time_.has_value()) {
+     previous()->InvalidateCache();
+diff --git a/src/core/lib/gprpp/time.h b/src/core/lib/gprpp/time.h
+index 557139eb46..dbd2de3f98 100644
+--- a/src/core/lib/gprpp/time.h
++++ b/src/core/lib/gprpp/time.h
+@@ -88,15 +88,15 @@ class Timestamp {
+ 
+   class ScopedSource : public Source {
+    public:
+-    ScopedSource() : previous_(thread_local_time_source_) {
+-      thread_local_time_source_ = this;
++    ScopedSource() : previous_(thread_local_time_source_()) {
++      thread_local_time_source_() = this;
+     }
+     ScopedSource(const ScopedSource&) = delete;
+     ScopedSource& operator=(const ScopedSource&) = delete;
+     void InvalidateCache() override { previous_->InvalidateCache(); }
+ 
+    protected:
+-    ~ScopedSource() { thread_local_time_source_ = previous_; }
++    ~ScopedSource() { thread_local_time_source_() = previous_; }
+     Source* previous() const { return previous_; }
+ 
+    private:
+@@ -112,7 +112,7 @@ class Timestamp {
+   static Timestamp FromCycleCounterRoundUp(gpr_cycle_counter c);
+   static Timestamp FromCycleCounterRoundDown(gpr_cycle_counter c);
+ 
+-  static Timestamp Now() { return thread_local_time_source_->Now(); }
++  static Timestamp Now() { return thread_local_time_source_()->Now(); }
+ 
+   static constexpr Timestamp FromMillisecondsAfterProcessEpoch(int64_t millis) {
+     return Timestamp(millis);
+@@ -160,7 +160,8 @@ class Timestamp {
+   explicit constexpr Timestamp(int64_t millis) : millis_(millis) {}
+ 
+   int64_t millis_ = 0;
+-  static thread_local Timestamp::Source* thread_local_time_source_;
++  static Timestamp::Source*& thread_local_time_source_();
++  static thread_local Timestamp::Source* thread_local_time_source_var_;
+ };
+ 
+ class ScopedTimeCache final : public Timestamp::ScopedSource {
+diff --git a/src/core/lib/iomgr/exec_ctx.cc b/src/core/lib/iomgr/exec_ctx.cc
+index 65cd319d20..b0640badb0 100644
+--- a/src/core/lib/iomgr/exec_ctx.cc
++++ b/src/core/lib/iomgr/exec_ctx.cc
+@@ -56,9 +56,15 @@ static void exec_ctx_sched(grpc_closure* closure) {
+ 
+ namespace grpc_core {
+ 
+-thread_local ExecCtx* ExecCtx::exec_ctx_;
++thread_local ExecCtx* ExecCtx::exec_ctx_var_;
++ExecCtx*& ExecCtx::exec_ctx_() {
++  return exec_ctx_var_;
++}
+ thread_local ApplicationCallbackExecCtx*
+-    ApplicationCallbackExecCtx::callback_exec_ctx_;
++    ApplicationCallbackExecCtx::callback_exec_ctx_var_;
++ApplicationCallbackExecCtx*& ApplicationCallbackExecCtx::callback_exec_ctx_() {
++  return callback_exec_ctx_var_;
++}
+ 
+ bool ExecCtx::Flush() {
+   bool did_something = false;
+diff --git a/src/core/lib/iomgr/exec_ctx.h b/src/core/lib/iomgr/exec_ctx.h
+index 230af79699..d2f4107012 100644
+--- a/src/core/lib/iomgr/exec_ctx.h
++++ b/src/core/lib/iomgr/exec_ctx.h
+@@ -186,7 +186,7 @@ class ExecCtx {
+   void TestOnlySetNow(Timestamp now) { time_cache_.TestOnlySetNow(now); }
+ 
+   /// Gets pointer to current exec_ctx.
+-  static ExecCtx* Get() { return exec_ctx_; }
++  static ExecCtx* Get() { return exec_ctx_(); }
+ 
+   static void Run(const DebugLocation& location, grpc_closure* closure,
+                   grpc_error_handle error);
+@@ -202,7 +202,7 @@ class ExecCtx {
+ 
+  private:
+   /// Set exec_ctx_ to exec_ctx.
+-  static void Set(ExecCtx* exec_ctx) { exec_ctx_ = exec_ctx; }
++  static void Set(ExecCtx* exec_ctx) { exec_ctx_() = exec_ctx; }
+ 
+   grpc_closure_list closure_list_ = GRPC_CLOSURE_LIST_INIT;
+   CombinerData combiner_data_ = {nullptr, nullptr};
+@@ -211,7 +211,8 @@ class ExecCtx {
+   unsigned starting_cpu_ = std::numeric_limits<unsigned>::max();
+ 
+   ScopedTimeCache time_cache_;
+-  static thread_local ExecCtx* exec_ctx_;
++  static thread_local ExecCtx* exec_ctx_var_;
++  static ExecCtx*& exec_ctx_();
+   ExecCtx* last_exec_ctx_ = Get();
+ };
+ 
+@@ -282,7 +283,7 @@ class ApplicationCallbackExecCtx {
+         }
+         (*f->functor_run)(f, f->internal_success);
+       }
+-      callback_exec_ctx_ = nullptr;
++      callback_exec_ctx_() = nullptr;
+       if (!(GRPC_APP_CALLBACK_EXEC_CTX_FLAG_IS_INTERNAL_THREAD & flags_)) {
+         Fork::DecExecCtxCount();
+       }
+@@ -294,14 +295,14 @@ class ApplicationCallbackExecCtx {
+ 
+   uintptr_t Flags() { return flags_; }
+ 
+-  static ApplicationCallbackExecCtx* Get() { return callback_exec_ctx_; }
++  static ApplicationCallbackExecCtx* Get() { return callback_exec_ctx_(); }
+ 
+   static void Set(ApplicationCallbackExecCtx* exec_ctx, uintptr_t flags) {
+     if (Get() == nullptr) {
+       if (!(GRPC_APP_CALLBACK_EXEC_CTX_FLAG_IS_INTERNAL_THREAD & flags)) {
+         Fork::IncExecCtxCount();
+       }
+-      callback_exec_ctx_ = exec_ctx;
++      callback_exec_ctx_() = exec_ctx;
+     }
+   }
+ 
+@@ -326,7 +327,8 @@ class ApplicationCallbackExecCtx {
+   uintptr_t flags_{0u};
+   grpc_completion_queue_functor* head_{nullptr};
+   grpc_completion_queue_functor* tail_{nullptr};
+-  static thread_local ApplicationCallbackExecCtx* callback_exec_ctx_;
++  static thread_local ApplicationCallbackExecCtx* callback_exec_ctx_var_;
++  static ApplicationCallbackExecCtx*& callback_exec_ctx_();
+ };
+ 
+ }  // namespace grpc_core
