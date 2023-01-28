@@ -14,8 +14,6 @@ Legend:
 - `"0002-Revert-CMake-try-creating-symlink-first-on-windows.patch"` :x: (win symlinks don't play well with pacman packages)
 - `"0003-add-pthread-as-system-lib-for-mingw.patch"` :grey_exclamation:
 - `"0004-enable-emutls-for-mingw.patch"` :grey_exclamation:
-- `"0005-export-out-of-tree-mlir-targets.patch"` :x:
-- `"0008-COFF-Emit-embedded-exclude-symbols-directives-for-hi.patch"` :arrow_down_small:
-- `"0009-Use-hidden-visibility-when-building-for-MinGW-with-Clang.patch"` :arrow_down_small:
 - `"0101-link-pthread-with-mingw.patch"` :grey_exclamation:
+- `"0301-Add-exceptions-for-Flang-runtime-libraries-on-MinGW.patch"` :upstreamed:
 - `"0303-ignore-new-bfd-options.patch"` :x:
