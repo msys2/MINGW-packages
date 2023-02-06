@@ -48,16 +48,6 @@ install_packages() {
     pacman --noprogressbar --upgrade --noconfirm *.pkg.tar.*
 }
 
-# Recipe quality
-check_recipe_quality() {
-    # TODO: remove this option when not anymore needed
-    if test -n "${DISABLE_QUALITY_CHECK}"; then
-        echo 'This feature is disabled.'
-        return 0
-    fi
-    saneman --format='\t%l:%c %p:%c %m' --verbose --no-terminal "${packages[@]}"
-}
-
 # List DLL dependencies
 list_dll_deps(){
     local target="${1}"

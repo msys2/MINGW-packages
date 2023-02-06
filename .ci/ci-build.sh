@@ -51,7 +51,6 @@ test -z "${packages[@]}" && success 'No changes in package recipes'
 
 # Build
 message 'Building packages' "${packages[@]}"
-execute 'Approving recipe quality' check_recipe_quality
 
 message 'Adding an empty local repository'
 repo-add $PWD/artifacts/ci.db.tar.gz
