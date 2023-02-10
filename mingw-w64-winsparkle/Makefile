@@ -21,11 +21,11 @@ objects:
 	$(CC) -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE signatureverifier.cpp -I../include
 	$(CC) -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE threads.cpp          -I../include
 	$(CC) -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE updatechecker.cpp    -I../include
-	$(CC) -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE ui.cpp               -I../include $(shell wx-config-3.0 --cflags)
-	$(CC) -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE updatedownloader.cpp -I../include $(shell wx-config-3.0 --cflags)
+	$(CC) -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE ui.cpp               -I../include $(shell wx-config-3.2 --cflags)
+	$(CC) -std=c++11 -c -mthreads -D_WIN32_WINNT=0x600 -DUNICODE -D_UNICODE -DBUILDING_WIN_SPARKLE updatedownloader.cpp -I../include $(shell wx-config-3.2 --cflags)
 
 static: objects
 	ar rcs libwinsparkle.a *.o
 
 dll: objects translations
-	$(CC) -shared -mthreads -o libwinsparkle.dll *.o translations.res -Wl,--out-implib,libwinsparkle.dll.a -lstdc++ $(shell wx-config-3.0 --libs core) -lexpat -lcrypto -lssl -lcrypt32 -lwininet -lversion -lole32 -loleaut32 -lrpcrt4 -luuid
+	$(CC) -shared -mthreads -o libwinsparkle.dll *.o translations.res -Wl,--out-implib,libwinsparkle.dll.a -lstdc++ $(shell wx-config-3.2 --libs core) -lexpat -lcrypto -lssl -lcrypt32 -lwininet -lversion -lole32 -loleaut32 -lrpcrt4 -luuid
