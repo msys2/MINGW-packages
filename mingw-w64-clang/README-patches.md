@@ -11,6 +11,7 @@ Legend:
 -----
 
 - `"0001-Fix-GetHostTriple-for-mingw-w64-in-msys.patch"` :x:
+- `"0001-Stop-using-access-time-for-file-comparison.pacth"` :grey_question:
 - `"0002-Revert-CMake-try-creating-symlink-first-on-windows.patch"` :x: (win symlinks don't play well with pacman packages)
 - `"0003-add-pthread-as-system-lib-for-mingw.patch"` :grey_exclamation:
 - `"0004-enable-emutls-for-mingw.patch"` :grey_exclamation:
