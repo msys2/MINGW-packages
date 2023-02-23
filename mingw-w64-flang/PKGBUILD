@@ -2,14 +2,14 @@ _compiler=clang
 _realname=flang
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-_version=15.0.7
+_version=16.0.0
 _rc=""
 _tag=llvmorg-${_version}${_rc}
 pkgver=${_version}${_rc/-/}
-pkgrel=2
+pkgrel=1
 pkgdesc="Fortran frontend for LLVM (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw64' 'ucrt64' 'clang64')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url="https://flang.llvm.org/"
 license=("custom:Apache 2.0 with LLVM Exception")
 provides=($([[ ${MINGW_PACKAGE_PREFIX} != *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-fc"))
@@ -28,19 +28,22 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-clang-tools-extra"
              $([[ "$_compiler" == "gcc" ]] && echo \
                "${MINGW_PACKAGE_PREFIX}-gcc")
              )
-options=('!debug' 'strip')
-source=("https://github.com/llvm/llvm-project/releases/download/${_tag}/flang-${pkgver}.src.tar.xz"{,.sig}
-        "https://github.com/llvm/llvm-project/releases/download/${_tag}/cmake-${pkgver}.src.tar.xz"{,.sig}
+_pkgfn=${_realname}-${pkgver}.src
+_url=https://github.com/llvm/llvm-project/releases/download/${_tag}
+source=("${_url}/${_pkgfn}.tar.xz"{,.sig}
+        "${_url}/cmake-${pkgver}.src.tar.xz"{,.sig}
         "0001-cast-cxx11-narrowing.patch"
         "0002-cmake-22162.patch"
-        "0003-do-not-link-to-llvm-dylib.patch")
-sha256sums=('eb217f0efab3aacb4f1777e43ef5ed2186d4a03a6140613623b3ac764e934860'
+        "0003-do-not-link-to-llvm-dylib.patch"
+        "0004-do-not-clock_gettime-on-mingw.patch")
+sha256sums=('2734b4bb13080b874b0b83c203f611e805ed56a284ce080cf8bcdbfa2a064ff2'
             'SKIP'
-            '8986f29b634fdaa9862eedda78513969fe9788301c9f2d938f4c10a3e7a3e7ea'
+            '04e62ab7d0168688d9102680adf8eabe7b04275f333fe20eef8ab5a3a8ea9fcc'
             'SKIP'
             'ba08064d737a2aa173125e88c3900dce804220fb0562596b03130177c2139312'
             '77fb0612217b6af7a122f586a9d0d334cd48bb201509bf72e8f8e6244616e895'
-            '8d70b33d20d74801aeee82173944fed3b33ae185031537e1b50a640238f7a988')
+            '8d70b33d20d74801aeee82173944fed3b33ae185031537e1b50a640238f7a988'
+            'b02c962bd71832d64542f8b3793e824ac99f5797a3821767eb40875c2f3e4f6f')
 validpgpkeys=('B6C8F98282B944E3B0D5C2530FC3042E345AD05D'  # Hans Wennborg, Google.
               '474E22316ABF4785A88C6E8EA2C794A986419D8A'  # Tom Stellard
               'D574BD5D1D0E98895E3BF90044F2485E45D59042') # Tobias Hieta
@@ -60,21 +63,12 @@ prepare() {
   apply_patch_with_msg \
     "0001-cast-cxx11-narrowing.patch" \
     "0002-cmake-22162.patch" \
-    "0003-do-not-link-to-llvm-dylib.patch"
+    "0003-do-not-link-to-llvm-dylib.patch" \
+    "0004-do-not-clock_gettime-on-mingw.patch"
 }
 
 build() {
-  cd "${srcdir}"
-
-  case "${CARCH}" in
-    i?86|armv7)
-      # lld needs all the address space it can get.
-      LDFLAGS+=" -Wl,--large-address-aware"
-      ;;
-  esac
-
   local -a extra_args
-
   if check_option "debug" "y"; then
     extra_args+=(-DCMAKE_BUILD_TYPE=Debug)
   else
@@ -85,19 +79,6 @@ build() {
     export CC='clang'
     export CXX='clang++'
     extra_args+=(-DLLVM_ENABLE_LLD=ON)
-  fi
-
-  # try to figure out a reasonable CMAKE_BUILD_PARALLEL_LEVEL
-  if [ -z "${CMAKE_BUILD_PARALLEL_LEVEL+x}" ]; then
-    # figure about 1 job per 2GB RAM
-    local _jobs=$(awk '{ if ($1 == "MemTotal:") { printf "%.0f", $2/(2*1024*1024) } }' /proc/meminfo)
-    # EXCEPT on GHA, which is being really difficult.
-    if (( _jobs < 1 )) || [ -n "${CI+x}" ]; then
-      _jobs=1
-    elif (( _jobs > $(nproc) + 2 )); then
-      _jobs=$(( $(nproc) + 2 ))
-    fi
-    export CMAKE_BUILD_PARALLEL_LEVEL=${_jobs}
   fi
 
   [[ -d build-${MSYSTEM} ]] && rm -rf build-${MSYSTEM}
@@ -114,14 +95,17 @@ build() {
     -DLLVM_ENABLE_THREADS=ON \
     -DLLVM_HOST_TRIPLE="${CARCH}-w64-windows-gnu" \
     -DLLVM_LINK_LLVM_DYLIB=ON \
+    -DFLANG_INCLUDE_TESTS=OFF \
     "${extra_args[@]}" \
-    ../flang-${pkgver}.src
+    ../${_pkgfn}
 
   ${MINGW_PREFIX}/bin/cmake.exe --build .
 }
 
 check() {
   cd "${srcdir}"/build-${MSYSTEM}
+  ${MINGW_PREFIX}/bin/cmake.exe -DFLANG_INCLUDE_TESTS=ON ../${_pkgfn}
+  ${MINGW_PREFIX}/bin/cmake.exe --build .
   ${MINGW_PREFIX}/bin/cmake.exe --build . -- check-flang || true
 }
 
