@@ -81,8 +81,12 @@ failure() { local status="${1}"; local items=("${@:2}"); _status failure "${stat
 success() { local status="${1}"; local items=("${@:2}"); _status success "${status}." "${items[@]}"; exit 0; }
 message() { local status="${1}"; local items=("${@:2}"); _status message "${status}"  "${items[@]}"; }
 
-# Detect
-list_packages || failure 'Could not detect changed files'
+if [ $# -eq 0 ]; then
+    # Detect
+    list_packages || failure 'Could not detect changed files'
+else
+    declare -a packages=("$@")
+fi
 message 'Processing changes'
 
 declare -a skipped_packages=()
@@ -110,7 +114,7 @@ for package in "${skipped_packages[@]}"; do
     unset package
 done
 
-test -z "${packages[@]}" && success 'No changes in package recipes'
+test ${#packages[@]} -eq 0 && success 'No changes in package recipes'
 
 # Build
 message 'Building packages' "${packages[@]}"
