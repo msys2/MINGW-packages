@@ -3,7 +3,7 @@
 _realname=eccodes
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=2.19.1
+pkgver=2.26.0
 pkgrel=1
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
@@ -13,59 +13,93 @@ depends=("${MINGW_PACKAGE_PREFIX}-netcdf"
          "${MINGW_PACKAGE_PREFIX}-jasper"
          "${MINGW_PACKAGE_PREFIX}-openjpeg2"
          "${MINGW_PACKAGE_PREFIX}-libaec"
-         "${MINGW_PACKAGE_PREFIX}-libpng")
-makedepends=("${MINGW_PACKAGE_PREFIX}-gcc"
+         "${MINGW_PACKAGE_PREFIX}-libpng"
+         $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran"))
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
              "${MINGW_PACKAGE_PREFIX}-pkg-config"
-             "make"
-             "patch"
-             "${MINGW_PACKAGE_PREFIX}-cmake")
-license=('Apache')
+             $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-fortran"))
+license=('spdx:Apache-2.0')
 url="https://confluence.ecmwf.int/display/ECC/ecCodes+Home"
 source=(https://confluence.ecmwf.int/download/attachments/45757960/${_realname}-${pkgver}-Source.tar.gz
-        fix-mingw.patch)
+        fix-mingw.patch
+        0002-pkgconfig.patch)
 noextract=(${_realname}-${pkgver}-Source.tar.gz)
-sha256sums=('9964bed5058e873d514bd4920951122a95963128b12f55aa199d9afbafdd5d4b'
-            'ee7d576af56ae23c954b1ee25562475b6db6e04612c39d7f7a16e8a16eb56c33')
+sha256sums=('392f632612e16a8c0bb0b8f6d627cbc3f54e56f51ace05bceac368377ab52e49'
+            '1447df9219b2a26ebff3a4563df0e0097328009ac18b8b8a791b56030d49981d'
+            '1cb0019e53ec75861cc2b6d2b0f431d07f349456ab1e4874bdff342134bd40a8')
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying $_patch"
+    patch -Nbp1 -i "${srcdir}/$_patch"
+  done
+}
 
 prepare() {
-  tar xf ${srcdir}/${_realname}-${pkgver}-Source.tar.gz || \
-  tar xf ${srcdir}/${_realname}-${pkgver}-Source.tar.gz
-  cd ${srcdir}/${_realname}-${pkgver}-Source
-  patch -p1 -i ${srcdir}/fix-mingw.patch
+  tar xf "${srcdir}"/${_realname}-${pkgver}-Source.tar.gz || \
+  tar xf "${srcdir}"/${_realname}-${pkgver}-Source.tar.gz
+
+  cd "${srcdir}"/${_realname}-${pkgver}-Source
+
+  apply_patch_with_msg \
+    fix-mingw.patch \
+    0002-pkgconfig.patch
 }
 
 build() {
-  [[ -d ${srcdir}/build-${MINGW_CHOST} ]] && rm -rf ${srcdir}/build-${MINGW_CHOST}
-  mkdir -p ${srcdir}/build-${MINGW_CHOST} && cd ${srcdir}/build-${MINGW_CHOST}
+  [[ -d "${srcdir}"/build-${MSYSTEM} ]] && rm -rf "${srcdir}"/build-${MSYSTEM}
+  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
+
+  declare -a extra_config
+  if check_option "debug" "n"; then
+    extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+    _fortran_opt="-DENABLE_FORTRAN=OFF"
+  else
+    _fortran_opt="-DENABLE_FORTRAN=ON"
+ fi
 
   # CMake options copied from:
   #   https://github.com/ecmwf/eccodes/blob/master/.appveyor.yml
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
-  ${MINGW_PREFIX}/bin/cmake \
-    -G"MSYS Makefiles" \
-    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DENABLE_FORTRAN=0 \
-    -DENABLE_PYTHON=0 \
-    -DENABLE_NETCDF=1 \
-    -DENABLE_JPG=1 \
-    -DIEEE_LE=1 \
-    -DENABLE_MEMFS=0 \
-    -DENABLE_EXAMPLES=OFF \
-    -DENABLE_TESTS=OFF \
-    ../${_realname}-${pkgver}-Source
+    "${MINGW_PREFIX}"/bin/cmake \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+      -DCMAKE_INSTALL_DATADIR="${MINGW_PREFIX}/share" \
+      -DCMAKE_INSTALL_DATAROOTDIR="${MINGW_PREFIX}/share/${_realname}/definitions" \
+      "${extra_config[@]}" \
+      ${_fortran_opt} \
+      -DENABLE_NETCDF=ON \
+      -DENABLE_JPG=ON \
+      -DIEEE_LE=1 \
+      -DENABLE_MEMFS=OFF \
+      -DENABLE_EXAMPLES=OFF \
+      -DENABLE_TESTS=OFF \
+      ../${_realname}-${pkgver}-Source
 
-  make
+  "${MINGW_PREFIX}"/bin/cmake --build .
 }
 
 package() {
-  cd "${srcdir}/build-${MINGW_CHOST}"
-  make DESTDIR="${pkgdir}" install
+  cd "${srcdir}/build-${MSYSTEM}"
+  DESTDIR="${pkgdir}" "${MINGW_PREFIX}"/bin/cmake --install .
 
-  mkdir -p ${pkgdir}${MINGW_PREFIX}/share/licenses/$_realname
-  cp -pf ${srcdir}/${_realname}-${pkgver}-Source/NOTICE \
-    ${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}
-  cp -pf ${srcdir}/${_realname}-${pkgver}-Source/LICENSE \
-    ${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}
+  # Remove full path reference
+  local _PREFIX_WIN="$(cygpath -wm ${MINGW_PREFIX})"
+  for pcfile in "${pkgdir}${MINGW_PREFIX}"/lib/pkgconfig/*.pc; do
+    sed -s "s|${_PREFIX_WIN}|${MINGW_PREFIX}|g" -i "${pcfile}"
+  done
+
+  install -Dm644 "${srcdir}"/${_realname}-${pkgver}-Source/NOTICE \
+    "${pkgdir}${MINGW_PREFIX}"/share/licenses/${_realname}/NOTICE
+  install -Dm644 "${srcdir}"/${_realname}-${pkgver}-Source/LICENSE \
+    "${pkgdir}${MINGW_PREFIX}"/share/licenses/${_realname}/LICENSE
 }

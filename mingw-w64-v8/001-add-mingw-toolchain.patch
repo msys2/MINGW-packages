@@ -1,0 +1,1370 @@
+diff --git a/config/BUILD.gn b/config/BUILD.gn
+index 265d4bc07..1b19e3090 100644
+--- a/config/BUILD.gn
++++ b/config/BUILD.gn
+@@ -112,13 +112,13 @@ config("debug") {
+     defines += [ "DYNAMIC_ANNOTATIONS_PREFIX=NACL_" ]
+   }
+ 
+-  if (is_win) {
++  if (is_msvs) {
+     if (!enable_iterator_debugging && !use_custom_libcxx) {
+       # Iterator debugging is enabled by default by the compiler on debug
+       # builds, and we have to tell it to turn it off.
+       defines += [ "_HAS_ITERATOR_DEBUGGING=0" ]
+     }
+-  } else if ((is_linux || is_chromeos) && current_cpu == "x64" &&
++  } else if ((is_linux || is_chromeos || is_mingw) && current_cpu == "x64" &&
+              enable_iterator_debugging) {
+     # Enable libstdc++ debugging facilities to help catch problems early, see
+     # http://crbug.com/65151 .
+@@ -158,25 +158,25 @@ config("default_libs") {
+     # instead the targets that use the less common ones (e.g. wininet or
+     # winspool) should include those explicitly.
+     libs = [
+-      "advapi32.lib",
+-      "comdlg32.lib",
+-      "dbghelp.lib",
+-      "dnsapi.lib",
+-      "gdi32.lib",
+-      "msimg32.lib",
+-      "odbc32.lib",
+-      "odbccp32.lib",
+-      "oleaut32.lib",
+-      "shell32.lib",
+-      "shlwapi.lib",
+-      "user32.lib",
+-      "usp10.lib",
+-      "uuid.lib",
+-      "version.lib",
+-      "wininet.lib",
+-      "winmm.lib",
+-      "winspool.lib",
+-      "ws2_32.lib",
++      "advapi32",
++      "comdlg32",
++      "dbghelp",
++      "dnsapi",
++      "gdi32",
++      "msimg32",
++      "odbc32",
++      "odbccp32",
++      "oleaut32",
++      "shell32",
++      "shlwapi",
++      "user32",
++      "usp10",
++      "uuid",
++      "version",
++      "wininet",
++      "winmm",
++      "winspool",
++      "ws2_32",
+ 
+       # Please don't add more stuff here. We should actually be making this
+       # list smaller, since all common things should be covered. If you need
+@@ -192,9 +192,9 @@ config("default_libs") {
+     } else {
+       # These libraries are not compatible with Windows UWP (i.e. store apps.)
+       libs += [
+-        "delayimp.lib",
+-        "kernel32.lib",
+-        "ole32.lib",
++        "delayimp",
++        "kernel32",
++        "ole32",
+       ]
+     }
+   } else if (is_android) {
+@@ -282,8 +282,13 @@ group("shared_library_deps") {
+ 
+ # Windows linker setup for EXEs and DLLs.
+ if (is_win) {
+-  _windows_linker_configs = [
+-    "//build/config/win:sdk_link",
++  _windows_linker_configs = []
++  if (is_msvs) {
++    _windows_linker_configs += [
++      "//build/config/win:sdk_link",
++    ]
++  }
++  _windows_linker_configs += [
+     "//build/config/win:common_linker_setup",
+   ]
+ }
+diff --git a/config/BUILDCONFIG.gn b/config/BUILDCONFIG.gn
+index efba84719..d69a1920f 100644
+--- a/config/BUILDCONFIG.gn
++++ b/config/BUILDCONFIG.gn
+@@ -135,12 +135,16 @@ declare_args() {
+   # set "is_official_build" to true for any build intended to ship to end-users.
+   is_official_build = false
+ 
++  # Set to true when compiling with the MinGW GCC compiler on the MSYS2 environment.
++  is_mingw = getenv("MSYSTEM") != "" && getenv("MSYSTEM") != "MSYS"
++
+   # Set to true when compiling with the Clang compiler.
+-  is_clang = current_os != "linux" ||
++  is_clang = (current_os != "linux" ||
+              (current_cpu != "s390x" && current_cpu != "s390" &&
+               current_cpu != "ppc64" && current_cpu != "ppc" &&
+               current_cpu != "mips" && current_cpu != "mips64" &&
+-              current_cpu != "riscv64")
++              current_cpu != "riscv64")) &&
++              (getenv("CC") == "clang" || getenv("CC") == "clang-cl")
+ 
+   # Allows the path to a custom target toolchain to be injected as a single
+   # argument, and set as the default toolchain.
+@@ -211,13 +215,17 @@ if (host_toolchain == "") {
+     # configurations we support this will always work and it saves build steps.
+     # Windows ARM64 targets require an x64 host for cross build.
+     if (target_cpu == "x86" || target_cpu == "x64") {
+-      if (is_clang) {
++      if (is_clang && !is_mingw) {
+         host_toolchain = "//build/toolchain/win:win_clang_$target_cpu"
++      } else if (is_mingw) {
++        host_toolchain = "//build/toolchain/win:mingw_$target_cpu"
+       } else {
+         host_toolchain = "//build/toolchain/win:$target_cpu"
+       }
+-    } else if (is_clang) {
++    } else if (is_clang && !is_mingw) {
+       host_toolchain = "//build/toolchain/win:win_clang_$host_cpu"
++    } else if (is_mingw) {
++      host_toolchain = "//build/toolchain/win:mingw_$host_cpu"
+     } else {
+       host_toolchain = "//build/toolchain/win:$host_cpu"
+     }
+@@ -253,8 +261,10 @@ if (target_os == "android") {
+ } else if (target_os == "win") {
+   # On Windows, we use the same toolchain for host and target by default.
+   # Beware, win cross builds have some caveats, see docs/win_cross.md
+-  if (is_clang) {
++  if (is_clang && !is_mingw) {
+     _default_toolchain = "//build/toolchain/win:win_clang_$target_cpu"
++  } else if (is_mingw) {
++    _default_toolchain = "//build/toolchain/win:mingw_$target_cpu"
+   } else {
+     _default_toolchain = "//build/toolchain/win:$target_cpu"
+   }
+@@ -309,6 +319,7 @@ is_win = current_os == "win" || current_os == "winuwp"
+ 
+ is_apple = is_ios || is_mac
+ is_posix = !is_win && !is_fuchsia
++is_msvs = is_win && !is_mingw
+ 
+ # =============================================================================
+ # TARGET DEFAULTS
+@@ -411,7 +422,7 @@ set_defaults("rust_proc_macro") {
+ 
+ # Compute the set of configs common to all linked targets (shared libraries,
+ # loadable modules, executables) to avoid duplication below.
+-if (is_win) {
++if (is_msvs) {
+   # Many targets remove these configs, so they are not contained within
+   # //build/config:executable_config for easy removal.
+   _linker_configs = [
+@@ -433,7 +444,7 @@ default_executable_configs = default_compiler_configs + [
+                                "//build/config:executable_config",
+                              ] + _linker_configs
+ 
+-if (is_win) {
++if (is_msvs) {
+   # Turn on linker CFI for executables, and position it so it can be removed
+   # if needed.
+   default_executable_configs += [ "//build/config/win:cfi_linker" ]
+@@ -449,7 +460,7 @@ default_shared_library_configs = default_compiler_configs + [
+                                    "//build/config:default_libs",
+                                    "//build/config:shared_library_config",
+                                  ] + _linker_configs
+-if (is_win) {
++if (is_msvs) {
+   # Turn on linker CFI for DLLs, and position it so it can be removed if needed.
+   default_shared_library_configs += [ "//build/config/win:cfi_linker" ]
+ }
+diff --git a/config/clang/clang.gni b/config/clang/clang.gni
+index 7196fcf6c..5597f0856 100644
+--- a/config/clang/clang.gni
++++ b/config/clang/clang.gni
+@@ -11,7 +11,7 @@ declare_args() {
+   # coding guidelines, etc. Only used when compiling with Chrome's Clang, not
+   # Chrome OS's.
+   clang_use_chrome_plugins =
+-      is_clang && !is_nacl && current_os != "zos" &&
++      is_clang && !is_nacl && !is_mingw && current_os != "zos" &&
+       default_toolchain != "//build/toolchain/cros:target"
+ 
+   clang_base_path = default_clang_base_path
+diff --git a/config/compiler/BUILD.gn b/config/compiler/BUILD.gn
+index 7183544ea..97769d9cc 100644
+--- a/config/compiler/BUILD.gn
++++ b/config/compiler/BUILD.gn
+@@ -304,7 +304,7 @@ config("compiler") {
+ 
+   # In general, Windows is totally different, but all the other builds share
+   # some common compiler and linker configuration.
+-  if (!is_win) {
++  if (!is_msvs) {
+     # Common POSIX compiler flags setup.
+     # --------------------------------
+     cflags += [ "-fno-strict-aliasing" ]  # See http://crbug.com/32204
+@@ -318,7 +318,7 @@ config("compiler") {
+       } else {
+         cflags += [ "-fstack-protector" ]
+       }
+-    } else if ((is_posix && !is_chromeos && !is_nacl) || is_fuchsia) {
++    } else if ((is_posix && !is_chromeos && !is_nacl) || is_fuchsia || is_mingw) {
+       # TODO(phajdan.jr): Use -fstack-protector-strong when our gcc supports it.
+       # See also https://crbug.com/533294
+       if (current_os != "zos") {
+@@ -364,7 +364,7 @@ config("compiler") {
+ 
+   # Non-Apple Posix and Fuchsia compiler flags setup.
+   # -----------------------------------
+-  if ((is_posix && !is_apple) || is_fuchsia) {
++  if ((is_posix && !is_apple) || is_fuchsia || is_mingw) {
+     if (enable_profiling) {
+       if (!is_debug) {
+         cflags += [ "-g" ]
+@@ -514,11 +514,11 @@ config("compiler") {
+     # TODO(thakis): Make the driver pass --color-diagnostics to the linker
+     # if -fcolor-diagnostics is passed to it, and pass -fcolor-diagnostics
+     # in ldflags instead.
+-    if (is_win) {
++    if (is_msvs) {
+       # On Windows, we call the linker directly, instead of calling it through
+       # the driver.
+       ldflags += [ "--color-diagnostics" ]
+-    } else {
++    } else if (!is_clang) {
+       ldflags += [ "-Wl,--color-diagnostics" ]
+     }
+   }
+@@ -529,7 +529,7 @@ config("compiler") {
+     ldflags += [ "-Wl,-z,keep-text-section-prefix" ]
+   }
+ 
+-  if (is_clang && !is_nacl && current_os != "zos") {
++  if (is_clang && !is_nacl && !is_mingw && current_os != "zos") {
+     cflags += [ "-fcrash-diagnostics-dir=" + clang_diagnostic_dir ]
+     if (save_reproducers_on_lld_crash && use_lld) {
+       ldflags += [
+@@ -612,13 +612,16 @@ config("compiler") {
+       # support "c++20"/"gnu++20".
+       cflags_cc += [ "-std=${standard_prefix}++2a" ]
+     }
+-  } else if (is_win) {
++  } else if (is_msvs) {
+     cflags_c += [ "/std:c11" ]
+     if (!is_clang && defined(msvc_use_cxx17) && msvc_use_cxx17) {
+       cflags_cc += [ "/std:c++17" ]
+     } else {
+       cflags_cc += [ "/std:c++20" ]
+     }
++  } else if (is_mingw) {
++    cflags_c += [ "-std=c11" ]
++    cflags_cc += [ "-std=gnu++17" ]
+   } else if (!is_nacl) {
+     # TODO(mcgrathr) - the NaCl GCC toolchain doesn't support either
+     # gnu11/gnu++11 or c11/c++11; we technically don't need this toolchain any
+@@ -673,7 +676,7 @@ config("compiler") {
+     # should be able to better manage binary size increases on its own.
+     import_instr_limit = 30
+ 
+-    if (is_win) {
++    if (is_msvs) {
+       ldflags += [
+         "/opt:lldltojobs=all",
+         "-mllvm:-import-instr-limit=$import_instr_limit",
+@@ -749,7 +752,7 @@ config("compiler") {
+   if (compiler_timing) {
+     if (is_clang && !is_nacl) {
+       cflags += [ "-ftime-trace" ]
+-    } else if (is_win) {
++    } else if (is_msvs) {
+       cflags += [
+         # "Documented" here:
+         # http://aras-p.info/blog/2017/10/23/Best-unknown-MSVC-flag-d2cgsummary/
+@@ -775,15 +778,15 @@ config("compiler") {
+   # jumps. Turn it off by default and enable selectively for targets where it's
+   # beneficial.
+   if (use_lld && !enable_call_graph_profile_sort) {
+-    if (is_win) {
++    if (is_msvs) {
+       ldflags += [ "/call-graph-profile-sort:no" ]
+-    } else {
++    } else if (!is_mingw) {
+       ldflags += [ "-Wl,--no-call-graph-profile-sort" ]
+     }
+   }
+ 
+   if (is_clang && !is_nacl && show_includes) {
+-    if (is_win) {
++    if (is_msvs) {
+       # TODO(crbug.com/1223741): Goma mixes the -H and /showIncludes output.
+       assert(!use_goma, "show_includes on Windows is not reliable with goma")
+       cflags += [
+@@ -802,7 +805,7 @@ config("compiler") {
+   # prevent us from running into problems in the Microsoft C++ ABI (see
+   # https://crbug.com/847724).
+   if (is_clang && !is_nacl && target_os != "chromeos" &&
+-      (is_win || use_custom_libcxx)) {
++      (is_msvs || use_custom_libcxx)) {
+     cflags += [ "-fcomplete-member-pointers" ]
+   }
+ 
+@@ -901,7 +904,7 @@ config("thinlto_optimize_default") {
+   if (!is_debug && use_thin_lto && is_a_target_toolchain) {
+     lto_opt_level = 0
+ 
+-    if (is_win) {
++    if (is_msvs) {
+       ldflags = [ "/opt:lldlto=" + lto_opt_level ]
+     } else {
+       ldflags = [ "-Wl,--lto-O" + lto_opt_level ]
+@@ -925,7 +928,7 @@ config("thinlto_optimize_max") {
+       lto_opt_level = 0
+     }
+ 
+-    if (is_win) {
++    if (is_msvs) {
+       ldflags = [ "/opt:lldlto=" + lto_opt_level ]
+     } else {
+       ldflags = [ "-Wl,--lto-O" + lto_opt_level ]
+@@ -954,7 +957,7 @@ config("compiler_cpu_abi") {
+     ldflags += [ "-fno-global-isel" ]
+   }
+ 
+-  if ((is_posix && !is_apple) || is_fuchsia) {
++  if ((is_posix && !is_apple) || is_fuchsia || is_mingw) {
+     # CPU architecture. We may or may not be doing a cross compile now, so for
+     # simplicity we always explicitly set the architecture.
+     if (current_cpu == "x64") {
+@@ -1298,7 +1301,7 @@ config("compiler_deterministic") {
+   # Eliminate build metadata (__DATE__, __TIME__ and __TIMESTAMP__) for
+   # deterministic build.  See https://crbug.com/314403
+   if (!is_official_build) {
+-    if (is_win && !is_clang) {
++    if (is_msvs && !is_clang) {
+       cflags += [
+         "/wd4117",  # Trying to define or undefine a predefined macro.
+         "/D__DATE__=",
+@@ -1336,12 +1339,12 @@ config("compiler_deterministic") {
+       cflags += [ "-ffile-compilation-dir=." ]
+       swiftflags += [ "-file-compilation-dir=." ]
+     }
+-    if (!is_win) {
++    if (!is_msvs) {
+       # We don't use clang -cc1as on Windows (yet? https://crbug.com/762167)
+       asmflags = [ "-Wa,-fdebug-compilation-dir,." ]
+     }
+ 
+-    if (is_win && use_lld) {
++    if (is_msvs && use_lld) {
+       if (symbol_level == 2 || (is_clang && using_sanitizer)) {
+         # Absolutize source file paths for PDB. Pass the real build directory
+         # if the pdb contains source-level debug information and if linker
+@@ -1374,7 +1377,7 @@ config("compiler_deterministic") {
+ }
+ 
+ config("clang_revision") {
+-  if (is_clang && clang_base_path == default_clang_base_path) {
++  if (is_msvs && is_clang && clang_base_path == default_clang_base_path) {
+     update_args = [
+       "--print-revision",
+       "--verify-version=$clang_version",
+@@ -1495,7 +1498,7 @@ config("default_warnings") {
+   cflags_cc = []
+   ldflags = []
+ 
+-  if (is_win) {
++  if (is_msvs) {
+     if (treat_warnings_as_errors) {
+       cflags += [ "/WX" ]
+     }
+@@ -1570,10 +1573,27 @@ config("default_warnings") {
+       # files.
+       cflags += [ "-Wno-packed-not-aligned" ]
+     }
++
++    if (is_mingw) {
++      cflags += [
++        "-Wno-attributes",           # "__decspec(dllimport) inline"
++        "-Wno-format",               # PRIu64 llu support on MinGW
++      ]
++      if (!is_clang) {
++        cflags_cc += [
++          "-Wno-subobject-linkage",    # Tests having code in header files
++        ]
++        cflags += [
++          "-Wno-array-bounds",
++          "-Wno-unused-but-set-variable",
++          "-Wno-stringop-overflow",    # False positive overflow error on gcc 10
++        ]
++      }
++    }
+   }
+ 
+   # Common Clang and GCC warning setup.
+-  if (!is_win || is_clang) {
++  if (!is_msvs || is_clang) {
+     cflags += [
+       # Disables.
+       "-Wno-missing-field-initializers",  # "struct foo f = {0};"
+@@ -1675,7 +1695,7 @@ config("prevent_unsafe_narrowing") {
+ # part of Chromium.
+ 
+ config("chromium_code") {
+-  if (is_win) {
++  if (is_msvs) {
+     if (is_clang) {
+       cflags = [ "/W4" ]  # Warning level 4.
+ 
+@@ -1737,12 +1757,12 @@ config("chromium_code") {
+ 
+     # TODO(thakis): Enable this more often, https://crbug.com/346399
+     # use_libfuzzer: https://crbug.com/1063180
+-    if ((!is_nacl || is_nacl_saigo) && !use_libfuzzer) {
++    if ((!is_nacl || is_nacl_saigo) && !is_mingw && !use_libfuzzer) {
+       cflags += [ "-Wunreachable-code-aggressive" ]
+     }
+ 
+     # Thread safety analysis is broken under nacl: https://crbug.com/982423.
+-    if (!is_nacl || is_nacl_saigo) {
++    if ((!is_nacl || is_nacl_saigo) && !is_mingw) {
+       cflags += [
+         # Thread safety analysis. See base/thread_annotations.h and
+         # https://clang.llvm.org/docs/ThreadSafetyAnalysis.html
+@@ -1762,7 +1782,7 @@ config("no_chromium_code") {
+   cflags_cc = []
+   defines = []
+ 
+-  if (is_win) {
++  if (is_msvs) {
+     if (is_clang) {
+       cflags += [ "/W3" ]  # Warning level 3.
+     }
+@@ -1829,7 +1849,7 @@ config("noshadowing") {
+ # Allows turning Run-Time Type Identification on or off.
+ 
+ config("rtti") {
+-  if (is_win) {
++  if (is_msvs) {
+     cflags_cc = [ "/GR" ]
+   } else {
+     cflags_cc = [ "-frtti" ]
+@@ -1839,7 +1859,7 @@ config("rtti") {
+ config("no_rtti") {
+   # Some sanitizer configs may require RTTI to be left enabled globally
+   if (!use_rtti) {
+-    if (is_win) {
++    if (is_msvs) {
+       cflags_cc = [ "/GR-" ]
+     } else {
+       cflags_cc = [ "-fno-rtti" ]
+@@ -1883,7 +1903,7 @@ config("thin_archive") {
+   # confuses lldb.
+   if ((is_posix && !is_nacl && !is_apple) || is_fuchsia) {
+     arflags = [ "-T" ]
+-  } else if (is_win && use_lld) {
++  } else if (is_msvs && use_lld) {
+     arflags = [ "/llvmlibthin" ]
+   }
+ }
+@@ -1894,7 +1914,7 @@ config("thin_archive") {
+ # Note: exceptions are disallowed in Google code.
+ 
+ config("exceptions") {
+-  if (is_win) {
++  if (is_msvs) {
+     # Enables exceptions in the STL.
+     if (!use_custom_libcxx) {
+       defines = [ "_HAS_EXCEPTIONS=1" ]
+@@ -1903,11 +1923,18 @@ config("exceptions") {
+   } else {
+     cflags_cc = [ "-fexceptions" ]
+     cflags_objcc = cflags_cc
++
++    if (is_mingw && exclude_unwind_tables) {
++      # With exceptions explicitly allowed,
++      # override exclude_unwind_tables or
++      # linking will fail on MinGW
++      cflags_cc += [ "-funwind-tables", "-fasynchronous-unwind-tables", ]
++    }
+   }
+ }
+ 
+ config("no_exceptions") {
+-  if (is_win) {
++  if (is_msvs) {
+     # Disables exceptions in the STL.
+     # libc++ uses the __has_feature macro to control whether to use exceptions,
+     # so defining this macro is unnecessary. Defining _HAS_EXCEPTIONS to 0 also
+@@ -1973,7 +2000,7 @@ config("no_incompatible_pointer_warnings") {
+ 
+ # Shared settings for both "optimize" and "optimize_max" configs.
+ # IMPORTANT: On Windows "/O1" and "/O2" must go before the common flags.
+-if (is_win) {
++if (is_msvs) {
+   common_optimize_on_cflags = [
+     "/Ob2",  # Both explicit and auto inlining.
+     "/Oy-",  # Disable omitting frame pointers, must be after /O2.
+@@ -2079,7 +2106,7 @@ config("default_stack_frames") {
+ 
+ # Default "optimization on" config.
+ config("optimize") {
+-  if (is_win) {
++  if (is_msvs) {
+     if (chrome_pgo_phase != 2) {
+       # Favor size over speed, /O1 must be before the common flags.
+       # /O1 implies /Os and /GF.
+@@ -2138,7 +2165,7 @@ config("optimize") {
+ 
+ # Turn off optimizations.
+ config("no_optimize") {
+-  if (is_win) {
++  if (is_msvs) {
+     cflags = [
+       "/Od",  # Disable optimization.
+       "/Ob0",  # Disable all inlining (on by default).
+@@ -2190,7 +2217,7 @@ config("optimize_max") {
+     configs = [ "//build/config/nacl:irt_optimize" ]
+   } else {
+     ldflags = common_optimize_on_ldflags
+-    if (is_win) {
++    if (is_msvs) {
+       # Favor speed over size, /O2 must be before the common flags.
+       # /O2 implies /Ot, /Oi, and /GF.
+       cflags = [ "/O2" ] + common_optimize_on_cflags
+@@ -2223,7 +2250,7 @@ config("optimize_speed") {
+     configs = [ "//build/config/nacl:irt_optimize" ]
+   } else {
+     ldflags = common_optimize_on_ldflags
+-    if (is_win) {
++    if (is_msvs) {
+       # Favor speed over size, /O2 must be before the common flags.
+       # /O2 implies /Ot, /Oi, and /GF.
+       cflags = [ "/O2" ] + common_optimize_on_cflags
+@@ -2357,7 +2384,7 @@ config("win_pdbaltpath") {
+ 
+ # Full symbols.
+ config("symbols") {
+-  if (is_win) {
++  if (is_msvs) {
+     if (is_clang) {
+       cflags = [
+         # Debug information in the .obj files.
+@@ -2392,7 +2419,7 @@ config("symbols") {
+     }
+ 
+     # On aix -gdwarf causes linker failures due to thread_local variables.
+-    if (!is_nacl && current_os != "aix") {
++    if (!is_nacl && !is_mingw && current_os != "aix") {
+       if (use_dwarf5) {
+         cflags += [ "-gdwarf-5" ]
+       } else if (!is_apple) {
+@@ -2409,11 +2436,11 @@ config("symbols") {
+     # build-directory-independent output. pnacl and nacl-clang do support that
+     # flag, so we can use use -g1 for pnacl and nacl-clang compiles.
+     # gcc nacl is is_nacl && !is_clang, pnacl and nacl-clang are && is_clang.
+-    if ((!is_nacl || is_clang) && current_os != "zos") {
++    if ((!is_nacl || is_clang) && !is_mingw && current_os != "zos") {
+       cflags += [ "-g2" ]
+     }
+ 
+-    if (!is_nacl && is_clang && !is_tsan && !is_asan) {
++    if (!is_nacl && !is_mingw && is_clang && !is_tsan && !is_asan) {
+       # gcc generates dwarf-aranges by default on -g1 and -g2. On clang it has
+       # to be manually enabled.
+       #
+@@ -2459,7 +2486,9 @@ config("symbols") {
+         # sections (llvm.org/PR34820).
+         cflags += [ "-ggnu-pubnames" ]
+       }
+-      ldflags += [ "-Wl,--gdb-index" ]
++      if (!is_mingw) {
++        ldflags += [ "-Wl,--gdb-index" ]
++      }
+     }
+   }
+ 
+@@ -2496,7 +2525,7 @@ config("symbols") {
+ # This config guarantees to hold symbol for stack trace which are shown to user
+ # when crash happens in unittests running on buildbot.
+ config("minimal_symbols") {
+-  if (is_win) {
++  if (is_msvs) {
+     # Functions, files, and line tables only.
+     cflags = []
+ 
+@@ -2569,7 +2598,7 @@ config("minimal_symbols") {
+ # told to not generate debug information and the linker then just puts function
+ # names in the final debug information.
+ config("no_symbols") {
+-  if (is_win) {
++  if (is_msvs) {
+     ldflags = [ "/DEBUG" ]
+ 
+     # All configs using /DEBUG should include this:
+@@ -2665,6 +2694,11 @@ buildflag_header("compiler_buildflags") {
+ config("cet_shadow_stack") {
+   if (enable_cet_shadow_stack && is_win) {
+     assert(target_cpu == "x64")
+-    ldflags = [ "/CETCOMPAT" ]
++    if (is_mingw) {
++      ldflags = [ "-fcf-protection=full" ]
++      cflags = [ "-fcf-protection=full" ]
++    } else {
++      ldflags = [ "/CETCOMPAT" ]
++    }
+   }
+ }
+diff --git a/config/linux/pkg-config.py b/config/linux/pkg-config.py
+index f4133637f..aa0f2ecd3 100755
+--- a/config/linux/pkg-config.py
++++ b/config/linux/pkg-config.py
+@@ -41,7 +41,11 @@ from optparse import OptionParser
+ # Additionally, you can specify the option --atleast-version. This will skip
+ # the normal outputting of a dictionary and instead print true or false,
+ # depending on the return value of pkg-config for the given package.
+-
++#
++# --pkg_config_libdir=<path> allows direct override
++# of the PKG_CONFIG_LIBDIR environment library.
++#
++# --full-path-libs causes lib names to include their full path.
+ 
+ def SetConfigPath(options):
+   """Set the PKG_CONFIG_LIBDIR environment variable.
+@@ -104,12 +108,29 @@ def RewritePath(path, strip_prefix, sysroot):
+   else:
+     return path
+ 
++flag_regex = re.compile("(-.)(.+)")
++
++def FlagReplace(matchobj):
++  if matchobj.group(1) == '-I':
++     return matchobj.group(1) + subprocess.check_output([u'cygpath',u'-w',matchobj.group(2)]).strip().decode("utf-8")
++  if matchobj.group(1) == '-L':
++     return matchobj.group(1) + subprocess.check_output([u'cygpath',u'-w',matchobj.group(2)]).strip().decode("utf-8")
++  if matchobj.group(1) == '-l':
++     return matchobj.group(1) + matchobj.group(2) + '.lib'
++  return matchobj.group(0)
++
++def ConvertGCCToMSVC(flags):
++  """Rewrites GCC flags into MSVC flags."""
++  # need a better way to determine mingw vs msvc build
++  if 'win32' not in sys.platform or "GCC" in sys.version:
++    return flags
++  return [ flag_regex.sub(FlagReplace,flag) for flag in flags]
+ 
+ def main():
+   # If this is run on non-Linux platforms, just return nothing and indicate
+   # success. This allows us to "kind of emulate" a Linux build from other
+   # platforms.
+-  if "linux" not in sys.platform:
++  if "linux" not in sys.platform and 'win32' not in sys.platform:
+     print("[[],[],[],[],[]]")
+     return 0
+ 
+@@ -122,12 +143,15 @@ def main():
+   parser.add_option('-a', action='store', dest='arch', type='string')
+   parser.add_option('--system_libdir', action='store', dest='system_libdir',
+                     type='string', default='lib')
++  parser.add_option('--pkg_config_libdir', action='store', dest='pkg_config_libdir',
++                    type='string')
+   parser.add_option('--atleast-version', action='store',
+                     dest='atleast_version', type='string')
+   parser.add_option('--libdir', action='store_true', dest='libdir')
+   parser.add_option('--dridriverdir', action='store_true', dest='dridriverdir')
+   parser.add_option('--version-as-components', action='store_true',
+                     dest='version_as_components')
++  parser.add_option('--full-path-libs', action='store_true', dest='full_path_libs')
+   (options, args) = parser.parse_args()
+ 
+   # Make a list of regular expressions to strip out.
+@@ -144,6 +168,10 @@ def main():
+   else:
+     prefix = ''
+ 
++  # Override PKG_CONFIG_LIBDIR
++  if options.pkg_config_libdir:
++    os.environ['PKG_CONFIG_LIBDIR'] = options.pkg_config_libdir
++
+   if options.atleast_version:
+     # When asking for the return value, just run pkg-config and print the return
+     # value, no need to do other work.
+@@ -203,7 +231,7 @@ def main():
+   # For now just split on spaces to get the args out. This will break if
+   # pkgconfig returns quoted things with spaces in them, but that doesn't seem
+   # to happen in practice.
+-  all_flags = flag_string.strip().split(' ')
++  all_flags = ConvertGCCToMSVC(flag_string.strip().split(' '))
+ 
+ 
+   sysroot = options.sysroot
+@@ -220,7 +248,10 @@ def main():
+       continue;
+ 
+     if flag[:2] == '-l':
+-      libs.append(RewritePath(flag[2:], prefix, sysroot))
++      library = RewritePath(flag[2:], prefix, sysroot)
++      # Skip math library on MSVC
++      if library != 'm.lib':
++        libs.append(library)
+     elif flag[:2] == '-L':
+       lib_dirs.append(RewritePath(flag[2:], prefix, sysroot))
+     elif flag[:2] == '-I':
+@@ -237,6 +268,14 @@ def main():
+     else:
+       cflags.append(flag)
+ 
++  if options.full_path_libs:
++    full_path_libs = []
++    for lib_dir in lib_dirs:
++      for lib in libs:
++        if os.path.isfile(lib_dir+"/"+lib):
++          full_path_libs.append(lib_dir+"/"+lib)
++    libs = full_path_libs
++
+   # Output a GN array, the first one is the cflags, the second are the libs. The
+   # JSON formatter prints GN compatible lists when everything is a list of
+   # strings.
+diff --git a/config/linux/pkg_config.gni b/config/linux/pkg_config.gni
+index cb9b46003..e2428abbe 100644
+--- a/config/linux/pkg_config.gni
++++ b/config/linux/pkg_config.gni
+@@ -45,6 +45,9 @@ declare_args() {
+   # in similar fashion by setting the `system_libdir` variable in the build's
+   # args.gn file to 'lib' or 'lib64' as appropriate for the target architecture.
+   system_libdir = "lib"
++
++  # Allow directly overriding the PKG_CONFIG_LIBDIR enviroment variable
++  pkg_config_libdir = ""
+ }
+ 
+ pkg_config_script = "//build/config/linux/pkg-config.py"
+@@ -88,6 +91,17 @@ if (host_pkg_config != "") {
+   host_pkg_config_args = pkg_config_args
+ }
+ 
++if (pkg_config_libdir != "") {
++  pkg_config_args += [
++    "--pkg_config_libdir",
++    pkg_config_libdir,
++  ]
++  host_pkg_config_args += [
++    "--pkg_config_libdir",
++    pkg_config_libdir,
++  ]
++}
++
+ template("pkg_config") {
+   assert(defined(invoker.packages),
+          "Variable |packages| must be defined to be a list in pkg_config.")
+diff --git a/config/sanitizers/BUILD.gn b/config/sanitizers/BUILD.gn
+index cb07c5471..51bfaebd7 100644
+--- a/config/sanitizers/BUILD.gn
++++ b/config/sanitizers/BUILD.gn
+@@ -210,7 +210,7 @@ config("default_sanitizer_ldflags") {
+         }
+       }
+     }
+-  } else if (is_win) {
++  } else if (is_msvs) {
+     # Windows directly calls link.exe instead of the compiler driver when
+     # linking.  Hence, pass the runtime libraries instead of -fsanitize=address
+     # or -fsanitize=fuzzer.
+@@ -273,14 +273,14 @@ config("asan_flags") {
+ }
+ 
+ config("link_executable") {
+-  if (is_asan && is_win && !is_component_build) {
++  if (is_asan && is_msvs && !is_component_build) {
+     assert(current_cpu == "x64", "WinASan unsupported architecture")
+     ldflags = [ "-wholearchive:clang_rt.asan-x86_64.lib" ]
+   }
+ }
+ 
+ config("link_shared_library") {
+-  if (is_asan && is_win && !is_component_build) {
++  if (is_asan && is_msvs && !is_component_build) {
+     assert(current_cpu == "x64", "WinASan unsupported architecture")
+     libs = [ "clang_rt.asan_dll_thunk-x86_64.lib" ]
+   }
+@@ -311,7 +311,7 @@ config("cfi_flags") {
+ 
+     if (use_cfi_diag) {
+       cflags += [ "-fno-sanitize-trap=cfi" ]
+-      if (is_win) {
++      if (is_msvs) {
+         cflags += [
+           "/Oy-",
+           "/Ob0",
+diff --git a/config/win/BUILD.gn b/config/win/BUILD.gn
+index a5075393b..4b652132a 100644
+--- a/config/win/BUILD.gn
++++ b/config/win/BUILD.gn
+@@ -52,6 +52,7 @@ declare_args() {
+ # is applied to all targets. It is here to separate out the logic that is
+ # Windows-only.
+ config("compiler") {
++  if (is_msvs) {
+   if (current_cpu == "x86") {
+     asmflags = [
+       # When /safeseh is specified, the linker will only produce an image if it
+@@ -214,6 +215,12 @@ config("compiler") {
+     # the source file is a no-op.
+     "/ignore:4221",
+   ]
++  } else { # is_mingw
++    cflags = [ "-Wa,-mbig-obj" ]
++    if (!is_clang) {
++      cflags += [ "-fno-keep-inline-dllexport" ]
++    }
++  }
+ }
+ 
+ # This is included by reference in the //build/config/compiler:runtime_library
+@@ -317,19 +324,27 @@ config("sdk_link") {
+ # targets who want different library configurations can remove this and specify
+ # their own.
+ config("common_linker_setup") {
+-  ldflags = [
+-    "/FIXED:NO",
+-    "/ignore:4199",
+-    "/ignore:4221",
+-    "/NXCOMPAT",
+-    "/DYNAMICBASE",
+-  ]
+-
+-  if (win_linker_timing) {
+-    ldflags += [
+-      "/time",
+-      "/verbose:incr",
++  if (is_mingw) {
++    # Enable DEP and ASLR
++    ldflags = [
++      "-Wl,-dynamicbase",
++      "-Wl,-nxcompat",
++     ]
++  } else {
++    ldflags = [
++      "/FIXED:NO",
++      "/ignore:4199",
++      "/ignore:4221",
++      "/NXCOMPAT",
++      "/DYNAMICBASE",
+     ]
++
++    if (win_linker_timing) {
++      ldflags += [
++        "/time",
++        "/verbose:incr",
++      ]
++    }
+   }
+ }
+ 
+@@ -338,7 +353,7 @@ config("default_cfg_compiler") {
+   # This is needed to allow functions to be called by code that is built
+   # with CFG enabled, such as system libraries.
+   # The CFG guards are only emitted if |win_enable_cfg_guards| is enabled.
+-  if (is_clang) {
++  if (is_msvs && is_clang) {
+     if (win_enable_cfg_guards) {
+       cflags = [ "/guard:cf" ]
+     } else {
+@@ -353,7 +368,7 @@ config("disable_guards_cfg_compiler") {
+   # Emit table of address-taken functions for Control-Flow Guard (CFG).
+   # This is needed to allow functions to be called by code that is built
+   # with CFG enabled, such as system libraries.
+-  if (is_clang) {
++  if (is_msvs && is_clang) {
+     cflags = [ "/guard:cf,nochecks" ]
+   }
+ }
+@@ -366,7 +381,7 @@ config("cfi_linker") {
+   # ASan and CFG leads to slow process startup. Chromium's test runner uses
+   # lots of child processes, so this means things are really slow. Disable CFG
+   # for now. https://crbug.com/846966
+-  if (!is_debug && !is_asan) {
++  if (is_msvs && !is_debug && !is_asan) {
+     # Turn on CFG bitmap generation and CFG load config.
+     ldflags = [ "/guard:cf" ]
+   }
+@@ -457,12 +472,12 @@ config("delayloads_not_for_child_dll") {
+ # See https://msdn.microsoft.com/en-us/library/2kzt1wy3.aspx for a reference of
+ # what each value does.
+ config("default_crt") {
+-  if (is_component_build) {
++  if (is_msvs && is_component_build) {
+     # Component mode: dynamic CRT. Since the library is shared, it requires
+     # exceptions or will give errors about things not matching, so keep
+     # exceptions on.
+     configs = [ ":dynamic_crt" ]
+-  } else {
++  } else if (!is_mingw) {
+     if (current_os == "winuwp") {
+       # https://blogs.msdn.microsoft.com/vcblog/2014/06/10/the-great-c-runtime-crt-refactoring/
+       # contains a details explanation of what is happening with the Windows
+@@ -480,7 +495,7 @@ config("default_crt") {
+ # when the debug CRT is part of the bottleneck. This also avoids *implicitly*
+ # defining _DEBUG.
+ config("release_crt") {
+-  if (is_component_build) {
++  if (is_msvs && is_component_build) {
+     cflags = [ "/MD" ]
+ 
+     if (use_custom_libcxx) {
+@@ -488,7 +503,7 @@ config("release_crt") {
+       # standard library, which libc++ needs for exception_ptr internals.
+       ldflags = [ "/DEFAULTLIB:msvcprt.lib" ]
+     }
+-  } else {
++  } else if (!is_mingw) {
+     cflags = [ "/MT" ]
+     if (use_custom_libcxx) {
+       ldflags = [ "/DEFAULTLIB:libcpmt.lib" ]
+@@ -497,13 +512,13 @@ config("release_crt") {
+ }
+ 
+ config("dynamic_crt") {
+-  if (is_debug) {
++  if (is_msvs && is_debug) {
+     # This pulls in the DLL debug CRT and defines _DEBUG
+     cflags = [ "/MDd" ]
+     if (use_custom_libcxx) {
+       ldflags = [ "/DEFAULTLIB:msvcprtd.lib" ]
+     }
+-  } else {
++  } else if (!is_mingw) {
+     cflags = [ "/MD" ]
+     if (use_custom_libcxx) {
+       ldflags = [ "/DEFAULTLIB:msvcprt.lib" ]
+@@ -512,13 +527,13 @@ config("dynamic_crt") {
+ }
+ 
+ config("static_crt") {
+-  if (is_debug) {
++  if (is_msvs && is_debug) {
+     # This pulls in the static debug CRT and defines _DEBUG
+     cflags = [ "/MTd" ]
+     if (use_custom_libcxx) {
+       ldflags = [ "/DEFAULTLIB:libcpmtd.lib" ]
+     }
+-  } else {
++  } else if (!is_mingw) {
+     cflags = [ "/MT" ]
+     if (use_custom_libcxx) {
+       ldflags = [ "/DEFAULTLIB:libcpmt.lib" ]
+@@ -541,11 +556,23 @@ if (current_cpu == "x64") {
+   subsystem_version_suffix = ",5.01"
+ }
+ 
++if (is_mingw) {
++  subsystem_version_suffix = ""
++}
++
+ config("console") {
+-  ldflags = [ "/SUBSYSTEM:CONSOLE$subsystem_version_suffix" ]
++  if (is_msvs) {
++    ldflags = [ "/SUBSYSTEM:CONSOLE$subsystem_version_suffix" ]
++  } else {
++    ldflags = [ "-mconsole" ]
++  }
+ }
+ config("windowed") {
+-  ldflags = [ "/SUBSYSTEM:WINDOWS$subsystem_version_suffix" ]
++  if (is_msvs) {
++    ldflags = [ "/SUBSYSTEM:WINDOWS$subsystem_version_suffix" ]
++  } else {
++    ldflags = [ "-mwindows" ]
++  }
+ }
+ 
+ # Incremental linking ----------------------------------------------------------
+@@ -579,6 +606,9 @@ config("unicode") {
+     "_UNICODE",
+     "UNICODE",
+   ]
++  if (is_mingw) {
++    #ldflags = [ "-municode" ]
++  }
+ }
+ 
+ # Lean and mean ----------------------------------------------------------------
+@@ -599,3 +629,21 @@ config("lean_and_mean") {
+ config("nominmax") {
+   defines = [ "NOMINMAX" ]
+ }
++
++# Let unit tests see all "for_testing" dll symbols.
++config("export_all_symbols") {
++  if (is_mingw) {
++    ldflags = [ "-Wl,--export-all-symbols" ]
++  }
++}
++
++# Workaround a Mingw ld bug where large debug symbol data
++# causes the produced executable to be corrupted
++# https://stackoverflow.com/questions/22261539/ld-exe-crashing-in-mingw
++# this affects mksnapshot and v8 component.
++
++config("strip_all_symbols_at_link_time") {
++  if (is_mingw) {
++    ldflags = [ "-Wl,--strip-all" ]
++  }
++}
+diff --git a/config/win/manifest.gni b/config/win/manifest.gni
+index e1859eacd..bc52040b6 100644
+--- a/config/win/manifest.gni
++++ b/config/win/manifest.gni
+@@ -72,7 +72,7 @@ segment_heap_manifest = "//build/win/segment_heap.manifest"
+ #     ...
+ #   }
+ 
+-if (is_win) {
++if (is_msvs) {
+   template("windows_manifest") {
+     config_name = "${target_name}__config"
+     source_set_name = target_name
+diff --git a/config/win/visual_studio_version.gni b/config/win/visual_studio_version.gni
+index d90244682..1856706c7 100644
+--- a/config/win/visual_studio_version.gni
++++ b/config/win/visual_studio_version.gni
+@@ -22,7 +22,7 @@ declare_args() {
+   windows_sdk_path = "C:\Program Files (x86)\Windows Kits\10"
+ }
+ 
+-if (visual_studio_path == "") {
++if (is_msvs && visual_studio_path == "") {
+   toolchain_data =
+       exec_script("../../vs_toolchain.py", [ "get_toolchain_dir" ], "scope")
+   visual_studio_path = toolchain_data.vs_path
+@@ -30,7 +30,7 @@ if (visual_studio_path == "") {
+   visual_studio_version = toolchain_data.vs_version
+   wdk_path = toolchain_data.wdk_dir
+   visual_studio_runtime_dirs = toolchain_data.runtime_dirs
+-} else {
++} else if (!is_mingw) {
+   assert(visual_studio_version != "",
+          "You must set the visual_studio_version if you set the path")
+   assert(wdk_path != "",
+diff --git a/toolchain/gcc_solink_wrapper.py b/toolchain/gcc_solink_wrapper.py
+index 193f4fe19..1cf596f1a 100755
+--- a/toolchain/gcc_solink_wrapper.py
++++ b/toolchain/gcc_solink_wrapper.py
+@@ -24,6 +24,8 @@ def CollectSONAME(args):
+   # TODO(crbug.com/1259067): Come up with a way to get this info without having
+   # to bundle readelf in the toolchain package.
+   toc = ''
++  if ("GCC" in sys.version and sys.platform=='win32'): # Mingw's readelf doesn't work on PE files
++    return 0, toc
+   readelf = subprocess.Popen(wrapper_utils.CommandToRun(
+       [args.readelf, '-d', args.sofile]),
+                              stdout=subprocess.PIPE,
+@@ -38,6 +40,10 @@ def CollectSONAME(args):
+ def CollectDynSym(args):
+   """Replaces: nm --format=posix -g -D -p $sofile | cut -f1-2 -d' '"""
+   toc = ''
++
++  if ("GCC" in sys.version and sys.platform=='win32'): # Mingw's nm doesn't work on PE/COFF files
++    return 0, toc
++
+   nm = subprocess.Popen(wrapper_utils.CommandToRun(
+       [args.nm, '--format=posix', '-g', '-D', '-p', args.sofile]),
+                         stdout=subprocess.PIPE,
+@@ -103,6 +109,9 @@ def main():
+                       help='The strip binary to run',
+                       metavar='PATH')
+   parser.add_argument('--dwp', help='The dwp binary to run', metavar='PATH')
++  parser.add_argument('--objcopy',
++                      help='The objcopy binary to run',
++                      metavar='PATH')
+   parser.add_argument('--sofile',
+                       required=True,
+                       help='Shared object file produced by linking command',
+@@ -194,9 +203,19 @@ def main():
+ 
+     # Finally, strip the linked shared object file (if desired).
+     if args.strip:
++      if args.objcopy:
++        result = subprocess.call(wrapper_utils.CommandToRun(
++            [args.objcopy, '--only-keep-debug', args.sofile, args.output + '.debug']))
++        if result != 0:
++          return result
+       result = subprocess.call(
+           wrapper_utils.CommandToRun(
+               [args.strip, '-o', args.output, args.sofile]))
++    if result != 0:
++      return result
++    if args.objcopy:
++      result = subprocess.call(wrapper_utils.CommandToRun(
++          [args.objcopy, '--add-gnu-debuglink', args.output + '.debug',args.output]))
+ 
+   if dwp_proc:
+     dwp_result = dwp_proc.wait()
+diff --git a/toolchain/gcc_toolchain.gni b/toolchain/gcc_toolchain.gni
+index 7abfd87f1..80740d059 100644
+--- a/toolchain/gcc_toolchain.gni
++++ b/toolchain/gcc_toolchain.gni
+@@ -61,6 +61,7 @@ if (enable_resource_allowlist_generation) {
+ #  - cc
+ #  - cxx
+ #  - ld
++#  - rc (mingw only)
+ #
+ # Optional parameters that control the tools:
+ #
+@@ -113,6 +114,9 @@ template("gcc_toolchain") {
+     assert(defined(invoker.cc), "gcc_toolchain() must specify a \"cc\" value")
+     assert(defined(invoker.cxx), "gcc_toolchain() must specify a \"cxx\" value")
+     assert(defined(invoker.ld), "gcc_toolchain() must specify a \"ld\" value")
++    if (is_mingw) {
++      assert(defined(invoker.rc), "gcc_toolchain() must specify a \"rc\" value")
++    }
+ 
+     # This define changes when the toolchain changes, forcing a rebuild.
+     # Nothing should ever use this define.
+@@ -296,15 +300,19 @@ template("gcc_toolchain") {
+     asm = asm_prefix + invoker.cc
+     ar = invoker.ar
+     ld = link_prefix + invoker.ld
+-    if (defined(invoker.readelf)) {
+-      readelf = invoker.readelf
+-    } else {
+-      readelf = "readelf"
+-    }
+-    if (defined(invoker.nm)) {
+-      nm = invoker.nm
++    if (!is_mingw) {
++      if (defined(invoker.readelf)) {
++        readelf = invoker.readelf
++      } else {
++        readelf = "readelf"
++      }
++      if (defined(invoker.nm)) {
++        nm = invoker.nm
++      } else {
++        nm = "nm"
++      }
+     } else {
+-      nm = "nm"
++      rc = invoker.rc
+     }
+     if (defined(invoker.dwp)) {
+       dwp_switch = " --dwp=\"${invoker.dwp}\""
+@@ -395,6 +403,14 @@ template("gcc_toolchain") {
+       outputs = [ "$object_subdir/{{source_name_part}}.o" ]
+     }
+ 
++    tool("rc") {
++      depfile = "{{output}}.d"
++      command = "$rc -i {{source}} -o {{output}}"
++      depsformat = "gcc"
++      description = "RC {{output}}"
++      outputs = [ "$object_subdir/{{source_name_part}}.o" ]
++    }
++
+     tool("asm") {
+       # For GCC we can just use the C compiler to compile assembly.
+       depfile = "{{output}}.d"
+@@ -461,7 +477,6 @@ template("gcc_toolchain") {
+         # -soname flag is not available on aix ld
+         soname_flag = "-Wl,-soname=\"$soname\""
+       }
+-      link_command = "$ld -shared $soname_flag {{ldflags}}${extra_ldflags} -o \"$unstripped_sofile\" @\"$rspfile\""
+ 
+       # Generate a map file to be used for binary size analysis.
+       # Map file adds ~10% to the link time on a z620.
+@@ -472,13 +487,35 @@ template("gcc_toolchain") {
+         map_switch = " --map-file \"$map_file\""
+       }
+ 
+-      assert(defined(readelf), "to solink you must have a readelf")
+-      assert(defined(nm), "to solink you must have an nm")
+       strip_switch = ""
+       if (defined(invoker.strip)) {
+         strip_switch = "--strip=${invoker.strip} "
+       }
+ 
++      mingw_flags = ""
++      soname_flags = "-Wl,-soname=\"$soname\""
++      if (is_mingw) {
++        # Have MinGW linker generate a .def file and a .a import library
++        mingw_flags += " -Wl,--output-def=\"$sofile\".def -Wl,--out-implib=\"$sofile\".a "
++        readelf = ""
++        if (defined(invoker.readelf)) {
++          readelf = "${invoker.readelf} "
++        }
++        nm = ""
++        if (defined(invoker.nm)) {
++          readelf = "${invoker.nm} "
++        }
++        if (is_clang) {
++          # Clang on Windows does not support the -soname flag.
++          soname_flags = ""
++        }
++      } else {
++        assert(defined(readelf), "to solink you must have a readelf")
++        assert(defined(nm), "to solink you must have an nm")
++      }
++
++      link_command = "$ld -shared ${soname_flags} ${mingw_flags} {{ldflags}}${extra_ldflags} -o \"$unstripped_sofile\" @\"$rspfile\""
++
+       # This needs a Python script to avoid using a complex shell command
+       # requiring sh control structures, pipelines, and POSIX utilities.
+       # The host might not have a POSIX shell and utilities (e.g. Windows).
+diff --git a/toolchain/toolchain.gni b/toolchain/toolchain.gni
+index 844bc8e54..07a6638c6 100644
+--- a/toolchain/toolchain.gni
++++ b/toolchain/toolchain.gni
+@@ -52,7 +52,7 @@ if (is_apple) {
+ }
+ 
+ # Prefix for shared library files.
+-if (is_posix || is_fuchsia) {
++if (is_posix || is_fuchsia || is_mingw) {
+   shlib_prefix = "lib"
+ } else {
+   shlib_prefix = ""
+@@ -73,7 +73,7 @@ if (is_fuchsia) {
+ # four variables reduce the duplication in that boilerplate.
+ stamp_description = "STAMP {{output}}"
+ copy_description = "COPY {{source}} {{output}}"
+-if (host_os == "win") {
++if (is_msvs) {
+   _tool_wrapper_path =
+       rebase_path("//build/toolchain/win/tool_wrapper.py", root_build_dir)
+ 
+diff --git a/toolchain/win/BUILD.gn b/toolchain/win/BUILD.gn
+index 612938527..c6a9f0f33 100644
+--- a/toolchain/win/BUILD.gn
++++ b/toolchain/win/BUILD.gn
+@@ -4,6 +4,7 @@
+ 
+ import("//build/config/win/visual_studio_version.gni")
+ import("//build/toolchain/win/toolchain.gni")
++import("//build/toolchain/gcc_toolchain.gni")
+ 
+ assert(is_win, "Should only be running on Windows")
+ 
+@@ -21,16 +22,18 @@ if (current_toolchain == default_toolchain) {
+   } else {
+     configuration_name = "Release"
+   }
+-  exec_script("../../vs_toolchain.py",
+-              [
+-                "copy_dlls",
+-                rebase_path(root_build_dir),
+-                configuration_name,
+-                target_cpu,
+-              ])
++  if (is_msvs) {
++    exec_script("../../vs_toolchain.py",
++                [
++                  "copy_dlls",
++                  rebase_path(root_build_dir),
++                  configuration_name,
++                  target_cpu,
++                ])
++  }
+ }
+ 
+-if (target_cpu == "x86" || target_cpu == "x64") {
++if (is_msvs && (target_cpu == "x86" || target_cpu == "x64")) {
+   win_toolchains("x86") {
+     toolchain_arch = "x86"
+   }
+@@ -39,7 +42,7 @@ if (target_cpu == "x86" || target_cpu == "x64") {
+   }
+ }
+ 
+-if (target_cpu == "arm64") {
++if (is_msvs && target_cpu == "arm64") {
+   win_toolchains("arm64") {
+     toolchain_arch = "arm64"
+   }
+@@ -53,10 +56,12 @@ if (target_cpu == "arm64") {
+ # The only reason it's a separate toolchain is so that it can force
+ # is_component_build to false in the toolchain_args() block, because
+ # building nacl64.exe in component style does not work.
+-win_toolchains("nacl_win64") {
+-  toolchain_arch = "x64"
+-  toolchain_args = {
+-    is_component_build = false
++if (!is_mingw) {
++  win_toolchains("nacl_win64") {
++    toolchain_arch = "x64"
++    toolchain_args = {
++      is_component_build = false
++    }
+   }
+ }
+ 
+@@ -87,3 +92,26 @@ if (target_os == "winuwp") {
+     }
+   }
+ }
++
++template("mingw_toolchain") {
++  gcc_toolchain("mingw_" + target_name) {
++    forward_variables_from(invoker, "*")
++    cc = getenv("CC")
++    cxx = getenv("CXX")
++    ar = getenv("AR")
++    ld = cxx
++    rc = "windres"
++    strip = "strip"
++    executable_extension = ".exe"
++    toolchain_args = {
++      current_cpu = target_name
++      current_os = "win"
++    }
++  }
++}
++
++mingw_toolchain("x64") {
++}
++
++mingw_toolchain("x86") {
++}
+diff --git a/util/lastchange.py b/util/lastchange.py
+index 2caf94506..e289dccc0 100755
+--- a/util/lastchange.py
++++ b/util/lastchange.py
+@@ -192,7 +192,10 @@ def GetGitTopDirectory(source_dir):
+   Returns:
+     The output of "git rev-parse --show-toplevel" as a string
+   """
+-  return _RunGitCommand(source_dir, ['rev-parse', '--show-toplevel'])
++  directory = _RunGitCommand(source_dir, ['rev-parse', '--show-toplevel'])
++  if "GCC" in sys.version and sys.platform=='win32':
++    return subprocess.check_output(["cygpath", "-w", directory]).strip(b"\n").decode()
++  return directory
+ 
+ 
+ def WriteIfChanged(file_name, contents):
+diff --git a/win/BUILD.gn b/win/BUILD.gn
+index ed5548083..585175a0a 100644
+--- a/win/BUILD.gn
++++ b/win/BUILD.gn
+@@ -16,7 +16,7 @@ windows_manifest("default_exe_manifest") {
+   ]
+ }
+ 
+-if (is_win) {
++if (is_msvs) {
+   assert(host_os != "mac" || target_cpu != "x86",
+          "Windows cross-builds from Mac must be 64-bit.")
+ 
+@@ -172,4 +172,8 @@ if (is_win) {
+       }
+     }
+   }
++} else {
++  group("runtime_libs") {
++    data = []
++  }
+ }

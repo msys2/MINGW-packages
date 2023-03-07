@@ -3,34 +3,37 @@
 _realname=gnutls
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-_pkgver=3.7.2
-pkgver=${_pkgver}
-pkgrel=4
+pkgver=3.8.0
+pkgrel=1
 pkgdesc="A library which provides a secure layer over a reliable transport layer (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
-license=('GPL3' 'LGPL2.1')
+license=('spdx:GPL-3.0-or-later' 'spdx:LGPL-2.1-or-later')
 url="https://www.gnutls.org/"
 options=('!zipman')
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
+         "${MINGW_PACKAGE_PREFIX}-gettext"
          "${MINGW_PACKAGE_PREFIX}-gmp"
+         "${MINGW_PACKAGE_PREFIX}-brotli"
          "${MINGW_PACKAGE_PREFIX}-libidn2"
-         "${MINGW_PACKAGE_PREFIX}-libsystre"
          "${MINGW_PACKAGE_PREFIX}-libtasn1"
          "${MINGW_PACKAGE_PREFIX}-nettle>=3.6"
          "${MINGW_PACKAGE_PREFIX}-p11-kit>=0.23.1"
          "${MINGW_PACKAGE_PREFIX}-libunistring"
+         "${MINGW_PACKAGE_PREFIX}-libwinpthread-git"
          "${MINGW_PACKAGE_PREFIX}-zlib"
+         "${MINGW_PACKAGE_PREFIX}-zstd"
          #"${MINGW_PACKAGE_PREFIX}-unbound"
         )
-makedepends=("${MINGW_PACKAGE_PREFIX}-gcc"
-             "${MINGW_PACKAGE_PREFIX}-gtk-doc")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-gtk-doc"
+             "${MINGW_PACKAGE_PREFIX}-autotools")
 # Need remove "autogen" package before building.
-source=(https://www.gnupg.org/ftp/gcrypt/gnutls/v${_pkgver%.*}/${_realname}-${pkgver}.tar.xz{,.sig}
+source=(https://www.gnupg.org/ftp/gcrypt/gnutls/v${pkgver%.*}/${_realname}-${pkgver}.tar.xz{,.sig}
         0003-gnutls-fix-external-libtasn1-detection.patch
         0004-disable-broken-examples.patch
         0005-remove-coverage-rules.patch)
-sha256sums=('646e6c5a9a185faa4cea796d378a1ba8e1148dbb197ca6605f95986a25af2752'
+sha256sums=('0ea0d11a1660a1e63f960f157b197abe6d0c8cb3255be24e1fb3815930b9bdc5'
             'SKIP'
             '6493f69e782d60fe04de4b0040987e99851c522d0baf2fe25d10b85b63e97863'
             'cbf9e59fb2432d4ac1edcb70734023e074b8058fa4c010a036a40de8449f67fb'
@@ -38,9 +41,10 @@ sha256sums=('646e6c5a9a185faa4cea796d378a1ba8e1148dbb197ca6605f95986a25af2752'
 validpgpkeys=('0424D4EE81A0E3D119C6F835EDA21E94B565716F')  # "Simon Josefsson <simon@josefsson.org>"
 validpgpkeys+=('1F42418905D8206AA754CCDC29EE58B996865171') # "Nikos Mavrogiannopoulos <nmav@gnutls.org>
 validpgpkeys+=('462225C3B46F34879FC8496CD605848ED7E69871') # "Daiki Ueno <ueno@unixuser.org>"
+validpgpkeys+=('5D46CB0F763405A7053556F47A75A648B3F9220C') # Zoltan Fridrich <zfridric at redhat.com>
 
 prepare() {
-  cd "${srcdir}/${_realname}-${_pkgver}"
+  cd "${srcdir}/${_realname}-${pkgver}"
   patch -p1 -i ${srcdir}/0003-gnutls-fix-external-libtasn1-detection.patch
   patch -p1 -i ${srcdir}/0004-disable-broken-examples.patch
   patch -p1 -i ${srcdir}/0005-remove-coverage-rules.patch
@@ -50,8 +54,8 @@ prepare() {
 
 build() {
   # Workaround for localtime_r functions
-  CFLAGS+=" -D_POSIX_C_SOURCE"
-  CXXFLAGS+=" -D_POSIX_C_SOURCE"
+  CFLAGS+=" -D_POSIX_C_SOURCE -Wno-int-conversion"
+  CXXFLAGS+=" -D_POSIX_C_SOURCE -Wno-int-conversion"
 
   local -a extra_config
   case "${CARCH}" in
@@ -62,15 +66,20 @@ build() {
       ;;
   esac
 
-  [[ -d "${srcdir}/build-${MINGW_CHOST}" ]] && rm -rf "${srcdir}/build-${MINGW_CHOST}"
-  mkdir -p "${srcdir}/build-${MINGW_CHOST}" && cd "${srcdir}/build-${MINGW_CHOST}"
+  # Weak symbols are broken with GCC + binutils
+  # https://github.com/msys2/MINGW-packages/issues/11743
+  export gl_cv_have_weak=no
 
-  ../${_realname}-${_pkgver}/configure \
+  [[ -d "${srcdir}/build-${MSYSTEM}-static" ]] && rm -rf "${srcdir}/build-${MSYSTEM}-static"
+  mkdir -p "${srcdir}/build-${MSYSTEM}-static" && cd "${srcdir}/build-${MSYSTEM}-static"
+
+  CPPFLAGS+=" -DIN_LIBUNISTRING" \
+  ../${_realname}-${pkgver}/configure \
     --prefix=${MINGW_PREFIX} \
     --build=${MINGW_CHOST} \
     --host=${MINGW_CHOST} \
     --target=${MINGW_CHOST} \
-    --enable-shared \
+    --disable-shared \
     --enable-static \
     --enable-cxx \
     --enable-nls \
@@ -78,9 +87,29 @@ build() {
     --disable-rpath \
     --disable-gtk-doc \
     --with-libiconv-prefix=${MINGW_PREFIX} \
-    --with-libregex-libs=-lsystre \
-    --enable-local-libopts \
-    --disable-guile \
+    --disable-libdane \
+    --disable-tests \
+    "${extra_config[@]}" \
+    gl_cv_double_slash_root=yes
+
+  make
+
+  [[ -d "${srcdir}/build-${MSYSTEM}-shared" ]] && rm -rf "${srcdir}/build-${MSYSTEM}-shared"
+  mkdir -p "${srcdir}/build-${MSYSTEM}-shared" && cd "${srcdir}/build-${MSYSTEM}-shared"
+
+  ../${_realname}-${pkgver}/configure \
+    --prefix=${MINGW_PREFIX} \
+    --build=${MINGW_CHOST} \
+    --host=${MINGW_CHOST} \
+    --target=${MINGW_CHOST} \
+    --enable-shared \
+    --disable-static \
+    --enable-cxx \
+    --enable-nls \
+    --enable-openssl-compatibility \
+    --disable-rpath \
+    --disable-gtk-doc \
+    --with-libiconv-prefix=${MINGW_PREFIX} \
     --disable-libdane \
     --disable-tests \
     "${extra_config[@]}" \
@@ -90,12 +119,18 @@ build() {
 }
 
 check() {
-  cd ${srcdir}/build-${MINGW_CHOST}
+  cd "${srcdir}/build-${MSYSTEM}-static"
+  make -k check || /bin/true
+
+  cd "${srcdir}/build-${MSYSTEM}-shared"
   make -k check || /bin/true
 }
 
 package() {
-  cd ${srcdir}/build-${MINGW_CHOST}
+  cd "${srcdir}/build-${MSYSTEM}-static"
+  make DESTDIR="${pkgdir}" install
+
+  cd "${srcdir}/build-${MSYSTEM}-shared"
   make DESTDIR="${pkgdir}" install
 
   find "${pkgdir}${MINGW_PREFIX}" -name '*.def' -o -name '*.exp' | xargs -rtl1 rm

@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -83,6 +84,8 @@ def install_package(pkg: typing.Union[typing.List[str], Path]) -> typing.Generat
             "--refresh",
             "--sync",
             "--noconfirm",
+            "--needed",
+            "mingw-w64-ucrt-x86_64-python-pip",
             get_pkg_name(pkg),
         ]
         uninstall_command = [
@@ -100,6 +103,8 @@ def install_package(pkg: typing.Union[typing.List[str], Path]) -> typing.Generat
                 "--sync",
                 "--refresh",
                 "--noconfirm",
+                "--needed",
+                "mingw-w64-ucrt-x86_64-python-pip",
                 *pkg,
             ]
             uninstall_command = [
@@ -193,9 +198,11 @@ def main() -> None:
     for pkgloc in ARTIFACTS_LOCATION.glob("*.pkg.tar.*"):
         with install_package(pkgloc):
             pkgname = get_pkg_name(pkgloc)
+            with gha_group(f"Pip Output (without reverse dependencies): {pkgloc.name}"):
+                run_pip_check(pkgname)
             rdeps = get_rdeps(pkgname)
             with install_package(rdeps):
-                with gha_group(f"Pip Output: {pkgloc.name}"):
+                with gha_group(f"Pip Output (with reverse dependencies): {pkgloc.name}"):
                     run_pip_check(pkgname)
 
 
@@ -206,7 +213,7 @@ def check_whether_we_should_run() -> bool:
         pkgname = "-".join(pkgloc.name.split("-")[:-3])
         if "-python-" in pkgname:
             return True
-        elif pkgname == "mingw-w64-x86_64-python":
+        elif pkgname == "mingw-w64-ucrt-x86_64-python":
             return False
     # now this is compilcated
     # need to find file listing in the package.
@@ -222,7 +229,7 @@ def check_whether_we_should_run() -> bool:
             with open(Path(tempdir, pkgloc.stem), "rb") as file:
                 with tarfile.open(fileobj=file, mode="r") as tar:
                     for mem in tar.getmembers():
-                        if "mingw64/lib/python" in mem.name:
+                        if "ucrt64/lib/python" in mem.name:
                             return True
     return False
 
@@ -239,10 +246,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.run:
         res = check_whether_we_should_run()
+
+        _op_file = sys.stdout
+        _file_name = os.environ.get("GITHUB_OUTPUT")
+        if _file_name:
+            _op_file = open(_file_name, "a")
         if res:
-            print("::set-output name=run::true")
+            print("run=true", file=_op_file)
         else:
-            print("::set-output name=run::false")
+            print("run=false", file=_op_file)
+        if _op_file is not sys.stdout:
+            _op_file.close()
+
         sys.exit(0)
     else:
         main()

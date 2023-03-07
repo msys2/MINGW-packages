@@ -3,32 +3,38 @@
 _realname=embree
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=3.12.1
-pkgrel=2
+pkgver=3.13.5
+pkgrel=3
 pkgdesc="High Performance Ray Tracing Kernels Intel Corporation (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
 url="https://www.embree.org/"
-license=("Apache 2.0")
-depends=("${MINGW_PACKAGE_PREFIX}-intel-tbb"
-         "${MINGW_PACKAGE_PREFIX}-glfw")
+license=("spdx:Apache-2.0")
+depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
+         "${MINGW_PACKAGE_PREFIX}-tbb")
 makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
-             "${MINGW_PACKAGE_PREFIX}-gcc")
+             "${MINGW_PACKAGE_PREFIX}-cc")
 options=('strip' 'buildflags' '!debug')
 source=(${_realname}-${pkgver}.tar.gz::https://github.com/embree/embree/archive/v${pkgver}.tar.gz
-        001-build-fixes.patch)
-sha256sums=('0c9e760b06e178197dd29c9a54f08ff7b184b0487b5ba8b8be058e219e23336e'
-            'f597aed33951601fae37932dfe0cf8df1dda0470513a190fdfa9f5c690fcabd1')
-
+        001-build-fixes.patch
+        https://github.com/embree/embree/pull/412.patch)
+sha256sums=('b8c22d275d9128741265537c559d0ea73074adbf2f2b66b0a766ca52c52d665b'
+            '5ee91fb07f373b3a83f26f9f9fa3ab80661a9f0b7e1c3f4a23eb572f631fa37f'
+            '8bc0c0635ec0969eb60768fa9d0682096d96d17bf818eb995700f5f64601df14')
 prepare() {
   cd ${srcdir}/${_realname}-${pkgver}
   patch -p1 -i ${srcdir}/001-build-fixes.patch
-  
+  # Windows ARM64 support
+  patch -p1 -i ${srcdir}/412.patch
+
   mv kernels/embree.rc{,.orig}
   iconv -f UTF-16LE -t UTF-8 kernels/embree.rc.orig > kernels/embree.rc
 }
 
 build() {
+  [[ -d "build-${MSYSTEM}" ]] && rm -rf "build-${MSYSTEM}"
+  mkdir -p build-${MSYSTEM} && cd build-${MSYSTEM}
+
   declare -a extra_config
   if check_option "debug" "n"; then
     extra_config+=("-DCMAKE_BUILD_TYPE=Release")
@@ -36,27 +42,35 @@ build() {
     extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
   fi
 
-  [[ -d "build-${MINGW_CHOST}" ]] && rm -rf "build-${MINGW_CHOST}"
-  mkdir -p build-${MINGW_CHOST} && cd build-${MINGW_CHOST}
+  if [[ "${CARCH}" == "x86_64" ]]; then
+    extra_config+=("-DEMBREE_ISA_AVX512=ON")
+  else
+    extra_config+=("-DEMBREE_ISA_AVX512=OFF")
+  fi
+
+  if [[ "${CARCH}" == "aarch64" ]]; then
+    extra_config+=("-DEMBREE_ARM=ON")
+  else
+    extra_config+=("-DEMBREE_ARM=OFF")
+  fi
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
-  ${MINGW_PREFIX}/bin/cmake.exe \
-    -G"MSYS Makefiles" \
+  ${MINGW_PREFIX}/bin/cmake.exe -Wno-dev \
+    -G"Ninja" \
     -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
     -DEMBREE_STATIC_LIB=OFF \
     -DEMBREE_ISPC_SUPPORT=OFF \
     -DEMBREE_STACK_PROTECTOR=ON \
-    ${extra_config} \
+    -DEMBREE_TUTORIALS=OFF \
+    -DBUILD_TESTING=OFF \
+    ${extra_config[@]} \
     ../${_realname}-${pkgver}
 
-  make
+  ${MINGW_PREFIX}/bin/cmake --build .
 }
 
 package() {
-  cd "${srcdir}"/build-${MINGW_CHOST}
-  make DESTDIR=${pkgdir} install
+  cd "${srcdir}"/build-${MSYSTEM}
+  DESTDIR=${pkgdir} ${MINGW_PREFIX}/bin/cmake --install .
   install -Dm644 ${srcdir}/${_realname}-${pkgver}/LICENSE.txt "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
-  
-  # Resolve conflict with imagemagick
-  mv ${pkgdir}${MINGW_PREFIX}/bin/convert{,_embree}.exe
 }

@@ -47,8 +47,7 @@ def get_pkginfo(package, packageset):
         script += f"echo \"${{{prop}[@]}}\" && printf '\\0'\n"
 
     shell = os.environ.get("SHELL", "bash")
-    env = {**os.environ, "MINGW_PACKAGE_PREFIX": "mingw-w64"}
-    results = run(shell, "-c", script, env=env).split("\0")[:-1]
+    results = run(shell, "-c", script).split("\0")[:-1]
     assert len(props) == len(results), "Length of props matches results"
 
     info = {}

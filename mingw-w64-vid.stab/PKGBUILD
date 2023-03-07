@@ -4,31 +4,50 @@ _realname=vid.stab
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
 pkgver=1.1
-pkgrel=1
+pkgrel=3
 pkgdesc="Video stabilization library (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
 url='http://public.hronopik.de/vid.stab'
-license=('GPL')
-makedepends=("${MINGW_PACKAGE_PREFIX}-cmake" "git")
+license=('spdx:GPL-2.0-or-later')
+depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
+         $([[ ${MINGW_PACKAGE_PREFIX} != *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-openmp"))
+makedepends=(
+  "${MINGW_PACKAGE_PREFIX}-cmake"
+  "${MINGW_PACKAGE_PREFIX}-cc"
+  "git")
 options=('strip' 'staticlibs')
 _hash='2d82492533bf5004bc2c4f8213a1b622c45f6a44'
-source=(""vid.stab-${pkgver}::git+https://github.com/georgmartius/vid.stab.git#commit=${_hash}"")
-sha256sums=('SKIP')
+source=(""vid.stab-${pkgver}::git+https://github.com/georgmartius/vid.stab.git#commit=${_hash}""
+        "0001-OpenMP.patch"
+        "0002-disable-sse-on-arm.patch")
+sha256sums=('SKIP'
+            '902d237a2cbdbec032379a2b23ba3abd0bd4f4455169c7c4994edbaf5137e1f5'
+            'c11232d1dad550363f1d69137e2ddfb7f159c8ba86040e65dc376bd757d58ca7')
+
+# Helper macros to help make tasks easier #
+apply_patch_with_msg() {
+  for _fname in "$@"
+  do
+    msg2 "Applying ${_fname}"
+    patch -Nbp1 -i "${srcdir}"/${_fname}
+  done
+}
 
 prepare() {
   cd "$srcdir"/${_realname}-${pkgver}
- 
-  if [[ -d build ]]; then
-    rm -rf build
-  fi
-  mkdir build
+
+  apply_patch_with_msg \
+    0001-OpenMP.patch \
+    0002-disable-sse-on-arm.patch
 }
 
 build() {
   cd "$srcdir"/${_realname}-${pkgver}
-  [[ -d "${srcdir}"/build-${CARCH}-static ]] && rm -rf "${srcdir}"/build-${CARCH}-static
-  mkdir -p "${srcdir}"/build-${CARCH}-static && cd "${srcdir}"/build-${CARCH}-static
+
+  msg2 "Building shared library"
+  [[ -d "${srcdir}"/build-${MSYSTEM}-shared ]] && rm -rf "${srcdir}"/build-${MSYSTEM}-shared
+  mkdir -p "${srcdir}"/build-${MSYSTEM}-shared && cd "${srcdir}"/build-${MSYSTEM}-shared
 
   declare -a extra_config
   if check_option "debug" "n"; then
@@ -39,35 +58,43 @@ build() {
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
     ${MINGW_PREFIX}/bin/cmake \
-      -G'MSYS Makefiles' \
+      -GNinja \
       -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
       "${extra_config[@]}" \
       -DBUILD_SHARED_LIBS=ON \
       ../${_realname}-${pkgver}
 
-  make
-  [[ -d "${srcdir}"/build-${CARCH}-shared ]] && rm -rf "${srcdir}"/build-${CARCH}-shared
-  mkdir -p "${srcdir}"/build-${CARCH}-shared && cd "${srcdir}"/build-${CARCH}-shared
+  cmake --build .
+
+
+  msg2 "Building static library"
+  [[ -d "${srcdir}"/build-${MSYSTEM}-static ]] && rm -rf "${srcdir}"/build-${MSYSTEM}-static
+  mkdir -p "${srcdir}"/build-${MSYSTEM}-static && cd "${srcdir}"/build-${MSYSTEM}-static
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
     ${MINGW_PREFIX}/bin/cmake \
-      -G'MSYS Makefiles' \
+      -GNinja \
       -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
       "${extra_config[@]}" \
       -DBUILD_SHARED_LIBS=OFF \
       ../${_realname}-${pkgver}
 
-  make
+  cmake --build .
 }
 
 #check() {
-#  cd "${srcdir}"/build-${CARCH}
+#  cd "${srcdir}"/build-${MSYSTEM}-shared
 #  make check
 #}
 
 package() {
-  cd "${srcdir}"/build-${CARCH}-static
-  make install DESTDIR="${pkgdir}"
-  cd "${srcdir}"/build-${CARCH}-shared
-  make install DESTDIR="${pkgdir}"
+  msg2 "Installing static library"
+  cd "${srcdir}"/build-${MSYSTEM}-static
+  DESTDIR=${pkgdir} cmake --install .
+
+  msg2 "Installing shared library"
+  cd "${srcdir}"/build-${MSYSTEM}-shared
+  DESTDIR=${pkgdir} cmake --install .
+
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }

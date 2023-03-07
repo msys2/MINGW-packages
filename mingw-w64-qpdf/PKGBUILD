@@ -3,60 +3,68 @@
 _realname=qpdf
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=10.1.0
+pkgver=11.3.0
 pkgrel=1
 pkgdesc="QPDF: A Content-Preserving PDF Transformation System (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 url="https://github.com/qpdf/qpdf"
-license=('custom:Artistic-2.0' 'Apache')
-makedepends=("${MINGW_PACKAGE_PREFIX}-gcc"
-             "${MINGW_PACKAGE_PREFIX}-pkg-config")
+license=('spdx:Artistic-2.0' 'Apache')
+makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-python-sphinx")
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-gnutls"
          "${MINGW_PACKAGE_PREFIX}-libjpeg"
-         "${MINGW_PACKAGE_PREFIX}-pcre"
          "${MINGW_PACKAGE_PREFIX}-zlib")
-#https://sourceforge.net/projects/${_realname}/files/${_realname}/${pkgver}/${_realname}-${pkgver}.tar.gz
-source=(https://github.com/qpdf/qpdf/releases/download/release-${_realname}-${pkgver}/${_realname}-${pkgver}.tar.gz{,.asc}
-        "0001-fix-printf-on-mingw-w64.patch"
-        "0002-enable-advapi32-mingw.patch"
-        "0003-install-rule.patch")
-sha512sums=('f9b22d89fc62e430e6232c840ad74d220ac9eb09d7f2dfe2c42c1c943d35b5fd25e2abec9970ac19ad7ad25dc3d95c74e68e50bad395abf815cf71c432233106'
+source=(https://github.com/qpdf/qpdf/releases/download/v${pkgver}/${_realname}-${pkgver}.tar.gz{,.asc}
+        001-do-not-copy-dlls.patch
+        002-do-not-change-library-prefix-and-suffix.patch)
+sha256sums=('547cee67de77b5c4ef4917e57d2db9c848cfe3aa950361f68d36367a3a03936e'
             'SKIP'
-            '8d02655546e2e8182b3ac8df0387d4e34d1e86ee44d1311f5349fd8f82a328583785f2c99feee4c65db2569629b76a0b6edeb5b9bbf3b6b01d3708847a1f15bf'
-            '485f108e96b92e76620fcf8e3ddc350d67c5458eea0adcd6a5e11d29fa980c7d9672f832aaec644b39f57674fa505a8d5748059a6b0da027be38b1a7ed01036e'
-            '4b93c1af24d5afc84445b00563da0ab60d46654830104690e53844dc1bdb278ac39d8a059c12501f34afb31411a53e2b46f3f953e690f582e3561a9eeb9131a5')
+            '4e1193db33b7887d3a751e41463af0e1fb3734aadcf5c5ffed1336b5ec54b84e'
+            'd02280343c8a2dba29f23e198b40ed8af57b45aba56cfa30a84d3fe5277f9da4')
 validpgpkeys=('C2C96B10011FE009E6D1DF828A75D10998012C7E') # Jay Berkenbilt <ejb@ql.org>
 
 prepare() {
   cd "${srcdir}/${_realname}-${pkgver}"
-  #patch -p1 -i "${srcdir}/0001-fix-printf-on-mingw-w64.patch"
-  patch -p1 -i "${srcdir}/0002-enable-advapi32-mingw.patch"
-  patch -p1 -i "${srcdir}/0003-install-rule.patch"
-
-  ./autogen.sh
+  patch -p1 -i "${srcdir}"/001-do-not-copy-dlls.patch
+  patch -p1 -i "${srcdir}"/002-do-not-change-library-prefix-and-suffix.patch
 }
 
 build() {
-  [[ -d ${srcdir}/build-${MINGW_CHOST} ]] && rm -rf ${srcdir}/build-${MINGW_CHOST}
-  cp -rf ${_realname}-${pkgver} build-${MINGW_CHOST} && cd ${srcdir}/build-${MINGW_CHOST}
+  [[ -d "${srcdir}"/build-${MSYSTEM} ]] && rm -rf "${srcdir}"/build-${MSYSTEM}
+  mkdir "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
 
-  ./configure \
-    --prefix=${MINGW_PREFIX} \
-    --build=${MINGW_CHOST} \
-    --host=${MINGW_CHOST} \
-    --target=${MINGW_CHOST} \
-    --enable-crypto-gnutls \
-    --disable-crypto-openssl \
-    --disable-implicit-crypto \
-    --disable-test-compare-images \
-    --enable-external-libs \
-    --with-buildrules=mingw
-  make
+  declare -a extra_config
+  if check_option "debug" "n"; then
+    extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake \
+    -GNinja \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    ${extra_config[@]} \
+    -DREQUIRE_CRYPTO_GNUTLS=ON \
+    -DREQUIRE_CRYPTO_OPENSSL=OFF \
+    -DUSE_IMPLICIT_CRYPTO=OFF \
+    -DBUILD_STATIC_LIBS=OFF \
+    -DBUILD_DOC=OFF \
+    -DINSTALL_EXAMPLES=OFF \
+    ../${_realname}-${pkgver}
+
+  ${MINGW_PREFIX}/bin/cmake --build .
+}
+
+check() {
+  cd "${srcdir}/build-${MSYSTEM}"
+  PATH=$PWD/libqpdf/build:$PATH ${MINGW_PREFIX}/bin/ctest || true
 }
 
 package() {
-  cd "${srcdir}/build-${MINGW_CHOST}"
-  make DESTDIR=${pkgdir} install
+  cd "${srcdir}/build-${MSYSTEM}"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
 }

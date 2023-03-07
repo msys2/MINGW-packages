@@ -7,24 +7,26 @@
 _realname=gdal
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=3.3.2
-pkgrel=2
+pkgver=3.6.2
+pkgrel=7
 pkgdesc="A translator library for raster geospatial data formats (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
 url="https://gdal.org/"
-license=('custom')
-makedepends=("${MINGW_PACKAGE_PREFIX}-gcc"
-             "${MINGW_PACKAGE_PREFIX}-pkg-config"
-             "${MINGW_PACKAGE_PREFIX}-postgresql")
-depends=("${MINGW_PACKAGE_PREFIX}-cfitsio"
+license=('spdx:MIT')
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja")
+depends=("${MINGW_PACKAGE_PREFIX}-armadillo"
+         "${MINGW_PACKAGE_PREFIX}-arrow"
+         "${MINGW_PACKAGE_PREFIX}-cfitsio"
          "${MINGW_PACKAGE_PREFIX}-crypto++"
          "${MINGW_PACKAGE_PREFIX}-curl"
          "${MINGW_PACKAGE_PREFIX}-expat"
          "${MINGW_PACKAGE_PREFIX}-geos"
          "${MINGW_PACKAGE_PREFIX}-giflib"
+         "${MINGW_PACKAGE_PREFIX}-hdf4"
          "${MINGW_PACKAGE_PREFIX}-hdf5"
-         "${MINGW_PACKAGE_PREFIX}-jasper"
          "${MINGW_PACKAGE_PREFIX}-json-c"
          "${MINGW_PACKAGE_PREFIX}-libfreexl"
          "${MINGW_PACKAGE_PREFIX}-libgeotiff"
@@ -40,75 +42,98 @@ depends=("${MINGW_PACKAGE_PREFIX}-cfitsio"
          "${MINGW_PACKAGE_PREFIX}-libxml2"
          "${MINGW_PACKAGE_PREFIX}-netcdf"
          "${MINGW_PACKAGE_PREFIX}-openjpeg2"
-         "${MINGW_PACKAGE_PREFIX}-pcre"
+         "${MINGW_PACKAGE_PREFIX}-openssl"
+         "${MINGW_PACKAGE_PREFIX}-pcre2"
          "${MINGW_PACKAGE_PREFIX}-poppler"
          "${MINGW_PACKAGE_PREFIX}-postgresql"
          "${MINGW_PACKAGE_PREFIX}-proj"
-         #"${MINGW_PACKAGE_PREFIX}-qhull"
+         "${MINGW_PACKAGE_PREFIX}-qhull"
+         "${MINGW_PACKAGE_PREFIX}-sfcgal"
          "${MINGW_PACKAGE_PREFIX}-sqlite3"
          "${MINGW_PACKAGE_PREFIX}-xerces-c"
          "${MINGW_PACKAGE_PREFIX}-xz")
 #optdepends=("${MINGW_PACKAGE_PREFIX}-postgresql")
-options=('strip' 'staticlibs')
-source=(https://download.osgeo.org/${_realname}/${pkgver}/${_realname}-${pkgver}.tar.xz
-        001-qhull-reentrant.patch)
-sha256sums=('630e34141cf398c3078d7d8f08bb44e804c65bbf09807b3610dcbfbc37115cc3'
-            'd331a4ca57ba9ecd533d2705273ca89b472902a880eb9edae9d0766bc8034519')
+source=(https://github.com/OSGeo/gdal/releases/download/v${pkgver}/gdal-${pkgver}.tar.gz
+        002-dont-define-msvcrt-version.patch)
+sha256sums=('cd5bf004af85b88414676b0d5694d3192414e556961ee3d47164f3298078a818'
+            '2eb8b8d7321f5a75cc7ff29bf63ae8bda1c900f463b6577bac109503346275f4')
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying $_patch"
+    patch -Np1 -i "${srcdir}/$_patch"
+  done
+}
 
 prepare() {
   cd ${srcdir}/${_realname}-${pkgver}
-  patch -p1 -i ${srcdir}/001-qhull-reentrant.patch
-
-  cd ${srcdir}
-  [[ -d ${srcdir}/build-${MSYSTEM} ]] && rm -rf ${srcdir}/build-${MSYSTEM}
-  cp -rf ${_realname}-${pkgver} build-${MSYSTEM}
-  cd "${srcdir}/build-${MSYSTEM}"
-
-  sed -i "s|/usr/local|${MINGW_PREFIX}|g" configure.ac
-  sed -i "s|/usr|${MINGW_PREFIX}|g" configure.ac
-  sed -i "s|mandir='\${prefix}/man'|mandir='\${prefix}/share/man'|g" configure.ac
-  for p in m4/*.m4
-  do
-    sed -i "s|/usr|${MINGW_PREFIX}|g" $p
-  done
-  # bug: http://osgeo-org.1560.x6.nabble.com/gdal-dev-jpeg2000-jasper-error-compiling-gdal-2-1-from-git-release-branch-td5299100.html
-  sed -i -e 's@uchar@unsigned char@' frmts/jpeg2000/jpeg2000_vsil_io.cpp
-
-  touch config.rpath
-  ./autogen.sh
+  apply_patch_with_msg \
+    002-dont-define-msvcrt-version.patch
 }
 
 build() {
-  cd "${srcdir}/build-${MSYSTEM}"
+  declare -a extra_config
+  if check_option "debug" "n"; then
+    extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
 
-  CFLAGS+=" -fno-strict-aliasing"
+  msg2 "Building static library"
+  mkdir -p "${srcdir}/build-${MSYSTEM}-static" && cd "${srcdir}/build-${MSYSTEM}-static"
 
-  ./configure \
-    --build=${MINGW_CHOST} \
-    --host=${MINGW_CHOST} \
-    --target=${MINGW_CHOST} \
-    --prefix=${MINGW_PREFIX} \
-    --with-poppler \
-    --with-webp \
-    --with-spatialite \
-    --with-liblzma \
-    --with-mysql=${MINGW_PREFIX}/bin/mariadb_config \
-    --without-python \
-    --without-perl \
-    --with-qhull=internal
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    "${MINGW_PREFIX}"/bin/cmake.exe \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+      "${extra_config[@]}" \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DCMAKE_CXX_STANDARD=17 \
+      -DBUILD_PYTHON_BINDINGS=OFF \
+      -DGDAL_USE_INTERNAL_LIBS=OFF \
+      -DGDAL_USE_MSSQL_ODBC=OFF \
+      -DBUILD_TESTING=OFF \
+      ../${_realname}-${pkgver}
 
-  sed -i GDALmake.opt -e "s|EXE_DEP_LIBS.*|EXE_DEP_LIBS = \$\(GDAL_SLIB\)|g"
-  sed -i GNUmakefile -e "s|\$(GDAL_ROOT)\/||g"
+  "${MINGW_PREFIX}"/bin/cmake.exe --build .
 
-  make
-  # make man
+  msg2 "Building shared library"
+  mkdir -p "${srcdir}/build-${MSYSTEM}-shared" && cd "${srcdir}/build-${MSYSTEM}-shared"
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    "${MINGW_PREFIX}"/bin/cmake.exe \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+      "${extra_config[@]}" \
+      -DBUILD_SHARED_LIBS=ON \
+      -DCMAKE_CXX_STANDARD=17 \
+      -DBUILD_PYTHON_BINDINGS=OFF \
+      -DGDAL_USE_INTERNAL_LIBS=OFF \
+      -DGDAL_USE_MSSQL_ODBC=OFF \
+      -DBUILD_TESTING=OFF \
+      ../${_realname}-${pkgver}
+
+  "${MINGW_PREFIX}"/bin/cmake.exe --build .
+}
+
+check () {
+  cd "${srcdir}/build-${MSYSTEM}-shared"
+
+  "${MINGW_PREFIX}"/bin/cmake.exe -DBUILD_TESTING=ON ../${_realname}-${pkgver}
+  "${MINGW_PREFIX}"/bin/cmake.exe --build .
+  "${MINGW_PREFIX}"/bin/ctest.exe .
 }
 
 package () {
-  cd "${srcdir}/build-${MSYSTEM}"
-  make DESTDIR="${pkgdir}" install
-  make DESTDIR="${pkgdir}" install-man
+  msg2 "Installing static library"
+  cd "${srcdir}/build-${MSYSTEM}-static"
+  DESTDIR="${pkgdir}" "${MINGW_PREFIX}"/bin/cmake.exe --install .
+
+  msg2 "Installing shared library"
+  cd "${srcdir}/build-${MSYSTEM}-shared"
+  DESTDIR="${pkgdir}" "${MINGW_PREFIX}"/bin/cmake.exe --install .
 
   # install license
-  install -D -m644 LICENSE.TXT "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE.TXT" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }

@@ -3,10 +3,10 @@
 #include <windows.h>
 
 #if defined(CC)
-	#define C "gcc.exe"
+	#define C "cc.exe"
 	#define E "MPICC"
 #elif defined(CXX)
-	#define C "g++.exe"
+	#define C "c++.exe"
 	#define E "MPICXX"
 #elif defined(FC)
 	#define C "gfortran.exe"
@@ -34,14 +34,9 @@ int main(int argc, char** argv) {
 	int i = 0;
 	args[i++] = GetEnvironmentVariable(E, comp, SZ) > 0 ? comp : C;
 	args[i++] = ipath;
-#ifdef FC
-	// Workarounds for the GFORTRAN 10 increased strictness
-	args[i++] = "-fallow-invalid-boz";
-	args[i++] = "-fallow-argument-mismatch";
-#endif
 	if(!show) for(int x = 1; x < argc; ++x) args[i++] = argv[x];
 	args[i++] = lpath;
-	args[i++] = "-lmsmpi";
+	args[i++] = "-l:libmsmpi.dll.a";
 	args[i] = NULL;
 	if(show) {
 		for(int x = 0; args[x]; ++x) printf("%s ", args[x]);

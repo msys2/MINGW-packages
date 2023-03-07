@@ -24,41 +24,6 @@ _status() {
     printf "${items:+\t%s\n}" "${items:+${items[@]}}"
 }
 
-# Convert lines to array
-_as_list() {
-    local -n nameref_list="${1}"
-    local filter="${2}"
-    local strip="${3}"
-    local lines="${4}"
-    local result=1
-    nameref_list=()
-    while IFS= read -r line; do
-        test -z "${line}" && continue
-        result=0
-        [[ "${line}" = ${filter} ]] && nameref_list+=("${line/${strip}/}")
-    done <<< "${lines}"
-    return "${result}"
-}
-
-# Changes since master or from head
-_list_changes() {
-    local list_name="${1}"
-    local filter="${2}"
-    local strip="${3}"
-    local git_options=("${@:4}")
-    _as_list "${list_name}" "${filter}" "${strip}" "$(git log "${git_options[@]}" upstream/master.. | sort -u)" ||
-    _as_list "${list_name}" "${filter}" "${strip}" "$(git log "${git_options[@]}" HEAD^.. | sort -u)"
-}
-
-# Git configuration
-git_config() {
-    local name="${1}"
-    local value="${2}"
-    test -n "$(git config ${name})" && return 0
-    git config --global "${name}" "${value}" && return 0
-    failure 'Could not configure Git for makepkg'
-}
-
 # Run command with status
 execute(){
     local status="${1}"
@@ -73,11 +38,6 @@ execute(){
     cd - > /dev/null
 }
 
-# Added commits
-list_commits()  {
-    _list_changes commits '*' '#*::' --pretty=format:'%ai::[%h] %s'
-}
-
 # Get changed packages in correct build order
 list_packages() {
     # readarray doesn't work with a plain pipe
@@ -86,16 +46,6 @@ list_packages() {
 
 install_packages() {
     pacman --noprogressbar --upgrade --noconfirm *.pkg.tar.*
-}
-
-# Recipe quality
-check_recipe_quality() {
-    # TODO: remove this option when not anymore needed
-    if test -n "${DISABLE_QUALITY_CHECK}"; then
-        echo 'This feature is disabled.'
-        return 0
-    fi
-    saneman --format='\t%l:%c %p:%c %m' --verbose --no-terminal "${packages[@]}"
 }
 
 # List DLL dependencies

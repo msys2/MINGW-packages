@@ -6,50 +6,159 @@
 
 _realname=arpack
 pkgbase=mingw-w64-${_realname}
-pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=3.8.0
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         $([[ "${CARCH}" == "i686" ]] || echo "${MINGW_PACKAGE_PREFIX}-${_realname}64"))
+pkgver=3.9.0
 pkgrel=1
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64')
 pkgdesc="Fortran77 subroutines designed to solve large scale eigenvalue problems (mingw-w64)"
 url='https://forge.scilab.org/index.php/p/arpack-ng/'
-license=('BSD')
-depends=("${MINGW_PACKAGE_PREFIX}-gcc-libgfortran"
-         "${MINGW_PACKAGE_PREFIX}-openblas")
-makedepends=("${MINGW_PACKAGE_PREFIX}-gcc-fortran")
-provides=("${MINGW_PACKAGE_PREFIX}-arpack-ng")
+license=('spdx:BSD-3-Clause')
+depends=($([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran"))
+makedepends=("${MINGW_PACKAGE_PREFIX}-fc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-openblas"
+             $([[ "${CARCH}" == "i686" ]] || echo "${MINGW_PACKAGE_PREFIX}-openblas64"))
+provides=("${MINGW_PACKAGE_PREFIX}-${_realname}-ng")
+options=('!buildflags')
 source=(${_realname}-${pkgver}.tar.gz::https://github.com/opencollab/arpack-ng/archive/${pkgver}.tar.gz)
-sha256sums=('ADA5AEB3878874383307239C9235B716A8A170C6D096A6625BFD529844DF003D')
+sha256sums=('24f2a2b259992d3c797d80f626878aa8e2ed5009d549dad57854bbcfb95e1ed0')
 
-prepare() {
- cd "${srcdir}/${_realname}-ng-${pkgver}"
- ./bootstrap
+# Helper macros to help make tasks easier #
+apply_patch_with_msg() {
+  for _fname in "$@"
+  do
+    msg2 "Applying ${_fname}"
+    patch -Nbp1 -i "${srcdir}"/${_fname}
+  done
+}
+
+_build_arpack() {
+  _idx_opt=$1
+
+  declare -a _build_type
+  if check_option "debug" "n"; then
+    _build_type+=("Release")
+  else
+    _build_type+=("Debug")
+  fi
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    ${MINGW_PREFIX}/bin/cmake \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+      -DCMAKE_BUILD_TYPE=${_build_type} \
+      -DICB=ON \
+      ${_idx_opt} \
+      ../${_realname}-ng-${pkgver}
+
+  ${MINGW_PREFIX}/bin/cmake --build .
+
 }
 
 build() {
-  [[ -d "${srcdir}"/build-${CARCH} ]] && rm -rf "${srcdir}"/build-${CARCH}
-  mkdir "${srcdir}"/build-${CARCH} && cd "${srcdir}"/build-${CARCH}
+  [[ -d "${srcdir}/build-${MSYSTEM}-static-32" ]] && rm -rf "${srcdir}/build-${MSYSTEM}-static-32"
+  mkdir -p "${srcdir}/build-${MSYSTEM}-static-32" && cd "${srcdir}/build-${MSYSTEM}-static-32"
 
-  ../${_realname}-ng-${pkgver}/configure \
-    --prefix=${MINGW_PREFIX} \
-    --build=${MINGW_CHOST} \
-    --host=${MINGW_CHOST} \
-    --enable-static \
-    --enable-shared \
-    --with-blas=openblas
+  msg2 "Build static ARPACK with 32-bit indexing"
+  _build_arpack "-DBUILD_SHARED_LIBS=OFF"
 
-  make
+  [[ -d "${srcdir}/build-${MSYSTEM}-shared-32" ]] && rm -rf "${srcdir}/build-${MSYSTEM}-shared-32"
+  mkdir -p "${srcdir}/build-${MSYSTEM}-shared-32" && cd "${srcdir}/build-${MSYSTEM}-shared-32"
+
+  msg2 "Build shared ARPACK with 32-bit indexing"
+  _build_arpack ""
+
+
+  if [ "${CARCH}" != "i686" ]; then
+    [[ -d "${srcdir}/build-${MSYSTEM}-static-64" ]] && rm -rf "${srcdir}/build-${MSYSTEM}-static-64"
+    mkdir -p "${srcdir}/build-${MSYSTEM}-static-64" && cd "${srcdir}/build-${MSYSTEM}-static-64"
+
+    msg2 "Build static ARPACK with 64-bit indexing"
+    _build_arpack "-DINTERFACE64=1 -DITF64SUFFIX=_64 -DBUILD_SHARED_LIBS=OFF -DBLAS_LIBRARIES=openblas_64"
+
+    [[ -d "${srcdir}/build-${MSYSTEM}-shared-64" ]] && rm -rf "${srcdir}/build-${MSYSTEM}-shared-64"
+    mkdir -p "${srcdir}/build-${MSYSTEM}-shared-64" && cd "${srcdir}/build-${MSYSTEM}-shared-64"
+
+    msg2 "Build shared ARPACK with 64-bit indexing"
+    _build_arpack "-DINTERFACE64=1 -DITF64SUFFIX=_64 -DBLAS_LIBRARIES=openblas_64"
+  fi
 }
 
-#check() {
-#  cd "${srcdir}"/build-${CARCH}
-#  make check
-#}
+check() {
+  cd "${srcdir}/build-${MSYSTEM}-static-32"
+  msg2 "Static check with 32-bit indexing"
+  ${MINGW_PREFIX}/bin/cmake --build . --target test || true
 
-package() {
-  cd "${srcdir}"/build-${CARCH}
+  cd "${srcdir}/build-${MSYSTEM}-shared-32"
+  msg2 "Shared check with 32-bit indexing"
+  ${MINGW_PREFIX}/bin/cmake --build . --target test || true
 
-  make DESTDIR="${pkgdir}"/ install
-  install -Dm644 ${srcdir}/${_realname}-ng-${pkgver}/COPYING \
-    ${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING
+  if [ "${CARCH}" != "i686" ]; then
+    cd "${srcdir}/build-${MSYSTEM}-static-64"
+    msg2 "Static check with 64-bit indexing"
+    ${MINGW_PREFIX}/bin/cmake --build . --target test || true
+
+    cd "${srcdir}/build-${MSYSTEM}-shared-64"
+    msg2 "Shared check with 64-bit indexing"
+    ${MINGW_PREFIX}/bin/cmake --build . --target test || true
+  fi
 }
+
+package_arpack() {
+  pkgdesc="Fortran77 subroutines designed to solve large scale eigenvalue problems (mingw-w64)"
+  depends+=("${MINGW_PACKAGE_PREFIX}-openblas")
+
+  #Static Install
+  cd "${srcdir}/build-${MSYSTEM}-static-32"
+  DESTDIR=${pkgdir} ${MINGW_PREFIX}/bin/cmake --install .
+
+  #Shared Install
+  cd "${srcdir}/build-${MSYSTEM}-shared-32"
+  DESTDIR=${pkgdir} ${MINGW_PREFIX}/bin/cmake --install .
+  install -Dm644 ${srcdir}/${_realname}-ng-${pkgver}/COPYING ${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING
+
+  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
+  for _f in "${pkgdir}${MINGW_PREFIX}"/lib/cmake/${_realname}ng/*.cmake; do
+    sed -e "s|${PREFIX_WIN}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
+    sed -e "s|${MINGW_PREFIX}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
+  done
+
+}
+
+package_arpack64() {
+  pkgdesc="Fortran77 subroutines designed to solve large scale eigenvalue problems with 64-bit indexing (mingw-w64)"
+  depends+=("${MINGW_PACKAGE_PREFIX}-openblas64")
+  provides=()
+  conflicts=()
+  replaces=()
+
+  #Static Install
+  cd "${srcdir}/build-${MSYSTEM}-static-64"
+  DESTDIR=${pkgdir} ${MINGW_PREFIX}/bin/cmake --install .
+
+  #Shared Install
+  cd "${srcdir}/build-${MSYSTEM}-shared-64"
+  DESTDIR=${pkgdir} ${MINGW_PREFIX}/bin/cmake --install .
+  install -Dm644 ${srcdir}/${_realname}-ng-${pkgver}/COPYING ${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}64/COPYING
+
+  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
+  for _f in "${pkgdir}${MINGW_PREFIX}"/lib/cmake/${_realname}ng_64/*.cmake; do
+    sed -e "s|${PREFIX_WIN}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
+    sed -e "s|${MINGW_PREFIX}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
+  done
+
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;

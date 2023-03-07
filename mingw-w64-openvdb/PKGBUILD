@@ -3,44 +3,54 @@
 _realname=openvdb
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=8.0.0
-pkgrel=3
+pkgver=10.0.1
+pkgrel=1
 pkgdesc="OpenVDB is an open source C++ library comprising a novel hierarchical data structure and a large suite of tools for the efficient storage and manipulation of sparse volumetric data discretized on three-dimensional grids (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
 url="https://www.openvdb.org/"
-license=("MPL 2.0")
+license=("spdx:MPL-2.0")
 depends=("${MINGW_PACKAGE_PREFIX}-blosc"
-         "${MINGW_PACKAGE_PREFIX}-boost"
-         "${MINGW_PACKAGE_PREFIX}-intel-tbb"
-         "${MINGW_PACKAGE_PREFIX}-openexr"
+         "${MINGW_PACKAGE_PREFIX}-gcc-libs"
+         "${MINGW_PACKAGE_PREFIX}-imath"
+         "${MINGW_PACKAGE_PREFIX}-tbb"
          "${MINGW_PACKAGE_PREFIX}-zlib")
-makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
-             "${MINGW_PACKAGE_PREFIX}-python"
-             "${MINGW_PACKAGE_PREFIX}-python-numpy")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-boost"
+             "${MINGW_PACKAGE_PREFIX}-python")
+optdepends=("${MINGW_PACKAGE_PREFIX}-boost: Python bindings"
+            "${MINGW_PACKAGE_PREFIX}-python: Python bindings")
 checkdepends=("${MINGW_PACKAGE_PREFIX}-cppunit")
 options=('!strip' 'buildflags' '!debug')
 source=(${_realname}-${pkgver}.tar.gz::https://github.com/AcademySoftwareFoundation/openvdb/archive/v${pkgver}.tar.gz
-        001-build-fixes.patch
-        002-fix-find-cppunit.patch
-        003-msvc-mingw.patch
-        004-python-module-ext.patch)
-sha256sums=('04a28dc24a744f8ac8bbc5636a949628edb02b7c84db24ad795429c8c739a9ee'
-            '19cbfa91d93bceb65a6126a3a67f5368619fb78ffd4d44d5dc48c8ea6c0fd5b7'
-            'e45ba2c3f28327fda7d6d25735dba247cab80f4794693a77b7842fb072db579b'
-            '30cdc55dc8c7b93ce929080f83a9254d51ceb896197ab74e80ac8ed69ea3e08a'
-            '2c1798e7f454d6efb0805964c84c5683bbd3bf679b2cb6ea1e4cc12be8520bea')
+        001-use-pkgconfig.patch
+        002-fix-finding-tbb.patch)
+sha256sums=('887a3391fbd96b20c77914f4fb3ab4b33d26e5fc479aa036d395def5523c622f'
+            '107a1e7fa6a8efd0931f36088e19b14732f96df124cad6cf22821533ff745d62'
+            '0ce7767fb9561dfbea0160709e2644e4c0e2e22d24aed1686644369e5f8f99e5')
+
+# Helper macros to help make tasks easier #
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
 
 prepare() {
-  cd ${srcdir}/openvdb-${pkgver}
-  patch -p1 -i ${srcdir}/001-build-fixes.patch
-  patch -p1 -i ${srcdir}/002-fix-find-cppunit.patch
-  patch -p1 -i ${srcdir}/003-msvc-mingw.patch
-
-  patch -p1 -i ${srcdir}/004-python-module-ext.patch
+  cd "${srcdir}"/${_realname}-${pkgver}
+  apply_patch_with_msg \
+    001-use-pkgconfig.patch \
+    002-fix-finding-tbb.patch
 }
 
 build() {
+  [[ -d "${srcdir}"/build-${MSYSTEM} ]] && rm -rf "${srcdir}"/build-${MSYSTEM}
+  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
+
   declare -a extra_config
   if check_option "debug" "n"; then
     extra_config+=("-DCMAKE_BUILD_TYPE=Release")
@@ -48,31 +58,29 @@ build() {
     extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
   fi
 
-  [[ -d "build-${MINGW_CHOST}" ]] && rm -rf "build-${MINGW_CHOST}"
-  mkdir -p build-${MINGW_CHOST} && cd build-${MINGW_CHOST}
-
-  CFLAGS+=" -D_USE_MATH_DEFINES"
-  CXXFLAGS+=" -D_USE_MATH_DEFINES"
-
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake.exe \
-    -G"MSYS Makefiles" \
+    -G"Ninja" \
     -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
     -DUSE_BLOSC=ON \
     -DUSE_EXR=ON \
+    -DUSE_EXPLICIT_INSTANTIATION=OFF \
     -DOPENVDB_CORE_SHARED=ON \
     -DOPENVDB_BUILD_PYTHON_MODULE=ON \
     -DPython_EXECUTABLE=${MINGW_PREFIX}/bin/python \
-    -DPython_ROOT_DIR=${MINGW_PREFIX} \
-    -DPython_FIND_REGISTRY=NEVER \
-    ${extra_config} \
-    ../openvdb-${pkgver}
+    ${extra_config[@]} \
+    ../${_realname}-${pkgver}
 
-  make
+  ${MINGW_PREFIX}/bin/cmake --build .
 }
 
 package() {
-  cd "${srcdir}"/build-${MINGW_CHOST}
-  make DESTDIR=${pkgdir} install
+  cd "${srcdir}"/build-${MSYSTEM}
+  DESTDIR=${pkgdir} ${MINGW_PREFIX}/bin/cmake --install .
   install -Dm644 ${srcdir}/openvdb-${pkgver}/LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+
+  # VTK requires FindOpenVDB to be in CMAKE_MODULE_PATH
+  mkdir -p "${pkgdir}"${MINGW_PREFIX}/share/cmake/Modules/
+  cp "${pkgdir}"${MINGW_PREFIX}/lib/cmake/OpenVDB/{OpenVDBUtils,FindOpenVDB,FindBlosc}.cmake \
+    "${pkgdir}"${MINGW_PREFIX}/share/cmake/Modules/
 }

@@ -3,28 +3,31 @@
 _realname=cppcheck
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-pkgver=2.3
-pkgrel=3
+pkgver=2.10.2
+pkgrel=1
 pkgdesc="static analysis of C/C++ code (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 url="https://cppcheck.sourceforge.io/"
 license=('GPL3')
-depends=("${MINGW_PACKAGE_PREFIX}-pcre"
-         "${MINGW_PACKAGE_PREFIX}-z3")
-makedepends=("${MINGW_PACKAGE_PREFIX}-docbook-xsl"
+depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
+         "${MINGW_PACKAGE_PREFIX}-pcre")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-docbook-xsl"
              "${MINGW_PACKAGE_PREFIX}-qt5-base"
              "${MINGW_PACKAGE_PREFIX}-qt5-charts"
              "${MINGW_PACKAGE_PREFIX}-qt5-tools"
              "${MINGW_PACKAGE_PREFIX}-clang"
-             "${MINGW_PACKAGE_PREFIX}-python")
-optdepends=("${MINGW_PACKAGE_PREFIX}-qt5-base: cppcheck-gui"
-            "${MINGW_PACKAGE_PREFIX}-qt5-charts: charts"
+             "${MINGW_PACKAGE_PREFIX}-python"
+             "${MINGW_PACKAGE_PREFIX}-tinyxml2")
+optdepends=("${MINGW_PACKAGE_PREFIX}-qt5-charts: cppcheck-gui"
             "${MINGW_PACKAGE_PREFIX}-python-pygments: cppcheck-htmlreport")
 source=(${_realname}-${pkgver}.tar.gz::"https://github.com/danmar/cppcheck/archive/${pkgver}.tar.gz"
         '001-cppcheck-2.2-change-language-files-path.patch'
         '002-cppcheck-2.2-change-cfg-path.patch')
-sha256sums=('3c622628ebf46f68909c7a96743b07b6207894a0772fbe802603732152ab1035'
+sha256sums=('915785d01fa6f5571e9d450102056466222b554525ce3ad67c61b75508a7a451'
             'e741bfafbeb3ade454a42563a1c4617ae3dc87fd6a6f409e1ae4b735b68997d3'
             '6f53ad14361717b3f994033483c14ad35c5790f703e03fe8aebaca83936ea61b')
 
@@ -36,71 +39,65 @@ prepare() {
 
 build() {
   [[ -d "${srcdir}"/build-${MSYSTEM} ]] && rm -rf "${srcdir}"/build-${MSYSTEM}
-  cp -r "${srcdir}/${_realname}-${pkgver}" "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
+  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
 
-  LANG='en_US.UTF-8' make \
-    PREFIX=${MINGW_PREFIX} \
-    CXX=${MINGW_PREFIX}/bin/g++ \
-    LD=${MINGW_PREFIX}/bin/ld \
-    MATCHCOMPILER=yes \
-    FILESDIR=${MINGW_PREFIX}/share/cppcheck \
-    HAVE_RULES=yes \
-    LDFLAGS=-lshlwapi RDYNAMIC=
+  declare -a extra_config
+  if check_option "debug" "y"; then
+    extra_config+=(-DCMAKE_BUILD_TYPE=Debug)
+  else
+    extra_config+=(-DCMAKE_BUILD_TYPE=Release)
+  fi
 
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=;-DFILESDIR=" \
+  ${MINGW_PREFIX}/bin/cmake.exe \
+    -G"Ninja" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DUSE_MATCHCOMPILER=ON \
+    -DFILESDIR=${MINGW_PREFIX}/share/cppcheck \
+    -DHAVE_RULES=ON \
+    -DBUILD_GUI=ON \
+    -DWITH_QCHART=ON \
+    -DENABLE_OSS_FUZZ=OFF \
+    -DUSE_BUNDLED_TINYXML2=OFF \
+    ${extra_config[@]} \
+    ../${_realname}-${pkgver}
+
+  ${MINGW_PREFIX}/bin/cmake --build .
+
+  # man
+  cd "${srcdir}"/${_realname}-${pkgver}
   make man \
     DB2MAN=${MINGW_PREFIX}/share/xml/docbook/xsl-stylesheets-1.79.2/manpages/docbook.xsl \
     FILESDIR=${MINGW_PREFIX}/share/cppcheck
-
-  cd gui
-  lrelease gui.pro
-  ${MINGW_PREFIX}/bin/qmake HAVE_RULES=yes HAVE_QCHART=yes CONFIG+=release
-  make \
-    CXX=${MINGW_PREFIX}/bin/g++ \
-    LD=${MINGW_PREFIX}/bin/ld \
-    PREFIX=${MINGW_PREFIX} \
-    MATCHCOMPILER=yes \
-    FILESDIR=${MINGW_PREFIX}/share/cppcheck \
-    HAVE_RULES=yes \
-    HAVE_QCHART=yes
+  # help
+  qhelpgenerator gui/help/online-help.qhcp -o gui/help/online-help.qhc
 }
 
 check() {
   cd "${srcdir}"/build-${MSYSTEM}
-   LANG='en_US.UTF-8' make test \
-     MATCHCOMPILER=yes \
-     CXX=${MINGW_PREFIX}/bin/g++ \
-     LD=${MINGW_PREFIX}/bin/ld \
-     PREFIX="${MINGW_PREFIX}" \
-     FILESDIR=${MINGW_PREFIX}/share/cppcheck \
-     HAVE_RULES=yes \
-     HAVE_QCHART=yes \
-     LDFLAGS=-lshlwapi RDYNAMIC=
+  ${MINGW_PREFIX}/bin/cmake -DBUILD_TESTS=ON ../${_realname}-${pkgver}
+  ${MINGW_PREFIX}/bin/cmake --build .
+  cd bin && ./testrunner -g -q
 }
 
 package() {
   cd "${srcdir}"/build-${MSYSTEM}
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
+  # Fix location of language files
+  install -d "${pkgdir}"${MINGW_PREFIX}/share/${_realname}/lang
+  mv "${pkgdir}"${MINGW_PREFIX}/bin/cppcheck_*.qm "${pkgdir}"${MINGW_PREFIX}/share/${_realname}/lang/
+  # Remove freedesktop (Linux) files
+  rm -r "${pkgdir}"${MINGW_PREFIX}/share/applications
+  rm -r "${pkgdir}"${MINGW_PREFIX}/share/icons
 
-  LANG='en_US.UTF-8' make install \
-    DESTDIR="${pkgdir}" \
-    CXX=${MINGW_PREFIX}/bin/g++ \
-    LD=${MINGW_PREFIX}/bin/ld \
-    PREFIX="${MINGW_PREFIX}" \
-    MATCHCOMPILER=yes \
-    FILESDIR=${MINGW_PREFIX}/share/cppcheck \
-    HAVE_QCHART=yes \
-    HAVE_RULES=yes
-
+  cd "${srcdir}"/${_realname}-${pkgver}
   # man and COPYING
   install -Dpm644 cppcheck.1 "${pkgdir}${MINGW_PREFIX}/share/man/man1/cppcheck.1"
   install -Dpm644 COPYING    "${pkgdir}${MINGW_PREFIX}/share/licenses/cppcheck/COPYING"
 
-  # GUI
-  install -m755 build/gui/cppcheck-gui.exe "${pkgdir}${MINGW_PREFIX}/bin"
-  install -d "${pkgdir}${MINGW_PREFIX}/share/cppcheck/cfg"
+  # Install extra files
+  install -Dpm644 htmlreport/cppcheck-htmlreport "${pkgdir}${MINGW_PREFIX}/bin/cppcheck-htmlreport"
   install -d "${pkgdir}${MINGW_PREFIX}/share/cppcheck/help"
-  install -d "${pkgdir}${MINGW_PREFIX}/share/cppcheck/lang"
-  install -D cfg/* -t "${pkgdir}${MINGW_PREFIX}/share/cppcheck/cfg"
   install -D gui/help/online-help.qch -t "${pkgdir}${MINGW_PREFIX}/share/cppcheck/help"
   install -D gui/help/online-help.qhc -t "${pkgdir}${MINGW_PREFIX}/share/cppcheck/help"
-  install -D gui/*.qm -t "${pkgdir}${MINGW_PREFIX}/share/cppcheck/lang"
 }

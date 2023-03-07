@@ -32,46 +32,63 @@
 _realname=petsc
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}" "${MINGW_PACKAGE_PREFIX}-${_realname}-build")
-pkgver=3.15.4
+pkgver=3.18.3
 pkgrel=1
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 pkgdesc='Sparse iterative (non)linear solver package (mingw-w64)'
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
-         "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran"	
-         "${MINGW_PACKAGE_PREFIX}-openblas"
-         "${MINGW_PACKAGE_PREFIX}-parmetis"
-         "${MINGW_PACKAGE_PREFIX}-metis"
+         $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran")
          "${MINGW_PACKAGE_PREFIX}-hwloc"
-         "${MINGW_PACKAGE_PREFIX}-msmpi")
+         "${MINGW_PACKAGE_PREFIX}-metis"
+         "${MINGW_PACKAGE_PREFIX}-msmpi"
+         "${MINGW_PACKAGE_PREFIX}-omp"
+         "${MINGW_PACKAGE_PREFIX}-openblas"
+         "${MINGW_PACKAGE_PREFIX}-parmetis")
 makedepends=('python'
-             "${MINGW_PACKAGE_PREFIX}-gcc"
-             "${MINGW_PACKAGE_PREFIX}-gcc-fortran")
+             "${MINGW_PACKAGE_PREFIX}-cc"
+             $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-fc"))
 optdepends=("${MINGW_PACKAGE_PREFIX}-tcl: build & run test suite")
 options=('strip' 'staticlibs')
-license=('2-clause BSD')
+license=('spdx:BSD-2-Clause')
 url="https://www.mcs.anl.gov/petsc/"
 source=("https://ftp.mcs.anl.gov/pub/petsc/release-snapshots/${_realname}-lite-${pkgver}.tar.gz"
         'all.tcl'
         'tclbuildtest.tcl'
         'petsc.test'
         'petsc-mat.test'
-        '0001-mpi-detection-override.patch')
+        '0001-mpi-detection-override.patch'
+        '0002-openblas-clang.patch'
+        '0003-pid.patch')
 noextract=("${_realname}-lite-${pkgver}.tar.gz")
-sha256sums=('1e62fb0859a12891022765d1e24660cfcd704291c58667082d81a0618d6b0047'
+sha256sums=('8aaa005479c8ec2eed2b9cbb067cfc1ac0900b0de2176439f0d4f21e09c2020b'
             'ec5072630e1c0309fe383669e9187790cd135a393c67bc4bc35cf60b0ba396ff'
             '15c7af25b91406d5fe5f26cfe00963b6cfde1c3dd466eb25f1b6fae299934966'
             '9662cc4104726c714f7961aba6f8c93bfb85f3d3f89b4908b0a55aedab41ca31'
             'fc95ca4ddc138d288f047835a68a84a11cb841c6cca146c6ef7d7e63e0836b1a'
-            'a28912b086807df7381abaec28353023a148f17a594abb6a1478f3b7b434373b')
+            'bef5353d6d10de492c9832f24b41993c38d1b36a78eb55e7d49089ba72acc05a'
+            'c954cc4240a6f3cebdc40cf4fca07561e58eb50717b9741c296b73657bac1c51'
+            '08d37a205d7a2ae27ccef41ee931f92c96aa428b94ed633def2f56fdfa6fb11e')
+
+# Helper macros to help make tasks easier #
+apply_patch_with_msg() {
+  for _fname in "$@"
+  do
+    msg2 "Applying ${_fname}"
+    patch -Nbp1 -i "${srcdir}"/${_fname}
+  done
+}
 
 prepare() {
-  mkdir -p $srcdir/build-${MINGW_CHOST} && cd $srcdir/build-${MINGW_CHOST}
+  [[ -d "${srcdir}"/build-${MSYSTEM} ]] && rm -rf "${srcdir}"/build-${MSYSTEM}
+  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
   tar xzf $srcdir/${_realname}-lite-${pkgver}.tar.gz
+
   cd ${_realname}-${pkgver}
-  for p in ${source[*]:5}; do
-    patch -p1 -i "$srcdir/$p"
-  done
+  apply_patch_with_msg \
+    0001-mpi-detection-override.patch \
+    0002-openblas-clang.patch \
+    0003-pid.patch
 }
 
 # Optimized build flavors
@@ -81,84 +98,91 @@ builds='dso dto dmo zso zto zmo sso sto smo cso cto cmo'
 # builds="$builds dsg dtg dmg zsg ztg zmg ssg stg smg csg ctg cmg"
 
 _petsc() {
-  opts="--with-single-library=1 --disable-shared --with-windows-graphics=0 --with-x=0 --with-openblas=1 --with-hwloc=1 --with-openblas-dir=$MINGW_PREFIX"
-  ld=gfortran
-  pc="openblas hwloc"
-  xflags=-msse # SSE support is required for proper FP trapping
-  iflags=
-  ldflags=
   desc=
+  opts="--with-single-library=1 --disable-shared --with-windows-graphics=0 --with-x=0 --with-hwloc=1 --with-openblas=1 --with-openblas-dir=$MINGW_PREFIX"
+  pc="hwloc openblas"
+  iflags=
+  cflags="$CFLAGS"
+  cxxflags="$CXXFLAGS"
+  fflags="$CFLAGS -fallow-invalid-boz -fallow-argument-mismatch -I$MINGW_PREFIX/include"
+  cppflags="$CPPFLAGS"
+  ldflags="$LDFLAGS"
+  pc_libs="$LIBS"
+  libs="$LIBS"
+  ld="$CXX"
+  if [[ ${MINGW_PACKAGE_PREFIX} != *-clang-* ]]; then
+    libs+=" -lgfortran -lquadmath"
+    pc_libs="$libs"
+  else
+    opts+=" --with-fc=0"
+  fi
   case $1 in
     ?m?)
-      opts="$opts --with-mpi=1 --with-mpi-compilers=1 --with-pthread=0 --with-openmp=0 --with-metis=1 --with-parmetis=1"
-      pc="$pc parmetis msmpi"
-      ld=mpifort
+      opts+=" --with-mpi=1 --with-mpi-compilers=0 --with-pthread=0 --with-openmp=0 --with-metis=1 --with-parmetis=1"
+      pc+=" parmetis msmpi"
+      libs+=" -lmsmpi"
+      # pc_libs is not augmented because MPI is provided by the PkgConfig
       desc="MPI parallel"
     ;;
     ?t?)
-      opts="$opts --with-mpi=0 --with-pthread=0 --with-openmp=1"
+      opts+=" --with-mpi=0 --with-pthread=0 --with-openmp=1"
       iflags="$iflags -I\${includedir}/mpiuni"
-      ldflags="-fopenmp $ldflags"
+      ldflags+=" -fopenmp"
       desc="OpenMP multithreaded"
     ;;
     ?s?)
-      opts="$opts --with-mpi=0 --with-pthread=0 --with-openmp=0"
-      iflags="$iflags -I\${includedir}/mpiuni"
+      opts+=" --with-mpi=0 --with-pthread=0 --with-openmp=0"
+      iflags+=" -I\${includedir}/mpiuni"
       desc="Sequential"
     ;;
   esac
   case $1 in
     z*|d*)
-      opts="$opts --with-precision=double"
-      desc="$desc double precision"
+      opts+=" --with-precision=double"
+      desc+=" double precision"
     ;;
     c*|s*)
-      opts="$opts --with-precision=single"
-      desc="$desc single precision"
+      opts+=" --with-precision=single"
+      desc+=" single precision"
     ;;
   esac
   case $1 in
     d*|s*)
-      opts="$opts --with-scalar-type=real"
+      opts+=" --with-scalar-type=real"
     ;;
     z*|c*)
-      opts="$opts --with-scalar-type=complex"
-      desc="$desc complex"
+      opts+=" --with-scalar-type=complex"
+      desc+=" complex"
     ;;
   esac
   case $1 in
     *o)
-      opts="$opts --with-debugging=0"
-      cflags="$CFLAGS $xflags"
-      cxxflags="$CXXFLAGS $xflags"
-      fflags="$CFLAGS $xflags"
-      options=('strip' 'staticlibs')
+      opts+=" --with-debugging=0"
     ;;
     *g)
-      opts="$opts --with-debugging=1"
+      opts+=" --with-debugging=1"
       debug="-g -Og"
-      cflags="$CFLAGS $debug $xflags"
-      cxxflags="$CXXFLAGS $debug $xflags"
-      fflags="$CFLAGS $debug $xflags"
-      options=('!strip' 'staticlibs')
+      cflags+=" $debug"
+      cxxflags+=" $debug"
+      fflags+=" $debug"
     ;;
   esac
 }
 
 build() {
-  cd  "${srcdir}/build-${MINGW_CHOST}/${_realname}-${pkgver}"
+  cd  "${srcdir}/build-${MSYSTEM}/${_realname}-${pkgver}"
   for build in ${builds}; do
     _petsc ${build}
     export PETSC_DIR=`pwd`
-    /usr/bin/python configure --PETSC_ARCH=${build} ${opts} CFLAGS="$cflags" FFLAGS="$fflags" CXXFLAGS="$cxxflags" CPPFLAGS="$CPPFLAGS" LDFLAGS="$LDFLAGS" MAKEFLAGS="$MAKEFLAGS"
+    /usr/bin/python configure --PETSC_ARCH=${build} ${opts} CC="$CC" CXX="$CXX" FC="gfortran" CFLAGS="$cflags" FFLAGS="$fflags" CXXFLAGS="$cxxflags" CPPFLAGS="$cppflags" LDFLAGS="$ldflags" LIBS="$libs" MAKEFLAGS="$MAKEFLAGS"
     make PETSC_ARCH=${build} all
-  	(
-  		cd ${build}/lib
-  	  case ${build} in
-    		*o) strip -S *.a ;;
-  	  esac
-  		${ld} -shared -Wl,--enable-auto-import -Wl,--export-all-symbols -o lib${_realname}-${build}.dll -Wl,--out-implib,lib${_realname}.dll.a -Wl,--whole-archive lib${_realname}.a -Wl,--no-whole-archive ${ldflags} $(pkg-config ${pc} --libs)
-  	)
+    (
+      cd ${build}/lib
+      case ${build} in
+        *o) strip -S *.a ;;
+      esac
+      ${ld} -shared -Wl,--enable-auto-import -Wl,--export-all-symbols -o lib${_realname}-${build}.dll -Wl,--out-implib,lib${_realname}.dll.a -Wl,--whole-archive lib${_realname}.a -Wl,--no-whole-archive ${ldflags} ${libs} $(pkg-config ${pc} --libs)
+    )
   done
 }
 
@@ -166,7 +190,7 @@ eval "package_${MINGW_PACKAGE_PREFIX}-${_realname}() { _package; }"
 eval "package_${MINGW_PACKAGE_PREFIX}-${_realname}-build() { _package_build; }"
 
 _package() {
-  cd ${srcdir}/build-${MINGW_CHOST}/${_realname}-${pkgver}
+  cd ${srcdir}/build-${MSYSTEM}/${_realname}-${pkgver}
   mkdir -p ${pkgdir}${MINGW_PREFIX}/{bin,lib/pkgconfig,lib/${_realname},include/${_realname},share/test/${_realname}/{ksp,mat}}
   (
     cd include
@@ -190,17 +214,20 @@ _package() {
   )
   for build in ${builds}; do
     _petsc ${build}
-  	(
-  		cd ${build}/lib
-  		mkdir -p ${pkgdir}${MINGW_PREFIX}/lib/${_realname}/${build}
-  		cp *.a ${pkgdir}${MINGW_PREFIX}/lib/${_realname}/${build}
-  		cp *.dll ${pkgdir}${MINGW_PREFIX}/bin
-  	)
-  	(
-  		cd ${build}/include
-  		mkdir -p ${pkgdir}${MINGW_PREFIX}/include/${_realname}/${build}
-  		cp *.{h,mod} ${pkgdir}${MINGW_PREFIX}/include/${_realname}/${build}
-  	)
+    (
+      cd ${build}/lib
+      mkdir -p ${pkgdir}${MINGW_PREFIX}/lib/${_realname}/${build}
+      cp *.a ${pkgdir}${MINGW_PREFIX}/lib/${_realname}/${build}
+      cp *.dll ${pkgdir}${MINGW_PREFIX}/bin
+    )
+    (
+      cd ${build}/include
+      mkdir -p ${pkgdir}${MINGW_PREFIX}/include/${_realname}/${build}
+      cp *.h ${pkgdir}${MINGW_PREFIX}/include/${_realname}/${build}
+      if [[ ${MINGW_PACKAGE_PREFIX} != *-clang-* ]]; then
+        cp *.mod ${pkgdir}${MINGW_PREFIX}/include/${_realname}/${build}
+      fi
+    )
     echo "
       prefix=${MINGW_PREFIX}
       libdir=\${prefix}/lib/${_realname}
@@ -211,7 +238,7 @@ _package() {
       Description: ${desc} PETSc build
       Requires.private: ${pc}
       Cflags: -I\${includedir}/${build} -I\${includedir} ${iflags}
-      Libs.private: -L\${libdir}/${build} -l${_realname} ${ldflags} -lgfortran -lquadmath
+      Libs.private: -L\${libdir}/${build} -l${_realname} ${ldflags} ${pc_libs}
       Libs: -L\${libdir}/${build} -l${_realname}
     " | sed '/^\s*$/d;s/^\s*//' > ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/${_realname}-${build}.pc
   done
@@ -219,7 +246,7 @@ _package() {
 
 _package_build() {
   mkdir -p ${pkgdir}${MINGW_PREFIX}/src
-  cd ${srcdir}/build-${MINGW_CHOST}
+  cd ${srcdir}/build-${MSYSTEM}
   cp -R ${_realname}-${pkgver} ${pkgdir}${MINGW_PREFIX}/src
   cd ${pkgdir}${MINGW_PREFIX}/src
   find . -regextype posix-extended \( -regex '.*\.(o|dll|log|DIR)$' -or -regex '.*/__pycache__' \) -exec rm -rf {} +

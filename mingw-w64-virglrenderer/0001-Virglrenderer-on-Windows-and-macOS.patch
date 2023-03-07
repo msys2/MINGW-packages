@@ -1,0 +1,246 @@
+diff --git a/meson.build b/meson.build
+index 0916486..b87e712 100644
+--- a/meson.build
++++ b/meson.build
+@@ -74,7 +74,6 @@ endforeach
+ 
+ prog_python = import('python').find_installation('python3')
+ 
+-libdrm_dep = dependency('libdrm', version : '>=2.4.50')
+ thread_dep = dependency('threads')
+ epoxy_dep = dependency('epoxy', version: '>= 1.5.4')
+ m_dep = cc.find_library('m')
+@@ -182,9 +181,12 @@ endif
+ 
+ if with_egl
+    if cc.has_header('epoxy/egl.h', dependencies: epoxy_dep) and epoxy_dep.get_pkgconfig_variable('epoxy_has_egl') == '1'
++      libdrm_dep = dependency('libdrm', required: require_egl, version : '>=2.4.50')
+       gbm_dep = dependency('gbm', version: '>= ' + _gbm_ver, required: require_egl)
+-      have_egl = gbm_dep.found()
+-      conf_data.set('HAVE_EPOXY_EGL_H', 1)
++      have_egl = libdrm_dep.found() and gbm_dep.found()
++      if have_egl
++         conf_data.set('HAVE_EPOXY_EGL_H', 1)
++      endif
+    else
+       assert(not require_egl,
+              'egl was explicitely requested but it is not supported by epoxy')
+@@ -237,7 +239,7 @@ with_tests = get_option('tests')
+ with_valgrind = get_option('valgrind')
+ 
+ subdir('src')
+-subdir('vtest')
++#subdir('vtest')
+ 
+ if with_tests
+    subdir('tests')
+diff --git a/src/gallium/auxiliary/os/os_thread.h b/src/gallium/auxiliary/os/os_thread.h
+index d904764..9eaf539 100644
+--- a/src/gallium/auxiliary/os/os_thread.h
++++ b/src/gallium/auxiliary/os/os_thread.h
+@@ -57,7 +57,7 @@ typedef thrd_t pipe_thread;
+ static inline pipe_thread pipe_thread_create( PIPE_THREAD_ROUTINE((*routine), ), void *param )
+ {
+    pipe_thread thread;
+-#ifdef HAVE_PTHREAD
++#if !defined(__MINGW32__) && defined(HAVE_PTHREAD)
+    sigset_t saved_set, new_set;
+    int ret;
+ 
+diff --git a/src/meson.build b/src/meson.build
+index 575b7a3..118024b 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -89,7 +89,6 @@ venus_sources = [
+ virgl_depends = [
+    gallium_dep,
+    epoxy_dep,
+-   libdrm_dep,
+    thread_dep,
+    m_dep,
+ ]
+@@ -106,7 +105,7 @@ virgl_sources += vrend_sources
+ 
+ if have_egl
+    virgl_sources += vrend_winsys_egl_sources
+-   virgl_depends += [gbm_dep]
++   virgl_depends += [libdrm_dep, gbm_dep]
+ endif
+ 
+ if have_glx
+diff --git a/src/vrend_debug.c b/src/vrend_debug.c
+index b888ad2..ef2b51d 100644
+--- a/src/vrend_debug.c
++++ b/src/vrend_debug.c
+@@ -25,6 +25,11 @@
+ #include "vrend_debug.h"
+ #include "vrend_renderer.h"
+ #include "util/u_debug.h"
++#ifdef __MINGW32__
++#include <process.h>
++#define setenv(a,b,c)
++#define unsetenv(a)
++#endif
+ #include <stdlib.h>
+ #include <stdio.h>
+ 
+diff --git a/src/vrend_renderer.c b/src/vrend_renderer.c
+index b8b2a36..cb7b465 100644
+--- a/src/vrend_renderer.c
++++ b/src/vrend_renderer.c
+@@ -313,6 +313,7 @@ struct global_renderer_state {
+    struct list_head waiting_query_list;
+ 
+    bool finishing;
++   bool gl_apple;
+    bool use_gles;
+    bool use_core_profile;
+    bool use_external_blob;
+@@ -4100,9 +4101,9 @@ static void vrend_draw_bind_vertex_legacy(struct vrend_context *ctx,
+       } else {
+          enable_bitmask |= (1 << loc);
+          if (util_format_is_pure_integer(ve->base.src_format)) {
+-            glVertexAttribIPointer(loc, ve->nr_chan, ve->type, vbo->base.stride, (void *)(unsigned long)(ve->base.src_offset + vbo->base.buffer_offset));
++            glVertexAttribIPointer(loc, ve->nr_chan, ve->type, vbo->base.stride, (void *)(uintptr_t)(ve->base.src_offset + vbo->base.buffer_offset));
+          } else {
+-            glVertexAttribPointer(loc, ve->nr_chan, ve->type, ve->norm, vbo->base.stride, (void *)(unsigned long)(ve->base.src_offset + vbo->base.buffer_offset));
++            glVertexAttribPointer(loc, ve->nr_chan, ve->type, ve->norm, vbo->base.stride, (void *)(uintptr_t)(ve->base.src_offset + vbo->base.buffer_offset));
+          }
+          glVertexAttribDivisorARB(loc, ve->base.instance_divisor);
+       }
+@@ -4797,12 +4798,12 @@ int vrend_draw_vbo(struct vrend_context *ctx,
+ 
+       if (indirect_handle) {
+          if (indirect_params_res)
+-            glMultiDrawArraysIndirectCountARB(mode, (GLvoid const *)(unsigned long)info->indirect.offset,
++            glMultiDrawArraysIndirectCountARB(mode, (GLvoid const *)(uintptr_t)info->indirect.offset,
+                                               info->indirect.indirect_draw_count_offset, info->indirect.draw_count, info->indirect.stride);
+          else if (info->indirect.draw_count > 1)
+-            glMultiDrawArraysIndirect(mode, (GLvoid const *)(unsigned long)info->indirect.offset, info->indirect.draw_count, info->indirect.stride);
++            glMultiDrawArraysIndirect(mode, (GLvoid const *)(uintptr_t)info->indirect.offset, info->indirect.draw_count, info->indirect.stride);
+          else
+-            glDrawArraysIndirect(mode, (GLvoid const *)(unsigned long)info->indirect.offset);
++            glDrawArraysIndirect(mode, (GLvoid const *)(uintptr_t)info->indirect.offset);
+       } else if (info->instance_count <= 1)
+          glDrawArrays(mode, start, count);
+       else if (info->start_instance)
+@@ -4827,25 +4828,25 @@ int vrend_draw_vbo(struct vrend_context *ctx,
+ 
+       if (indirect_handle) {
+          if (indirect_params_res)
+-            glMultiDrawElementsIndirectCountARB(mode, elsz, (GLvoid const *)(unsigned long)info->indirect.offset,
++            glMultiDrawElementsIndirectCountARB(mode, elsz, (GLvoid const *)(uintptr_t)info->indirect.offset,
+                                                 info->indirect.indirect_draw_count_offset, info->indirect.draw_count, info->indirect.stride);
+          else if (info->indirect.draw_count > 1)
+-            glMultiDrawElementsIndirect(mode, elsz, (GLvoid const *)(unsigned long)info->indirect.offset, info->indirect.draw_count, info->indirect.stride);
++            glMultiDrawElementsIndirect(mode, elsz, (GLvoid const *)(uintptr_t)info->indirect.offset, info->indirect.draw_count, info->indirect.stride);
+          else
+-            glDrawElementsIndirect(mode, elsz, (GLvoid const *)(unsigned long)info->indirect.offset);
++            glDrawElementsIndirect(mode, elsz, (GLvoid const *)(uintptr_t)info->indirect.offset);
+       } else if (info->index_bias) {
+          if (info->instance_count > 1)
+-            glDrawElementsInstancedBaseVertex(mode, info->count, elsz, (void *)(unsigned long)sub_ctx->ib.offset, info->instance_count, info->index_bias);
++            glDrawElementsInstancedBaseVertex(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->instance_count, info->index_bias);
+          else if (info->min_index != 0 || info->max_index != (unsigned)-1)
+-            glDrawRangeElementsBaseVertex(mode, info->min_index, info->max_index, info->count, elsz, (void *)(unsigned long)sub_ctx->ib.offset, info->index_bias);
++            glDrawRangeElementsBaseVertex(mode, info->min_index, info->max_index, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->index_bias);
+          else
+-            glDrawElementsBaseVertex(mode, info->count, elsz, (void *)(unsigned long)sub_ctx->ib.offset, info->index_bias);
++            glDrawElementsBaseVertex(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->index_bias);
+       } else if (info->instance_count > 1) {
+-         glDrawElementsInstancedARB(mode, info->count, elsz, (void *)(unsigned long)sub_ctx->ib.offset, info->instance_count);
++         glDrawElementsInstancedARB(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->instance_count);
+       } else if (info->min_index != 0 || info->max_index != (unsigned)-1)
+-         glDrawRangeElements(mode, info->min_index, info->max_index, info->count, elsz, (void *)(unsigned long)sub_ctx->ib.offset);
++         glDrawRangeElements(mode, info->min_index, info->max_index, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset);
+       else
+-         glDrawElements(mode, info->count, elsz, (void *)(unsigned long)sub_ctx->ib.offset);
++         glDrawElements(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset);
+    }
+ 
+    if (info->primitive_restart) {
+@@ -6216,6 +6217,7 @@ int vrend_renderer_init(const struct vrend_if_cbs *cbs, uint32_t flags)
+       vrend_printf( "gl_version %d - compat profile\n", gl_ver);
+    }
+ 
++   vrend_state.gl_apple = (strcmp((const char *)glGetString(GL_VENDOR), "Apple") == 0);
+    vrend_state.use_integer = use_integer();
+ 
+    init_features(gles ? 0 : gl_ver,
+@@ -6952,6 +6954,7 @@ static int vrend_resource_alloc_texture(struct vrend_resource *gr,
+ 
+    const bool format_can_texture_storage = has_feature(feat_texture_storage) &&
+         (tex_conv_table[format].flags & VIRGL_TEXTURE_CAN_TEXTURE_STORAGE);
++   const bool format_has_storage_multisample = has_feature(feat_storage_multisample);
+ 
+    if (format_can_texture_storage)
+       gr->storage_bits |= VREND_STORAGE_GL_IMMUTABLE;
+@@ -7015,7 +7018,7 @@ static int vrend_resource_alloc_texture(struct vrend_resource *gr,
+       }
+ 
+       if (pr->nr_samples > 0) {
+-         if (format_can_texture_storage) {
++         if (format_can_texture_storage && format_has_storage_multisample) {
+             if (gr->target == GL_TEXTURE_2D_MULTISAMPLE) {
+                glTexStorage2DMultisample(gr->target, pr->nr_samples,
+                                          internalformat, pr->width0, pr->height0,
+@@ -7879,7 +7882,7 @@ static void do_readpixels(struct vrend_resource *res,
+ 
+    if (has_feature(feat_arb_robustness))
+       glReadnPixelsARB(x, y, width, height, format, type, bufSize, data);
+-   else if (has_feature(feat_gles_khr_robustness))
++   else if (vrend_state.use_gles && has_feature(feat_gles_khr_robustness))
+       glReadnPixelsKHR(x, y, width, height, format, type, bufSize, data);
+    else
+       glReadPixels(x, y, width, height, format, type, data);
+@@ -10005,7 +10008,7 @@ static void vrend_renderer_fill_caps_v1(int gl_ver, int gles_ver, union virgl_ca
+       caps->v1.bset.depth_clip_disable = 1;
+ 
+    if (gl_ver >= 32) {
+-      caps->v1.bset.fragment_coord_conventions = 1;
++      caps->v1.bset.fragment_coord_conventions = (vrend_state.gl_apple)? 0:1;
+       caps->v1.bset.seamless_cube_map = 1;
+    } else {
+       if (epoxy_has_gl_extension("GL_ARB_fragment_coord_conventions"))
+diff --git a/src/vrend_winsys.c b/src/vrend_winsys.c
+index bf2d9ef..bf84102 100644
+--- a/src/vrend_winsys.c
++++ b/src/vrend_winsys.c
+@@ -22,6 +22,8 @@
+  *
+  **************************************************************************/
+ 
++#include "os/os_misc.h"
++#include "vrend_debug.h"
+ #include "vrend_winsys.h"
+ 
+ #ifdef HAVE_EPOXY_GLX_H
+diff --git a/src/vrend_winsys_gbm.h b/src/vrend_winsys_gbm.h
+index 84943fb..52b1544 100644
+--- a/src/vrend_winsys_gbm.h
++++ b/src/vrend_winsys_gbm.h
+@@ -25,7 +25,9 @@
+ #ifndef VIRGL_GBM_H
+ #define VIRGL_GBM_H
+ 
++#ifdef HAVE_EPOXY_EGL_H
+ #include <gbm.h>
++#endif
+ #include "vrend_iov.h"
+ #include "virglrenderer.h"
+ 
+@@ -101,6 +103,8 @@ struct virgl_gbm {
+    struct gbm_device *device;
+ };
+ 
++#ifdef HAVE_EPOXY_EGL_H
++
+ struct virgl_gbm *virgl_gbm_init(int fd);
+ 
+ void virgl_gbm_fini(struct virgl_gbm *gbm);
+@@ -124,3 +128,5 @@ bool virgl_gbm_external_allocation_preferred(uint32_t flags);
+ bool virgl_gbm_gpu_import_required(uint32_t flags);
+ 
+ #endif
++
++#endif

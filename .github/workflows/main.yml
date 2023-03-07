@@ -11,77 +11,123 @@ on:
 jobs:
   build:
     if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master'}}
-    runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
         include: [
-          { msystem: MINGW64, toolchain: mingw-w64-x86_64-toolchain, can-fail: false },
-          { msystem: MINGW32, toolchain: mingw-w64-i686-toolchain, can-fail: false },
-          { msystem: UCRT64, toolchain: mingw-w64-ucrt-x86_64-toolchain, can-fail: false },
-          { msystem: CLANG64, toolchain: mingw-w64-clang-x86_64-toolchain, can-fail: true },
-          { msystem: CLANG32, toolchain: '', can-fail: true }
+          { msystem: MINGW64, runner: windows-2022 },
+          { msystem: MINGW32, runner: windows-2022 },
+          { msystem: UCRT64, runner: windows-2022 },
+          { msystem: CLANG64, runner: windows-2022 },
+          { msystem: CLANG32, runner: windows-2022 },
+          # { msystem: CLANGARM64, runner: ['Windows', 'ARM64', 'CI'] }
         ]
     name: ${{ matrix.msystem }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      MSYS: "winjitdebug"
     steps:
-      - uses: actions/checkout@v2
+      - name: Get CPU Name
+        run : |
+          Get-CIMInstance -Class Win32_Processor | Select-Object -Property Name
+
+      - name: Setup JIT minidump
+        if: ${{ matrix.msystem != 'CLANGARM64' }}
+        run: |
+          Set-Location '${{ runner.temp }}'
+          Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/Procdump.zip' -OutFile Procdump.zip
+          Expand-Archive Procdump.zip -DestinationPath .
+          New-Item -Path '_dumps' -ItemType Directory
+          .\procdump64.exe -accepteula -ma -i "${{ runner.temp }}/_dumps"
+          .\procdump.exe -accepteula -ma -i "${{ runner.temp }}/_dumps"
+
+      - name: Configure Pagefile
+        if: ${{ matrix.msystem != 'CLANGARM64' }}
+        uses: al-cheb/configure-pagefile-action@86589fd789a4de3e62ba628dda2cb10027b66d67
+        with:
+          minimum-size: 4GB
+          maximum-size: 16GB
+          disk-root: "C:"
+
+      - uses: actions/checkout@v3
         with:
           path: temp
           fetch-depth: 0
+          persist-credentials: false
 
       # to match the autobuild environment
-      - uses: actions/setup-python@v2
+      - uses: actions/setup-python@v4
         with:
-          python-version: '3.8'
+          python-version: '3.10'
+          architecture: 'x64'
 
       - uses: msys2/setup-msys2@v2
         with:
           msystem: ${{ matrix.msystem }}
-          install: VCS base-devel binutils pactoys-git ${{ matrix.toolchain }}
+          install: git python base-devel
           update: true
+          release: ${{ runner.arch != 'ARM64' }}
+          location: 'D:\M'
 
       - name: Add staging repo
         shell: msys2 {0}
         run: |
-          sed -i '1s|^|[staging]\nServer = https://repo.msys2.org/staging/\nSigLevel = Never\n[clang32]\nInclude = /etc/pacman.d/mirrorlist.clang32\n|' /etc/pacman.conf
+          cp /etc/pacman.conf /etc/pacman.conf.bak
+          grep -qFx '[staging]' /etc/pacman.conf || sed -i '/^# \[staging\]/,/^$/ s|^# ||g' /etc/pacman.conf
 
       - name: Update using staging
         run: |
           msys2 -c 'pacman --noconfirm -Suuy'
           msys2 -c 'pacman --noconfirm -Suu'
 
-      - name: Install clang32 toolchain
-        if: ${{ matrix.msystem == 'CLANG32' }}
-        run: |
-          msys2 -c 'pacman --noconfirm --overwrite "*" -S --needed mingw-w64-clang-i686-toolchain'
-
       - name: Move Checkout
         run: |
+          If (Test-Path "C:\_") { rm -r -fo "C:\_" }
           Copy-Item -Path ".\temp" -Destination "C:\_" -Recurse
 
       - name: CI-Build
         shell: msys2 {0}
-        continue-on-error: ${{ matrix.can-fail }}
         id: build
         run: |
           cd /C/_
+          unset VCPKG_ROOT
+          pacman -S --needed --noconfirm ${MINGW_PACKAGE_PREFIX}-ntldd
           MINGW_ARCH=${{ matrix.msystem }} ./.ci/ci-build.sh
 
       - name: "Upload binaries"
-        uses: actions/upload-artifact@v2
-        continue-on-error: ${{ matrix.can-fail }}
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v3
         with:
           name: ${{ matrix.msystem }}-packages
           path: C:/_/artifacts/*.pkg.tar.*
+          if-no-files-found: ignore
+
+      - name: "Upload dumps"
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.msystem }}-dumps
+          path: ${{ runner.temp }}/_dumps/*.dmp
+          if-no-files-found: ignore
+
+      - name: "Clean up runner"
+        if: ${{ always() }}
+        continue-on-error: true
+        run: |
+          If (Test-Path "C:\_") { rm -r -fo "C:\_" }
+          msys2 -c 'mv -f /etc/pacman.conf.bak /etc/pacman.conf'
+          msys2 -c 'pacman --noconfirm -Suuy'
+          msys2 -c 'pacman --noconfirm -Suu'
+
   check:
     needs: [build]
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/download-artifact@v2
+      - uses: actions/checkout@v3
+      - uses: actions/download-artifact@v3
         continue-on-error: true
         with:
-          name: MINGW64-packages
+          name: UCRT64-packages
           path: C:/_/artifacts
       - name: Check whether to Run
         id: check-run
@@ -90,11 +136,39 @@ jobs:
       - uses: msys2/setup-msys2@v2
         if: steps.check-run.outputs.run == 'true'
         with:
-          msystem: MINGW64
-          install: mingw-w64-x86_64-python-pip
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-python-pip
           release: false # since we aren't building anything
+      - name: Add staging repo
+        if: steps.check-run.outputs.run == 'true'
+        shell: msys2 {0}
+        run: |
+          sed -i '1s|^|[staging]\nServer = https://repo.msys2.org/staging/\nSigLevel = Never\n|' /etc/pacman.conf
+      - name: Update using staging
+        if: steps.check-run.outputs.run == 'true'
+        run: |
+          msys2 -c 'pacman --noconfirm -Suuy'
+          msys2 -c 'pacman --noconfirm -Suu'
       - name: Run Checks
         if: steps.check-run.outputs.run == 'true'
         shell: msys2 {0}
         run: |
           python .ci/ci-check.py
+
+  package-grokker:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/download-artifact@v3
+        id: artifacts
+        continue-on-error: true
+        with:
+          name: UCRT64-packages
+          path: artifacts
+      - name: Grok packages
+        uses: jeremyd2019/package-grokker/grok-artifacts@main
+        if: steps.artifacts.outcome == 'success'
+        with:
+          repo: ucrt64
+          path: artifacts

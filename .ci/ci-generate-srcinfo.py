@@ -29,6 +29,7 @@ import hashlib
 import time
 import shlex
 import subprocess
+import gzip
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
@@ -55,7 +56,8 @@ def get_mingw_arch_list(msys2_root: str, dir: str, pkgbuild_path: str) -> List[s
     executable = os.path.join(msys2_root, 'usr', 'bin', 'bash.exe')
     sub_commands = [
         shlex.join(['source', pkgbuild_path]),
-        'echo -n "${mingw_arch[@]}"'
+        '! declare -p mingw_arch &>/dev/null',
+        'echo -n "$? ${mingw_arch[@]}"'
     ]
     env = os.environ.copy()
     env["CHERE_INVOKING"] = "1"
@@ -63,10 +65,11 @@ def get_mingw_arch_list(msys2_root: str, dir: str, pkgbuild_path: str) -> List[s
     env["MSYS2_PATH_TYPE"] = "minimal"
     out = subprocess.check_output(
         [executable, '-lc', ';'.join(sub_commands)], universal_newlines=True, env=env, cwd=dir)
-    arch_list = out.strip().split()
-    if not arch_list:
+    first, *arch_list = out.strip().split()
+    list_exists = bool(int(first))
+    if not list_exists:
+        assert not arch_list
         arch_list = ["mingw32", "mingw64", "ucrt64", "clang64"]
-    assert arch_list
     return arch_list
 
 
@@ -196,7 +199,7 @@ def main(argv: List[str]) -> Optional[Union[int, str]]:
     parser.add_argument('mode', choices=['msys', 'mingw'], help="The type of the repo")
     parser.add_argument("msys2_root", help="The path to MSYS2")
     parser.add_argument("repo_path", help="The path to GIT repo")
-    parser.add_argument("json_cache", help="The path to the json file used to fetch/store the results")
+    parser.add_argument("json_cache", help="The path to the json.gz file used to fetch/store the results")
     parser.add_argument("--time-limit", action="store",
         type=int, dest="time_limit", default=0,
         help='time after which it will stop and save, 0 means no limit')
@@ -208,7 +211,7 @@ def main(argv: List[str]) -> Optional[Union[int, str]]:
     cache: Cache = {}
     try:
         with open(srcinfo_path, "rb") as h:
-            cache = json.loads(h.read())
+            cache = json.loads(gzip.decompress(h.read()))
     except FileNotFoundError:
         pass
 
@@ -224,7 +227,7 @@ def main(argv: List[str]) -> Optional[Union[int, str]]:
 
     srcinfos_dict = OrderedDict(sorted(srcinfos))
     with open(srcinfo_path, "wb") as h:
-        h.write(json.dumps(srcinfos_dict, indent=2).encode("utf-8"))
+        h.write(gzip.compress(json.dumps(srcinfos_dict, indent=2).encode("utf-8")))
 
     return None
 
