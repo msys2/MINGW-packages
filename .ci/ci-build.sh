@@ -9,7 +9,7 @@ set -eo pipefail
 DIR="$( cd "$( dirname "$0" )" && pwd )"
 
 # Configure
-mkdir artifacts
+mkdir -p artifacts
 git remote add upstream 'https://github.com/MSYS2/MINGW-packages'
 git fetch --quiet upstream
 # reduce time required to install packages by disabling pacman's disk space checking
