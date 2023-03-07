@@ -1,0 +1,78 @@
+name: llvm
+
+concurrency:
+  group: llvm-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build1:
+    uses: ./.github/workflows/build.yml
+    with:
+      packages: mingw-w64-clang mingw-w64-libc++
+  build2:
+    needs: build1
+    uses: ./.github/workflows/build.yml
+    with:
+      packages: mingw-w64-polly mingw-w64-libclc mingw-w64-mlir mingw-w64-lldb
+  build3:
+    needs: build2
+    uses: ./.github/workflows/build.yml
+    with:
+      packages: mingw-w64-flang mingw-w64-openmp
+
+  check:
+    needs: [build3]
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/download-artifact@v3
+        continue-on-error: true
+        with:
+          name: UCRT64-packages
+          path: C:/_/artifacts
+      - name: Check whether to Run
+        id: check-run
+        run: |
+          python .ci/ci-check.py --whether-to-run
+      - uses: msys2/setup-msys2@v2
+        if: steps.check-run.outputs.run == 'true'
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-python-pip mingw-w64-ucrt-x86_64-python-pacdb
+          release: false # since we aren't building anything
+      - name: Add staging repo
+        if: steps.check-run.outputs.run == 'true'
+        shell: msys2 {0}
+        run: |
+          sed -i '1s|^|[staging]\nServer = https://repo.msys2.org/staging/\nSigLevel = Never\n|' /etc/pacman.conf
+      - name: Update using staging
+        if: steps.check-run.outputs.run == 'true'
+        run: |
+          msys2 -c 'pacman --noconfirm -Suuy'
+          msys2 -c 'pacman --noconfirm -Suu'
+      - name: Run Checks
+        if: steps.check-run.outputs.run == 'true'
+        shell: msys2 {0}
+        run: |
+          python .ci/ci-check.py
+
+  package-grokker:
+    runs-on: ubuntu-latest
+    needs: build3
+
+    steps:
+      - uses: actions/download-artifact@v3
+        id: artifacts
+        continue-on-error: true
+        with:
+          name: UCRT64-packages
+          path: artifacts
+      - name: Grok packages
+        uses: jeremyd2019/package-grokker/grok-artifacts@main
+        if: steps.artifacts.outcome == 'success'
+        with:
+          repo: ucrt64
+          path: artifacts
