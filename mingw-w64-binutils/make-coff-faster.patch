@@ -1,0 +1,204 @@
+From f5ca0d38bfe3df9c1299c1965fa8b77a6493ff3d Mon Sep 17 00:00:00 2001
+From: oltolm <oleg.tolmatcev@gmail.com>
+Date: Thu, 2 Mar 2023 21:41:44 +0100
+Subject: [PATCH] make coff faster
+
+---
+ .gitignore        |  1 +
+ bfd/bfd-in2.h     |  4 ++++
+ bfd/coff-x86_64.c | 10 ++++++++++
+ bfd/coffcode.h    |  3 +++
+ bfd/coffgen.c     | 14 ++++++++++++++
+ bfd/opncls.c      | 30 ++++++++++++++++++++++++++++++
+ bfd/section.c     |  5 +++++
+ 7 files changed, 67 insertions(+)
+ create mode 100644 .gitignore
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 00000000..b2d4dc68
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1 @@
++.vscode/
+diff --git a/bfd/bfd-in2.h b/bfd/bfd-in2.h
+index eddfb31b..695e49bc 100644
+--- a/bfd/bfd-in2.h
++++ b/bfd/bfd-in2.h
+@@ -47,6 +47,7 @@ extern "C" {
+ #include <stdarg.h>
+ #include <string.h>
+ #include <sys/stat.h>
++#include "hashtab.h"
+ 
+ #if defined (__STDC__) || defined (ALMOST_STDC) || defined (HAVE_STRINGIZE)
+ #ifndef SABER
+@@ -6822,6 +6823,9 @@ struct bfd
+ 
+   /* For input BFDs, the build ID, if the object has one. */
+   const struct bfd_build_id *build_id;
++
++  htab_t section_by_target_index;
++  htab_t section_by_index;
+ };
+ 
+ static inline const char *
+diff --git a/bfd/coff-x86_64.c b/bfd/coff-x86_64.c
+index 13061cda..974f2cfd 100644
+--- a/bfd/coff-x86_64.c
++++ b/bfd/coff-x86_64.c
+@@ -753,11 +753,21 @@ coff_amd64_rtype_to_howto (bfd *abfd ATTRIBUTE_UNUSED,
+ 
+ 	  /* Sigh, the only way to get the section to offset against
+ 	     is to find it the hard way.  */
++	struct bfd_section entry;
++	entry.index = sym->n_scnum - 1;
++	struct bfd_section *ptr = htab_find (abfd->section_by_index, &entry);
++	if (ptr != NULL)
++	{
++		osect_vma = ptr->output_section->vma;
++	}
++	else
++	{
+ 	  for (s = abfd->sections, i = 1; i < sym->n_scnum; i++)
+ 	    s = s->next;
+ 
+ 	  osect_vma = s->output_section->vma;
+ 	}
++	}
+ 
+       *addendp -= osect_vma;
+     }
+diff --git a/bfd/coffcode.h b/bfd/coffcode.h
+index 1a7309b2..67d39644 100644
+--- a/bfd/coffcode.h
++++ b/bfd/coffcode.h
+@@ -353,6 +353,7 @@ CODE_FRAGMENT
+ */
+ 
+ #include "libiberty.h"
++#include "hashtab.h"
+ 
+ #ifdef COFF_WITH_PE
+ #include "peicode.h"
+@@ -3106,6 +3107,8 @@ coff_compute_section_file_positions (bfd * abfd)
+     target_index = 1;
+     abfd->sections = NULL;
+     abfd->section_last = NULL;
++    htab_empty (abfd->section_by_index);
++    htab_empty (abfd->section_by_target_index);
+     for (i = 0; i < count; i++)
+       {
+ 	current = section_list[i];
+diff --git a/bfd/coffgen.c b/bfd/coffgen.c
+index 74636a9e..5e7d740d 100644
+--- a/bfd/coffgen.c
++++ b/bfd/coffgen.c
+@@ -126,6 +126,9 @@ make_a_section_from_file (bfd *abfd,
+   newsect->userdata = NULL;
+   newsect->next = NULL;
+   newsect->target_index = target_index;
++  void **slot = htab_find_slot (abfd->section_by_target_index, newsect, INSERT);
++  if (slot != NULL)
++    *slot = newsect;
+ 
+   if (!bfd_coff_styp_to_sec_flags_hook (abfd, hdr, name, newsect, &flags))
+     result = false;
+@@ -369,12 +372,23 @@ coff_section_from_bfd_index (bfd *abfd, int section_index)
+   if (section_index == N_DEBUG)
+     return bfd_abs_section_ptr;
+ 
++  struct bfd_section entry;
++  entry.target_index = section_index;
++
++  void *s = htab_find (abfd->section_by_target_index, &entry);
++  if (s != NULL)
++  {
++    return s;
++  }
++  else
++  {
+   while (answer)
+     {
+       if (answer->target_index == section_index)
+ 	return answer;
+       answer = answer->next;
+     }
++  }
+ 
+   /* We should not reach this point, but the SCO 3.2v4 /lib/libc_s.a
+      has a bad symbol table in biglitpow.o.  */
+diff --git a/bfd/opncls.c b/bfd/opncls.c
+index 9241cd1c..4ada5541 100644
+--- a/bfd/opncls.c
++++ b/bfd/opncls.c
+@@ -26,6 +26,7 @@
+ #include "libbfd.h"
+ #include "libiberty.h"
+ #include "elf-bfd.h"
++#include "hashtab.h"
+ 
+ #ifndef S_IXUSR
+ #define S_IXUSR 0100	/* Execute by owner.  */
+@@ -52,6 +53,32 @@ unsigned int bfd_use_reserved_id = 0;
+ /* fdopen is a loser -- we should use stdio exclusively.  Unfortunately
+    if we do that we can't use fcntl.  */
+ 
++static hashval_t htab_hash_section_index (const void *entry)
++{
++  const struct bfd_section* sec = entry;
++  return sec->index;
++}
++
++static int htab_eq_section_index (const void *e1, const void *e2)
++{
++  const struct bfd_section *sec1 = e1;
++  const struct bfd_section *sec2 = e2;
++  return sec1->index == sec2->index;
++}
++
++static hashval_t htab_hash_section_target_index (const void *entry)
++{
++  const struct bfd_section* sec = entry;
++  return sec->target_index;
++}
++
++static int htab_eq_section_target_index (const void *e1, const void *e2)
++{
++  const struct bfd_section *sec1 = e1;
++  const struct bfd_section *sec2 = e2;
++  return sec1->target_index == sec2->target_index;
++}
++
+ /* Return a new BFD.  All BFD's are allocated through this routine.  */
+ 
+ bfd *
+@@ -91,6 +118,9 @@ _bfd_new_bfd (void)
+ 
+   nbfd->archive_plugin_fd = -1;
+ 
++  nbfd->section_by_index = htab_create (10, htab_hash_section_index, htab_eq_section_index, NULL);
++  nbfd->section_by_target_index = htab_create (10, htab_hash_section_target_index, htab_eq_section_target_index, NULL);
++
+   return nbfd;
+ }
+ 
+diff --git a/bfd/section.c b/bfd/section.c
+index 3b1993b6..bef6f397 100644
+--- a/bfd/section.c
++++ b/bfd/section.c
+@@ -828,6 +828,11 @@ bfd_section_init (bfd *abfd, asection *newsect)
+   _bfd_section_id++;
+   abfd->section_count++;
+   bfd_section_list_append (abfd, newsect);
++
++  void **slot = htab_find_slot (abfd->section_by_index, newsect, INSERT);
++  if (slot != NULL)
++    *slot = newsect;
++
+   return newsect;
+ }
+ 
+-- 
+2.39.2.windows.1
+
