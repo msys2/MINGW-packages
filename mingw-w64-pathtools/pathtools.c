@@ -498,6 +498,7 @@ get_relocated_path_list_ref(char const * from, char const * to_path_list, char *
     arr[i] = scratch;
     strcat (scratch, ref_path);
     strcat (scratch, rel_to_datadir);
+    free (rel_to_datadir);
     simplify_path (arr[i]);
     size_t arr_i_size = strlen (arr[i]);
     result_size += arr_i_size;
@@ -553,6 +554,7 @@ single_path_relocation_ref(const char *from, const char *to, char *ref_path)
   }
   char * rel_to_datadir = get_relative_path (from, to);
   strcat (ref_path, rel_to_datadir);
+  free (rel_to_datadir);
   simplify_path (&ref_path[0]);
   return malloc_copy_string(ref_path);
 #else
