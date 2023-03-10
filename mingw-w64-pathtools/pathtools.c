@@ -263,17 +263,6 @@ simplify_path(char * path)
   *result_p = '\0';
 }
 
-/* Returns actual_to by calculating the relative path from -> to and
-   applying that to actual_from. An assumption that actual_from is a
-   dir is made, and it may or may not end with a '/' */
-char const *
-get_relocated_path (char const * from, char const * to, char const * actual_from)
-{
-  char const * relative_from_to = get_relative_path (from, to);
-  char * actual_to = (char *) malloc (strlen(actual_from) + 2 + strlen(relative_from_to));
-  return actual_to;
-}
-
 int
 get_executable_path(char const * argv0, char * result, ssize_t max_size)
 {
