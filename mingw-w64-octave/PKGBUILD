@@ -2,7 +2,7 @@ _realname=octave
 pkgbase=mingw-w64-${_realname}
 pkgname=${MINGW_PACKAGE_PREFIX}-${_realname}
 pkgver=8.1.0
-pkgrel=2
+pkgrel=3
 pkgdesc="GNU Octave: Interactive programming environment for numerical computations (mingw-w64)"
 url="https://www.octave.org"
 license=('spdx:GPL-3.0-or-later')
@@ -10,8 +10,8 @@ arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64')
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran")
-         "${MINGW_PACKAGE_PREFIX}-openblas"
-         "${MINGW_PACKAGE_PREFIX}-arpack"
+         $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] && echo "${MINGW_PACKAGE_PREFIX}-lapack" || echo "${MINGW_PACKAGE_PREFIX}-openblas")
+         $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-arpack")
          "${MINGW_PACKAGE_PREFIX}-curl"
          "${MINGW_PACKAGE_PREFIX}-fftw"
          "${MINGW_PACKAGE_PREFIX}-ghostscript"
@@ -23,8 +23,8 @@ depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-pcre2"
          "${MINGW_PACKAGE_PREFIX}-qhull"
          $([[ ${CARCH} == i686 ]] && echo "${MINGW_PACKAGE_PREFIX}-suitesparse5" || echo "${MINGW_PACKAGE_PREFIX}-suitesparse")
-         "${MINGW_PACKAGE_PREFIX}-sundials"
-         "${MINGW_PACKAGE_PREFIX}-qrupdate"
+         $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-sundials")
+         $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-qrupdate")
          "${MINGW_PACKAGE_PREFIX}-qscintilla-qt5"
          "${MINGW_PACKAGE_PREFIX}-qt5-tools")
 makedepends=("${MINGW_PACKAGE_PREFIX}-autotools"
@@ -41,11 +41,13 @@ optdepends=('texinfo: for help-support in Octave'
             "${MINGW_PACKAGE_PREFIX}-gnuplot: alternative plotting"
             "${MINGW_PACKAGE_PREFIX}-portaudio: audio support")
 source=(https://ftp.gnu.org/gnu/octave/octave-$pkgver.tar.xz{,.sig}
+        "0001-avoid-ambiguous-operator-overload-with-clang.patch"
         "0002-mk-doc-cache-path.patch"
         "0005-makeinfo-perl.patch")
 validpgpkeys=('DBD9C84E39FE1AAE99F04446B05F05B75D36644B')  # John W. Eaton
 sha512sums=('7e43e1a272cb51e981d4f534bbed2c2915bb714be3f151f98862ed8ecec1ee3a90600dd22778077b6cdecee4c802a2e4d13a49c339cef683e1356941b9e1cd1d'
             'SKIP'
+            'f95223a42b4fb2d394eda30ffca9534de012e0ed428bd3b9515c03e57dfeef58321ccee79165fbd48f03cf1e75a63860802a34d167c77db8ad4e13296102c373'
             '5742cde34ae9184276c830dab41dccb289991578656353658bf07315d89b1c3870c6c51520d5aae0cec8c7fb12c707a1970aa9dde353b4ab54e515d1d3cf66e0'
             'c2796f1d83208595c4f52f27d14f3bedc64d95a514089108726b5a2de20296bdfb195f545e7045a322eebef4ce387b0f05547e071c74dfa5478f5689d0f207bd')
 
@@ -63,6 +65,15 @@ prepare() {
   apply_patch_with_msg \
     0002-mk-doc-cache-path.patch \
     0005-makeinfo-perl.patch
+
+  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+    apply_patch_with_msg \
+      0001-avoid-ambiguous-operator-overload-with-clang.patch
+
+    # We need the patched libtool with Flang specific changes.
+    autoreconf -fiv
+  fi
+
 }
 
 build() {
@@ -70,8 +81,34 @@ build() {
 
   declare -a _extra_config
   if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
-    export F77=${MINGW_PREFIX}/bin/flang
-    _extra_config+=("--enable-fortran-calling-convention=gfortran")
+    _extra_config+=(# Reference LAPACK still crashes for some functions with
+                    # complex input.  But using OpenBLAS would crash for even
+                    # more functions.
+                    "--with-blas=-lblas"
+                    # Clang seems to require a different set of dllexport
+                    # attributes than GCC.  For the time being, export all
+                    # symbols (including those from gnulib and other static
+                    # libraries linked into the Octave libraries).  Doing that
+                    # might cause issues in some cases.  But solving this
+                    # without breaking GCC support might be difficult.
+                    "--disable-lib-visibility-flags"
+                    # Libtool still needs some hints how to handle LLVM Flang:
+                    "--enable-fortran-calling-convention=gfortran"
+                    "ac_cv_f77_compiler_gnu=yes"
+                    "lt_cv_prog_gnu_ld=yes"
+                    "F77=${MINGW_PREFIX}/bin/flang"
+                    # LLVM 16 seems to have switched defaults to C++17.
+                    # Apparently, some STL functions that are deprecated in that
+                    # version of the standard are used.  For the time being,
+                    # build with the C++14 feature set (and GNU extensions).
+                    "CXX=${MINGW_PREFIX}/bin/clang++ -std=gnu++14")
+    # The headers from some dependent libraries (graphicsmagick++?) cause a
+    # torrent of warnings about deprecated declarations.  Sometimes to the
+    # point that the build crashes with garbled characters in the terminal
+    # output for some reason.  Just calling `make all -j2` again in the build
+    # tree lets the compilation finish successfully.
+    # Disable those warnings as a work-around.
+    CXXFLAGS+=" -Wno-deprecated-declarations"
   fi
 
   # The configure step sometimes hangs for MINGW32 for currently unknown reasons.
@@ -89,7 +126,6 @@ build() {
     --disable-static \
     --enable-relocate-all \
     --enable-link-all-dependencies \
-    --with-blas=-lopenblas \
     "${_extra_config[@]}" \
     gl_cv_have_weak=no \
     octave_cv_fftw3_threads_lib="-lfftw3_omp" \
