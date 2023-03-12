@@ -69,7 +69,7 @@ def get_mingw_arch_list(msys2_root: str, dir: str, pkgbuild_path: str) -> List[s
     list_exists = bool(int(first))
     if not list_exists:
         assert not arch_list
-        arch_list = ["mingw32", "mingw64", "ucrt64", "clang64"]
+        arch_list = ["mingw32", "mingw64", "ucrt64", "clang64", "clang32"]
     return arch_list
 
 
