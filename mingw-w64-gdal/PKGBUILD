@@ -5,10 +5,11 @@
 # Contributor: Petri Moisio <petri.k.moisio@gmail.com>
 
 _realname=gdal
-pkgbase=mingw-w64-${_realname}
-pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgbase=mingw-w64-${_realname,,}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-python-${_realname}")
 pkgver=3.6.3
-pkgrel=1
+pkgrel=2
 pkgdesc="A translator library for raster geospatial data formats (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
@@ -16,7 +17,9 @@ url="https://gdal.org/"
 license=('spdx:MIT')
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-cmake"
-             "${MINGW_PACKAGE_PREFIX}-ninja")
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-python-numpy"
+             "${MINGW_PACKAGE_PREFIX}-python-setuptools")
 depends=("${MINGW_PACKAGE_PREFIX}-armadillo"
          "${MINGW_PACKAGE_PREFIX}-arrow"
          "${MINGW_PACKAGE_PREFIX}-cfitsio"
@@ -52,10 +55,11 @@ depends=("${MINGW_PACKAGE_PREFIX}-armadillo"
          "${MINGW_PACKAGE_PREFIX}-sqlite3"
          "${MINGW_PACKAGE_PREFIX}-xerces-c"
          "${MINGW_PACKAGE_PREFIX}-xz")
-#optdepends=("${MINGW_PACKAGE_PREFIX}-postgresql")
 source=(https://github.com/OSGeo/gdal/releases/download/v${pkgver}/gdal-${pkgver}.tar.gz
+        001-fix-bindings-install-path.patch
         002-dont-define-msvcrt-version.patch)
 sha256sums=('1c271c08b7161227384833ddc24febd8d012a44c6de93a5912051784e3247506'
+            '8b093b0a84f69287f4be1a8e86b6d18643be0d44313ffa7905cb3d51d1775ab1'
             '2eb8b8d7321f5a75cc7ff29bf63ae8bda1c900f463b6577bac109503346275f4')
 
 apply_patch_with_msg() {
@@ -69,6 +73,7 @@ apply_patch_with_msg() {
 prepare() {
   cd ${srcdir}/${_realname}-${pkgver}
   apply_patch_with_msg \
+    001-fix-bindings-install-path.patch \
     002-dont-define-msvcrt-version.patch
 }
 
@@ -108,10 +113,11 @@ build() {
       "${extra_config[@]}" \
       -DBUILD_SHARED_LIBS=ON \
       -DCMAKE_CXX_STANDARD=17 \
-      -DBUILD_PYTHON_BINDINGS=OFF \
+      -DBUILD_PYTHON_BINDINGS=ON \
       -DGDAL_USE_INTERNAL_LIBS=OFF \
       -DGDAL_USE_MSSQL_ODBC=OFF \
       -DBUILD_TESTING=OFF \
+      -DPython_EXECUTABLE=${MINGW_PREFIX}/bin/python \
       ../${_realname}-${pkgver}
 
   "${MINGW_PREFIX}"/bin/cmake.exe --build .
@@ -125,7 +131,7 @@ check () {
   "${MINGW_PREFIX}"/bin/ctest.exe .
 }
 
-package () {
+package_gdal() {
   msg2 "Installing static library"
   cd "${srcdir}/build-${MSYSTEM}-static"
   DESTDIR="${pkgdir}" "${MINGW_PREFIX}"/bin/cmake.exe --install .
@@ -136,4 +142,41 @@ package () {
 
   # install license
   install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE.TXT" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+
+  # Move python stuff
+  mkdir -p ${srcdir}/build-${MSYSTEM}-shared/{bin,lib}
+  mv ${pkgdir}${MINGW_PREFIX}/bin/*py ${srcdir}/build-${MSYSTEM}-shared/bin
+  mv ${pkgdir}${MINGW_PREFIX}/lib/python* ${srcdir}/build-${MSYSTEM}-shared/lib
 }
+
+package_python-gdal() {
+  pkgdesc="Python bindings for GDAL (mingw-w64)"
+  depends=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+           "${MINGW_PACKAGE_PREFIX}-python"
+           "${MINGW_PACKAGE_PREFIX}-python-psycopg2"
+           "${MINGW_PACKAGE_PREFIX}-python-numpy")
+
+  msg2 "Installing Python bindings"
+  cd "${srcdir}/build-${MSYSTEM}-shared"
+
+  install -d ${pkgdir}${MINGW_PREFIX}/{bin,lib}
+  mv ${srcdir}/build-${MSYSTEM}-shared/bin/* ${pkgdir}${MINGW_PREFIX}/bin
+  mv ${srcdir}/build-${MSYSTEM}-shared/lib/* ${pkgdir}${MINGW_PREFIX}/lib
+
+  # fix python command in files
+  local _mingw_prefix=$(cygpath -am ${MINGW_PREFIX})
+  for _f in "${pkgdir}${MINGW_PREFIX}"/bin/*.py; do
+    sed -e "s|${_mingw_prefix}/bin/|/usr/bin/env |g" -i ${_f}
+  done
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;
