@@ -1,0 +1,109 @@
+From dc8830b6d616c03b41b287b3c34065a0592a566e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Markus=20M=C3=BCtzel?= <markus.muetzel@gmx.de>
+Date: Thu, 6 Apr 2023 18:36:50 +0200
+Subject: [PATCH] [flang][codegen]: Complex numbers in function arguments on
+ Windows.
+
+Function arguments or return values that are complex floating point values
+aren't correctly lowered for Windows 64-bit targets.
+Add a target that is specific for that platform.
+---
+ lib/Optimizer/CodeGen/Target.cpp | 76 +++++++++++++++++++++++++-
+ 1 file changed, 74 insertions(+), 2 deletions(-)
+
+diff --git a/flang/lib/Optimizer/CodeGen/Target.cpp b/flang/lib/Optimizer/CodeGen/Target.cpp
+index 50d144909a1c..e3f6757ac573 100644
+--- a/lib/Optimizer/CodeGen/Target.cpp
++++ b/lib/Optimizer/CodeGen/Target.cpp
+@@ -232,6 +232,74 @@ struct TargetX86_64 : public GenericTarget<TargetX86_64> {
+ };
+ } // namespace
+ 
++//===----------------------------------------------------------------------===//
++// x86_64 (x86 64 bit) Windows target specifics.
++//===----------------------------------------------------------------------===//
++
++namespace {
++struct TargetX86_64Win : public GenericTarget<TargetX86_64Win> {
++  using GenericTarget::GenericTarget;
++
++  static constexpr int defaultWidth = 64;
++
++  CodeGenSpecifics::Marshalling
++  complexArgumentType(mlir::Location loc, mlir::Type eleTy) const override {
++    CodeGenSpecifics::Marshalling marshal;
++    const auto *sem = &floatToSemantics(kindMap, eleTy);
++    if (sem == &llvm::APFloat::IEEEsingle()) {
++      // i64   pack both floats in a 64-bit GPR
++      marshal.emplace_back(mlir::IntegerType::get(eleTy.getContext(), 64),
++                           AT{});
++    } else if (sem == &llvm::APFloat::IEEEdouble()) {
++      // Use a type that will be translated into LLVM as:
++      // { double, double }   struct of 2 double, byval, align 8
++      marshal.emplace_back(
++          fir::ReferenceType::get(mlir::TupleType::get(
++              eleTy.getContext(), mlir::TypeRange{eleTy, eleTy})),
++          AT{/*align=*/8, /*byval=*/true});
++    } else if (sem == &llvm::APFloat::IEEEquad()) {
++      // Use a type that will be translated into LLVM as:
++      // { fp128, fp128 }   struct of 2 fp128, byval, align 16
++      marshal.emplace_back(
++          fir::ReferenceType::get(mlir::TupleType::get(
++              eleTy.getContext(), mlir::TypeRange{eleTy, eleTy})),
++          AT{/*align=*/16, /*byval=*/true});
++    } else {
++      TODO(loc, "complex for this precision");
++    }
++    return marshal;
++  }
++
++  CodeGenSpecifics::Marshalling
++  complexReturnType(mlir::Location loc, mlir::Type eleTy) const override {
++    CodeGenSpecifics::Marshalling marshal;
++    const auto *sem = &floatToSemantics(kindMap, eleTy);
++    if (sem == &llvm::APFloat::IEEEsingle()) {
++      // i64   pack both floats in a 64-bit GPR
++      marshal.emplace_back(mlir::IntegerType::get(eleTy.getContext(), 64),
++                           AT{});
++    } else if (sem == &llvm::APFloat::IEEEdouble()) {
++      // Use a type that will be translated into LLVM as:
++      // { double, double }   struct of 2 double, sret, align 8
++      marshal.emplace_back(
++          fir::ReferenceType::get(mlir::TupleType::get(
++              eleTy.getContext(), mlir::TypeRange{eleTy, eleTy})),
++          AT{/*align=*/8, /*byval=*/false, /*sret=*/true});
++    } else if (sem == &llvm::APFloat::IEEEquad()) {
++      // Use a type that will be translated into LLVM as:
++      // { fp128, fp128 }   struct of 2 fp128, sret, align 16
++      marshal.emplace_back(
++          fir::ReferenceType::get(mlir::TupleType::get(
++              eleTy.getContext(), mlir::TypeRange{eleTy, eleTy})),
++          AT{/*align=*/16, /*byval=*/false, /*sret=*/true});
++    } else {
++      TODO(loc, "complex for this precision");
++    }
++    return marshal;
++  }
++};
++} // namespace
++
+ //===----------------------------------------------------------------------===//
+ // AArch64 linux target specifics.
+ //===----------------------------------------------------------------------===//
+@@ -548,8 +616,12 @@ fir::CodeGenSpecifics::get(mlir::MLIRContext *ctx, llvm::Triple &&trp,
+     return std::make_unique<TargetI386>(ctx, std::move(trp),
+                                         std::move(kindMap));
+   case llvm::Triple::ArchType::x86_64:
+-    return std::make_unique<TargetX86_64>(ctx, std::move(trp),
+-                                          std::move(kindMap));
++    if (trp.isOSWindows())
++      return std::make_unique<TargetX86_64Win>(ctx, std::move(trp),
++                                               std::move(kindMap));
++    else
++      return std::make_unique<TargetX86_64>(ctx, std::move(trp),
++                                            std::move(kindMap));
+   case llvm::Triple::ArchType::aarch64:
+     return std::make_unique<TargetAArch64>(ctx, std::move(trp),
+                                            std::move(kindMap));
+-- 
+2.38.0.windows.1
