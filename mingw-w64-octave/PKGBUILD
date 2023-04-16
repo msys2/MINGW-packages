@@ -1,13 +1,13 @@
 _realname=octave
 pkgbase=mingw-w64-${_realname}
 pkgname=${MINGW_PACKAGE_PREFIX}-${_realname}
-pkgver=8.1.0
-pkgrel=2
+pkgver=8.2.0
+pkgrel=1
 pkgdesc="GNU Octave: Interactive programming environment for numerical computations (mingw-w64)"
 url="https://www.octave.org"
 license=('spdx:GPL-3.0-or-later')
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran")
          "${MINGW_PACKAGE_PREFIX}-openblas"
@@ -16,36 +16,42 @@ depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-fftw"
          "${MINGW_PACKAGE_PREFIX}-ghostscript"
          "${MINGW_PACKAGE_PREFIX}-gl2ps"
-         "${MINGW_PACKAGE_PREFIX}-glpk"
+         $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-aarch64* ]] || echo "${MINGW_PACKAGE_PREFIX}-glpk")
          "${MINGW_PACKAGE_PREFIX}-graphicsmagick"
          "${MINGW_PACKAGE_PREFIX}-hdf5"
          "${MINGW_PACKAGE_PREFIX}-libsndfile"
          "${MINGW_PACKAGE_PREFIX}-pcre2"
          "${MINGW_PACKAGE_PREFIX}-qhull"
          $([[ ${CARCH} == i686 ]] && echo "${MINGW_PACKAGE_PREFIX}-suitesparse5" || echo "${MINGW_PACKAGE_PREFIX}-suitesparse")
-         "${MINGW_PACKAGE_PREFIX}-sundials"
+         $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-aarch64* ]] || echo "${MINGW_PACKAGE_PREFIX}-sundials")
          "${MINGW_PACKAGE_PREFIX}-qrupdate"
          "${MINGW_PACKAGE_PREFIX}-qscintilla-qt5"
          "${MINGW_PACKAGE_PREFIX}-qt5-tools")
 makedepends=("${MINGW_PACKAGE_PREFIX}-autotools"
              "${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-fc"
-             "${MINGW_PACKAGE_PREFIX}-gnuplot"
+             $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-aarch64* ]] || echo "${MINGW_PACKAGE_PREFIX}-gnuplot")
              "${MINGW_PACKAGE_PREFIX}-gperf"
              "${MINGW_PACKAGE_PREFIX}-fltk"
              "${MINGW_PACKAGE_PREFIX}-portaudio"
              "${MINGW_PACKAGE_PREFIX}-rapidjson")
 optdepends=('texinfo: for help-support in Octave'
+            "unzip: for decompressing .zip archives"
+            "zip: for compressing .zip archives"
             "${MINGW_PACKAGE_PREFIX}-epstool: eps output with tight bounding box"
             "${MINGW_PACKAGE_PREFIX}-fltk: alternative plotting and dialogs"
             "${MINGW_PACKAGE_PREFIX}-gnuplot: alternative plotting"
             "${MINGW_PACKAGE_PREFIX}-portaudio: audio support")
 source=(https://ftp.gnu.org/gnu/octave/octave-$pkgver.tar.xz{,.sig}
+        "0001-no-namespace-in-extern-C.patch::https://hg.savannah.gnu.org/hgweb/octave/raw-rev/123c5d78fc9d"
+        "0003-no-community-support.patch"
         "0002-mk-doc-cache-path.patch"
         "0005-makeinfo-perl.patch")
 validpgpkeys=('DBD9C84E39FE1AAE99F04446B05F05B75D36644B')  # John W. Eaton
-sha512sums=('7e43e1a272cb51e981d4f534bbed2c2915bb714be3f151f98862ed8ecec1ee3a90600dd22778077b6cdecee4c802a2e4d13a49c339cef683e1356941b9e1cd1d'
+sha512sums=('9f56428e990c6aa71a5cfe7698602ba681535c36b140fa9248536c260afebd19f6125c92a0fd6d14fab5a794de49e03ccc98e89ac879108f635b3ffc4ec40514'
             'SKIP'
+            'b3961b95e8eba47959f3d8dd5b7542c7578647d7a3fd79489ceeadc34444d69128011f6cb276f6cb1f09411e1253b6c6e2f1b8caa9db3fc2ada523f01682d5b1'
+            'c737dc79352ebfec9651266c1853cb6cf6d75201019be0b4cc60bd12a1bde777a18b6e50e278f9980a6ffed96fb4442793f870b434c0c8abcbd521a2f4f53dd9'
             '5742cde34ae9184276c830dab41dccb289991578656353658bf07315d89b1c3870c6c51520d5aae0cec8c7fb12c707a1970aa9dde353b4ab54e515d1d3cf66e0'
             'c2796f1d83208595c4f52f27d14f3bedc64d95a514089108726b5a2de20296bdfb195f545e7045a322eebef4ce387b0f05547e071c74dfa5478f5689d0f207bd')
 
@@ -63,6 +69,16 @@ prepare() {
   apply_patch_with_msg \
     0002-mk-doc-cache-path.patch \
     0005-makeinfo-perl.patch
+
+  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+    apply_patch_with_msg \
+      0001-no-namespace-in-extern-C.patch \
+      0003-no-community-support.patch
+
+    # We need the patched libtool with Flang specific changes.
+    autoreconf -fiv
+  fi
+
 }
 
 build() {
@@ -70,8 +86,30 @@ build() {
 
   declare -a _extra_config
   if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
-    export F77=${MINGW_PREFIX}/bin/flang
-    _extra_config+=("--enable-fortran-calling-convention=gfortran")
+    _extra_config+=(# Clang seems to require a different set of dllexport
+                    # attributes than GCC.  For the time being, export all
+                    # symbols (including those from gnulib and other static
+                    # libraries linked into the Octave libraries).  Doing that
+                    # might cause issues in some cases.  But solving this
+                    # without breaking GCC support might be difficult.
+                    "--disable-lib-visibility-flags"
+                    # Libtool still needs some hints how to handle LLVM Flang:
+                    "--enable-fortran-calling-convention=gfortran"
+                    "ac_cv_f77_compiler_gnu=yes"
+                    "lt_cv_prog_gnu_ld=yes"
+                    "F77=${MINGW_PREFIX}/bin/flang"
+                    # LLVM 16 seems to have switched defaults to C++17.
+                    # Apparently, some STL functions that are deprecated in that
+                    # version of the standard are used.  For the time being,
+                    # build with the C++14 feature set (and GNU extensions).
+                    "CXX=${MINGW_PREFIX}/bin/clang++ -std=gnu++14")
+    # The headers from some dependent libraries (graphicsmagick++?) cause a
+    # torrent of warnings about deprecated declarations.  Sometimes to the
+    # point that the build crashes with garbled characters in the terminal
+    # output for some reason.  Just calling `make all -j2` again in the build
+    # tree lets the compilation finish successfully.
+    # Disable those warnings as a work-around.
+    CXXFLAGS+=" -Wno-deprecated-declarations"
   fi
 
   # The configure step sometimes hangs for MINGW32 for currently unknown reasons.
@@ -89,7 +127,6 @@ build() {
     --disable-static \
     --enable-relocate-all \
     --enable-link-all-dependencies \
-    --with-blas=-lopenblas \
     "${_extra_config[@]}" \
     gl_cv_have_weak=no \
     octave_cv_fftw3_threads_lib="-lfftw3_omp" \
