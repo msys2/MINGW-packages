@@ -680,7 +680,7 @@ function qemuLiveDesktopQemuImgConversions {
 	# Conversion tests with qcow qcow2 qed raw vdi vhdx vmdk vpc
 	download $LIVE_IMAGE_URL
 	local IMG_SIZE=$(qemu-img info "$LIVE_IMAGE_FILE" |
-		grep bytes | sed "s/.*(//" | sed "s/ bytes.*//")
+		grep "virtual.*bytes" | sed "s/.*(//" | sed "s/ bytes.*//")
 
 	local TESTDIR="qemu-img-conversion" FMT
 	mkdir -p $TESTDIR
@@ -875,7 +875,7 @@ function qemuInstalledDesktopGTK {
 
 # Extended VNC-Desktop (HDImage)
 function qemuInstalledDesktopVNC1 {
-	local IMAGE='\Qemu\test\test-usernet.qcow2'
+	local IMAGE='d:\Qemu\test\test-usernet.qcow2'
 	[ -f "$IMAGE" ] || return 0
 	cygwinXlaunch
 	execute qemu-system-x86_64 -M q35 $(accel) -m 1G -pidfile "$PIDFILE" \
@@ -1209,7 +1209,7 @@ function qemu2018day08 {
 	download https://www.qemu-advent-calendar.org/2018/download/day08.tar.xz
 	tar -xf day08.tar.xz
 	cat day08/readme.txt
-	execute qemu-system-i386 -m 32 -M isapc $(accel) -cpu pentium -no-acpi $(pcspk) \
+	execute qemu-system-i386 -m 32 -M isapc,acpi=off $(accel) -cpu pentium $(pcspk) \
 		-net nic,model=ne2k_isa -net user -drive if=ide,file=day08/hd.qcow2
 	removeDir day08
 }
