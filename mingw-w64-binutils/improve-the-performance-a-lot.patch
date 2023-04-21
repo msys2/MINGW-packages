@@ -1,0 +1,647 @@
+diff --git a/bfd/bfd-in2.h b/bfd/bfd-in2.h
+index eddfb31b6d5..16816788058 100644
+--- a/bfd/bfd-in2.h
++++ b/bfd/bfd-in2.h
+@@ -400,15 +400,50 @@ extern bool bfd_record_phdr
+ /* Byte swapping routines.  */
+ 
+ uint64_t bfd_getb64 (const void *);
+-uint64_t bfd_getl64 (const void *);
++static inline uint64_t bfd_getl64 (const void *p) {
++	const bfd_byte *addr = (const bfd_byte *) p;
++#if defined(__x86__) || defined(__x86_64__) || defined(__i386__)
++	return *(uint64_t *)addr;
++#else
++	uint64_t v;
++	v  = addr[7]; v <<= 8;
++	v |= addr[6]; v <<= 8;
++	v |= addr[5]; v <<= 8;
++	v |= addr[4]; v <<= 8;
++	v |= addr[3]; v <<= 8;
++	v |= addr[2]; v <<= 8;
++	v |= addr[1]; v <<= 8;
++	v |= addr[0];
++	return v;
++#endif
++}
+ int64_t bfd_getb_signed_64 (const void *);
+ int64_t bfd_getl_signed_64 (const void *);
+ bfd_vma bfd_getb32 (const void *);
+-bfd_vma bfd_getl32 (const void *);
++static inline bfd_vma bfd_getl32 (const void *p) {
++	const bfd_byte *addr = (const bfd_byte *) p;
++#if defined(__x86__) || defined(__x86_64__) || defined(__i386__)
++	return *(unsigned long *)addr;
++#else
++	unsigned long v;
++	v = (unsigned long) addr[0];
++	v |= (unsigned long) addr[1] << 8;
++	v |= (unsigned long) addr[2] << 16;
++	v |= (unsigned long) addr[3] << 24;
++	return v;
++#endif
++}
+ bfd_signed_vma bfd_getb_signed_32 (const void *);
+ bfd_signed_vma bfd_getl_signed_32 (const void *);
+ bfd_vma bfd_getb16 (const void *);
+-bfd_vma bfd_getl16 (const void *);
++static inline bfd_vma bfd_getl16 (const void *p) {
++	const bfd_byte *addr = (const bfd_byte *) p;
++#if defined(__x86__) || defined(__x86_64__) || defined(__i386__)
++	return *(unsigned short *)addr;
++#else
++	return (addr[1] << 8) | addr[0];
++#endif
++}
+ bfd_signed_vma bfd_getb_signed_16 (const void *);
+ bfd_signed_vma bfd_getl_signed_16 (const void *);
+ void bfd_putb64 (uint64_t, void *);
+@@ -573,7 +608,7 @@ const char *bfd_set_filename (bfd *abfd, const char *filename);
+ #define bfd_put_signed_8 \
+   bfd_put_8
+ #define bfd_get_8(abfd, ptr) \
+-  ((bfd_vma) *(const unsigned char *) (ptr) & 0xff)
++  ((bfd_vma) *(const unsigned char *) (ptr))
+ #define bfd_get_signed_8(abfd, ptr) \
+   ((((bfd_signed_vma) *(const unsigned char *) (ptr) & 0xff) ^ 0x80) - 0x80)
+ 
+@@ -6725,6 +6760,13 @@ struct bfd
+   /* The number of sections.  */
+   unsigned int section_count;
+ 
++  /* The section index cache, for speed up coff_section_from_bfd_index */
++  struct bfd_section **sections_index_map;
++  unsigned int sections_index_map_size;
++  int sections_index_map_dirty;
++
++  unsigned int comdat_sym_begin;
++
+   /* The archive plugin file descriptor.  */
+   int archive_plugin_fd;
+ 
+@@ -6983,6 +7025,7 @@ bfd_section_list_remove (bfd *abfd, asection *s)
+ {
+   asection *next = s->next;
+   asection *prev = s->prev;
++  abfd->sections_index_map_dirty = 1;
+   if (prev)
+     prev->next = next;
+   else
+@@ -6996,6 +7039,7 @@ bfd_section_list_remove (bfd *abfd, asection *s)
+ static inline void
+ bfd_section_list_append (bfd *abfd, asection *s)
+ {
++  abfd->sections_index_map_dirty = 1;
+   s->next = 0;
+   if (abfd->section_last)
+     {
+@@ -7013,6 +7057,7 @@ bfd_section_list_append (bfd *abfd, asection *s)
+ static inline void
+ bfd_section_list_prepend (bfd *abfd, asection *s)
+ {
++  abfd->sections_index_map_dirty = 1;
+   s->prev = 0;
+   if (abfd->sections)
+     {
+@@ -7031,6 +7076,7 @@ static inline void
+ bfd_section_list_insert_after (bfd *abfd, asection *a, asection *s)
+ {
+   asection *next = a->next;
++  abfd->sections_index_map_dirty = 1;
+   s->next = next;
+   s->prev = a;
+   a->next = s;
+@@ -7044,6 +7090,7 @@ static inline void
+ bfd_section_list_insert_before (bfd *abfd, asection *b, asection *s)
+ {
+   asection *prev = b->prev;
++  abfd->sections_index_map_dirty = 1;
+   s->prev = prev;
+   s->next = b;
+   b->prev = s;
+diff --git a/bfd/cache.c b/bfd/cache.c
+index b64b9744c4b..62ccc7efa2a 100644
+--- a/bfd/cache.c
++++ b/bfd/cache.c
+@@ -102,6 +102,8 @@ bfd_cache_max_open (void)
+ #endif
+ #ifdef _SC_OPEN_MAX
+ 	max = sysconf (_SC_OPEN_MAX) / 8;
++#elif defined(_WIN32)
++	max = 32;
+ #else
+ 	max = 10;
+ #endif
+diff --git a/bfd/coff-i386.c b/bfd/coff-i386.c
+index 24a05d3aa65..53d5f218a40 100644
+--- a/bfd/coff-i386.c
++++ b/bfd/coff-i386.c
+@@ -613,16 +613,8 @@ coff_i386_rtype_to_howto (bfd *abfd ATTRIBUTE_UNUSED,
+ 	osect_vma = h->root.u.def.section->output_section->vma;
+       else
+ 	{
+-	  asection *s;
+-	  int i;
+-
+-	  /* Sigh, the only way to get the section to offset against
+-	     is to find it the hard way.  */
+-
+-	  for (s = abfd->sections, i = 1; i < sym->n_scnum; i++)
+-	    s = s->next;
+-
+-	  osect_vma = s->output_section->vma;
++      asection *s = coff_section_from_bfd_index(abfd, sym->n_scnum);
++      osect_vma = s->output_section->vma;
+ 	}
+ 
+       *addendp -= osect_vma;
+diff --git a/bfd/coff-x86_64.c b/bfd/coff-x86_64.c
+index 822504a339b..71fa5f3cfc8 100644
+--- a/bfd/coff-x86_64.c
++++ b/bfd/coff-x86_64.c
+@@ -752,14 +752,7 @@ coff_amd64_rtype_to_howto (bfd *abfd ATTRIBUTE_UNUSED,
+ 	osect_vma = h->root.u.def.section->output_section->vma;
+       else
+ 	{
+-	  asection *s;
+-	  int i;
+-
+-	  /* Sigh, the only way to get the section to offset against
+-	     is to find it the hard way.  */
+-	  for (s = abfd->sections, i = 1; i < sym->n_scnum; i++)
+-	    s = s->next;
+-
++      asection *s = coff_section_from_bfd_index(abfd, sym->n_scnum);
+ 	  osect_vma = s->output_section->vma;
+ 	}
+ 
+diff --git a/bfd/coffcode.h b/bfd/coffcode.h
+index 81d5cb0155e..cee8ec1047f 100644
+--- a/bfd/coffcode.h
++++ b/bfd/coffcode.h
+@@ -919,6 +919,7 @@ handle_COMDAT (bfd * abfd,
+   bfd_byte *esymstart, *esym, *esymend;
+   int seen_state = 0;
+   char *target_name = NULL;
++  unsigned int comdat_sym_begin = abfd->comdat_sym_begin;
+ 
+   sec_flags |= SEC_LINK_ONCE;
+ 
+@@ -944,16 +945,27 @@ handle_COMDAT (bfd * abfd,
+ 
+   esymstart = esym = (bfd_byte *) obj_coff_external_syms (abfd);
+   esymend = esym + obj_raw_syment_count (abfd) * bfd_coff_symesz (abfd);
++  esym += abfd->comdat_sym_begin * bfd_coff_symesz (abfd);
+ 
+   while (esym < esymend)
+     {
+-      struct internal_syment isym;
++	  struct internal_syment isym;
+       char buf[SYMNMLEN + 1];
+       const char *symname;
+ 
+-      bfd_coff_swap_sym_in (abfd, esym, & isym);
++      bfd_coff_swap_sym_in (abfd, esym, &isym);
+ 
+-      BFD_ASSERT (sizeof (internal_s->s_name) <= SYMNMLEN);
++	BFD_ASSERT (sizeof (internal_s->s_name) <= SYMNMLEN);
++
++	if (
++		comdat_sym_begin == 0
++		&& (isym.n_sclass == C_STAT || isym.n_sclass == C_EXT)
++		&& BTYPE (isym.n_type) == T_NULL
++		&& isym.n_value == 0
++		&& isym.n_scnum > 0
++	) {
++		abfd->comdat_sym_begin = comdat_sym_begin =  (esym - esymstart) / bfd_coff_symesz (abfd);
++	}
+ 
+       if (isym.n_scnum == section->target_index)
+ 	{
+@@ -3364,28 +3376,39 @@ coff_read_word (bfd *abfd, unsigned int *value, unsigned int *pelength)
+ static unsigned int
+ coff_compute_checksum (bfd *abfd, unsigned int *pelength)
+ {
+-  bool more_data;
+-  file_ptr filepos;
+-  unsigned int value;
+-  unsigned int total;
+-
+-  total = 0;
+-  *pelength = 0;
+-  filepos = (file_ptr) 0;
+-
+-  do
+-    {
+-      if (bfd_seek (abfd, filepos, SEEK_SET) != 0)
+-	return 0;
+-
+-      more_data = coff_read_word (abfd, &value, pelength);
+-      total += value;
+-      total = 0xffff & (total + (total >> 0x10));
+-      filepos += 2;
+-    }
+-  while (more_data);
+-
+-  return (0xffff & (total + (total >> 0x10)));
++	file_ptr filepos;
++	unsigned int value;
++	unsigned int total;
++	unsigned char read_buffer[32768];
++	int read_len;
++
++	total = 0;
++	*pelength = 0;
++	filepos = (file_ptr) 0;
++	if (bfd_seek (abfd, filepos, SEEK_SET) != 0)
++		return 0;
++	while(true) {
++		int pos=0;
++		read_len = bfd_bread(read_buffer, sizeof(read_buffer), abfd);
++		if (read_len<=0) {
++			break;
++		}
++		filepos += read_len;
++		*pelength += read_len;
++		for (; pos<(read_len&~1); pos+=2) {
++			value = (unsigned int)(read_buffer[pos] + (read_buffer[pos+1] << 8));
++			total += value;
++			total = 0xffff & (total + (total >> 0x10));
++		}
++		if (pos < read_len) {
++			// eof
++			value = (unsigned int)read_buffer[pos];
++			total += value;
++			total = 0xffff & (total + (total >> 0x10));
++			break;
++		}
++	}
++	return (0xffff & (total + (total >> 0x10)));
+ }
+ 
+ static bool
+@@ -5630,32 +5653,52 @@ coff_bigobj_swap_filehdr_out (bfd *abfd, void * in, void * out)
+   return bfd_coff_filhsz (abfd);
+ }
+ 
+-static void
+-coff_bigobj_swap_sym_in (bfd * abfd, void * ext1, void * in1)
+-{
+-  SYMENT_BIGOBJ *ext = (SYMENT_BIGOBJ *) ext1;
+-  struct internal_syment *in = (struct internal_syment *) in1;
++static inline void coff_bigobj_swap_sym_in_le(bfd * abfd, void * ext1, void * in1) {
++	SYMENT_BIGOBJ *ext = (SYMENT_BIGOBJ *) ext1;
++	struct internal_syment *in = (struct internal_syment *) in1;
++	if (ext->e.e_name[0] == 0) {
++		in->_n._n_n._n_zeroes = 0;
++		in->_n._n_n._n_offset = bfd_getl32(ext->e.e.e_offset);
++	}
++	else
++	{
++#if SYMNMLEN != E_SYMNMLEN
++#error we need to cope with truncating or extending SYMNMLEN
++#else
++		memcpy (in->_n._n_name, ext->e.e_name, SYMNMLEN);
++#endif
++	}
+ 
+-  if (ext->e.e_name[0] == 0)
+-    {
+-      in->_n._n_n._n_zeroes = 0;
+-      in->_n._n_n._n_offset = H_GET_32 (abfd, ext->e.e.e_offset);
+-    }
+-  else
+-    {
++	in->n_value = bfd_getl32(ext->e_value);
++	BFD_ASSERT (sizeof (in->n_scnum) >= 4);
++	in->n_scnum = bfd_getl32(ext->e_scnum);
++	in->n_type = bfd_getl16(ext->e_type);
++	in->n_sclass = H_GET_8 (abfd, ext->e_sclass);
++	in->n_numaux = H_GET_8 (abfd, ext->e_numaux);
++}
++
++static inline void coff_bigobj_swap_sym_in(bfd * abfd, void * ext1, void * in1) {
++  SYMENT_BIGOBJ *ext = (SYMENT_BIGOBJ *) ext1;
++	struct internal_syment *in = (struct internal_syment *) in1;
++	if (ext->e.e_name[0] == 0) {
++		in->_n._n_n._n_zeroes = 0;
++		in->_n._n_n._n_offset = H_GET_32 (abfd, ext->e.e.e_offset);
++	}
++	else
++	{
+ #if SYMNMLEN != E_SYMNMLEN
+ #error we need to cope with truncating or extending SYMNMLEN
+ #else
+-      memcpy (in->_n._n_name, ext->e.e_name, SYMNMLEN);
++		memcpy (in->_n._n_name, ext->e.e_name, SYMNMLEN);
+ #endif
+-    }
++	}
+ 
+-  in->n_value = H_GET_32 (abfd, ext->e_value);
+-  BFD_ASSERT (sizeof (in->n_scnum) >= 4);
+-  in->n_scnum = H_GET_32 (abfd, ext->e_scnum);
+-  in->n_type = H_GET_16 (abfd, ext->e_type);
+-  in->n_sclass = H_GET_8 (abfd, ext->e_sclass);
+-  in->n_numaux = H_GET_8 (abfd, ext->e_numaux);
++	in->n_value = H_GET_32 (abfd, ext->e_value);
++	BFD_ASSERT (sizeof (in->n_scnum) >= 4);
++	in->n_scnum = H_GET_32 (abfd, ext->e_scnum);
++	in->n_type = H_GET_16 (abfd, ext->e_type);
++	in->n_sclass = H_GET_8 (abfd, ext->e_sclass);
++	in->n_numaux = H_GET_8 (abfd, ext->e_numaux);
+ }
+ 
+ static unsigned int
+@@ -5791,13 +5834,13 @@ coff_bigobj_swap_aux_out (bfd * abfd,
+ 
+ static bfd_coff_backend_data bigobj_swap_table =
+ {
+-  coff_bigobj_swap_aux_in, coff_bigobj_swap_sym_in, coff_SWAP_lineno_in,
++  coff_bigobj_swap_aux_in, coff_bigobj_swap_sym_in_le, coff_SWAP_lineno_in,
+   coff_bigobj_swap_aux_out, coff_bigobj_swap_sym_out,
+   coff_SWAP_lineno_out, coff_SWAP_reloc_out,
+   coff_bigobj_swap_filehdr_out, coff_SWAP_aouthdr_out,
+   coff_SWAP_scnhdr_out,
+   FILHSZ_BIGOBJ, AOUTSZ, SCNHSZ, SYMESZ_BIGOBJ, AUXESZ_BIGOBJ,
+-   RELSZ, LINESZ, FILNMLEN_BIGOBJ,
++  RELSZ, LINESZ, FILNMLEN_BIGOBJ,
+   true,
+   COFF_DEFAULT_LONG_SECTION_NAMES,
+   COFF_DEFAULT_SECTION_ALIGNMENT_POWER,
+diff --git a/bfd/coffgen.c b/bfd/coffgen.c
+index e9455c82a33..c414d4bb4c2 100644
+--- a/bfd/coffgen.c
++++ b/bfd/coffgen.c
+@@ -357,28 +357,73 @@ coff_object_p (bfd *abfd)
+ 
+ /* Get the BFD section from a COFF symbol section number.  */
+ 
+-asection *
+-coff_section_from_bfd_index (bfd *abfd, int section_index)
+-{
+-  struct bfd_section *answer = abfd->sections;
++asection * coff_section_from_bfd_index(bfd *abfd, int section_index) {
++	struct bfd_section *answer = abfd->sections;
++	struct bfd_section **index_map = abfd->sections_index_map;
+ 
+-  if (section_index == N_ABS)
+-    return bfd_abs_section_ptr;
+-  if (section_index == N_UNDEF)
+-    return bfd_und_section_ptr;
+-  if (section_index == N_DEBUG)
+-    return bfd_abs_section_ptr;
++	if (section_index == N_ABS) {
++		return bfd_abs_section_ptr;
++	}
++	if (section_index == N_UNDEF) {
++		return bfd_und_section_ptr;
++	}
++	if (section_index == N_DEBUG) {
++		return bfd_abs_section_ptr;
++	}
+ 
+-  while (answer)
+-    {
+-      if (answer->target_index == section_index)
+-	return answer;
+-      answer = answer->next;
+-    }
++	if (section_index < 0 || (unsigned int)section_index > abfd->section_count) {
++		return bfd_und_section_ptr;
++	}
+ 
+-  /* We should not reach this point, but the SCO 3.2v4 /lib/libc_s.a
+-     has a bad symbol table in biglitpow.o.  */
+-  return bfd_und_section_ptr;
++	if (!index_map) {
++		abfd->sections_index_map_size = (abfd->section_count+16)&~0xF;
++		index_map = abfd->sections_index_map = (struct bfd_section **)malloc(sizeof(struct bfd_section *)*abfd->sections_index_map_size);
++		if (!index_map) {
++			goto __fallback;
++		}
++	} else if (abfd->sections_index_map_dirty) {
++		if (abfd->sections_index_map_size < abfd->section_count) {
++			free(index_map);
++			abfd->sections_index_map_size = (abfd->section_count+16)&~0xF;
++			index_map = abfd->sections_index_map = (struct bfd_section **)malloc(sizeof(struct bfd_section *)*abfd->sections_index_map_size);
++			if (!index_map) {
++				goto __fallback;
++			}
++		}
++	} else {
++		goto __get_section;
++	}
++	// update the index map
++	for (unsigned int idx=0; idx<abfd->sections_index_map_size; ++idx) {
++		index_map[idx] = bfd_und_section_ptr;
++	}
++	while (answer) {
++		index_map[answer->target_index] = answer;
++		answer = answer->next;
++	}
++	abfd->sections_index_map_dirty = 0;
++__get_section:
++	return index_map[section_index];
++__fallback:
++	if ((unsigned int)section_index > abfd->section_count/2) {
++		answer = abfd->section_last;
++		while (answer) {
++			if (answer->target_index == section_index) {
++				return answer;
++			}
++			answer = answer->prev;
++		}
++	} else {
++		while (answer) {
++			if (answer->target_index == section_index) {
++				return answer;
++			}
++			answer = answer->next;
++		}
++	}
++	/* We should not reach this point, but the SCO 3.2v4 /lib/libc_s.a
++		has a bad symbol table in biglitpow.o.  */
++	return bfd_und_section_ptr;
+ }
+ 
+ /* Get the upper bound of a COFF symbol table.  */
+diff --git a/bfd/libbfd.c b/bfd/libbfd.c
+index 7b03bde05e0..25a42589b78 100644
+--- a/bfd/libbfd.c
++++ b/bfd/libbfd.c
+@@ -626,13 +626,6 @@ bfd_getb16 (const void *p)
+   return (addr[0] << 8) | addr[1];
+ }
+ 
+-bfd_vma
+-bfd_getl16 (const void *p)
+-{
+-  const bfd_byte *addr = (const bfd_byte *) p;
+-  return (addr[1] << 8) | addr[0];
+-}
+-
+ bfd_signed_vma
+ bfd_getb_signed_16 (const void *p)
+ {
+@@ -718,19 +711,6 @@ bfd_getb32 (const void *p)
+   return v;
+ }
+ 
+-bfd_vma
+-bfd_getl32 (const void *p)
+-{
+-  const bfd_byte *addr = (const bfd_byte *) p;
+-  unsigned long v;
+-
+-  v = (unsigned long) addr[0];
+-  v |= (unsigned long) addr[1] << 8;
+-  v |= (unsigned long) addr[2] << 16;
+-  v |= (unsigned long) addr[3] << 24;
+-  return v;
+-}
+-
+ bfd_signed_vma
+ bfd_getb_signed_32 (const void *p)
+ {
+@@ -775,24 +755,6 @@ bfd_getb64 (const void *p)
+   return v;
+ }
+ 
+-uint64_t
+-bfd_getl64 (const void *p)
+-{
+-  const bfd_byte *addr = (const bfd_byte *) p;
+-  uint64_t v;
+-
+-  v  = addr[7]; v <<= 8;
+-  v |= addr[6]; v <<= 8;
+-  v |= addr[5]; v <<= 8;
+-  v |= addr[4]; v <<= 8;
+-  v |= addr[3]; v <<= 8;
+-  v |= addr[2]; v <<= 8;
+-  v |= addr[1]; v <<= 8;
+-  v |= addr[0];
+-
+-  return v;
+-}
+-
+ int64_t
+ bfd_getb_signed_64 (const void *p)
+ {
+diff --git a/bfd/opncls.c b/bfd/opncls.c
+index 9241cd1c537..e627bc96bc2 100644
+--- a/bfd/opncls.c
++++ b/bfd/opncls.c
+@@ -123,60 +123,68 @@ _bfd_new_bfd_contained_in (bfd *obfd)
+ static void
+ _bfd_delete_bfd (bfd *abfd)
+ {
+-  if (abfd->memory)
+-    {
+-      bfd_hash_table_free (&abfd->section_htab);
+-      objalloc_free ((struct objalloc *) abfd->memory);
+-    }
+-  else
+-    free ((char *) bfd_get_filename (abfd));
++	if (abfd->memory) {
++		bfd_hash_table_free (&abfd->section_htab);
++		objalloc_free ((struct objalloc *) abfd->memory);
++	} else {
++		free ((char *) bfd_get_filename (abfd));
++	}
+ 
+-  free (abfd->arelt_data);
+-  free (abfd);
++	if (abfd->sections_index_map) {
++		free(abfd->sections_index_map);
++	}
++	free (abfd->arelt_data);
++	free (abfd);
+ }
+ 
++
+ /* Free objalloc memory.  */
+ 
+ bool
+ _bfd_free_cached_info (bfd *abfd)
+ {
+-  if (abfd->memory)
+-    {
+-      const char *filename = bfd_get_filename (abfd);
+-      if (filename)
++	if (abfd->memory)
+ 	{
+-	  /* We can't afford to lose the bfd filename when freeing
+-	     abfd->memory, because that would kill the cache.c scheme
+-	     of closing and reopening files in order to limit the
+-	     number of open files.  To reopen, you need the filename.
+-	     And indeed _bfd_compute_and_write_armap calls
+-	     _bfd_free_cached_info to free up space used by symbols
+-	     and by check_format_matches.  Which we want to continue
+-	     doing to handle very large archives.  Later the archive
+-	     elements are copied, which might require reopening files.
+-	     We also want to keep using objalloc memory for the
+-	     filename since that allows the name to be updated
+-	     without either leaking memory or implementing some sort
+-	     of reference counted string for copies of the filename.  */
+-	  size_t len = strlen (filename) + 1;
+-	  char *copy = bfd_malloc (len);
+-	  if (copy == NULL)
+-	    return false;
+-	  memcpy (copy, filename, len);
+-	  abfd->filename = copy;
++		const char *filename = bfd_get_filename (abfd);
++		if (filename)
++		{
++			/* We can't afford to lose the bfd filename when freeing
++				abfd->memory, because that would kill the cache.c scheme
++				of closing and reopening files in order to limit the
++				number of open files.  To reopen, you need the filename.
++				And indeed _bfd_compute_and_write_armap calls
++				_bfd_free_cached_info to free up space used by symbols
++				and by check_format_matches.  Which we want to continue
++				doing to handle very large archives.  Later the archive
++				elements are copied, which might require reopening files.
++				We also want to keep using objalloc memory for the
++				filename since that allows the name to be updated
++				without either leaking memory or implementing some sort
++				of reference counted string for copies of the filename.  */
++			size_t len = strlen (filename) + 1;
++			char *copy = bfd_malloc (len);
++			if (copy == NULL)
++				return false;
++			memcpy (copy, filename, len);
++			abfd->filename = copy;
++		}
++		bfd_hash_table_free (&abfd->section_htab);
++		objalloc_free ((struct objalloc *) abfd->memory);
++
++		abfd->sections = NULL;
++		abfd->section_last = NULL;
++		abfd->outsymbols = NULL;
++		abfd->tdata.any = NULL;
++		abfd->usrdata = NULL;
++		abfd->memory = NULL;
++
++		if (abfd->sections_index_map) {
++			free(abfd->sections_index_map);
++			abfd->sections_index_map = NULL;
++		}
+ 	}
+-      bfd_hash_table_free (&abfd->section_htab);
+-      objalloc_free ((struct objalloc *) abfd->memory);
+-
+-      abfd->sections = NULL;
+-      abfd->section_last = NULL;
+-      abfd->outsymbols = NULL;
+-      abfd->tdata.any = NULL;
+-      abfd->usrdata = NULL;
+-      abfd->memory = NULL;
+-    }
+ 
+-  return true;
++	return true;
+ }
+ 
+ /*
