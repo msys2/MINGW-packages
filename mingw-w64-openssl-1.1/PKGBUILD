@@ -1,0 +1,197 @@
+# Maintainer: Alexey Pavlov <Alexpux@gmail.com>
+
+_realname=openssl
+pkgbase=mingw-w64-${_realname}-1.1
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}-1.1"
+	"${MINGW_PACKAGE_PREFIX}-${_realname}-1.1-pdb")
+_ver=1.1.1t
+# use a pacman compatible version scheme
+pkgver=${_ver/[a-z]/.${_ver//[0-9.]/}}
+pkgrel=1
+arch=('any')
+pkgdesc="The Open Source toolkit for Secure Sockets Layer and Transport Layer Security (mingw-w64)"
+depends=("${MINGW_PACKAGE_PREFIX}-ca-certificates" "${MINGW_PACKAGE_PREFIX}-gcc-libs" "${MINGW_PACKAGE_PREFIX}-zlib")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc")
+if [[ "$MSYSTEM" != CLANG* ]]; then
+  makedepends+=("${MINGW_PACKAGE_PREFIX}-cv2pdb")
+fi
+options=('!strip' '!buildflags' 'staticlibs')
+license=('BSD')
+url="https://www.openssl.org"
+noextract=(${_realname}-${_ver}.tar.gz)
+source=(https://www.openssl.org/source/${_realname}-${_ver}.tar.gz{,.asc}
+        'openssl-1.1.1-relocation.patch'
+        '0001-tests-work-around-the-MSYS-vs-Windows-paths-problem.patch'
+        '0001-shlib_wrap.sh-accommodate-for-MINGW-builds-being-tes.patch'
+        'openssl-1.1.1-mingw-arm.patch')
+sha256sums=('8dee9b24bdb1dcbf0c3d1e9b02fb8f6bf22165e807f45adeb7c9677536859d3b'
+            'SKIP'
+            '1c6bf1b9cf0f183c96349b1820df52b1c5f2bc193060d4d31a6c45230a857f5c'
+            'f2871bff59d19fe60086116c0549b54814e8e0af7a9ce3b96bb21604466ad556'
+            '8d370171d3fc47db8603097c56c247b1ea7a1364109ac202064c70cf1629deef'
+            'd41fad88631e7b8d2a56662f2166ea97ecbc6369f2ad3eac415182bc9ac9f308')
+
+validpgpkeys=('8657ABB260F056B1E5190839D9C4D26D0E604491'
+              '7953AC1FBC3DC8B3B292393ED5E9E43F7DF9EE8C'
+              'DC7032662AF885E2F47F243F527466A21CA79E6D'
+              'A21FAB74B0088AA361152586B8EF1A6BA9DA2D5C')
+
+# Helper macros to help make tasks easier #
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying $_patch"
+    patch -Nbp1 -i "${srcdir}/$_patch"
+  done
+}
+
+del_file_exists() {
+  for _fname in "$@"
+  do
+    if [ -f $_fname ]; then
+      rm -rf $_fname
+    fi
+  done
+}
+# =========================================== #
+
+prepare() {
+  # Clean up old sources so re-patching doesn't fail.
+  [[ -d ${srcdir}/${_realname}-${_ver} ]] && rm -rf ${srcdir}/${_realname}-${_ver}
+  tar -xzvf ${_realname}-${_ver}.tar.gz -C ${srcdir} || true
+  cd ${srcdir}/${_realname}-${_ver}
+
+# openssl-1.0.0a-ldflags.patch
+# openssl-1.0.2a-parallel-build.patch
+# openssl-1.0.1-x32.patch
+#  openssl-0.9.6-x509.patch
+  apply_patch_with_msg \
+     openssl-1.1.1-relocation.patch \
+     0001-tests-work-around-the-MSYS-vs-Windows-paths-problem.patch \
+     0001-shlib_wrap.sh-accommodate-for-MINGW-builds-being-tes.patch \
+     openssl-1.1.1-mingw-arm.patch
+}
+
+build() {
+  rm -rf ${srcdir}/build-${CARCH}
+ 
+  # No support for out-of-source builds
+  mkdir -p ${srcdir}/build-${CARCH}
+#  cp -a ${srcdir}/${_realname}-${_ver}/* ${srcdir}/build-${CARCH}
+
+  # Use mingw cflags instead of hardcoded ones
+  sed -i -e '/^"mingw"/ s/-fomit-frame-pointer -O3 -Wall/-O2 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions --param=ssp-buffer-size=4/' \
+     ${srcdir}/${_realname}-${_ver}/Configure
+#     ${srcdir}/build-${CARCH}/Configure
+
+  case "${CARCH}" in
+    i?86)
+      _mingw=mingw
+      ;;
+    x86_64)
+      _mingw=mingw64
+      ;;
+    aarch64)
+      _mingw="mingwarm64 no-asm"
+      ;;
+  esac
+
+  export CC=${MINGW_PREFIX}/bin/cc.exe
+  export CXX=${MINGW_PREFIX}/bin/c++.exe
+  STRIP_OPTS=
+
+  if [[ "$MSYSTEM" == CLANG* ]]
+  then
+    export LDFLAGS="-Wl,-pdb=" # Ensures that Clang generates PDB files
+    STRIP=llvm-strip
+    STRIP_OPTS=--strip-debug
+  else
+    STRIP=cv2pdb
+  fi
+  cd "${srcdir}/build-${CARCH}"
+  export MSYS2_ARG_CONV_EXCL="--prefix="
+  ${srcdir}/${_realname}-${_ver}/Configure \
+    --prefix=${MINGW_PREFIX} \
+    --openssldir=ssl \
+    ${_mingw} \
+    shared \
+    zlib-dynamic \
+    enable-camellia \
+    enable-capieng \
+    enable-idea \
+    enable-mdc2 \
+    enable-rc5  \
+    enable-rfc3779 \
+    -D__MINGW_USE_VC2005_COMPAT \
+    -DOPENSSLBIN=\"\\\"${MINGW_PREFIX}/bin\\\"\"
+
+  sed -i -e 's/ -O3 /&-g /' \
+    -e 's/TOP=\.\.\//TOP="$(pwd)"\/..\//' \
+    Makefile
+
+  make ZLIB_INCLUDE=-I"${MINGW_PREFIX}"/include depend all
+
+  case "${pkgname[@]}" in
+  *-pdb|*-pdb\ *)
+    for file in apps/*.exe *.dll engines/*.dll
+    do
+      $STRIP $STRIP_OPTS "$file" || exit
+    done
+
+    # copy cv2pdb'ed versions of libeay32.dll and ssleay32.dll to apps/
+    cp -f *.dll *.pdb apps/;;
+  esac
+}
+
+check() {
+  cd "${srcdir}/build-${CARCH}"
+  make VERBOSE=1 test
+}
+
+_package() {
+  cd "${srcdir}/build-${CARCH}"
+
+  test pdb != "$1" || {
+    install -d -m 755 "${pkgdir}${MINGW_PREFIX}/bin"
+    install -d -m 755 "${pkgdir}${MINGW_PREFIX}/lib/engines"
+    install -m 755 *.pdb "${pkgdir}${MINGW_PREFIX}/bin"
+    install -m 755 engines/*.pdb "${pkgdir}${MINGW_PREFIX}/lib/engines"
+    return
+  }
+
+  mkdir -p "${pkgdir}${MINGW_PREFIX}"/bin
+  mkdir -p "${pkgdir}${MINGW_PREFIX}"/lib/engines-1_1
+  mkdir -p "${pkgdir}${MINGW_PREFIX}"/share/licenses/${_realname}-1.1
+
+  make -j1 DESTDIR="${pkgdir}" install_engines
+  install -D -m644 "${srcdir}/${_realname}-${_ver}/LICENSE" \
+         "${pkgdir}${MINGW_PREFIX}"/share/licenses/${_realname}-1.1/LICENSE
+
+  chmod -R 777 "${pkgdir}${MINGW_PREFIX}"/bin
+  chmod -R 777 "${pkgdir}${MINGW_PREFIX}"/lib
+  chmod -R 777 "${pkgdir}${MINGW_PREFIX}"/lib/engines-1_1
+}
+
+package_mingw-w64-i686-openssl-1.1() {
+  _package
+}
+
+package_mingw-w64-x86_64-openssl-1.1() {
+  _package
+}
+
+package_mingw-w64-clang-aarch64-openssl-1.1() {
+  _package
+}
+
+package_mingw-w64-i686-openssl-1.1-pdb() {
+  _package pdb
+}
+
+package_mingw-w64-x86_64-openssl-1.1-pdb() {
+  _package pdb
+}
+
+package_mingw-w64-clang-aarch64-openssl-1.1-pdb() {
+  _package pdb
+}
