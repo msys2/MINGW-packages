@@ -1,0 +1,315 @@
+From 0e759f232b6def277d4ae3f2d8bccfe6e34d6034 Mon Sep 17 00:00:00 2001
+From: Oleg Tolmatcev <oleg.tolmatcev@gmail.com>
+Date: Tue, 16 May 2023 14:25:32 +0100
+Subject: [PATCH] Add section caches to coff_data_type
+
+  * libcoff-in.h (struct coff_tdata): Add section_by_index and section_by_target_index hash tables.
+  * libcoff.h: Regenerate.
+  * coffcode.h (htab_hash_section_index): New function. (htab_eq_section_index): New function. (htab_hash_section_target_index): New function. (htab_eq_section_target_index): New function. (coff_mkobject_hool): Create the hash tables.
+  * peicode.h: Add the same new functions. (pe_mkobject_hook): Create the hash tables.
+  * coff-x86_64.c (coff_amd64_rtype_to_howto): Use the new tables to speed up lookups.
+  * coffgen.c (coff_section_from_bfd_index): Likewise. (_bfd_coff_close_and_cleanup): Delete the hash tables.
+
+diff --git a/bfd/coff-x86_64.c b/bfd/coff-x86_64.c
+index 822504a339b..1f8c8d515c4 100644
+--- a/bfd/coff-x86_64.c
++++ b/bfd/coff-x86_64.c
+@@ -745,22 +745,37 @@ coff_amd64_rtype_to_howto (bfd *abfd ATTRIBUTE_UNUSED,
+ 
+   if (rel->r_type == R_AMD64_SECREL)
+     {
+-      bfd_vma osect_vma;
++      bfd_vma osect_vma = 0;
+ 
+-      if (h && (h->root.type == bfd_link_hash_defined
+-		|| h->root.type == bfd_link_hash_defweak))
++      if (h != NULL
++	  && (h->root.type == bfd_link_hash_defined
++	      || h->root.type == bfd_link_hash_defweak))
+ 	osect_vma = h->root.u.def.section->output_section->vma;
+       else
+ 	{
++	  htab_t table = coff_data (abfd)->section_by_index;
+ 	  asection *s;
+-	  int i;
+ 
+-	  /* Sigh, the only way to get the section to offset against
+-	     is to find it the hard way.  */
+-	  for (s = abfd->sections, i = 1; i < sym->n_scnum; i++)
+-	    s = s->next;
++	  if (htab_elements (table) == 0)
++	    {
++	      /* Sigh - if we do not have a section index then the only way
++		 to get the section to offset against is to find it the hard
++		 way.  */
++	      for (s = abfd->sections; s != NULL; s = s->next)
++		{
++		  void ** slot = htab_find_slot (table, s, INSERT);
++
++		  if (slot != NULL)
++		    *slot = s;
++		}
++	    }
++
++	  struct bfd_section needle;
+ 
+-	  osect_vma = s->output_section->vma;
++	  needle.index = sym->n_scnum - 1;
++	  s = htab_find (table, &needle);
++	  if (s != NULL)
++	    osect_vma = s->output_section->vma;
+ 	}
+ 
+       *addendp -= osect_vma;
+diff --git a/bfd/coffcode.h b/bfd/coffcode.h
+index 974c8ad9854..ab6f797b324 100644
+--- a/bfd/coffcode.h
++++ b/bfd/coffcode.h
+@@ -731,6 +731,36 @@ sec_to_styp_flags (const char *sec_name, flagword sec_flags)
+ 
+ #ifndef COFF_WITH_PE
+ 
++static hashval_t
++htab_hash_section_index (const void * entry)
++{
++  const struct bfd_section * sec = entry;
++  return sec->index;
++}
++
++static int
++htab_eq_section_index (const void * e1, const void * e2)
++{
++  const struct bfd_section * sec1 = e1;
++  const struct bfd_section * sec2 = e2;
++  return sec1->index == sec2->index;
++}
++
++static hashval_t
++htab_hash_section_target_index (const void * entry)
++{
++  const struct bfd_section * sec = entry;
++  return sec->target_index;
++}
++
++static int
++htab_eq_section_target_index (const void * e1, const void * e2)
++{
++  const struct bfd_section * sec1 = e1;
++  const struct bfd_section * sec2 = e2;
++  return sec1->target_index == sec2->target_index;
++}
++
+ static bool
+ styp_to_sec_flags (bfd *abfd,
+ 		   void * hdr,
+@@ -2062,6 +2092,7 @@ coff_mkobject (bfd * abfd)
+   abfd->tdata.coff_obj_data = bfd_zalloc (abfd, amt);
+   if (abfd->tdata.coff_obj_data == NULL)
+     return false;
++
+   coff = coff_data (abfd);
+   coff->symbols = NULL;
+   coff->conversion_table = NULL;
+@@ -2154,6 +2185,11 @@ coff_mkobject_hook (bfd * abfd,
+     abfd->flags |= HAS_DEBUG;
+ #endif
+ 
++  coff->section_by_index
++    = htab_create (10, htab_hash_section_index, htab_eq_section_index, NULL);
++  coff->section_by_target_index = htab_create
++    (10, htab_hash_section_target_index, htab_eq_section_target_index, NULL);
++
+   return coff;
+ }
+ #endif
+diff --git a/bfd/coffgen.c b/bfd/coffgen.c
+index ac936def566..03b64ac6762 100644
+--- a/bfd/coffgen.c
++++ b/bfd/coffgen.c
+@@ -42,6 +42,7 @@
+ #include "libbfd.h"
+ #include "coff/internal.h"
+ #include "libcoff.h"
++#include "hashtab.h"
+ 
+ /* Take a section header read from a coff file (in HOST byte order),
+    and make a BFD "section" out of it.  This is used by ECOFF.  */
+@@ -360,8 +361,6 @@ coff_object_p (bfd *abfd)
+ asection *
+ coff_section_from_bfd_index (bfd *abfd, int section_index)
+ {
+-  struct bfd_section *answer = abfd->sections;
+-
+   if (section_index == N_ABS)
+     return bfd_abs_section_ptr;
+   if (section_index == N_UNDEF)
+@@ -369,6 +368,32 @@ coff_section_from_bfd_index (bfd *abfd, int section_index)
+   if (section_index == N_DEBUG)
+     return bfd_abs_section_ptr;
+ 
++  struct bfd_section *answer;
++  htab_t table = coff_data (abfd)->section_by_target_index;
++
++  if (htab_elements (table) == 0)
++    {
++      answer = abfd->sections;
++
++      while (answer)
++	{
++	  void **slot = htab_find_slot (table, answer, INSERT);
++	  if (slot == NULL)
++	    return bfd_und_section_ptr;
++	  *slot = answer;
++	  answer = answer->next;
++	}
++    }
++
++  struct bfd_section needle;
++  needle.target_index = section_index;
++
++  answer = htab_find (table, &needle);
++  if (answer != NULL)
++    return answer;
++
++  answer = abfd->sections;
++
+   while (answer)
+     {
+       if (answer->target_index == section_index)
+@@ -3142,6 +3167,21 @@ _bfd_coff_close_and_cleanup (bfd *abfd)
+ 
+   if (tdata != NULL)
+     {
++      if (bfd_family_coff (abfd) && bfd_get_format (abfd) == bfd_object)
++	{
++	  if (tdata->section_by_index)
++	    {
++	      htab_delete (tdata->section_by_index);
++	      tdata->section_by_index = NULL;
++	    }
++
++	  if (tdata->section_by_target_index)
++	    {
++	      htab_delete (tdata->section_by_target_index);
++	      tdata->section_by_target_index = NULL;
++	    }
++	}
++
+       /* PR 25447:
+ 	 Do not clear the keep_syms and keep_strings flags.
+ 	 These may have been set by pe_ILF_build_a_bfd() indicating
+@@ -3158,5 +3198,6 @@ _bfd_coff_close_and_cleanup (bfd *abfd)
+ 	  _bfd_stab_cleanup (abfd, &tdata->line_info);
+ 	}
+     }
++
+   return _bfd_generic_close_and_cleanup (abfd);
+ }
+diff --git a/bfd/libcoff-in.h b/bfd/libcoff-in.h
+index d0839c76e96..9c5780bfcc0 100644
+--- a/bfd/libcoff-in.h
++++ b/bfd/libcoff-in.h
+@@ -24,6 +24,7 @@
+ 
+ #include "bfdlink.h"
+ #include "coff-bfd.h"
++#include "hashtab.h"
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -129,6 +130,13 @@ typedef struct coff_tdata
+      COFF object into memory.  */
+   char * stub;
+   bfd_size_type stub_size;
++
++  /* Hash table containing sections by target index.  */
++  htab_t section_by_target_index;
++
++  /* Hash table containing sections by index.  */
++  htab_t section_by_index;
++
+ } coff_data_type;
+ 
+ /* Tdata for pe image files.  */
+diff --git a/bfd/libcoff.h b/bfd/libcoff.h
+index 235d5c3c843..1a8d9307734 100644
+--- a/bfd/libcoff.h
++++ b/bfd/libcoff.h
+@@ -28,6 +28,7 @@
+ 
+ #include "bfdlink.h"
+ #include "coff-bfd.h"
++#include "hashtab.h"
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -133,6 +134,13 @@ typedef struct coff_tdata
+      COFF object into memory.  */
+   char * stub;
+   bfd_size_type stub_size;
++
++  /* Hash table containing sections by target index.  */
++  htab_t section_by_target_index;
++
++  /* Hash table containing sections by index.  */
++  htab_t section_by_index;
++
+ } coff_data_type;
+ 
+ /* Tdata for pe image files.  */
+diff --git a/bfd/peicode.h b/bfd/peicode.h
+index e2e2be65b5d..436ff54fbea 100644
+--- a/bfd/peicode.h
++++ b/bfd/peicode.h
+@@ -255,6 +255,36 @@ coff_swap_scnhdr_in (bfd * abfd, void * ext, void * in)
+ #endif
+ }
+ 
++static hashval_t
++htab_hash_section_index (const void * entry)
++{
++  const struct bfd_section * sec = entry;
++  return sec->index;
++}
++
++static int
++htab_eq_section_index (const void * e1, const void * e2)
++{
++  const struct bfd_section * sec1 = e1;
++  const struct bfd_section * sec2 = e2;
++  return sec1->index == sec2->index;
++}
++
++static hashval_t
++htab_hash_section_target_index (const void * entry)
++{
++  const struct bfd_section * sec = entry;
++  return sec->target_index;
++}
++
++static int
++htab_eq_section_target_index (const void * e1, const void * e2)
++{
++  const struct bfd_section * sec1 = e1;
++  const struct bfd_section * sec2 = e2;
++  return sec1->target_index == sec2->target_index;
++}
++
+ static bool
+ pe_mkobject (bfd * abfd)
+ {
+@@ -352,6 +382,11 @@ pe_mkobject_hook (bfd * abfd,
+   memcpy (pe->dos_message, internal_f->pe.dos_message,
+ 	  sizeof (pe->dos_message));
+ 
++  pe->coff.section_by_index
++    = htab_create (10, htab_hash_section_index, htab_eq_section_index, NULL);
++  pe->coff.section_by_target_index = htab_create
++    (10, htab_hash_section_target_index, htab_eq_section_target_index, NULL);
++
+   return (void *) pe;
+ }
+ 
+-- 
+2.39.1
+
