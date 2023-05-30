@@ -1,0 +1,323 @@
+diff --git a/llvmlite/binding/analysis.py b/llvmlite/binding/analysis.py
+--- a/llvmlite/binding/analysis.py
++++ b/llvmlite/binding/analysis.py
+@@ -4,7 +4,6 @@
+ 
+ from ctypes import POINTER, c_char_p, c_int
+ 
+-from llvmlite import ir
+ from llvmlite.binding import ffi
+ from llvmlite.binding.module import parse_assembly
+ 
+@@ -17,6 +16,7 @@
+     are printed.
+     """
+     assert func is not None
++    from llvmlite import ir
+     if isinstance(func, ir.Function):
+         mod = parse_assembly(str(func.module))
+         func = mod.get_function(func.name)
+diff --git a/llvmlite/ir/instructions.py b/llvmlite/ir/instructions.py
+--- a/llvmlite/ir/instructions.py
++++ b/llvmlite/ir/instructions.py
+@@ -133,7 +133,7 @@
+     def _descr(self, buf, add_metadata):
+         def descr_arg(i, a):
+             if i in self.arg_attributes:
+-                attrs = ' '.join(self.arg_attributes[i]._to_list()) + ' '
++                attrs = ' '.join(self.arg_attributes[i]._to_list(a.type)) + ' '
+             else:
+                 attrs = ''
+             return '{0} {1}{2}'.format(a.type, attrs, a.get_reference())
+@@ -155,13 +155,19 @@
+         if self.tail:
+             tail_marker = "{0} ".format(self.tail)
+ 
++        fn_attrs = ' ' + ' '.join(self.attributes._to_list(fnty.return_type))\
++            if self.attributes else ''
++
++        fm_attrs = ' ' + ' '.join(self.fastmath._to_list(fnty.return_type))\
++            if self.fastmath else ''
++
+         buf.append("{tail}{op}{fastmath} {callee}({args}){attr}{meta}\n".format(
+             tail=tail_marker,
+             op=self.opname,
+             callee=callee_ref,
+-            fastmath=''.join([" " + attr for attr in self.fastmath]),
++            fastmath=fm_attrs,
+             args=args,
+-            attr=''.join([" " + attr for attr in self.attributes]),
++            attr=fn_attrs,
+             meta=(self._stringify_metadata(leading_comma=True)
+                   if add_metadata else ""),
+         ))
+diff --git a/llvmlite/ir/values.py b/llvmlite/ir/values.py
+--- a/llvmlite/ir/values.py
++++ b/llvmlite/ir/values.py
+@@ -6,12 +6,12 @@
+ import functools
+ import string
+ import re
++from types import MappingProxyType
+ 
+ from llvmlite.ir import values, types, _utils
+ from llvmlite.ir._utils import (_StrCaching, _StringReferenceCaching,
+                                 _HasMetadata)
+ 
+-
+ _VALID_CHARS = (frozenset(map(ord, string.ascii_letters)) |
+                 frozenset(map(ord, string.digits)) |
+                 frozenset(map(ord, ' !#$%&\'()*+,-./:;<=>?@[]^_`{|}~')))
+@@ -863,14 +863,16 @@
+         for name in args:
+             self.add(name)
+ 
++    def _expand(self, name, typ):
++        return name
++
+     def add(self, name):
+         if name not in self._known:
+             raise ValueError('unknown attr {!r} for {}'.format(name, self))
+         return super(AttributeSet, self).add(name)
+ 
+-    def __iter__(self):
+-        # In sorted order
+-        return iter(sorted(super(AttributeSet, self).__iter__()))
++    def _to_list(self, typ):
++        return list(map(lambda a: self._expand(a, typ), iter(sorted(self))))
+ 
+ 
+ class FunctionAttributes(AttributeSet):
+@@ -914,15 +916,15 @@
+         assert val is None or isinstance(val, GlobalValue)
+         self._personality = val
+ 
+-    def __repr__(self):
+-        attrs = list(self)
++    def _to_list(self, ret_type):
++        attrs = super()._to_list(ret_type)
+         if self.alignstack:
+             attrs.append('alignstack({0:d})'.format(self.alignstack))
+         if self.personality:
+             attrs.append('personality {persty} {persfn}'.format(
+                 persty=self.personality.type,
+                 persfn=self.personality.get_reference()))
+-        return ' '.join(attrs)
++        return attrs
+ 
+ 
+ class Function(GlobalValue):
+@@ -975,8 +977,8 @@
+         ret = self.return_value
+         args = ", ".join(str(a) for a in self.args)
+         name = self.get_reference()
+-        attrs = self.attributes
+-        attrs = ' {}'.format(attrs) if attrs else ''
++        attrs = ' ' + ' '.join(self.attributes._to_list(
++            self.ftype.return_type)) if self.attributes else ''
+         if any(self.args):
+             vararg = ', ...' if self.ftype.var_arg else ''
+         else:
+@@ -1018,9 +1020,30 @@
+ 
+ 
+ class ArgumentAttributes(AttributeSet):
+-    _known = frozenset(['byval', 'inalloca', 'inreg', 'nest', 'noalias',
+-                        'nocapture', 'nonnull', 'returned', 'signext',
+-                        'sret', 'zeroext'])
++    # List from
++    # https://releases.llvm.org/14.0.0/docs/LangRef.html#parameter-attributes
++    _known = MappingProxyType({
++        'byref': True,
++        'byval': True,
++        'elementtype': True,
++        'immarg': False,
++        'inalloca': True,
++        'inreg': False,
++        'nest': False,
++        'noalias': False,
++        'nocapture': False,
++        'nofree': False,
++        'nonnull': False,
++        'noundef': False,
++        'preallocated': True,
++        'returned': False,
++        'signext': False,
++        'sret': True,
++        'swiftasync': False,
++        'swifterror': False,
++        'swiftself': False,
++        'zeroext': False,
++    })
+ 
+     def __init__(self, args=()):
+         self._align = 0
+@@ -1028,6 +1051,14 @@
+         self._dereferenceable_or_null = 0
+         super(ArgumentAttributes, self).__init__(args)
+ 
++    def _expand(self, name, typ):
++        import llvmlite.binding
++        if (llvmlite.binding.llvm_version_info[0] >= 14 and
++                self._known.get(name)):
++            return f"{name}({typ.pointee})"
++        else:
++            return name
++
+     @property
+     def align(self):
+         return self._align
+@@ -1055,8 +1086,8 @@
+         assert isinstance(val, int) and val >= 0
+         self._dereferenceable_or_null = val
+ 
+-    def _to_list(self):
+-        attrs = sorted(self)
++    def _to_list(self, typ):
++        attrs = super()._to_list(typ)
+         if self.align:
+             attrs.append('align {0:d}'.format(self.align))
+         if self.dereferenceable:
+@@ -1088,7 +1119,7 @@
+     """
+ 
+     def __str__(self):
+-        attrs = self.attributes._to_list()
++        attrs = self.attributes._to_list(self.type)
+         if attrs:
+             return "{0} {1} {2}".format(self.type, ' '.join(attrs),
+                                         self.get_reference())
+@@ -1102,7 +1133,7 @@
+     """
+ 
+     def __str__(self):
+-        attrs = self.attributes._to_list()
++        attrs = self.attributes._to_list(self.type)
+         if attrs:
+             return "{0} {1}".format(' '.join(attrs), self.type)
+         else:
+diff --git a/llvmlite/tests/test_ir.py b/llvmlite/tests/test_ir.py
+--- a/llvmlite/tests/test_ir.py
++++ b/llvmlite/tests/test_ir.py
+@@ -84,6 +84,10 @@
+         asm = asm.replace("\n    ", "\n  ")
+         return asm
+ 
++    def check_descr_regex(self, descr, asm):
++        expected = self._normalize_asm(asm)
++        self.assertRegex(descr, expected)
++
+     def check_descr(self, descr, asm):
+         expected = self._normalize_asm(asm)
+         self.assertEqual(descr, expected)
+@@ -91,6 +95,9 @@
+     def check_block(self, block, asm):
+         self.check_descr(self.descr(block), asm)
+ 
++    def check_block_regex(self, block, asm):
++        self.check_descr_regex(self.descr(block), asm)
++
+     def check_module_body(self, module, asm):
+         expected = self._normalize_asm(asm)
+         actual = module._stringify_body()
+@@ -1366,11 +1373,11 @@
+                 2: 'noalias'
+             }
+         )
+-        self.check_block(block, """\
++        self.check_block_regex(block, """\
+         my_block:
+             %"retval" = alloca i32
+             %"other" = alloca i32
+-            call void @"fun"(i32* noalias sret %"retval", i32 42, i32* noalias %"other")
++            call void @"fun"\\(i32\\* noalias sret(\\(i32\\))? %"retval", i32 42, i32\\* noalias %"other"\\)
+         """)  # noqa E501
+ 
+     def test_call_tail(self):
+@@ -1449,11 +1456,11 @@
+                 2: 'noalias'
+             }
+         )
+-        self.check_block(block, """\
++        self.check_block_regex(block, """\
+         my_block:
+             %"retval" = alloca i32
+             %"other" = alloca i32
+-            invoke fast fastcc void @"fun"(i32* noalias sret %"retval", i32 42, i32* noalias %"other") noinline
++            invoke fast fastcc void @"fun"\\(i32\\* noalias sret(\\(i32\\))? %"retval", i32 42, i32\\* noalias %"other"\\) noinline
+                 to label %"normal" unwind label %"unwind"
+         """)  # noqa E501
+ 
+@@ -1779,6 +1786,72 @@
+             "expected types to be the same, got float, double, float",
+             str(raises.exception))
+ 
++    def test_arg_attributes(self):
++        def gen_code(attr_name):
++            fnty = ir.FunctionType(ir.IntType(32), [ir.IntType(32).as_pointer(),
++                                                    ir.IntType(32)])
++            module = ir.Module()
++
++            func = ir.Function(module, fnty, name="sum")
++
++            bb_entry = func.append_basic_block()
++            bb_loop = func.append_basic_block()
++            bb_exit = func.append_basic_block()
++
++            builder = ir.IRBuilder()
++            builder.position_at_end(bb_entry)
++
++            builder.branch(bb_loop)
++            builder.position_at_end(bb_loop)
++
++            index = builder.phi(ir.IntType(32))
++            index.add_incoming(ir.Constant(index.type, 0), bb_entry)
++            accum = builder.phi(ir.IntType(32))
++            accum.add_incoming(ir.Constant(accum.type, 0), bb_entry)
++
++            func.args[0].add_attribute(attr_name)
++            ptr = builder.gep(func.args[0], [index])
++            value = builder.load(ptr)
++
++            added = builder.add(accum, value)
++            accum.add_incoming(added, bb_loop)
++
++            indexp1 = builder.add(index, ir.Constant(index.type, 1))
++            index.add_incoming(indexp1, bb_loop)
++
++            cond = builder.icmp_unsigned('<', indexp1, func.args[1])
++            builder.cbranch(cond, bb_loop, bb_exit)
++
++            builder.position_at_end(bb_exit)
++            builder.ret(added)
++
++            return str(module)
++
++        for attr_name in (
++            'byref',
++            'byval',
++            'elementtype',
++            'immarg',
++            'inalloca',
++            'inreg',
++            'nest',
++            'noalias',
++            'nocapture',
++            'nofree',
++            'nonnull',
++            'noundef',
++            'preallocated',
++            'returned',
++            'signext',
++            'swiftasync',
++            'swifterror',
++            'swiftself',
++            'zeroext',
++        ):
++            # If this parses, we emitted the right byval attribute format
++            llvm.parse_assembly(gen_code(attr_name))
++        # sret doesn't fit this pattern and is tested in test_call_attributes
++
+ 
+ class TestBuilderMisc(TestBase):
+     """
