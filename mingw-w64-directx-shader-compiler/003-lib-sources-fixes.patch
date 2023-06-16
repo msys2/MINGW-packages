@@ -1,0 +1,187 @@
+diff --git a/lib/DxcSupport/FileIOHelper.cpp b/lib/DxcSupport/FileIOHelper.cpp
+index 556e5f86c..e23706f11 100644
+--- a/lib/DxcSupport/FileIOHelper.cpp
++++ b/lib/DxcSupport/FileIOHelper.cpp
+@@ -22,6 +22,17 @@
+ 
+ #ifdef _WIN32
+ #include <intsafe.h>
++
++#ifndef UInt32Mult
++HRESULT UInt32Mult(UINT a, UINT b, UINT *out) {
++  uint64_t result = (uint64_t)a * (uint64_t)b;
++  if (result > uint64_t(UINT_MAX))
++    return ERROR_ARITHMETIC_OVERFLOW;
++
++  *out = (uint32_t)result;
++  return S_OK;
++}
++#endif
+ #endif
+ 
+ // CP_UTF8 is defined in WinNls.h, but others we use are not defined there.
+diff --git a/lib/DxcSupport/WinAdapter.cpp b/lib/DxcSupport/WinAdapter.cpp
+index 8ed47bfc8..959232d51 100644
+--- a/lib/DxcSupport/WinAdapter.cpp
++++ b/lib/DxcSupport/WinAdapter.cpp
+@@ -7,7 +7,7 @@
+ //
+ //===----------------------------------------------------------------------===//
+ 
+-#ifndef _WIN32
++#ifndef _MSC_VER
+ 
+ #include "dxc/WinAdapter.h"
+ #include "dxc/Support/WinFunctions.h"
+@@ -22,6 +22,7 @@ void CAllocator::Free(void *p) throw() { free(p); }
+ 
+ //===--------------------------- BSTR Allocation --------------------------===//
+ 
++#ifndef __MINGW32__
+ void SysFreeString(BSTR bstrString) {
+   if (bstrString)
+     free((void *)((uintptr_t)bstrString - sizeof(uint32_t)));
+@@ -49,6 +50,7 @@ BSTR SysAllocStringLen(const OLECHAR *strIn, UINT ui) {
+ 
+   return strOut;
+ }
++#endif
+ 
+ //===---------------------- Char converstion ------------------------------===//
+ 
+diff --git a/lib/HLSL/DxilContainerReflection.cpp b/lib/HLSL/DxilContainerReflection.cpp
+index 4df43c764..d1550b7d6 100644
+--- a/lib/HLSL/DxilContainerReflection.cpp
++++ b/lib/HLSL/DxilContainerReflection.cpp
+@@ -1922,7 +1922,7 @@ D3D_NAME SemanticToSystemValueType(const Semantic *S, DXIL::TessellatorDomain do
+   case Semantic::Kind::Coverage:
+     return D3D_NAME_COVERAGE;
+   case Semantic::Kind::InnerCoverage:
+-    return D3D_NAME_INNER_COVERAGE;
++    return D3D_NAME_UNDEFINED; // D3D_NAME_INNER_COVERAGE;
+   case Semantic::Kind::PrimitiveID:
+     return D3D_NAME_PRIMITIVE_ID;
+   case Semantic::Kind::SampleIndex:
+@@ -1944,7 +1944,7 @@ D3D_NAME SemanticToSystemValueType(const Semantic *S, DXIL::TessellatorDomain do
+   case Semantic::Kind::DepthGreaterEqual:
+     return D3D_NAME_DEPTH_GREATER_EQUAL;
+   case Semantic::Kind::StencilRef:
+-    return D3D_NAME_STENCIL_REF;
++    return D3D_NAME_UNDEFINED; // D3D_NAME_STENCIL_REF;
+   case Semantic::Kind::TessFactor: {
+     switch (domain) {
+     case DXIL::TessellatorDomain::IsoLine:
+diff --git a/lib/IR/PassRegistry.cpp b/lib/IR/PassRegistry.cpp
+index b77d2bf36..a4a916fac 100644
+--- a/lib/IR/PassRegistry.cpp
++++ b/lib/IR/PassRegistry.cpp
+@@ -35,7 +35,7 @@ using namespace llvm;
+ // A simple global initialized at DllMain-time will do (still does more work
+ // than we should likely perform though).
+ static uint32_t g_PassRegistryTid;
+-extern "C" uint32_t __stdcall GetCurrentThreadId(void);
++extern "C" DWORD __stdcall GetCurrentThreadId(void);
+ static void CheckThreadId() {
+   if (g_PassRegistryTid == 0)
+     g_PassRegistryTid = GetCurrentThreadId();
+diff --git a/lib/Support/Atomic.cpp b/lib/Support/Atomic.cpp
+index ac4ff3eb5..b64130c7a 100644
+--- a/lib/Support/Atomic.cpp
++++ b/lib/Support/Atomic.cpp
+@@ -16,13 +16,13 @@
+ 
+ using namespace llvm;
+ 
+-#if defined(_MSC_VER)
+-#include <Intrin.h>
++#if defined(_WIN32)
++#include <intrin.h>
+ #include <windows.h>
+ #undef MemoryFence
+ #endif
+ 
+-#if defined(__GNUC__) || (defined(__IBMCPP__) && __IBMCPP__ >= 1210)
++#if (defined(__GNUC__) && !defined(__MINGW32__)) || (defined(__IBMCPP__) && __IBMCPP__ >= 1210)
+ #define GNU_ATOMICS
+ #endif
+ 
+@@ -32,7 +32,7 @@ void sys::MemoryFence() {
+ #else
+ #  if defined(GNU_ATOMICS)
+   __sync_synchronize();
+-#  elif defined(_MSC_VER)
++#  elif defined(_WIN32)
+   MemoryBarrier();
+ #  else
+ # error No memory fence implementation for your platform!
+@@ -50,7 +50,7 @@ sys::cas_flag sys::CompareAndSwap(volatile sys::cas_flag* ptr,
+   return result;
+ #elif defined(GNU_ATOMICS)
+   return __sync_val_compare_and_swap(ptr, old_value, new_value);
+-#elif defined(_MSC_VER)
++#elif defined(_WIN32)
+   return InterlockedCompareExchange(ptr, new_value, old_value);
+ #else
+ #  error No compare-and-swap implementation for your platform!
+@@ -63,7 +63,7 @@ sys::cas_flag sys::AtomicIncrement(volatile sys::cas_flag* ptr) {
+   return *ptr;
+ #elif defined(GNU_ATOMICS)
+   return __sync_add_and_fetch(ptr, 1);
+-#elif defined(_MSC_VER)
++#elif defined(_WIN32)
+   return InterlockedIncrement(ptr);
+ #else
+ #  error No atomic increment implementation for your platform!
+@@ -76,7 +76,7 @@ sys::cas_flag sys::AtomicDecrement(volatile sys::cas_flag* ptr) {
+   return *ptr;
+ #elif defined(GNU_ATOMICS)
+   return __sync_sub_and_fetch(ptr, 1);
+-#elif defined(_MSC_VER)
++#elif defined(_WIN32)
+   return InterlockedDecrement(ptr);
+ #else
+ #  error No atomic decrement implementation for your platform!
+@@ -89,7 +89,7 @@ sys::cas_flag sys::AtomicAdd(volatile sys::cas_flag* ptr, sys::cas_flag val) {
+   return *ptr;
+ #elif defined(GNU_ATOMICS)
+   return __sync_add_and_fetch(ptr, val);
+-#elif defined(_MSC_VER)
++#elif defined(_WIN32)
+   return InterlockedExchangeAdd(ptr, val) + val;
+ #else
+ #  error No atomic add implementation for your platform!
+diff --git a/lib/Support/MSFileSystemBasic.cpp b/lib/Support/MSFileSystemBasic.cpp
+index 75b551426..390504415 100644
+--- a/lib/Support/MSFileSystemBasic.cpp
++++ b/lib/Support/MSFileSystemBasic.cpp
+@@ -45,7 +45,7 @@ static
+ DWORD WIN32_FROM_HRESULT(HRESULT hr)
+ {
+   if (SUCCEEDED(hr)) return ERROR_SUCCESS;
+-  if ((hr & 0xFFFF0000) == MAKE_HRESULT(SEVERITY_ERROR, FACILITY_WIN32, 0))
++  if ((hr & 0xFFFF0000) == (ULONG)MAKE_HRESULT(SEVERITY_ERROR, FACILITY_WIN32, 0))
+   {
+     // Could have come from many values, but we choose this one
+     return HRESULT_CODE(hr);
+diff --git a/lib/Support/regexec.c b/lib/Support/regexec.c
+index b161f056e..0076aac56 100644
+--- a/lib/Support/regexec.c
++++ b/lib/Support/regexec.c
+@@ -78,7 +78,7 @@
+ #define	ISSETBACK(v, n)		(((v) & ((unsigned long)here >> (n))) != 0)
+ /* function names */
+ #define SNAMES			/* engine.inc looks after details */
+-#define _states_param_          /* define to nothing when not a pointer */
++#define _states_param_ long          /* define to nothing when not a pointer */
+ #include "regengine.inc"
+ 
+ /* now undo things */
+@@ -130,7 +130,7 @@
+ #define	ISSETBACK(v, n)	((v)[here - (n)])
+ /* function names */
+ #define	LNAMES			/* flag */
+-#define _states_param_ __inexpressible_readableTo(stopmarker)
++#define _states_param_ // __inexpressible_readableTo(stopmarker)
+ 
+ #include "regengine.inc"
+ 
