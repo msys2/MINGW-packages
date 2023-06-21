@@ -9,7 +9,7 @@ set -eo pipefail
 DIR="$( cd "$( dirname "$0" )" && pwd )"
 
 # Configure
-mkdir artifacts
+mkdir -p artifacts
 git remote add upstream 'https://github.com/MSYS2/MINGW-packages'
 git fetch --quiet upstream
 # reduce time required to install packages by disabling pacman's disk space checking
@@ -81,8 +81,12 @@ failure() { local status="${1}"; local items=("${@:2}"); _status failure "${stat
 success() { local status="${1}"; local items=("${@:2}"); _status success "${status}." "${items[@]}"; exit 0; }
 message() { local status="${1}"; local items=("${@:2}"); _status message "${status}"  "${items[@]}"; }
 
-# Detect
-list_packages || failure 'Could not detect changed files'
+if [ $# -eq 0 ]; then
+    # Detect
+    list_packages || failure 'Could not detect changed files'
+else
+    declare -a packages=("$@")
+fi
 message 'Processing changes'
 
 declare -a skipped_packages=()
@@ -110,7 +114,7 @@ for package in "${skipped_packages[@]}"; do
     unset package
 done
 
-test -z "${packages[@]}" && success 'No changes in package recipes'
+test ${#packages[@]} -eq 0 && success 'No changes in package recipes'
 
 # Build
 message 'Building packages' "${packages[@]}"
@@ -141,6 +145,9 @@ for package in "${packages[@]}"; do
     echo "::endgroup::"
 
     cd B
+    for pkg in *.pkg.tar.*; do
+        rm -f /var/cache/pacman/pkg/"$pkg"*
+    done
     for pkg in *.pkg.tar.*; do
         pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
         echo "::group::[install] ${pkgname}"
