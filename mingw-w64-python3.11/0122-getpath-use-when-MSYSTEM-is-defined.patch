@@ -1,0 +1,181 @@
+From 2bb76ad04dcbd83018d0a250fc0ea650382d5043 Mon Sep 17 00:00:00 2001
+From: Naveen M K <naveen521kk@gmail.com>
+Date: Tue, 20 Jun 2023 18:46:17 +0530
+Subject: [PATCH 122/N] getpath: use `/` when MSYSTEM is defined
+
+should be squashed in previous commit
+---
+ Include/pylifecycle.h |  1 +
+ Modules/getpath.c     |  1 +
+ Python/fileutils.c    | 41 +++++++++++++++++++++++++----------------
+ Python/pathconfig.c   |  4 ++--
+ 4 files changed, 29 insertions(+), 18 deletions(-)
+
+diff --git a/Include/pylifecycle.h b/Include/pylifecycle.h
+index 50d8b76..5d29201 100644
+--- a/Include/pylifecycle.h
++++ b/Include/pylifecycle.h
+@@ -21,6 +21,7 @@ PyAPI_FUNC(int) Py_IsInitialized(void);
+ PyAPI_FUNC(PyThreadState *) Py_NewInterpreter(void);
+ PyAPI_FUNC(void) Py_EndInterpreter(PyThreadState *);
+ 
++PyAPI_FUNC(wchar_t) Py_GetAltSepW(const wchar_t *);
+ PyAPI_FUNC(wchar_t) Py_GetSepW(const wchar_t *);
+ PyAPI_FUNC(char) Py_GetSepA(const char *);
+ 
+diff --git a/Modules/getpath.c b/Modules/getpath.c
+index c4de354..74b9461 100644
+--- a/Modules/getpath.c
++++ b/Modules/getpath.c
+@@ -68,6 +68,7 @@ getpath_abspath(PyObject *Py_UNUSED(self), PyObject *args)
+     if (path) {
+         wchar_t *abs;
+         if (_Py_abspath((const wchar_t *)_Py_normpath(path, -1), &abs) == 0 && abs) {
++            abs = _Py_normpath(abs, -1);
+             r = PyUnicode_FromWideChar(abs, -1);
+             PyMem_RawFree((void *)abs);
+         } else {
+diff --git a/Python/fileutils.c b/Python/fileutils.c
+index 2d57d43..0fe9952 100644
+--- a/Python/fileutils.c
++++ b/Python/fileutils.c
+@@ -2050,7 +2050,11 @@ _Py_abspath(const wchar_t *path, wchar_t **abspath_p)
+     }
+ 
+ #ifdef MS_WINDOWS
+-    return _PyOS_getfullpathname(path, abspath_p);
++    if (_PyOS_getfullpathname(path, abspath_p) < 0){
++        return -1;
++    }
++    *abspath_p = _Py_normpath(*abspath_p, -1);
++    return 0;
+ #else
+     wchar_t cwd[MAXPATHLEN + 1];
+     cwd[Py_ARRAY_LENGTH(cwd) - 1] = 0;
+@@ -2190,11 +2194,16 @@ _Py_normpath(wchar_t *path, Py_ssize_t size)
+     wchar_t *minP2 = path;  // the beginning of the destination range
+     wchar_t lastC = L'\0';  // the last ljusted character, p2[-1] in most cases
+ 
++    const wchar_t sep = Py_GetSepW(NULL);
++#ifdef ALTSEP
++    const wchar_t altsep = Py_GetAltSepW(NULL);
++#endif
++
+ #define IS_END(x) (pEnd ? (x) == pEnd : !*(x))
+ #ifdef ALTSEP
+-#define IS_SEP(x) (*(x) == SEP || *(x) == ALTSEP)
++#define IS_SEP(x) (*(x) == sep || *(x) == altsep)
+ #else
+-#define IS_SEP(x) (*(x) == SEP)
++#define IS_SEP(x) (*(x) == sep)
+ #endif
+ #define SEP_OR_END(x) (IS_SEP(x) || IS_END(x))
+ 
+@@ -2205,7 +2214,7 @@ _Py_normpath(wchar_t *path, Py_ssize_t size)
+             path++;
+         }
+         p1 = p2 = minP2 = path;
+-        lastC = SEP;
++        lastC = sep;
+     }
+ #ifdef MS_WINDOWS
+     // Skip past drive segment and update minP2
+@@ -2219,13 +2228,13 @@ _Py_normpath(wchar_t *path, Py_ssize_t size)
+     // and network paths, including the first segment.
+     else if (IS_SEP(&p1[0]) && IS_SEP(&p1[1])) {
+         int sepCount = 2;
+-        *p2++ = SEP;
+-        *p2++ = SEP;
++        *p2++ = sep;
++        *p2++ = sep;
+         p1 += 2;
+         for (; !IS_END(p1) && sepCount; ++p1) {
+             if (IS_SEP(p1)) {
+                 --sepCount;
+-                *p2++ = lastC = SEP;
++                *p2++ = lastC = sep;
+             } else {
+                 *p2++ = lastC = *p1;
+             }
+@@ -2242,7 +2251,7 @@ _Py_normpath(wchar_t *path, Py_ssize_t size)
+         *p2++ = *p1++;
+         *p2++ = *p1++;
+         minP2 = p2 - 1;  // Absolute path has SEP at minP2
+-        lastC = SEP;
++        lastC = sep;
+     }
+ #endif /* MS_WINDOWS */
+ 
+@@ -2250,18 +2259,18 @@ _Py_normpath(wchar_t *path, Py_ssize_t size)
+     for (; !IS_END(p1); ++p1) {
+         wchar_t c = *p1;
+ #ifdef ALTSEP
+-        if (c == ALTSEP) {
+-            c = SEP;
++        if (c == altsep) {
++            c = sep;
+         }
+ #endif
+-        if (lastC == SEP) {
++        if (lastC == sep) {
+             if (c == L'.') {
+                 int sep_at_1 = SEP_OR_END(&p1[1]);
+                 int sep_at_2 = !sep_at_1 && SEP_OR_END(&p1[2]);
+                 if (sep_at_2 && p1[1] == L'.') {
+                     wchar_t *p3 = p2;
+-                    while (p3 != minP2 && *--p3 == SEP) { }
+-                    while (p3 != minP2 && *(p3 - 1) != SEP) { --p3; }
++                    while (p3 != minP2 && *--p3 == sep) { }
++                    while (p3 != minP2 && *(p3 - 1) != sep) { --p3; }
+                     if (p2 == minP2
+                         || (p3[0] == L'.' && p3[1] == L'.' && IS_SEP(&p3[2])))
+                     {
+@@ -2270,7 +2279,7 @@ _Py_normpath(wchar_t *path, Py_ssize_t size)
+                         *p2++ = L'.';
+                         *p2++ = L'.';
+                         lastC = L'.';
+-                    } else if (p3[0] == SEP) {
++                    } else if (p3[0] == sep) {
+                         // Absolute path, so absorb segment
+                         p2 = p3 + 1;
+                     } else {
+@@ -2281,7 +2290,7 @@ _Py_normpath(wchar_t *path, Py_ssize_t size)
+                 } else {
+                     *p2++ = lastC = c;
+                 }
+-            } else if (c == SEP) {
++            } else if (c == sep) {
+             } else {
+                 *p2++ = lastC = c;
+             }
+@@ -2291,7 +2300,7 @@ _Py_normpath(wchar_t *path, Py_ssize_t size)
+     }
+     *p2 = L'\0';
+     if (p2 != minP2) {
+-        while (--p2 != minP2 && *p2 == SEP) {
++        while (--p2 != minP2 && *p2 == sep) {
+             *p2 = L'\0';
+         }
+     }
+diff --git a/Python/pathconfig.c b/Python/pathconfig.c
+index b36fbcb..6b5d625 100644
+--- a/Python/pathconfig.c
++++ b/Python/pathconfig.c
+@@ -118,7 +118,7 @@ Py_GetSepW(const wchar_t *name)
+     if (sep != L'\0')
+         return sep;
+ #if defined(__MINGW32__)
+-    msystem = Py_GETENV("MSYSTEM");
++    msystem = getenv("MSYSTEM");
+ #endif
+     if (msystem != NULL && strcmp(msystem, "") != 0)
+         sep = L'/';
+@@ -127,7 +127,7 @@ Py_GetSepW(const wchar_t *name)
+     return sep;
+ }
+ 
+-static wchar_t
++wchar_t
+ Py_GetAltSepW(const wchar_t *name)
+ {
+     char sep = Py_GetSepW(name);
