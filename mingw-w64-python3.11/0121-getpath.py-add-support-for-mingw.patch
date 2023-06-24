@@ -1,0 +1,182 @@
+From 6b596eeb2cc6637e81a5cb61c3d416b8a7a11fd8 Mon Sep 17 00:00:00 2001
+From: Naveen M K <naveen521kk@gmail.com>
+Date: Tue, 20 Jun 2023 18:43:59 +0530
+Subject: [PATCH 121/N] getpath.py: add support for mingw
+
+- always normalize the PREFIX to an absolute path
+---
+ Modules/getpath.c  |  8 ++++++++
+ Modules/getpath.py | 48 +++++++++++++++++++++++++++++++++-------------
+ 2 files changed, 43 insertions(+), 13 deletions(-)
+
+diff --git a/Modules/getpath.c b/Modules/getpath.c
+index ceacf36..c4de354 100644
+--- a/Modules/getpath.c
++++ b/Modules/getpath.c
+@@ -881,6 +881,11 @@ _PyConfig_InitPathConfig(PyConfig *config, int compute_path_config)
+ #else
+         !decode_to_dict(dict, "os_name", "posix") ||
+ #endif
++#ifdef __MINGW32__
++        !int_to_dict(dict, "is_mingw", 1) ||
++#else
++        !int_to_dict(dict, "is_mingw", 0) ||
++#endif
+ #ifdef WITH_NEXT_FRAMEWORK
+         !int_to_dict(dict, "WITH_NEXT_FRAMEWORK", 1) ||
+ #else
+@@ -907,6 +912,9 @@ _PyConfig_InitPathConfig(PyConfig *config, int compute_path_config)
+         !funcs_to_dict(dict, config->pathconfig_warnings) ||
+ #ifndef MS_WINDOWS
+         PyDict_SetItemString(dict, "winreg", Py_None) < 0 ||
++#endif
++#ifdef __MINGW32__
++        !env_to_dict(dict, "ENV_MSYSTEM", 0) ||
+ #endif
+         PyDict_SetItemString(dict, "__builtins__", PyEval_GetBuiltins()) < 0
+     ) {
+diff --git a/Modules/getpath.py b/Modules/getpath.py
+index 74f918c..83db516 100644
+--- a/Modules/getpath.py
++++ b/Modules/getpath.py
+@@ -30,6 +30,7 @@
+ 
+ # ** Values known at compile time **
+ # os_name           -- [in] one of 'nt', 'posix', 'darwin'
++# is_mingw          -- [in] True if targeting MinGW
+ # PREFIX            -- [in] sysconfig.get_config_var(...)
+ # EXEC_PREFIX       -- [in] sysconfig.get_config_var(...)
+ # PYTHONPATH        -- [in] sysconfig.get_config_var(...)
+@@ -51,6 +52,7 @@
+ # ENV_PYTHONHOME          -- [in] getenv(...)
+ # ENV_PYTHONEXECUTABLE    -- [in] getenv(...)
+ # ENV___PYVENV_LAUNCHER__ -- [in] getenv(...)
++# ENV_MSYSTEM             -- [in] getenv(...)
+ 
+ # ** Values calculated at runtime **
+ # config            -- [in/out] dict of the PyConfig structure
+@@ -185,8 +187,27 @@ if os_name == 'posix' or os_name == 'darwin':
+     ZIP_LANDMARK = f'{platlibdir}/python{VERSION_MAJOR}{VERSION_MINOR}.zip'
+     DELIM = ':'
+     SEP = '/'
++    ALTSEP = None
+ 
+-elif os_name == 'nt':
++elif os_name == 'nt' and is_mingw:
++    BUILDDIR_TXT = 'pybuilddir.txt'
++    BUILD_LANDMARK = 'Modules/Setup.local'
++    DEFAULT_PROGRAM_NAME = f'python{VERSION_MAJOR}'
++    STDLIB_SUBDIR = f'{platlibdir}/python{VERSION_MAJOR}.{VERSION_MINOR}'
++    STDLIB_LANDMARKS = [f'{STDLIB_SUBDIR}/os.py', f'{STDLIB_SUBDIR}/os.pyc']
++    PLATSTDLIB_LANDMARK = f'{platlibdir}/python{VERSION_MAJOR}.{VERSION_MINOR}/lib-dynload'
++    BUILDSTDLIB_LANDMARKS = ['Lib/os.py']
++    VENV_LANDMARK = 'pyvenv.cfg'
++    ZIP_LANDMARK = f'{platlibdir}/python{VERSION_MAJOR}{VERSION_MINOR}.zip'
++    DELIM = ';'
++    if ENV_MSYSTEM:
++        SEP = '/'
++        ALTSEP = '\\'
++    else:
++        SEP = '\\'
++        ALTSEP = '/'
++
++elif os_name == 'nt': # MSVC
+     BUILDDIR_TXT = 'pybuilddir.txt'
+     BUILD_LANDMARK = f'{VPATH}\\Modules\\Setup.local'
+     DEFAULT_PROGRAM_NAME = f'python'
+@@ -199,6 +220,7 @@ elif os_name == 'nt':
+     WINREG_KEY = f'SOFTWARE\\Python\\PythonCore\\{PYWINVER}\\PythonPath'
+     DELIM = ';'
+     SEP = '\\'
++    ALTSEP = '/'
+ 
+ 
+ # ******************************************************************************
+@@ -263,10 +285,10 @@ if py_setpath:
+     if not executable:
+         executable = real_executable
+ 
+-if not executable and SEP in program_name:
++if not executable and (SEP in program_name or 
++                       (ALTSEP and ALTSEP in program_name)):
+     # Resolve partial path program_name against current directory
+     executable = abspath(program_name)
+-
+ if not executable:
+     # All platforms default to real_executable if known at this
+     # stage. POSIX does not set this value.
+@@ -497,15 +519,15 @@ if ((not home_was_set and real_executable_dir and not py_setpath)
+     except (FileNotFoundError, PermissionError):
+         if isfile(joinpath(real_executable_dir, BUILD_LANDMARK)):
+             build_prefix = joinpath(real_executable_dir, VPATH)
+-            if os_name == 'nt':
++            if os_name == 'nt' and not is_mingw:
+                 # QUIRK: Windows builds need platstdlib_dir to be the executable
+                 # dir. Normally the builddir marker handles this, but in this
+                 # case we need to correct manually.
+                 platstdlib_dir = real_executable_dir
+ 
+     if build_prefix:
+-        if os_name == 'nt':
+-            # QUIRK: No searching for more landmarks on Windows
++        if os_name == 'nt' and not is_mingw:
++            # QUIRK: No searching for more landmarks on MSVC
+             build_stdlib_prefix = build_prefix
+         else:
+             build_stdlib_prefix = search_up(build_prefix, *BUILDSTDLIB_LANDMARKS)
+@@ -597,7 +619,7 @@ else:
+ 
+     # Detect exec_prefix by searching from executable for the platstdlib_dir
+     if PLATSTDLIB_LANDMARK and not exec_prefix:
+-        if os_name == 'nt':
++        if os_name == 'nt' and (not is_mingw):
+             # QUIRK: Windows always assumed these were the same
+             # gh-100320: Our PYDs are assumed to be relative to the Lib directory
+             # (that is, prefix) rather than the executable (that is, executable_dir)
+@@ -607,7 +629,7 @@ else:
+         if not exec_prefix and EXEC_PREFIX:
+             exec_prefix = EXEC_PREFIX
+         if not exec_prefix or not isdir(joinpath(exec_prefix, PLATSTDLIB_LANDMARK)):
+-            if os_name == 'nt':
++            if os_name == 'nt' and (not is_mingw):
+                 # QUIRK: If DLLs is missing on Windows, don't warn, just assume
+                 # that they're in exec_prefix
+                 if not platstdlib_dir:
+@@ -660,7 +682,7 @@ elif not pythonpath_was_set:
+             pythonpath.append(abspath(p))
+ 
+     # Then add the default zip file
+-    if os_name == 'nt':
++    if os_name == 'nt' and (not is_mingw):
+         # QUIRK: Windows uses the library directory rather than the prefix
+         if library:
+             library_dir = dirname(library)
+@@ -673,7 +695,7 @@ elif not pythonpath_was_set:
+     else:
+         pythonpath.append(joinpath(prefix, ZIP_LANDMARK))
+ 
+-    if os_name == 'nt' and use_environment and winreg:
++    if (not is_mingw) and os_name == 'nt' and use_environment and winreg:
+         # QUIRK: Windows also lists paths in the registry. Paths are stored
+         # as the default value of each subkey of
+         # {HKCU,HKLM}\Software\Python\PythonCore\{winver}\PythonPath
+@@ -714,7 +736,7 @@ elif not pythonpath_was_set:
+     if not platstdlib_dir and exec_prefix:
+         platstdlib_dir = joinpath(exec_prefix, PLATSTDLIB_LANDMARK)
+ 
+-    if os_name == 'nt':
++    if os_name == 'nt' and (not is_mingw):
+         # QUIRK: Windows generates paths differently
+         if platstdlib_dir:
+             pythonpath.append(platstdlib_dir)
+@@ -742,8 +764,8 @@ elif not pythonpath_was_set:
+ 
+ # QUIRK: Non-Windows replaces prefix/exec_prefix with defaults when running
+ # in build directory. This happens after pythonpath calculation.
+-if os_name != 'nt' and build_prefix:
+-    prefix = config.get('prefix') or PREFIX
++if (os_name != 'nt' or is_mingw) and build_prefix:
++    prefix = config.get('prefix') or abspath(PREFIX)
+     exec_prefix = config.get('exec_prefix') or EXEC_PREFIX or prefix
+ 
+ 
