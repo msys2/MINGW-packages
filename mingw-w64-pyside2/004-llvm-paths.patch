@@ -1,0 +1,90 @@
+--- a/sources/shiboken2/ApiExtractor/abstractmetabuilder.cpp
++++ b/sources/shiboken2/ApiExtractor/abstractmetabuilder.cpp
+@@ -410,6 +410,14 @@
+ {
+     clang::Builder builder;
+     builder.setSystemIncludes(TypeDatabase::instance()->systemIncludes());
++#ifdef Q_CC_MINGW
++    auto includePaths = clang::emulatedSystemIncludePaths();
++    std::transform(includePaths.begin(), includePaths.end(), includePaths.begin(),
++              [](QByteArray filename) { // to forward slashes
++      return QFile::encodeName(QDir::cleanPath(QFile::decodeName(filename)));
++    });
++    builder.setSystemIncludePaths(includePaths);
++#endif
+     if (level == LanguageLevel::Default)
+         level = clang::emulatedCompilerLanguageLevel();
+     arguments.prepend(QByteArrayLiteral("-std=")
+--- a/sources/shiboken2/ApiExtractor/clangparser/clangbuilder.cpp
++++ b/sources/shiboken2/ApiExtractor/clangparser/clangbuilder.cpp
+@@ -828,7 +828,8 @@
+     // Has been observed to be 0 for invalid locations
+     bool result = false;
+     if (const char *cFileName = clang_getCString(cxFileName)) {
+-        result = d->visitHeader(cFileName);
++        QString absoluteFileName = QDir::cleanPath(QString::fromUtf8(cFileName));
++        result = d->visitHeader(absoluteFileName.toUtf8().constData());
+         clang_disposeString(cxFileName);
+     }
+     return result;
+@@ -844,6 +845,11 @@
+     }
+ }
+ 
++void Builder::setSystemIncludePaths(const QByteArrayList &systemIncludePaths)
++{
++    d->m_systemIncludePaths.append(systemIncludePaths);
++}
++
+ FileModelItem Builder::dom() const
+ {
+     Q_ASSERT(!d->m_scopeStack.isEmpty());
+--- a/sources/shiboken2/ApiExtractor/clangparser/clangbuilder.h
++++ b/sources/shiboken2/ApiExtractor/clangparser/clangbuilder.h
+@@ -45,6 +45,7 @@
+     ~Builder();
+ 
+     void setSystemIncludes(const QByteArrayList &systemIncludes);
++    void setSystemIncludePaths(const QByteArrayList &systemIncludePaths);
+ 
+     bool visitLocation(const CXSourceLocation &location) const override;
+ 
+--- a/sources/shiboken2/ApiExtractor/clangparser/compilersupport.cpp
++++ b/sources/shiboken2/ApiExtractor/clangparser/compilersupport.cpp
+@@ -401,4 +401,15 @@
+     return LanguageLevel::Default;
+ }
+ 
++QByteArrayList emulatedSystemIncludePaths()
++{
++    HeaderPaths headerPaths = gppInternalIncludePaths(compilerFromCMake(QStringLiteral("clang++")));
++    QByteArrayList result;
++    std::transform(headerPaths.cbegin(), headerPaths.cend(),
++                   std::back_inserter(result), [](const HeaderPath& path) {
++        return path.path;
++    });
++    return result;
++}
++
+ } // namespace clang
+--- a/sources/shiboken2/ApiExtractor/clangparser/compilersupport.h
++++ b/sources/shiboken2/ApiExtractor/clangparser/compilersupport.h
+@@ -46,6 +46,7 @@
+ QVersionNumber libClangVersion();
+ 
+ QByteArrayList emulatedCompilerOptions();
++QByteArrayList emulatedSystemIncludePaths();
+ LanguageLevel emulatedCompilerLanguageLevel();
+ 
+ const char *languageLevelOption(LanguageLevel l);
+--- a/sources/shiboken2/ApiExtractor/reporthandler.cpp
++++ b/sources/shiboken2/ApiExtractor/reporthandler.cpp
+@@ -35,7 +35,7 @@
+ #include <cstdarg>
+ #include <cstdio>
+ 
+-#if defined(_WINDOWS) || defined(NOCOLOR)
++#if defined(Q_OS_WIN) || defined(NOCOLOR)
+     #define COLOR_END ""
+     #define COLOR_WHITE ""
+     #define COLOR_YELLOW ""

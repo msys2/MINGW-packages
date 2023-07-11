@@ -4,10 +4,10 @@
 _realname=hdf5
 pkgbase="mingw-w64-${_realname}"
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-_ver=1.12.2
-patch=
+_ver=1.14.1
+patch=-2
 pkgver=${_ver}${patch//-/.}
-pkgrel=1
+pkgrel=2
 pkgdesc="General purpose library and file format for storing scientific data (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
@@ -16,20 +16,23 @@ url="https://www.hdfgroup.org/HDF5/"
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-libaec"
          "${MINGW_PACKAGE_PREFIX}-zlib"
+         "${MINGW_PACKAGE_PREFIX}-openssl"
+         "${MINGW_PACKAGE_PREFIX}-curl"
          $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran")
          )
-makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
              "${MINGW_PACKAGE_PREFIX}-ninja"
-             "${MINGW_PACKAGE_PREFIX}-cc"
-             $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-fortran")
+             $([[ ${MSYSTEM} == CLANG32 ]] || echo "${MINGW_PACKAGE_PREFIX}-fc")
              )
-options=('staticlibs' 'strip')
-source=("https://support.hdfgroup.org/ftp/HDF5/releases/hdf5-${_ver%.*}/hdf5-${_ver}${patch}/src/hdf5-${_ver}${patch}.tar.bz2"
+source=("https://support.hdfgroup.org/ftp/HDF5/releases/hdf5-${_ver%.*}/hdf5-${_ver}/src/hdf5-${_ver}${patch}.tar.bz2"
         "hdf5-proper-library-names-mingw.patch"
-        "hdf5-fix-find-szip.patch")
-sha256sums=('1a88bbe36213a2cea0c8397201a459643e7155c9dc91e062675b3fb07ee38afe'
-            '7b5595ee9903e14f147f7b4615648cad6a0f5a76f8299461ebe91d739e750476'
-            '48bdc4ab0d107bdec11aa3d3a2765cd29eaac5e304c3892365ed2ea352731cbe')
+        "hdf5-fix-static-lib.patch"
+        "hdf5-fix-fortran-module-directory-leak.patch")
+sha256sums=('06ca141d1a3c312b5d7cc4826a12737293ae131031748861689f6a2ec8219dbd'
+            'e236f5805152b25065c206922d7ec1bab05b233adac51bbd0fb1e546326162f6'
+            '9d172a7f6b8f54fdbf840e032708acade4ab88c81262b45bfa85d203810962a9'
+            '02b5d7335a9db628ed03b29c62d8f0e5f5618fa39de8e453aa02b530d28317a8')
 
 # Helper macros to help make tasks easier #
 apply_patch_with_msg() {
@@ -45,29 +48,37 @@ prepare() {
 
   apply_patch_with_msg \
     hdf5-proper-library-names-mingw.patch \
-    hdf5-fix-find-szip.patch
+    hdf5-fix-static-lib.patch \
+    hdf5-fix-fortran-module-directory-leak.patch
 }
 
 build() {
-  [[ -d ${srcdir}/build-${MSYSTEM} ]] && rm -rf ${srcdir}/build-${MSYSTEM}
   mkdir -p ${srcdir}/build-${MSYSTEM} && cd ${srcdir}/build-${MSYSTEM}
 
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
   local -a _enable_fortran
-  if [[ "${MINGW_PACKAGE_PREFIX}" == *-clang-* ]]; then
+  if [[ ${MSYSTEM} == CLANG32 ]]; then
     _enable_fortran="OFF"
   else
     _enable_fortran="ON"
   fi
 
+  CFLAGS+=" -Wno-implicit-function-declaration" \
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   SZIP_INSTALL=${MINGW_PREFIX} \
-    cmake \
+    ${MINGW_PREFIX}/bin/cmake \
       -Wno-dev \
       -GNinja \
       -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
-      -DBUILD_SHARED_LIBS=ON \
+      -DCMAKE_SHARED_LIBRARY_NAME_WITH_VERSION=ON \
       -DBUILD_TESTING=OFF \
-      -DCMAKE_BUILD_TYPE=Release \
+      ${_extra_config[@]} \
       -DCMAKE_SKIP_RPATH=ON \
       -DHDF5_BUILD_HL_LIB=ON \
       -DHDF5_BUILD_CPP_LIB=ON \
@@ -76,25 +87,20 @@ build() {
       -DHDF5_ENABLE_DEPRECATED_SYMBOLS=ON \
       -DHDF5_ENABLE_SZIP_SUPPORT=ON \
       -DHDF5_ENABLE_Z_LIB_SUPPORT=ON \
+      -DHDF5_ENABLE_ROS3_VFD=ON \
       -DHDF5_INSTALL_CMAKE_DIR="lib/cmake" \
       -DHDF5_INSTALL_DATA_DIR="share/doc/hdf5" \
+      -DHDF5_INSTALL_MODULE_DIR="include" \
       -DHDF5_MSVC_NAMING_CONVENTION=OFF \
       ../${_realname}-${_ver}${patch}
 
-  cmake --build .
+  ${MINGW_PREFIX}/bin/cmake --build .
 }
 
 package() {
   cd "${srcdir}/build-${MSYSTEM}"
 
-  if [[ "${MINGW_PACKAGE_PREFIX}" != *-clang-* ]]; then
-    mkdir -p ${srcdir}/build-${MSYSTEM}/bin/static/Release/
-    mkdir -p ${srcdir}/build-${MSYSTEM}/bin/shared/Release/
-    cp ${srcdir}/build-${MSYSTEM}/bin/static/*.mod ${srcdir}/build-${MSYSTEM}/bin/static/Release
-    cp ${srcdir}/build-${MSYSTEM}/bin/shared/*.mod ${srcdir}/build-${MSYSTEM}/bin/shared/Release
-  fi
-
-  DESTDIR="${pkgdir}" cmake --install .
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
 
   local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
   for _f in "${pkgdir}${MINGW_PREFIX}"/lib/cmake/*.cmake; do

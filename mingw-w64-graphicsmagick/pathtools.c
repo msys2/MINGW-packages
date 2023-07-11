@@ -263,17 +263,6 @@ simplify_path(char * path)
   *result_p = '\0';
 }
 
-/* Returns actual_to by calculating the relative path from -> to and
-   applying that to actual_from. An assumption that actual_from is a
-   dir is made, and it may or may not end with a '/' */
-char const *
-get_relocated_path (char const * from, char const * to, char const * actual_from)
-{
-  char const * relative_from_to = get_relative_path (from, to);
-  char * actual_to = (char *) malloc (strlen(actual_from) + 2 + strlen(relative_from_to));
-  return actual_to;
-}
-
 int
 get_executable_path(char const * argv0, char * result, ssize_t max_size)
 {
@@ -509,6 +498,7 @@ get_relocated_path_list_ref(char const * from, char const * to_path_list, char *
     arr[i] = scratch;
     strcat (scratch, ref_path);
     strcat (scratch, rel_to_datadir);
+    free (rel_to_datadir);
     simplify_path (arr[i]);
     size_t arr_i_size = strlen (arr[i]);
     result_size += arr_i_size;
@@ -564,6 +554,7 @@ single_path_relocation_ref(const char *from, const char *to, char *ref_path)
   }
   char * rel_to_datadir = get_relative_path (from, to);
   strcat (ref_path, rel_to_datadir);
+  free (rel_to_datadir);
   simplify_path (&ref_path[0]);
   return malloc_copy_string(ref_path);
 #else

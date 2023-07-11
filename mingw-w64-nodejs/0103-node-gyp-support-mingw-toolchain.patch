@@ -1,0 +1,267 @@
+diff -ur node-v18.13.0-orig/deps/npm/node_modules/node-gyp/addon.gypi node-v18.13.0/deps/npm/node_modules/node-gyp/addon.gypi
+--- node-v18.13.0-orig/deps/npm/node_modules/node-gyp/addon.gypi	2023-01-06 06:46:44.000000000 +0800
++++ node-v18.13.0/deps/npm/node_modules/node-gyp/addon.gypi	2023-01-26 19:00:07.257203100 +0800
+@@ -71,7 +71,7 @@
+         # that the addon will work regardless of whether the node/iojs binary
+         # is named node.exe, iojs.exe, or something else.
+         'conditions': [
+-          [ 'OS=="win"', {
++          [ 'OS=="winmsvs"', {
+             'defines': [ 'HOST_BINARY=\"<(node_host_binary)<(EXECUTABLE_SUFFIX)\"', ],
+             'sources': [
+               '<(node_gyp_dir)/src/win_delay_load_hook.cc',
+@@ -148,20 +148,21 @@
+             }
+           }]
+         ],
++        'library_dirs': [ '<(node_root_dir)/lib' ],
+         'libraries': [
+-          '-lkernel32.lib',
+-          '-luser32.lib',
+-          '-lgdi32.lib',
+-          '-lwinspool.lib',
+-          '-lcomdlg32.lib',
+-          '-ladvapi32.lib',
+-          '-lshell32.lib',
+-          '-lole32.lib',
+-          '-loleaut32.lib',
+-          '-luuid.lib',
+-          '-lodbc32.lib',
+-          '-lDelayImp.lib',
+-          '-l"<(node_lib_file)"'
++          '-lkernel32',
++          '-luser32',
++          '-lgdi32',
++          '-lwinspool',
++          '-lcomdlg32',
++          '-ladvapi32',
++          '-lshell32',
++          '-lole32',
++          '-loleaut32',
++          '-luuid',
++          '-lodbc32',
++          '-ldelayimp',
++          '-lnode'
+         ],
+         'msvs_disabled_warnings': [
+           # warning C4251: 'node::ObjectWrap::handle_' : class 'v8::Persistent<T>'
+diff -ur node-v18.13.0-orig/deps/npm/node_modules/node-gyp/gyp/pylib/gyp/__init__.py node-v18.13.0/deps/npm/node_modules/node-gyp/gyp/pylib/gyp/__init__.py
+--- node-v18.13.0-orig/deps/npm/node_modules/node-gyp/gyp/pylib/gyp/__init__.py	2023-01-06 06:46:44.000000000 +0800
++++ node-v18.13.0/deps/npm/node_modules/node-gyp/gyp/pylib/gyp/__init__.py	2023-01-21 18:10:08.752679400 +0800
+@@ -495,7 +495,7 @@
+             # Nothing in the variable, default based on platform.
+             if sys.platform == "darwin":
+                 options.formats = ["xcode"]
+-            elif sys.platform in ("win32", "cygwin"):
++            elif sys.platform in ("win32", "cygwin") and not "GCC" in sys.version:
+                 options.formats = ["msvs"]
+             else:
+                 options.formats = ["make"]
+diff -ur node-v18.13.0-orig/deps/npm/node_modules/node-gyp/gyp/pylib/gyp/generator/make.py node-v18.13.0/deps/npm/node_modules/node-gyp/gyp/pylib/gyp/generator/make.py
+--- node-v18.13.0-orig/deps/npm/node_modules/node-gyp/gyp/pylib/gyp/generator/make.py	2023-01-06 06:46:44.000000000 +0800
++++ node-v18.13.0/deps/npm/node_modules/node-gyp/gyp/pylib/gyp/generator/make.py	2023-01-21 18:10:08.768304000 +0800
+@@ -102,6 +102,8 @@
+         elif flavor == "zos":
+             default_variables.setdefault("SHARED_LIB_SUFFIX", ".x")
+             COMPILABLE_EXTENSIONS.update({".pli": "pli"})
++        elif flavor == "win":
++            default_variables.setdefault("SHARED_LIB_SUFFIX", ".dll")
+         else:
+             default_variables.setdefault("SHARED_LIB_SUFFIX", ".so")
+         default_variables.setdefault("SHARED_LIB_DIR", "$(builddir)/lib.$(TOOLSET)")
+@@ -144,6 +146,26 @@
+ SPACE_REPLACEMENT = "?"
+ 
+ 
++LINK_COMMANDS_WINMINGW = """\
++quiet_cmd_alink = AR($(TOOLSET)) $@
++cmd_alink = rm -f $@ && $(AR.$(TOOLSET)) crs $@ $(filter %.o,$^)
++
++quiet_cmd_alink_thin = AR($(TOOLSET)) $@
++cmd_alink_thin = rm -f $@ && $(AR.$(TOOLSET)) crsT $@ $(filter %.o,$^)
++
++# Due to circular dependencies between libraries :(, we wrap the
++# special "figure out circular dependencies" flags around the entire
++# input list during linking.
++quiet_cmd_link = LINK($(TOOLSET)) $@
++cmd_link = $(LINK.$(TOOLSET)) -o $@ $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -Wl,--start-group $(LD_INPUTS) $(LIBS) -Wl,--end-group
++
++quiet_cmd_solink = SOLINK($(TOOLSET)) $@
++cmd_solink = $(LINK.$(TOOLSET)) -o $@ -shared $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -Wl,--out-implib,$(builddir)/$(@F).a -Wl,--whole-archive $(LD_INPUTS) -Wl,--no-whole-archive $(LIBS)
++
++quiet_cmd_solink_module = SOLINK_MODULE($(TOOLSET)) $@
++cmd_solink_module = $(LINK.$(TOOLSET)) -o $@ -shared $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) $(filter-out FORCE_DO_CMD, $^) -Wl,--start-group $(LD_INPUTS) $(LIBS) -Wl,--end-group
++"""
++
+ LINK_COMMANDS_LINUX = """\
+ quiet_cmd_alink = AR($(TOOLSET)) $@
+ cmd_alink = rm -f $@ && $(AR.$(TOOLSET)) crs $@ $(filter %.o,$^)
+@@ -1575,6 +1597,8 @@
+                 target_ext = ".a"
+             elif self.flavor == "zos":
+                 target_ext = ".x"
++            elif self.flavor == "win":
++                target_ext = ".dll"
+             else:
+                 target_ext = ".so"
+         elif self.type == "none":
+@@ -2530,6 +2554,13 @@
+     elif flavor == "openbsd":
+         copy_archive_arguments = "-pPRf"
+         header_params.update({"copy_archive_args": copy_archive_arguments})
++    elif flavor == "win":
++        copy_archive_arguments = "-pPRf"
++        header_params.update(
++            {
++                "link_commands": LINK_COMMANDS_WINMINGW,
++            }
++        )
+     elif flavor == "aix":
+         copy_archive_arguments = "-pPRf"
+         header_params.update(
+diff -ur node-v18.13.0-orig/deps/npm/node_modules/node-gyp/lib/build.js node-v18.13.0/deps/npm/node_modules/node-gyp/lib/build.js
+--- node-v18.13.0-orig/deps/npm/node_modules/node-gyp/lib/build.js	2023-01-06 06:46:44.000000000 +0800
++++ node-v18.13.0/deps/npm/node_modules/node-gyp/lib/build.js	2023-01-26 19:00:23.142429500 +0800
+@@ -5,7 +5,7 @@
+ const glob = require('glob')
+ const log = require('npmlog')
+ const which = require('which')
+-const win = process.platform === 'win32'
++const win = require('os').type() === 'Windows_NT'
+ 
+ function build (gyp, argv, callback) {
+   var platformMake = 'make'
+@@ -185,7 +185,7 @@
+       }
+     }
+ 
+-    if (!win) {
++    if (!process.platform === 'win32') {
+       // Add build-time dependency symlinks (such as Python) to PATH
+       const buildBinsDir = path.resolve('build', 'node_gyp_bins')
+       process.env.PATH = `${buildBinsDir}:${process.env.PATH}`
+diff -ur node-v18.13.0-orig/deps/npm/node_modules/node-gyp/lib/configure.js node-v18.13.0/deps/npm/node_modules/node-gyp/lib/configure.js
+--- node-v18.13.0-orig/deps/npm/node_modules/node-gyp/lib/configure.js	2023-01-06 06:46:44.000000000 +0800
++++ node-v18.13.0/deps/npm/node_modules/node-gyp/lib/configure.js	2023-01-25 18:49:18.884904700 +0800
+@@ -5,7 +5,7 @@
+ const log = require('npmlog')
+ const os = require('os')
+ const processRelease = require('./process-release')
+-const win = process.platform === 'win32'
++const win = require('os').type() === 'Windows_NT'
+ const findNodeDirectory = require('./find-node-directory')
+ const createConfigGypi = require('./create-config-gypi')
+ const msgFormat = require('util').format
+@@ -66,7 +66,7 @@
+           return callback(err)
+         }
+         log.verbose('get node dir', 'target node version installed:', release.versionDir)
+-        nodeDir = path.resolve(gyp.devDir, release.versionDir)
++        nodeDir = path.resolve(path.dirname(path.dirname(process.execPath)))
+         createBuildDir()
+       })
+     }
+@@ -87,7 +87,9 @@
+         findVisualStudio(release.semver, gyp.opts.msvs_version,
+           createConfigFile)
+       } else {
+-        createPythonSymlink()
++        if (!process.platform === 'win32') {
++          createPythonSymlink()
++        }
+         createConfigFile()
+       }
+     })
+@@ -116,7 +118,7 @@
+     if (err) {
+       return callback(err)
+     }
+-    if (process.platform === 'win32') {
++    if (win) {
+       process.env.GYP_MSVS_VERSION = Math.min(vsInfo.versionYear, 2015)
+       process.env.GYP_MSVS_OVERRIDE_PATH = vsInfo.path
+     }
+@@ -230,8 +232,8 @@
+       var nodeGypDir = path.resolve(__dirname, '..')
+ 
+       var nodeLibFile = path.join(nodeDir,
+-        !gyp.opts.nodedir ? '<(target_arch)' : '$(Configuration)',
+-        release.name + '.lib')
++        !gyp.opts.nodedir ? 'lib' : 'lib',
++        'lib' + release.name + '.dll.a')
+ 
+       argv.push('-I', addonGypi)
+       argv.push('-I', commonGypi)
+diff -ur node-v18.13.0-orig/deps/npm/node_modules/node-gyp/lib/create-config-gypi.js node-v18.13.0/deps/npm/node_modules/node-gyp/lib/create-config-gypi.js
+--- node-v18.13.0-orig/deps/npm/node_modules/node-gyp/lib/create-config-gypi.js	2023-01-06 06:46:44.000000000 +0800
++++ node-v18.13.0/deps/npm/node_modules/node-gyp/lib/create-config-gypi.js	2023-01-26 19:00:47.263254500 +0800
+@@ -3,6 +3,7 @@
+ const fs = require('graceful-fs')
+ const log = require('npmlog')
+ const path = require('path')
++const win = require('os').type() === 'Windows_NT'
+ 
+ function parseConfigGypi (config) {
+   // translated from tools/js2c.py of Node.js
+@@ -78,7 +79,7 @@
+   // disable -T "thin" static archives by default
+   variables.standalone_static_library = gyp.opts.thin ? 0 : 1
+ 
+-  if (process.platform === 'win32') {
++  if (win) {
+     defaults.msbuild_toolset = vsInfo.toolset
+     if (vsInfo.sdk) {
+       defaults.msvs_windows_target_platform_version = vsInfo.sdk
+diff -ur node-v18.13.0-orig/deps/npm/node_modules/node-gyp/lib/find-node-directory.js node-v18.13.0/deps/npm/node_modules/node-gyp/lib/find-node-directory.js
+--- node-v18.13.0-orig/deps/npm/node_modules/node-gyp/lib/find-node-directory.js	2023-01-06 06:46:44.000000000 +0800
++++ node-v18.13.0/deps/npm/node_modules/node-gyp/lib/find-node-directory.js	2023-01-26 19:00:58.077942100 +0800
+@@ -2,6 +2,7 @@
+ 
+ const path = require('path')
+ const log = require('npmlog')
++const win = require('os').type() === 'Windows_NT'
+ 
+ function findNodeDirectory (scriptLocation, processObj) {
+   // set dirname and process if not passed in
+@@ -31,7 +32,7 @@
+     // lib/node_modules/npm/node_modules/node-gyp/lib or
+     // node_modules/npm/node_modules/node-gyp/lib depending on the
+     // platform
+-    if (processObj.platform === 'win32') {
++    if (win) {
+       nodeRootDir = path.join(npmParentDirectory, '..')
+     } else {
+       nodeRootDir = path.join(npmParentDirectory, '../..')
+@@ -49,7 +50,7 @@
+       // If we are a recently built node, and the directory structure
+       // is that of a repository. If we are on Windows then we only need
+       // to go one level up, everything else, two
+-      if (processObj.platform === 'win32') {
++      if (win) {
+         nodeRootDir = path.join(nodeDir, '..')
+       } else {
+         nodeRootDir = path.join(nodeDir, '../..')
+diff -ur node-v18.13.0-orig/deps/npm/node_modules/node-gyp/lib/find-python.js node-v18.13.0/deps/npm/node_modules/node-gyp/lib/find-python.js
+--- node-v18.13.0-orig/deps/npm/node_modules/node-gyp/lib/find-python.js	2023-01-06 06:46:44.000000000 +0800
++++ node-v18.13.0/deps/npm/node_modules/node-gyp/lib/find-python.js	2023-01-26 19:01:09.000324500 +0800
+@@ -4,7 +4,7 @@
+ const semver = require('semver')
+ const cp = require('child_process')
+ const extend = require('util')._extend // eslint-disable-line
+-const win = process.platform === 'win32'
++const win = require('os').type() === 'Windows_NT'
+ const logWithPrefix = require('./util').logWithPrefix
+ 
+ const systemDrive = process.env.SystemDrive || 'C:'
+diff -ur node-v18.13.0-orig/deps/npm/node_modules/node-gyp/lib/install.js node-v18.13.0/deps/npm/node_modules/node-gyp/lib/install.js
+--- node-v18.13.0-orig/deps/npm/node_modules/node-gyp/lib/install.js	2023-01-06 06:46:44.000000000 +0800
++++ node-v18.13.0/deps/npm/node_modules/node-gyp/lib/install.js	2023-01-21 18:10:08.830803300 +0800
+@@ -11,7 +11,7 @@
+ const semver = require('semver')
+ const fetch = require('make-fetch-happen')
+ const processRelease = require('./process-release')
+-const win = process.platform === 'win32'
++const win = require('os').type() === 'Windows_NT'
+ const streamPipeline = util.promisify(stream.pipeline)
+ 
+ /**

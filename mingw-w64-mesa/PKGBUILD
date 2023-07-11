@@ -3,22 +3,27 @@
 _realname=mesa
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=22.2.2
+pkgver=23.1.3
 pkgrel=1
-pkgdesc="Open-source implementation of the OpenGL specification (mingw-w64)"
+pkgdesc="Open-source implementation of the OpenGL, Vulkan and OpenCL specifications (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
-makedepends=("git"
-             "${MINGW_PACKAGE_PREFIX}-cc"
-             "${MINGW_PACKAGE_PREFIX}-python-mako"
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-directx-headers"
              "${MINGW_PACKAGE_PREFIX}-meson"
              "${MINGW_PACKAGE_PREFIX}-pkg-config"
+             "${MINGW_PACKAGE_PREFIX}-polly"
+             "${MINGW_PACKAGE_PREFIX}-python-mako"
              "${MINGW_PACKAGE_PREFIX}-libclc"
-             "${MINGW_PACKAGE_PREFIX}-libelf")
+             "${MINGW_PACKAGE_PREFIX}-libelf"
+             "${MINGW_PACKAGE_PREFIX}-glslang"
+             "git")
 depends=("${MINGW_PACKAGE_PREFIX}-clang"
          "${MINGW_PACKAGE_PREFIX}-zlib"
          "${MINGW_PACKAGE_PREFIX}-vulkan-loader"
          "${MINGW_PACKAGE_PREFIX}-libsystre"
+         "${MINGW_PACKAGE_PREFIX}-libva"
          "${MINGW_PACKAGE_PREFIX}-libwinpthread-git"
          "${MINGW_PACKAGE_PREFIX}-zstd"
          "${MINGW_PACKAGE_PREFIX}-spirv-llvm-translator"
@@ -27,15 +32,18 @@ depends=("${MINGW_PACKAGE_PREFIX}-clang"
 optdepends=("${MINGW_PACKAGE_PREFIX}-opengl-man-pages: for the OpenGL API man pages"
             "${MINGW_PACKAGE_PREFIX}-vulkan-validation-layers: to debug applications using Vulkan graphics")
 url="https://www.mesa3d.org/"
-license=('MIT')
-options=('staticlibs' 'strip')
+license=('spdx:MIT')
 source=(https://mesa.freedesktop.org/archive/${_realname}-${pkgver}.tar.xz{,.sig}
         llvmwrapgen.sh
-        0005-win32-The-opengl-headers-should-install-to-mesa-GL-s.patch)
-sha256sums=('2de11fb74fc5cc671b818e49fe203cea0cd1d8b69756e97cdb06a2f4e78948f9'
+        do-not-install-standard-headers.patch
+        0001-Add-checks-for-NULL-dxil_validator.patch
+        0002-meson-vaon12-fix-driver-file-name-for-mingw-build.patch)
+sha256sums=('2f6d7381bc10fbd2d6263ad1022785b8b511046c1a904162f8f7da18eea8aed9'
             'SKIP'
             '69f21522f20c10f5699dfe3e128aa88d4fedde816f6e8df1506d7470c44bf3da'
-            '7f7874b89103c98dc0006bb64d209b5c0afa5a72b27e5e3d9f366a9609881714')
+            'ac10033dd72e6ab705a8bdd5e2a47542a557d0cfc4c23fd0f319f682ec9308b8'
+            '439bb27fc8201a6854f52550af7cffca1cecab05a5a89e335ac15f1dfce08832'
+            '89b2dcef98cd5e9c5f39f79459cae6fd568577ebb380dffcc0c4e70cf8f9a82f')
 validpgpkeys=('8703B6700E7EE06D7A39B8D6EDAE37B02CEB490D') # Emil Velikov <emil.l.velikov@gmail.com>
 validpgpkeys+=('946D09B5E4C9845E63075FF1D961C596A7203456') # Andres Gomez <tanty@igalia.com>
 validpgpkeys+=('E3E8F480C52ADD73B278EE78E1ECBE07D7D70895') # Juan Antonio Suárez Romero (Igalia, S.L.) <jasuarez@igalia.com>"
@@ -61,6 +69,9 @@ case ${MSYSTEM} in
   CLANG64)
     _mach=clang-x86_64
   ;;
+  CLANGARM64)
+    _mach=clang-aarch64
+  ;;
 esac
 
 # Helper macros to help make tasks easier #
@@ -83,13 +94,16 @@ del_file_exists() {
 # =========================================== #
 
 prepare() {
-  [[ -d ${srcdir}/${_realname}-${pkgver} ]] && rm -rf ${srcdir}/${_realname}-${pkgver}
+  rm -rf ${srcdir}/${_realname}-${pkgver}
   tar -xJf ${srcdir}/${_realname}-${pkgver}.tar.xz -C ${srcdir} || true
 
   cd ${srcdir}/${_realname}-${pkgver}
 
+# Do not install standard API headers
   apply_patch_with_msg \
-    0005-win32-The-opengl-headers-should-install-to-mesa-GL-s.patch
+    do-not-install-standard-headers.patch \
+    0001-Add-checks-for-NULL-dxil_validator.patch \
+    0002-meson-vaon12-fix-driver-file-name-for-mingw-build.patch
 
 # Generate binary wrap for LLVM if llvm-config tool is busted
   if ! [ "$(${MINGW_PREFIX}/bin/llvm-config --has-rtti 2>&1)" = YES ] && ! [ "$(${MINGW_PREFIX}/bin/llvm-config --has-rtti 2>&1)" = NO ]; then
@@ -99,37 +113,31 @@ prepare() {
 
 build() {
   cd ${srcdir}/${_realname}-${pkgver}
-  buildconf="${MINGW_PREFIX}/bin/meson ./build/windows-${_mach}
+  buildconf="${MINGW_PREFIX}/bin/meson setup ./build/windows-${_mach}
   --prefix=${MINGW_PREFIX}
   --buildtype=release
   --backend=ninja
-  -Dshared-glapi=enabled
-  -Degl=enabled
-  -Dgles1=enabled
-  -Dgles2=enabled
+  -Dshared-glapi=disabled
+  -Degl=disabled
+  -Dgles1=disabled
+  -Dgles2=disabled
   -Dllvm=enabled
   -Dshared-llvm=enabled
   -Dosmesa=true
-  -Dbuild-tests=true
-  -Dvulkan-drivers=swrast"
-
-# Disable dozen when building with clang
-  if ! [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
-    buildconf="${buildconf},microsoft-experimental"
-  fi
-
-  buildconf="${buildconf}
+  -Dbuild-tests=false
   -Dgallium-drivers=swrast,zink,d3d12
+  -Dgallium-va=enabled
+  -Dvideo-codecs=h264dec,h264enc,h265dec,h265enc,vc1dec
   -Dmicrosoft-clc=enabled
   -Dstatic-libclc=all
   -Dcpp_rtti=true
-  -Dmin-windows-version=7"
+  -Dmin-windows-version=7
+  -Dgallium-opencl=icd
+  -Dopencl-spirv=true
+  -Dvulkan-drivers=swrast,microsoft-experimental"
 
-# Limit clover build to x86_64
-  if [ "${CARCH}" = x86_64 ]; then
-    buildconf="${buildconf}
-    -Dgallium-opencl=icd
-    -Dopencl-spirv=true"
+  if [[ "${_mach}" == "clang-x86" ]]; then
+    buildconf="${buildconf},amd"
   fi
 
 # Fallback to binary wrap if llvm-config tool is busted
@@ -138,10 +146,16 @@ build() {
      --force-fallback-for=llvm"
   fi
 
+  if [[ "${CARCH}" == "aarch64" ]]; then
+    _cc_march=armv8-a
+  else
+    _cc_march=core2
+  fi
+
   MSYS2_ARG_CONV_EXCL="--prefix=" \
   PROCESSOR_ARCHITECTURE="${CARCH}" ${buildconf} \
-  -Dc_args='-march=core2 -pipe' \
-  -Dcpp_args='-march=core2 -pipe' \
+  -Dc_args="-march=${_cc_march} -pipe" \
+  -Dcpp_args="-march=${_cc_march} -pipe" \
   -Dc_link_args='-s' \
   -Dcpp_link_args='-s'
 
@@ -150,13 +164,7 @@ build() {
 
 package() {
   cd ${srcdir}/${_realname}-${pkgver}/build/windows-${_mach}
-  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/meson install
-
-# Install graw library
-  cp -f ${srcdir}/${_realname}-${pkgver}/build/windows-${_mach}/src/gallium/targets/graw-gdi/graw.dll ${pkgdir}${MINGW_PREFIX}/bin/
-  cp -f ${srcdir}/${_realname}-${pkgver}/build/windows-${_mach}/src/gallium/targets/graw-null/graw_null.dll ${pkgdir}${MINGW_PREFIX}/bin/
-  cp -f ${srcdir}/${_realname}-${pkgver}/build/windows-${_mach}/src/gallium/targets/graw-gdi/graw.dll.a ${pkgdir}${MINGW_PREFIX}/lib/
-  cp -f ${srcdir}/${_realname}-${pkgver}/build/windows-${_mach}/src/gallium/targets/graw-null/graw_null.dll.a ${pkgdir}${MINGW_PREFIX}/lib/
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/meson install --skip-subprojects
 
 # fix osmesa version in .pc file
   sed -e "s|8.0.0|${pkgver}|g" \
@@ -167,7 +175,4 @@ package() {
     sed -e "s|./vulkan_radeon|${MINGW_PREFIX}/bin/libvulkan_radeon|g" \
       -i $(find ${pkgdir}${MINGW_PREFIX}/share/vulkan/icd.d -name "radeon_icd*.json" -print)
   fi
-
-  # Remove KHR include, fixes conflict with mingw-w64
-  rm -rf "${pkgdir}${MINGW_PREFIX}"/include/KHR
 }

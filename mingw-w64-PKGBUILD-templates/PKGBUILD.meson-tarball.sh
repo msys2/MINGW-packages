@@ -32,7 +32,7 @@ build() {
   mkdir -p build-${MSYSTEM} && cd build-${MSYSTEM}
 
   MSYS2_ARG_CONV_EXCL="--prefix=" \
-    meson \
+    meson setup \
       --prefix="${MINGW_PREFIX}" \
       --wrap-mode=nodownload \
       --auto-features=enabled \

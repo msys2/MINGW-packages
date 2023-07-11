@@ -6,34 +6,79 @@ pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 conflicts=("${MINGW_PACKAGE_PREFIX}-${_realname}-svn")
 replaces=("${MINGW_PACKAGE_PREFIX}-${_realname}-svn")
-pkgver=1.1.2
-pkgrel=2
+pkgver=1.1.5
+pkgrel=4
 pkgdesc="Fortran library for fast updates of QR and Cholesky decompositions (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64')
-url="https://sourceforge.net/projects/qrupdate/"
-options=('strip' 'staticlibs')
-license=('GPL' 'LGPL')
-makedepends=("${MINGW_PACKAGE_PREFIX}-gcc-fortran")
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url="https://gitlab.mpi-magdeburg.mpg.de/koehlerm/qrupdate-ng"
+license=('spdx:GPL-3.0-or-later')
+makedepends=("${MINGW_PACKAGE_PREFIX}-fc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja")
 depends=("${MINGW_PACKAGE_PREFIX}-openblas"
-         "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran")
-source=("https://downloads.sourceforge.net/project/qrupdate/qrupdate/1.2/${_realname}-${pkgver}.tar.gz")
-sha256sums=('e2a1c711dc8ebc418e21195833814cb2f84b878b90a2774365f0166402308e08')
+         $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran"))
+source=("https://github.com/mpimd-csc/qrupdate-ng/archive/v$pkgver/${_realname}-${pkgver}.tar.gz"
+        "001-do-not-build-tests.patch")
+sha256sums=('912426f7cb9436bb3490c3102a64d9a2c3883d700268a26d4d738b7607903757'
+            '33da14b4ea16e54175baecbd700145eb652897c5e15ceaeb8c419c0f98e07217')
+
+prepare() {
+  cd "${srcdir}"/${_realname}-ng-${pkgver}
+  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+    patch -p1 -i "${srcdir}"/001-do-not-build-tests.patch
+  fi
+}
 
 build() {
-  mkdir -p ${srcdir}/build-${CARCH} && cd ${srcdir}/build-${CARCH}
-  cp -pR ../${_realname}-${pkgver}/* .
-  make FPICFLAGS="" lib
-  gfortran -shared -o lib${_realname}.dll -Wl,--out-implib,lib${_realname}.dll.a src/*.o -lopenblas -lgfortran
+  declare -a extra_config
+  if check_option "debug" "n"; then
+    extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  # build static library
+  mkdir -p "${srcdir}/build-${MSYSTEM}-static" && cd "${srcdir}/build-${MSYSTEM}-static"
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    "${MINGW_PREFIX}"/bin/cmake.exe \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+      "${extra_config[@]}" \
+      -DBUILD_SHARED_LIBS=OFF \
+      ../${_realname}-ng-${pkgver}
+
+  "${MINGW_PREFIX}"/bin/cmake.exe --build .
+
+  # build shared library
+  mkdir -p "${srcdir}/build-${MSYSTEM}-shared" && cd "${srcdir}/build-${MSYSTEM}-shared"
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    "${MINGW_PREFIX}"/bin/cmake.exe \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+      "${extra_config[@]}" \
+      -DBUILD_SHARED_LIBS=ON \
+      ../${_realname}-ng-${pkgver}
+
+  "${MINGW_PREFIX}"/bin/cmake.exe --build .
 }
 
 package() {
-  cd ${srcdir}/build-${CARCH}
-  mkdir -p ${pkgdir}${MINGW_PREFIX}/bin
-  mkdir -p ${pkgdir}${MINGW_PREFIX}/lib
-  cp -pf lib${_realname}.dll ${pkgdir}${MINGW_PREFIX}/bin
-  cp -pf lib${_realname}*.a ${pkgdir}${MINGW_PREFIX}/lib
-  mkdir -p ${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}
-  cp -pf ${srcdir}/${_realname}-${pkgver}/COPYING* \
-    ${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}
+  cd "${srcdir}/build-${MSYSTEM}-static"
+  DESTDIR="${pkgdir}" "${MINGW_PREFIX}"/bin/cmake.exe --install .
+
+  cd "${srcdir}/build-${MSYSTEM}-shared"
+  DESTDIR="${pkgdir}" "${MINGW_PREFIX}"/bin/cmake.exe --install .
+
+  # Avoid linking to a mixture of reference BLAS/LAPACK and OpenBLAS in dependent projects
+  sed -s "s|Requires: blas, lapack|Requires.private: openblas|g" -i ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/qrupdate.pc
+
+  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
+  for _f in "${pkgdir}${MINGW_PREFIX}"/lib/cmake/${_realname}/*.cmake; do
+    sed -e "s|${PREFIX_WIN}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
+  done
+
+  install -Dm644 "${srcdir}/${_realname}-ng-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }

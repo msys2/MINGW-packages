@@ -4,7 +4,7 @@
 # Shell script for setting GnuCOBOL Environment
 # in MSYS2 MINGW32/MINGW64
 #
-# Copyright (C) 2017 Free Software Foundation, Inc.
+# Copyright (C) 2017,2023 Free Software Foundation, Inc.
 # Written by Simon Sobisch
 #
 # This file is part of GnuCOBOL.
@@ -82,6 +82,7 @@ _ce_setenv () {
   export "COB_LIBRARY_PATH=`cygpath.exe -pw $MINGW_PREFIX/lib/gnucobol`$COB_LIBRARY_PATH"
   if test $_ce_verbose -lt 0; then return; fi
   _ce_output "environment set"
+  echo ""; cobcrun -vV | tail -n2
 }
 
 

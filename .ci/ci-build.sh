@@ -9,7 +9,6 @@ set -eo pipefail
 DIR="$( cd "$( dirname "$0" )" && pwd )"
 
 # Configure
-source "$DIR/ci-library.sh"
 mkdir artifacts
 git remote add upstream 'https://github.com/MSYS2/MINGW-packages'
 git fetch --quiet upstream
@@ -17,6 +16,70 @@ git fetch --quiet upstream
 sed -i 's/^CheckSpace/#CheckSpace/g' /etc/pacman.conf
 
 pacman --noconfirm -Fy
+
+# Enable colors
+normal=$(tput sgr0)
+red=$(tput setaf 1)
+green=$(tput setaf 2)
+cyan=$(tput setaf 6)
+
+# Basic status function
+_status() {
+    local type="${1}"
+    local status="${package:+${package}: }${2}"
+    local items=("${@:3}")
+    case "${type}" in
+        failure) local -n nameref_color='red';   title='[MSYS2 CI] FAILURE:' ;;
+        success) local -n nameref_color='green'; title='[MSYS2 CI] SUCCESS:' ;;
+        message) local -n nameref_color='cyan';  title='[MSYS2 CI]'
+    esac
+    printf "\n${nameref_color}${title}${normal} ${status}\n\n"
+    printf "${items:+\t%s\n}" "${items:+${items[@]}}"
+}
+
+# Run command with status
+execute(){
+    local status="${1}"
+    local command="${2}"
+    local arguments=("${@:3}")
+    cd "${package:-.}"
+    message "${status}"
+    if [[ "${command}" != *:* ]]
+        then ${command} ${arguments[@]}
+        else ${command%%:*} | ${command#*:} ${arguments[@]}
+    fi || failure "${status} failed"
+    cd - > /dev/null
+}
+
+# Get changed packages in correct build order
+list_packages() {
+    # readarray doesn't work with a plain pipe
+    readarray -t packages < <("$DIR/ci-get-build-order.py")
+}
+
+install_packages() {
+    pacman --noprogressbar --upgrade --noconfirm *.pkg.tar.*
+}
+
+# List DLL dependencies
+list_dll_deps(){
+    local target="${1}"
+    echo "$(tput setaf 2)MSYS2 DLL dependencies:$(tput sgr0)"
+    find "$target" -regex ".*\.\(exe\|dll\)" -print0 | xargs -0 -r ldd | GREP_COLOR="1;35" grep --color=always "msys-.*\|" \
+    || echo "        None"
+}
+
+list_dll_bases(){
+    local target="${1}"
+    echo "$(tput setaf 2)MSYS2 DLL bases:$(tput sgr0)"
+    find "$target" -regex ".*\.\(exe\|dll\)" -print | rebase -iT - | GREP_COLOR="1;35" grep --color=always "msys-.*\|" \
+    || echo "        None"
+}
+
+# Status functions
+failure() { local status="${1}"; local items=("${@:2}"); _status failure "${status}." "${items[@]}"; exit 1; }
+success() { local status="${1}"; local items=("${@:2}"); _status success "${status}." "${items[@]}"; exit 0; }
+message() { local status="${1}"; local items=("${@:2}"); _status message "${status}"  "${items[@]}"; }
 
 # Detect
 list_packages || failure 'Could not detect changed files'
@@ -47,11 +110,10 @@ for package in "${skipped_packages[@]}"; do
     unset package
 done
 
-test -z "${packages}" && success 'No changes in package recipes'
+test -z "${packages[@]}" && success 'No changes in package recipes'
 
 # Build
 message 'Building packages' "${packages[@]}"
-execute 'Approving recipe quality' check_recipe_quality
 
 message 'Adding an empty local repository'
 repo-add $PWD/artifacts/ci.db.tar.gz
@@ -69,13 +131,16 @@ for package in "${packages[@]}"; do
     echo "::group::[build] ${package}"
     execute 'Clear cache' pacman -Scc --noconfirm
     execute 'Fetch keys' "$DIR/fetch-validpgpkeys.sh"
-    execute 'Building binary' makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild
-    repo-add $PWD/artifacts/ci.db.tar.gz $PWD/$package/*.pkg.tar.*
+    cp -r ${package} B && cd B
+    message 'Building binary'
+    makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild || failure "${status} failed"
+    cd - > /dev/null
+    repo-add $PWD/artifacts/ci.db.tar.gz $PWD/B/*.pkg.tar.*
     pacman -Sy
-    cp $PWD/$package/*.pkg.tar.* $PWD/artifacts
+    cp $PWD/B/*.pkg.tar.* $PWD/artifacts
     echo "::endgroup::"
 
-    cd "$package"
+    cd B
     for pkg in *.pkg.tar.*; do
         pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
         echo "::group::[install] ${pkgname}"
@@ -94,18 +159,11 @@ for package in "${packages[@]}"; do
 
         echo "::group::[runtime-dependencies] ${pkgname}"
         message "Runtime dependencies for ${pkgname}"
-        declare -a binaries=($(pacman -Ql $pkgname | sed -e 's|^[^ ]* ||' | grep -E ${MINGW_PREFIX}/bin/[^/]+\.\(dll\|exe\)$))
+        declare -a binaries=($(pacman -Ql $pkgname | sed -e 's|^[^ ]* ||' | grep -E ${MINGW_PREFIX}/.+\.\(dll\|exe\|pyd\)$))
         if [ "${#binaries[@]}" -ne 0 ]; then
             for binary in ${binaries[@]}; do
                 echo "${binary}:"
-                ntldd -R ${binary} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder" || true
-            done
-        fi
-        declare -a py_modules=($(pacman -Ql $pkgname | sed -e 's|^[^ ]* ||' | grep -E ${MINGW_PREFIX}/lib/python[0-9]\.[0-9]+/site-packages/.+\.pyd$))
-        if [ "${#py_modules[@]}" -ne 0 ]; then
-            for pyd in ${py_modules[@]}; do
-                echo "${pyd}:"
-                ntldd -R ${pyd} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder" || true
+                ntldd -R ${binary} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder\|ngcrecovery" || true
             done
         fi
         echo "::endgroup::"
@@ -117,7 +175,7 @@ for package in "${packages[@]}"; do
     done
     cd - > /dev/null
 
-    rm -f "${package}"/*.pkg.tar.*
+    rm -rf B
     unset package
 done
 success 'All packages built successfully'

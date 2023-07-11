@@ -1,0 +1,53 @@
+From a1e80c69223a091e6f0fc84df33a464604c8bbc1 Mon Sep 17 00:00:00 2001
+From: "R. Voggenauer" <rvogg@users.noreply.github.com>
+Date: Tue, 14 Feb 2023 15:21:06 +0100
+Subject: [PATCH] [Support] [Windows] Don't check file access time in
+ equivalent(file_status, file_status)
+
+The sys::fs::equivalent(file_status, file_status) function is meant to
+judge whether two file_status structs denote the same individual file.
+On Unix, this is implemented by only comparing the st_dev and st_ino
+numbers (from stat), ignoring all other fields.
+
+On Windows, lacking reliable fields corresponding to st_dev and st_ino,
+equivalent(file_status, file_status) compares essentially all fields.
+However, since 1e39ef331b2b78baec84fdb577d497511cc46bd5
+(https://reviews.llvm.org/D18456), file_status also contains the file
+access time.
+
+Including the file access time in equivalent(file_status, file_status)
+makes it possible to spuriously break. In particular, when invoking
+equivalent(Twine, Twine), with two paths, there's a race condition - the
+function calls status() on both input paths. Even if the two paths
+are the same, the comparison can fail, if the file was accessed
+between the two status() calls.
+
+Thus, it seems like the inclusion of the access time in
+equivalent(file_status, file_status) was a mistake.
+
+This race condition can cause spurious failures when linking with
+LLD/ELF, where LLD uses equivalent() to check whether a file
+exists within a specific sysroot, and that sysroot is accessed by other
+processes concurrently.
+
+This fixes downstream issue
+https://github.com/msys2/MINGW-packages/issues/15695.
+
+Differential Revision: https://reviews.llvm.org/D144172
+---
+ llvm/lib/Support/Windows/Path.inc | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/lib/Support/Windows/Path.inc b/lib/Support/Windows/Path.inc
+index 45f0e95c87fe4..b949b724509f6 100644
+--- a/lib/Support/Windows/Path.inc
++++ b/lib/Support/Windows/Path.inc
+@@ -654,8 +654,6 @@ bool equivalent(file_status A, file_status B) {
+          A.FileIndexLow          == B.FileIndexLow &&
+          A.FileSizeHigh          == B.FileSizeHigh &&
+          A.FileSizeLow           == B.FileSizeLow &&
+-         A.LastAccessedTimeHigh  == B.LastAccessedTimeHigh &&
+-         A.LastAccessedTimeLow   == B.LastAccessedTimeLow &&
+          A.LastWriteTimeHigh     == B.LastWriteTimeHigh &&
+          A.LastWriteTimeLow      == B.LastWriteTimeLow &&
+          A.VolumeSerialNumber    == B.VolumeSerialNumber;

@@ -2,16 +2,16 @@ _compiler=clang
 _realname=flang
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-_version=15.0.3
+_version=16.0.5
 _rc=""
 _tag=llvmorg-${_version}${_rc}
 pkgver=${_version}${_rc/-/}
-pkgrel=2
+pkgrel=1
 pkgdesc="Fortran frontend for LLVM (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw64' 'ucrt64' 'clang64')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url="https://flang.llvm.org/"
-license=("custom:Apache 2.0 with LLVM Exception")
+license=("spdx:Apache-2.0 WITH LLVM-exception")
 provides=($([[ ${MINGW_PACKAGE_PREFIX} != *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-fc"))
 depends=("${MINGW_PACKAGE_PREFIX}-clang"
          "${MINGW_PACKAGE_PREFIX}-llvm"
@@ -28,19 +28,26 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-clang-tools-extra"
              $([[ "$_compiler" == "gcc" ]] && echo \
                "${MINGW_PACKAGE_PREFIX}-gcc")
              )
-options=('!debug' 'strip')
-source=("https://github.com/llvm/llvm-project/releases/download/${_tag}/flang-${pkgver}.src.tar.xz"{,.sig}
-        "https://github.com/llvm/llvm-project/releases/download/${_tag}/cmake-${pkgver}.src.tar.xz"{,.sig}
+_pkgfn=${_realname}-${pkgver}.src
+_url=https://github.com/llvm/llvm-project/releases/download/${_tag}
+source=("${_url}/${_pkgfn}.tar.xz"{,.sig}
+        "${_url}/cmake-${pkgver}.src.tar.xz"{,.sig}
         "0001-cast-cxx11-narrowing.patch"
         "0002-cmake-22162.patch"
-        "0003-do-not-link-to-llvm-dylib.patch")
-sha256sums=('79bece01f5b3f6ef5a442dc0caaedc7c975212b46867c7e239b9a18093fe1008'
+        "0003-do-not-link-to-llvm-dylib.patch"
+        "0004-do-not-use-clock_gettime-on-mingw.patch"::"https://github.com/llvm/llvm-project/commit/329964769972ef3c8a68f2dfea30e66beb4ae3e2.patch"
+        "0005-Fix-c_long_double-value-on-mingw-aarch64.patch"
+        "0006-Rename-flang-new-flang-experimental-exec-to-flang.patch")
+sha256sums=('1989097966d843753c5c094142c19b7cdbc3f94c465241c8a63398970755244a'
             'SKIP'
-            '21cf3f52c53dc8b8972122ae35a5c18de09c7df693b48b5cd8553c3e3fed090d'
+            '9400d49acd53a4b8f310de60554a891436db5a19f6f227f99f0de13e4afaaaff'
             'SKIP'
             'ba08064d737a2aa173125e88c3900dce804220fb0562596b03130177c2139312'
             '77fb0612217b6af7a122f586a9d0d334cd48bb201509bf72e8f8e6244616e895'
-            '8d70b33d20d74801aeee82173944fed3b33ae185031537e1b50a640238f7a988')
+            '8d70b33d20d74801aeee82173944fed3b33ae185031537e1b50a640238f7a988'
+            'b724ce543a67194841716fb4078fdaab55b2346adaa6cfa064808bbf703841b4'
+            'a1811227e2a26c2786b0c8577528580e679111f6c0889afea57d08333e2d5e4f'
+            '5f8dffa8dadaa55f36f1330222b11e03673ea3a30099acf0537410a34728407a')
 validpgpkeys=('B6C8F98282B944E3B0D5C2530FC3042E345AD05D'  # Hans Wennborg, Google.
               '474E22316ABF4785A88C6E8EA2C794A986419D8A'  # Tom Stellard
               'D574BD5D1D0E98895E3BF90044F2485E45D59042') # Tobias Hieta
@@ -60,21 +67,18 @@ prepare() {
   apply_patch_with_msg \
     "0001-cast-cxx11-narrowing.patch" \
     "0002-cmake-22162.patch" \
-    "0003-do-not-link-to-llvm-dylib.patch"
+    "0003-do-not-link-to-llvm-dylib.patch" \
+    "0005-Fix-c_long_double-value-on-mingw-aarch64.patch"
+  # https://reviews.llvm.org/D149051
+  msg2 "Applying 0004-do-not-use-clock_gettime-on-mingw.patch"
+  patch -Nbp2 -i "${srcdir}/0004-do-not-use-clock_gettime-on-mingw.patch"
+  # https://reviews.llvm.org/D143592
+  apply_patch_with_msg \
+    "0006-Rename-flang-new-flang-experimental-exec-to-flang.patch"
 }
 
 build() {
-  cd "${srcdir}"
-
-  case "${CARCH}" in
-    i?86|armv7)
-      # lld needs all the address space it can get.
-      LDFLAGS+=" -Wl,--large-address-aware"
-      ;;
-  esac
-
   local -a extra_args
-
   if check_option "debug" "y"; then
     extra_args+=(-DCMAKE_BUILD_TYPE=Debug)
   else
@@ -87,21 +91,7 @@ build() {
     extra_args+=(-DLLVM_ENABLE_LLD=ON)
   fi
 
-  # try to figure out a reasonable CMAKE_BUILD_PARALLEL_LEVEL
-  if [ -z "${CMAKE_BUILD_PARALLEL_LEVEL+x}" ]; then
-    # figure about 1 job per 2GB RAM
-    local _jobs=$(awk '{ if ($1 == "MemTotal:") { printf "%.0f", $2/(2*1024*1024) } }' /proc/meminfo)
-    # EXCEPT on GHA, which is being really difficult.
-    if (( _jobs < 1 )) || [ -n "${CI+x}" ]; then
-      _jobs=1
-    elif (( _jobs > $(nproc) + 2 )); then
-      _jobs=$(( $(nproc) + 2 ))
-    fi
-    export CMAKE_BUILD_PARALLEL_LEVEL=${_jobs}
-  fi
-
-  [[ -d build-${MSYSTEM} ]] && rm -rf build-${MSYSTEM}
-  mkdir build-${MSYSTEM} && cd build-${MSYSTEM}
+  mkdir -p build-${MSYSTEM} && cd build-${MSYSTEM}
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake.exe \
@@ -114,18 +104,20 @@ build() {
     -DLLVM_ENABLE_THREADS=ON \
     -DLLVM_HOST_TRIPLE="${CARCH}-w64-windows-gnu" \
     -DLLVM_LINK_LLVM_DYLIB=ON \
+    -DFLANG_INCLUDE_TESTS=OFF \
     "${extra_args[@]}" \
-    ../flang-${pkgver}.src
+    ../${_pkgfn}
 
   ${MINGW_PREFIX}/bin/cmake.exe --build .
 }
 
 check() {
   cd "${srcdir}"/build-${MSYSTEM}
+  ${MINGW_PREFIX}/bin/cmake.exe -DFLANG_INCLUDE_TESTS=ON ../${_pkgfn}
+  ${MINGW_PREFIX}/bin/cmake.exe --build .
   ${MINGW_PREFIX}/bin/cmake.exe --build . -- check-flang || true
 }
 
 package() {
   DESTDIR="${pkgdir}" cmake --install "${srcdir}/build-${MSYSTEM}"
-  cp "${pkgdir}"${MINGW_PREFIX}/bin/flang-new "${pkgdir}"${MINGW_PREFIX}/bin/flang.exe
 }

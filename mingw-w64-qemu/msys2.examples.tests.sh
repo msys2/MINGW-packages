@@ -22,10 +22,17 @@ fi
 DOWNLOADDIR="$(cat "$CONFIGFILE")"
 echo "Configuration file: '$CONFIGFILE'"
 echo "Download directory: '$DOWNLOADDIR'"
-if ! mkdir -p "$DOWNLOADDIR" || ! touch "$DOWNLOADDIR/$CONFIGFILENAME"
+
+function validDownloadDir {
+	mkdir -p "$DOWNLOADDIR" && touch "$DOWNLOADDIR/test" && rm "$DOWNLOADDIR/test"
+}
+
+if ! validDownloadDir
 then
-	echo "Download directory '$DOWNLOADDIR' is not usable"
-	exit 1
+	echo "Download directory '$DOWNLOADDIR' is not usable."
+	DOWNLOADDIR="$(realpath ~)/tmp-qemu-tests"
+	echo "Trying '$DOWNLOADDIR' as fallback."
+	validDownloadDir || exit 1
 fi
 echo
 echo "On execution each test needs to download, most test only a few 10 MB or less,"
@@ -673,7 +680,7 @@ function qemuLiveDesktopQemuImgConversions {
 	# Conversion tests with qcow qcow2 qed raw vdi vhdx vmdk vpc
 	download $LIVE_IMAGE_URL
 	local IMG_SIZE=$(qemu-img info "$LIVE_IMAGE_FILE" |
-		grep bytes | sed "s/.*(//" | sed "s/ bytes.*//")
+		grep "virtual.*bytes" | sed "s/.*(//" | sed "s/ bytes.*//")
 
 	local TESTDIR="qemu-img-conversion" FMT
 	mkdir -p $TESTDIR
@@ -778,7 +785,7 @@ function qemuElevatedInstallWinGuestAgent {
 		local QGA_VSS="QEMU Guest Agent VSS Provider"
 		local QGA_RUN QGA_REG QGA_VSS_RUN QGA_VSS_REG TEST
 		echo
-		echo "Do NOT execute this test!"
+		echo "Better NOT execute this test!"
 		echo "Finally tested Msys2 QEMU Guest Agent will replace current QEMU Guest Agent."
 		echo "Current service settings should be restored using tested Msys2 QEMU Guest Agent."
 		echo
@@ -814,6 +821,7 @@ function qemuElevatedInstallWinGuestAgent {
 				then
 					echo
 					echo "Send test requests to $QGA now!"
+					echo "E.g. send '{\"execute\":\"guest-info\"}'"
 					read -p "All test requests sent? RETURN " TEST
 					net stop "$QGA"
 				fi
@@ -867,7 +875,7 @@ function qemuInstalledDesktopGTK {
 
 # Extended VNC-Desktop (HDImage)
 function qemuInstalledDesktopVNC1 {
-	local IMAGE='\Qemu\test\test-usernet.qcow2'
+	local IMAGE='d:\Qemu\test\test-usernet.qcow2'
 	[ -f "$IMAGE" ] || return 0
 	cygwinXlaunch
 	execute qemu-system-x86_64 -M q35 $(accel) -m 1G -pidfile "$PIDFILE" \
@@ -1201,7 +1209,7 @@ function qemu2018day08 {
 	download https://www.qemu-advent-calendar.org/2018/download/day08.tar.xz
 	tar -xf day08.tar.xz
 	cat day08/readme.txt
-	execute qemu-system-i386 -m 32 -M isapc $(accel) -cpu pentium -no-acpi $(pcspk) \
+	execute qemu-system-i386 -m 32 -M isapc,acpi=off $(accel) -cpu pentium $(pcspk) \
 		-net nic,model=ne2k_isa -net user -drive if=ide,file=day08/hd.qcow2
 	removeDir day08
 }

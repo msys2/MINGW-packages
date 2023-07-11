@@ -156,7 +156,8 @@ int main(int argc, char *argv[])
 
   sanitise_path_debug ("C:\\windows\\path", "C:/windows/path");
   sanitise_path_debug ("", "");
-  sanitise_path_debug ("\\\\", "/");
+  sanitise_path_debug ("\\\\", "//");
+  sanitise_path_debug ("a\\\\", "a/");
 
   char const * win_path = X509_get_default_private_dir ();
   printf ("%s -> %s\n", X509_PRIVATE_DIR, win_path);

@@ -32,25 +32,24 @@
 _realname=petsc
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}" "${MINGW_PACKAGE_PREFIX}-${_realname}-build")
-pkgver=3.17.3
+pkgver=3.19.0
 pkgrel=1
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
 pkgdesc='Sparse iterative (non)linear solver package (mingw-w64)'
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
-         $([[ ${MINGW_PACKAGE_PREFIX} != *-clang-* ]] && \
-           echo "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran" || \
-           echo "${MINGW_PACKAGE_PREFIX}-openmp")
+         $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran")
          "${MINGW_PACKAGE_PREFIX}-hwloc"
          "${MINGW_PACKAGE_PREFIX}-metis"
          "${MINGW_PACKAGE_PREFIX}-msmpi"
+         "${MINGW_PACKAGE_PREFIX}-omp"
          "${MINGW_PACKAGE_PREFIX}-openblas"
          "${MINGW_PACKAGE_PREFIX}-parmetis")
 makedepends=('python'
              "${MINGW_PACKAGE_PREFIX}-cc"
-             $([[ ${MINGW_PACKAGE_PREFIX} != *-clang-* ]] && echo "${MINGW_PACKAGE_PREFIX}-gcc-fortran"))
+             #$([[ ${MSYSTEM} == CLANG32 ]] || echo "${MINGW_PACKAGE_PREFIX}-fc")
+             $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-fc"))
 optdepends=("${MINGW_PACKAGE_PREFIX}-tcl: build & run test suite")
-options=('strip' 'staticlibs')
 license=('spdx:BSD-2-Clause')
 url="https://www.mcs.anl.gov/petsc/"
 source=("https://ftp.mcs.anl.gov/pub/petsc/release-snapshots/${_realname}-lite-${pkgver}.tar.gz"
@@ -59,15 +58,17 @@ source=("https://ftp.mcs.anl.gov/pub/petsc/release-snapshots/${_realname}-lite-$
         'petsc.test'
         'petsc-mat.test'
         '0001-mpi-detection-override.patch'
-        '0002-openblas-clang.patch')
+        '0002-openblas-clang.patch'
+        '0003-pid.patch')
 noextract=("${_realname}-lite-${pkgver}.tar.gz")
-sha256sums=('5c24ade5e4b32cc04935ba0db1dafe48d633bebaaa30a3033f1e58788d37875f'
+sha256sums=('8ced753e4d2fb6565662b2b1fbba75a426cbf8438203f82717ce270f0591322c'
             'ec5072630e1c0309fe383669e9187790cd135a393c67bc4bc35cf60b0ba396ff'
             '15c7af25b91406d5fe5f26cfe00963b6cfde1c3dd466eb25f1b6fae299934966'
             '9662cc4104726c714f7961aba6f8c93bfb85f3d3f89b4908b0a55aedab41ca31'
             'fc95ca4ddc138d288f047835a68a84a11cb841c6cca146c6ef7d7e63e0836b1a'
             'bef5353d6d10de492c9832f24b41993c38d1b36a78eb55e7d49089ba72acc05a'
-            '6f3b455b79b6d22ebf4189594bc9e17ccfbe4ffdd15843a9aa0698efa4a30cc2')
+            'c954cc4240a6f3cebdc40cf4fca07561e58eb50717b9741c296b73657bac1c51'
+            '08d37a205d7a2ae27ccef41ee931f92c96aa428b94ed633def2f56fdfa6fb11e')
 
 # Helper macros to help make tasks easier #
 apply_patch_with_msg() {
@@ -79,14 +80,14 @@ apply_patch_with_msg() {
 }
 
 prepare() {
-  [[ -d "${srcdir}"/build-${MSYSTEM} ]] && rm -rf "${srcdir}"/build-${MSYSTEM}
   mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
   tar xzf $srcdir/${_realname}-lite-${pkgver}.tar.gz
 
   cd ${_realname}-${pkgver}
   apply_patch_with_msg \
     0001-mpi-detection-override.patch \
-    0002-openblas-clang.patch
+    0002-openblas-clang.patch \
+    0003-pid.patch
 }
 
 # Optimized build flavors
@@ -102,17 +103,25 @@ _petsc() {
   iflags=
   cflags="$CFLAGS"
   cxxflags="$CXXFLAGS"
-  fflags="$CFLAGS -fallow-invalid-boz -fallow-argument-mismatch -I$MINGW_PREFIX/include"
+  fflags="$CFLAGS -I$MINGW_PREFIX/include"
   cppflags="$CPPFLAGS"
   ldflags="$LDFLAGS"
   pc_libs="$LIBS"
   libs="$LIBS"
   ld="$CXX"
   if [[ ${MINGW_PACKAGE_PREFIX} != *-clang-* ]]; then
+    fflags+=" -fallow-invalid-boz -fallow-argument-mismatch"
     libs+=" -lgfortran -lquadmath"
     pc_libs="$libs"
   else
+  # elif [[ ${MSYSTEM} == CLANG32 ]]; then
     opts+=" --with-fc=0"
+  # else
+  #   opts+=" --with-fc=${MINGW_PREFIX}/bin/flang"
+  #   libs+=" -lFortranRuntime -lFortranDecimal"
+  # fi
+  # if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+    cflags+=" -Wno-incompatible-function-pointer-types"
   fi
   case $1 in
     ?m?)
@@ -169,10 +178,15 @@ _petsc() {
 
 build() {
   cd  "${srcdir}/build-${MSYSTEM}/${_realname}-${pkgver}"
+  if [[ ${MINGW_PACKAGE_PREFIX} != *-clang-* ]]; then
+    export FC=gfortran
+  # else
+  #   export FC=${MINGW_PREFIX}/bin/flang.exe
+  fi
   for build in ${builds}; do
     _petsc ${build}
     export PETSC_DIR=`pwd`
-    /usr/bin/python configure --PETSC_ARCH=${build} ${opts} CC="$CC" CXX="$CXX" FC="gfortran" CFLAGS="$cflags" FFLAGS="$fflags" CXXFLAGS="$cxxflags" CPPFLAGS="$cppflags" LDFLAGS="$ldflags" LIBS="$libs" MAKEFLAGS="$MAKEFLAGS"
+    /usr/bin/python configure --PETSC_ARCH=${build} ${opts} CC="$CC" CXX="$CXX" FC="$FC" CFLAGS="$cflags" FFLAGS="$fflags" CXXFLAGS="$cxxflags" CPPFLAGS="$cppflags" LDFLAGS="$ldflags" LIBS="$libs" MAKEFLAGS="$MAKEFLAGS"
     make PETSC_ARCH=${build} all
     (
       cd ${build}/lib

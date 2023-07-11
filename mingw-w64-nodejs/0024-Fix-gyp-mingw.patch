@@ -1,0 +1,163 @@
+diff -ur node-v18.12.1-orig/configure.py node-v18.12.1/configure.py
+--- node-v18.12.1-orig/configure.py	2022-11-05 00:13:11.000000000 +0800
++++ node-v18.12.1/configure.py	2022-11-18 13:48:38.725010500 +0800
+@@ -44,7 +44,7 @@
+ # parse our options
+ parser = argparse.ArgumentParser()
+ 
+-valid_os = ('win', 'mac', 'solaris', 'freebsd', 'openbsd', 'linux',
++valid_os = ('win', 'winmsvs', 'mac', 'solaris', 'freebsd', 'openbsd', 'linux',
+             'android', 'aix', 'cloudabi', 'os400', 'ios')
+ valid_arch = ('arm', 'arm64', 'ia32', 'mips', 'mipsel', 'mips64el', 'ppc',
+               'ppc64', 'x64', 'x86', 'x86_64', 's390x', 'riscv64', 'loong64')
+@@ -1264,6 +1264,8 @@
+ def configure_node(o):
+   if options.dest_os == 'android':
+     o['variables']['OS'] = 'android'
++  if options.dest_os == 'win' and 'MSC' in sys.version:
++    o['variables']['OS'] = 'winmsvs'
+   o['variables']['node_prefix'] = options.prefix
+   o['variables']['node_install_npm'] = b(not options.without_npm)
+   o['variables']['node_install_corepack'] = b(not options.without_corepack)
+@@ -1460,6 +1462,8 @@
+     shlib_suffix = '%s.a'
+   elif sys.platform.startswith('zos'):
+     shlib_suffix = '%s.x'
++  elif sys.platform.startswith('win32') and 'GCC' in sys.version:
++    shlib_suffix = 'dll.a'
+   else:
+     shlib_suffix = 'so.%s'
+   if '%s' in shlib_suffix:
+@@ -1508,7 +1512,7 @@
+ 
+     # libpath needs to be provided ahead libraries
+     if options.__dict__[shared_lib + '_libpath']:
+-      if flavor == 'win':
++      if flavor == 'win' and 'MSC' in sys.version:
+         if 'msvs_settings' not in output:
+           output['msvs_settings'] = { 'VCLinkerTool': { 'AdditionalOptions': [] } }
+         output['msvs_settings']['VCLinkerTool']['AdditionalOptions'] += [
+@@ -2169,7 +2173,7 @@
+ 
+ if options.use_ninja:
+   gyp_args += ['-f', 'ninja-' + flavor]
+-elif flavor == 'win' and sys.platform != 'msys':
++elif flavor == 'win' and 'MSC' in sys.version:
+   gyp_args += ['-f', 'msvs', '-G', 'msvs_version=auto']
+ else:
+   gyp_args += ['-f', 'make-' + flavor]
+diff -ur node-v18.16.0-orig/tools/gyp/pylib/gyp/generator/make.py node-v18.16.0/tools/gyp/pylib/gyp/generator/make.py
+--- node-v18.16.0-orig/tools/gyp/pylib/gyp/generator/make.py	2023-04-12 12:09:20.000000000 +0800
++++ node-v18.16.0/tools/gyp/pylib/gyp/generator/make.py	2023-06-04 01:28:25.422642200 +0800
+@@ -101,6 +101,8 @@
+             default_variables.setdefault("SHARED_LIB_SUFFIX", ".a")
+         elif flavor == "zos":
+             default_variables.setdefault("SHARED_LIB_SUFFIX", ".x")
++        elif flavor == "win":
++            default_variables.setdefault("SHARED_LIB_SUFFIX", ".dll")
+         else:
+             default_variables.setdefault("SHARED_LIB_SUFFIX", ".so")
+         default_variables.setdefault("SHARED_LIB_DIR", "$(builddir)/lib.$(TOOLSET)")
+@@ -204,6 +206,26 @@
+ cmd_solink_module = $(LINK.$(TOOLSET)) -o $@ -shared $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -Wl,-soname=$(@F) -Wl,--start-group $(filter-out FORCE_DO_CMD, $^) -Wl,--end-group $(LIBS)
+ """  # noqa: E501
+ 
++LINK_COMMANDS_WINMINGW = """\
++quiet_cmd_alink = AR($(TOOLSET)) $@
++cmd_alink = rm -f $@ && echo $(filter %.o,$^) >> $(@).rsp && ar crs $@ @$(@).rsp
++
++quiet_cmd_alink_thin = AR($(TOOLSET)) $@
++cmd_alink_thin = rm -f $@ && echo $(filter %.o,$^) >> $(@).rsp && ar crsT $@ $(filter %.o,$^) @$(@).rsp
++
++# Due to circular dependencies between libraries :(, we wrap the
++# special "figure out circular dependencies" flags around the entire
++# input list during linking.
++quiet_cmd_link = LINK($(TOOLSET)) $@
++cmd_link = $(LINK.$(TOOLSET)) -o $@ $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -Wl,--start-group $(LD_INPUTS) $(LIBS) -Wl,--end-group
++
++quiet_cmd_solink = SOLINK($(TOOLSET)) $@
++cmd_solink = $(LINK.$(TOOLSET)) -o $@ -shared $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -Wl,--out-implib,$(builddir)/$(@F).a -Wl,--whole-archive $(LD_INPUTS) -Wl,--no-whole-archive $(LIBS)
++
++quiet_cmd_solink_module = SOLINK_MODULE($(TOOLSET)) $@
++cmd_solink_module = $(LINK.$(TOOLSET)) -o $@ -shared $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -Wl,--out-implib,$(builddir)/$(@F).a -Wl,--start-group $(filter-out FORCE_DO_CMD, $^) -Wl,--end-group $(LIBS)
++"""
++
+ LINK_COMMANDS_MAC = """\
+ quiet_cmd_alink = LIBTOOL-STATIC $@
+ cmd_alink = rm -f $@ && ./gyp-mac-tool filter-libtool libtool $(GYP_LIBTOOLFLAGS) -static -o $@ $(filter %.o,$^)
+@@ -378,6 +400,8 @@
+ LINK.target ?= %(LINK.target)s
+ LDFLAGS.target ?= $(LDFLAGS)
+ AR.target ?= $(AR)
++RC.target ?= $(RC)
++RCFLAGS.target ?= $(RCFLAGS)
+ 
+ # C++ apps need to be linked with g++.
+ LINK ?= $(CXX.target)
+@@ -391,6 +415,8 @@
+ LINK.host ?= %(LINK.host)s
+ LDFLAGS.host ?= $(LDFLAGS_host)
+ AR.host ?= %(AR.host)s
++RC.host ?= $(RC.host)s
++RCFLAGS.host ?= $(RCFLAGS_host)
+ 
+ # Define a dir function that can handle spaces.
+ # http://www.gnu.org/software/make/manual/make.html#Syntax-of-Functions
+@@ -466,6 +492,9 @@
+ quiet_cmd_touch = TOUCH $@
+ cmd_touch = touch $@
+ 
++quiet_cmd_rc = RC($(TOOLSET)) $@
++cmd_rc = windres -o $@ $< -O coff -Isrc $(RCFLAGS.$(TOOLSET))
++
+ quiet_cmd_copy = COPY $@
+ # send stderr to /dev/null to ignore messages when linking directories.
+ cmd_copy = ln -f "$<" "$@" 2>/dev/null || (rm -rf "$@" && cp %(copy_archive_args)s "$<" "$@")
+@@ -662,6 +691,7 @@
+     ".cc": "cxx",
+     ".cpp": "cxx",
+     ".cxx": "cxx",
++    ".rc": "rc",
+     ".s": "cc",
+     ".S": "cc",
+ }
+@@ -1563,6 +1593,8 @@
+                 target_ext = ".a"
+             elif self.flavor == "zos":
+                 target_ext = ".x"
++            elif self.flavor == "win":
++                target_ext = ".dll"
+             else:
+                 target_ext = ".so"
+         elif self.type == "none":
+@@ -2496,6 +2528,15 @@
+     elif flavor == "openbsd":
+         copy_archive_arguments = "-pPRf"
+         header_params.update({"copy_archive_args": copy_archive_arguments})
++    elif flavor == "win":
++        copy_archive_arguments = "-pPRf"
++        header_params.update(
++            {
++                "RC.target": GetEnvironFallback(("RC_target", "RC"), "windres"),
++                "RC.host": GetEnvironFallback(("RC_host", "RC"), "windres"),
++                "link_commands": LINK_COMMANDS_WINMINGW,
++            }
++        )
+     elif flavor == "aix":
+         copy_archive_arguments = "-pPRf"
+         header_params.update(
+diff -ur node-v18.12.1-orig/tools/install.py node-v18.12.1/tools/install.py
+--- node-v18.12.1-orig/tools/install.py	2022-11-05 00:13:14.000000000 +0800
++++ node-v18.12.1/tools/install.py	2022-11-26 20:24:56.791596900 +0800
+@@ -152,7 +152,10 @@
+   if 'true' == variables.get('node_shared'):
+     if is_windows:
+       action([output_prefix + 'libnode.dll'], 'bin/libnode.dll')
+-      action([output_prefix + 'libnode.lib'], 'lib/libnode.lib')
++      if 'MSC' in sys.version:
++        action([output_prefix + 'libnode.lib'], 'lib/libnode.lib')
++      else:
++        action([output_prefix + 'libnode.dll.a'], 'lib/libnode.dll.a')
+     elif sys.platform == 'zos':
+       # GYP will output to lib.target; see _InstallableTargetInstallPath
+       # function in tools/gyp/pylib/gyp/generator/make.py
