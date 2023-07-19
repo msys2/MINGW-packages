@@ -22,8 +22,8 @@ die "Could not remove previous patches"
 source PKGBUILD || die "Can't source PKGBUILD"
 
 base_tag=refs/tags/v$pkgver
-msys2_branch=wip-mingw-v3.11.2
-url=https://github.com/naveen521kk/cpython
+msys2_branch=mingw-v$pkgver
+url=https://github.com/msys2-contrib/cpython-mingw
 upstream_url=https://github.com/python/cpython
 
 test -d cpython ||
