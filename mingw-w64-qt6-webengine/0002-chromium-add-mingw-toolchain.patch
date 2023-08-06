@@ -1,0 +1,821 @@
+diff -ur a/src/3rdparty/chromium/build/build_config.h b/src/3rdparty/chromium/build/build_config.h
+--- a/src/3rdparty/chromium/build/build_config.h	2023-11-21 00:08:07.000000000 +0800
++++ b/src/3rdparty/chromium/build/build_config.h	2024-01-02 19:20:22.845621300 +0800
+@@ -382,4 +382,11 @@
+ #define BASE_STRING16_ITERATOR_IS_CHAR16_POINTER
+ #endif
+ 
++#if defined(OS_WIN) && defined(COMPILER_GCC)
++#undef __try
++#define __try try
++#undef __except
++#define __except(x) catch(...)
++#endif
++
+ #endif  // BUILD_BUILD_CONFIG_H_
+diff -ur a/src/3rdparty/chromium/build/config/BUILD.gn b/src/3rdparty/chromium/build/config/BUILD.gn
+--- a/src/3rdparty/chromium/build/config/BUILD.gn	2023-11-21 00:08:07.000000000 +0800
++++ b/src/3rdparty/chromium/build/config/BUILD.gn	2024-01-02 19:26:53.876852000 +0800
+@@ -204,6 +204,31 @@
+         "ole32.lib",
+       ]
+     }
++  } else if (is_mingw) {
++    libs = [
++      "advapi32",
++      "comdlg32",
++      "dbghelp",
++      "dnsapi",
++      "gdi32",
++      "msimg32",
++      "odbc32",
++      "odbccp32",
++      "oleaut32",
++      "shell32",
++      "shlwapi",
++      "user32",
++      "usp10",
++      "uuid",
++      "version",
++      "wininet",
++      "winmm",
++      "winspool",
++      "ws2_32",
++      "delayimp",
++      "kernel32",
++      "ole32",
++    ]
+   } else if (is_android) {
+     libs = [
+       "dl",
+@@ -371,7 +396,7 @@
+ # Recommend precompiled headers for targets with more than 50 .cc files.
+ config("precompiled_headers") {
+   if (enable_precompiled_headers) {
+-    if (is_win) {
++    if (is_win && !is_mingw) {
+       # This is a string rather than a file GN knows about. It has to match
+       # exactly what's in the /FI flag below, and what might appear in the
+       # source code in quotes for an #include directive.
+@@ -384,7 +409,7 @@
+ 
+       # Force include the header.
+       cflags = [ "/FI$precompiled_header" ]
+-    } else if (is_mac || is_linux) {
++    } else if (is_mac || is_linux || is_mingw) {
+       precompiled_source = "//build/precompile.h"
+     }
+   }
+diff -ur a/src/3rdparty/chromium/build/config/BUILDCONFIG.gn b/src/3rdparty/chromium/build/config/BUILDCONFIG.gn
+--- a/src/3rdparty/chromium/build/config/BUILDCONFIG.gn	2023-11-21 00:08:07.000000000 +0800
++++ b/src/3rdparty/chromium/build/config/BUILDCONFIG.gn	2024-01-02 19:20:22.876860800 +0800
+@@ -147,6 +147,9 @@
+   is_msvc = false
+   is_gcc = false
+ 
++  # Set to true when compiling with the MinGW GCC/Clang compiler on the MSYS2 environment.
++  is_mingw = current_os == "win" && (getenv("CXX") == "g++" || getenv("CXX") == "clang++")
++
+   # Allows the path to a custom target toolchain to be injected as a single
+   # argument, and set as the default toolchain.
+   custom_toolchain = ""
+@@ -220,16 +223,20 @@
+     # On Windows always use the target CPU for host builds for x86/x64. On the
+     # configurations we support this will always work and it saves build steps.
+     # Windows ARM64 targets require an x64 host for cross build.
+-    if (target_cpu == "x86" || target_cpu == "x64") {
+-      if (is_clang) {
+-        host_toolchain = "//build/toolchain/win:win_clang_$target_cpu"
++    if (is_mingw) {
++      host_toolchain = "//build/toolchain/win:mingw_$target_cpu"
++    } else {
++      if (target_cpu == "x86" || target_cpu == "x64") {
++        if (is_clang) {
++          host_toolchain = "//build/toolchain/win:win_clang_$target_cpu"
++        } else {
++          host_toolchain = "//build/toolchain/win:$target_cpu"
++        }
++      } else if (is_clang) {
++        host_toolchain = "//build/toolchain/win:win_clang_$host_cpu"
+       } else {
+-        host_toolchain = "//build/toolchain/win:$target_cpu"
++        host_toolchain = "//build/toolchain/win:$host_cpu"
+       }
+-    } else if (is_clang) {
+-      host_toolchain = "//build/toolchain/win:win_clang_$host_cpu"
+-    } else {
+-      host_toolchain = "//build/toolchain/win:$host_cpu"
+     }
+   } else if (host_os == "aix") {
+     host_toolchain = "//build/toolchain/aix:$host_cpu"
+@@ -263,10 +270,14 @@
+ } else if (target_os == "win") {
+   # On Windows, we use the same toolchain for host and target by default.
+   # Beware, win cross builds have some caveats, see docs/win_cross.md
+-  if (is_clang) {
+-    _default_toolchain = "//build/toolchain/win:win_clang_$target_cpu"
++  if (is_mingw) {
++    _default_toolchain = "//build/toolchain/win:mingw_$target_cpu"
+   } else {
+-    _default_toolchain = "//build/toolchain/win:$target_cpu"
++    if (is_clang) {
++      _default_toolchain = "//build/toolchain/win:win_clang_$target_cpu"
++    } else {
++      _default_toolchain = "//build/toolchain/win:$target_cpu"
++    }
+   }
+ } else if (target_os == "winuwp") {
+   # Only target WinUWP on for a Windows store application and only
+diff -ur a/src/3rdparty/chromium/build/config/compiler/BUILD.gn b/src/3rdparty/chromium/build/config/compiler/BUILD.gn
+--- a/src/3rdparty/chromium/build/config/compiler/BUILD.gn	2023-11-21 00:08:07.000000000 +0800
++++ b/src/3rdparty/chromium/build/config/compiler/BUILD.gn	2024-01-03 02:01:50.978438800 +0800
+@@ -612,7 +612,7 @@
+     }
+ 
+     # TODO(crbug.com/1235145): Investigate why/if this should be needed.
+-    if (is_win) {
++    if (is_win && !is_mingw) {
+       cflags += [ "/clang:-ffp-contract=off" ]
+     } else {
+       cflags += [ "-ffp-contract=off" ]
+@@ -626,9 +626,9 @@
+ 
+   # C11/C++11 compiler flags setup.
+   # ---------------------------
+-  if (is_linux || is_chromeos || is_android || (is_nacl && is_clang) ||
++  if (is_linux || is_mingw || is_chromeos || is_android || (is_nacl && is_clang) ||
+       current_os == "aix") {
+-    if (is_clang) {
++    if (is_clang && !is_mingw) {
+       standard_prefix = "c"
+ 
+       # Since we build with -std=c* and not -std=gnu*, _GNU_SOURCE will not be
+@@ -815,7 +815,7 @@
+   if (compiler_timing) {
+     if (is_clang && !is_nacl) {
+       cflags += [ "-ftime-trace" ]
+-    } else if (is_win) {
++    } else if (is_win && !is_mingw) {
+       cflags += [
+         # "Documented" here:
+         # http://aras-p.info/blog/2017/10/23/Best-unknown-MSVC-flag-d2cgsummary/
+@@ -845,7 +845,7 @@
+   # jumps. Turn it off by default and enable selectively for targets where it's
+   # beneficial.
+   if (use_lld && !enable_call_graph_profile_sort && !is_qtwebengine) {
+-    if (is_win) {
++    if (is_win && !is_mingw) {
+       ldflags += [ "/call-graph-profile-sort:no" ]
+     } else {
+       ldflags += [ "-Wl,--no-call-graph-profile-sort" ]
+@@ -853,7 +853,7 @@
+   }
+ 
+   if (is_clang && !is_nacl && show_includes) {
+-    if (is_win) {
++    if (is_win && !is_mingw) {
+       # TODO(crbug.com/1223741): Goma mixes the -H and /showIncludes output.
+       assert(!use_goma, "show_includes on Windows is not reliable with goma")
+       cflags += [
+@@ -1432,12 +1432,12 @@
+       cflags += [ "-ffile-compilation-dir=." ]
+       swiftflags += [ "-file-compilation-dir=." ]
+     }
+-    if (!is_win) {
++    if (!is_msvc) {
+       # We don't use clang -cc1as on Windows (yet? https://crbug.com/762167)
+       asmflags = [ "-Wa,-fdebug-compilation-dir,." ]
+     }
+ 
+-    if (is_win && use_lld) {
++    if (is_win && !is_mingw && use_lld) {
+       if (symbol_level == 2 || (is_clang && using_sanitizer)) {
+         # Absolutize source file paths for PDB. Pass the real build directory
+         # if the pdb contains source-level debug information and if linker
+@@ -1470,7 +1470,7 @@
+ }
+ 
+ config("clang_revision") {
+-  if (is_clang && clang_base_path == default_clang_base_path) {
++  if (!is_mingw && is_clang && clang_base_path == default_clang_base_path) {
+     update_args = [
+       "--print-revision",
+       "--verify-version=$clang_version",
+@@ -1827,10 +1827,55 @@
+       cflags_cc += [ "-Wno-return-type" ]
+       cflags_cc += [ "-Wno-deprecated-copy" ]
+     }
++
++    if (is_mingw) {
++      cflags += [
++        "-Wno-array-parameter",
++        "-Wno-attributes",
++        "-Wno-format",
++        "-Wno-missing-braces",
++        "-Wno-parentheses",
++      ]
++      cflags_cc += [
++        "-Wno-missing-field-initializers",
++        "-Wno-pessimizing-move",
++        "-Wno-return-type",
++        "-Wno-shadow",
++        "-Wno-sign-compare",
++        "-Wno-unknown-pragmas",
++        "-Wno-unused-const-variable",
++      ]
++
++      if (is_clang) {
++        cflags += [
++          "-Wno-constant-conversion",
++          "-Wno-deprecated-builtins",
++          "-Wno-deprecated-declarations",
++          "-Wno-macro-redefined",
++        ]
++        cflags_cc += [
++          "-Wno-unused-local-typedef",
++          "-Wno-unused-private-field",
++        ]
++      } else {
++        cflags += [
++          "-Wno-array-bounds",
++          "-Wno-builtin-macro-redefined",
++          "-Wno-dangling-pointer",
++          "-Wno-stringop-truncation",
++          "-Wno-unused-but-set-variable",
++        ]
++        cflags_cc += [
++          "-Wno-conversion-null",
++          "-Wno-free-nonheap-object",
++          "-Wno-pointer-arith",
++        ]
++      }
++    }
+   }
+ 
+   # Common Clang and GCC warning setup.
+-  if (!is_win || is_clang) {
++  if (!is_msvc || is_clang) {
+     cflags += [
+       # Disables.
+       "-Wno-missing-field-initializers",  # "struct foo f = {0};"
+@@ -1952,7 +1997,7 @@
+       # well.
+       ldflags = [ "-Werror" ]
+     }
+-    if (is_clang) {
++    if (is_clang && !is_mingw) {
+       # Enable extra warnings for chromium_code when we control the compiler.
+       cflags += [ "-Wextra" ]
+     }
+@@ -1985,7 +2030,7 @@
+     }
+   }
+ 
+-  if (is_clang) {
++  if (is_clang && !is_mingw) {
+     cflags += [
+       # Warn on missing break statements at the end of switch cases.
+       # For intentional fallthrough, use [[fallthrough]].
+@@ -2143,7 +2188,7 @@
+   # confuses lldb.
+   if ((is_posix && !is_nacl && !is_apple) || is_fuchsia) {
+     arflags = [ "-T" ]
+-  } else if (is_win && use_lld) {
++  } else if (is_win && !is_mingw && use_lld) {
+     arflags = [ "/llvmlibthin" ]
+   }
+ }
+@@ -2177,7 +2222,9 @@
+     if (!use_custom_libcxx) {
+       defines = [ "_HAS_EXCEPTIONS=0" ]
+     }
+-  } else {
++  } else if (!is_mingw) {
++    # Do not explicitly set no-exceptions on MinGW, else we have to
++    # unset it in many other places.
+     cflags_cc = [ "-fno-exceptions" ]
+     cflags_objcc = cflags_cc
+   }
+@@ -2210,7 +2257,7 @@
+ # the gcc 4.9 toolchains.
+ config("no_incompatible_pointer_warnings") {
+   cflags = []
+-  if (is_clang) {
++  if (is_clang || is_mingw) {
+     cflags += [ "-Wno-incompatible-pointer-types" ]
+   } else if (current_cpu == "mipsel" || current_cpu == "mips64el") {
+     cflags += [ "-w" ]
+@@ -2312,7 +2359,7 @@
+ }
+ 
+ config("default_stack_frames") {
+-  if (!is_win) {
++  if (!is_msvc) {
+     if (enable_frame_pointers) {
+       cflags = [ "-fno-omit-frame-pointer" ]
+ 
+@@ -2398,7 +2445,7 @@
+ 
+ # Turn off optimizations.
+ config("no_optimize") {
+-  if (is_win) {
++  if (is_win && !is_mingw) {
+     cflags = [
+       "/Od",  # Disable optimization.
+       "/Ob0",  # Disable all inlining (on by default).
+@@ -2718,7 +2765,7 @@
+     # sections" there.  Maybe just a bug in nacl_switch_32.S.
+     _enable_gdb_index =
+         symbol_level == 2 && !is_apple && !is_nacl && current_cpu != "x86" &&
+-        current_os != "zos" && (use_gold || use_lld) &&
++        current_os != "zos" && (use_gold || use_lld) && !is_mingw &&
+         # Disable on non-fission 32-bit Android because it pushes
+         # libcomponents_unittests over the 4gb size limit.
+         !(is_android && !use_debug_fission && current_cpu != "x64" &&
+diff -ur a/src/3rdparty/chromium/build/config/linux/pkg-config.py b/src/3rdparty/chromium/build/config/linux/pkg-config.py
+--- a/src/3rdparty/chromium/build/config/linux/pkg-config.py	2023-11-21 00:08:07.000000000 +0800
++++ b/src/3rdparty/chromium/build/config/linux/pkg-config.py	2024-01-02 19:20:22.892475100 +0800
+@@ -108,7 +108,7 @@
+   # If this is run on non-Linux platforms, just return nothing and indicate
+   # success. This allows us to "kind of emulate" a Linux build from other
+   # platforms.
+-  if "linux" not in sys.platform:
++  if sys.platform not in ["linux", "win32"]:
+     print("[[],[],[],[],[]]")
+     return 0
+ 
+diff -ur a/src/3rdparty/chromium/build/config/sanitizers/BUILD.gn b/src/3rdparty/chromium/build/config/sanitizers/BUILD.gn
+--- a/src/3rdparty/chromium/build/config/sanitizers/BUILD.gn	2023-11-21 00:08:07.000000000 +0800
++++ b/src/3rdparty/chromium/build/config/sanitizers/BUILD.gn	2024-01-02 19:20:22.892475100 +0800
+@@ -58,7 +58,7 @@
+ assert(!(is_win && is_asan && current_cpu == "x86"),
+        "ASan is only supported in 64-bit builds on Windows.")
+ 
+-if ((is_apple || is_win) && is_asan) {
++if ((is_apple || is_msvc) && is_asan) {
+   if (is_mac || (is_ios && target_environment == "catalyst")) {
+     _clang_rt_dso_path = "darwin/libclang_rt.asan_osx_dynamic.dylib"
+   } else if (is_ios) {
+@@ -216,7 +216,7 @@
+         }
+       }
+     }
+-  } else if (is_win) {
++  } else if (is_win && !is_mingw) {
+     # Windows directly calls link.exe instead of the compiler driver when
+     # linking.  Hence, pass the runtime libraries instead of -fsanitize=address
+     # or -fsanitize=fuzzer.
+@@ -279,14 +279,14 @@
+ }
+ 
+ config("link_executable") {
+-  if (is_asan && is_win && !is_component_build) {
++  if (is_asan && is_msvc && !is_component_build) {
+     assert(current_cpu == "x64", "WinASan unsupported architecture")
+     ldflags = [ "-wholearchive:clang_rt.asan-x86_64.lib" ]
+   }
+ }
+ 
+ config("link_shared_library") {
+-  if (is_asan && is_win && !is_component_build) {
++  if (is_asan && is_msvc && !is_component_build) {
+     assert(current_cpu == "x64", "WinASan unsupported architecture")
+     libs = [ "clang_rt.asan_dll_thunk-x86_64.lib" ]
+   }
+@@ -317,7 +317,7 @@
+ 
+     if (use_cfi_diag) {
+       cflags += [ "-fno-sanitize-trap=cfi" ]
+-      if (is_win) {
++      if (is_win && !is_mingw) {
+         cflags += [
+           "/Oy-",
+           "/Ob0",
+diff -ur a/src/3rdparty/chromium/build/config/win/BUILD.gn b/src/3rdparty/chromium/build/config/win/BUILD.gn
+--- a/src/3rdparty/chromium/build/config/win/BUILD.gn	2023-11-21 00:08:07.000000000 +0800
++++ b/src/3rdparty/chromium/build/config/win/BUILD.gn	2024-01-02 19:20:22.892475100 +0800
+@@ -54,6 +54,17 @@
+ # is applied to all targets. It is here to separate out the logic that is
+ # Windows-only.
+ config("compiler") {
++  if (is_mingw) {
++    if (current_cpu == "x86" || current_cpu == "x64") {
++      cflags = [ "-msse3" ]
++    }
++
++    if (current_cpu == "x64" || current_cpu == "arm64") {
++      ldflags = [ "-m64" ]
++    } else {
++      ldflags = [ "-m32" ]
++    }
++  } else {
+   if (current_cpu == "x86") {
+     asmflags = [
+       # When /safeseh is specified, the linker will only produce an image if it
+@@ -150,6 +161,7 @@
+       cflags += [ "/clang:-fdiagnostics-format=clang" ]
+     }
+   }
++  }
+ 
+   # Disabled with cc_wrapper because of https://github.com/mozilla/sccache/issues/264
+   if (use_lld && !use_thin_lto && (is_clang || !use_goma) && cc_wrapper == "") {
+@@ -314,7 +326,7 @@
+ 
+ # Linker flags for Windows SDK setup, this is applied only to EXEs and DLLs.
+ config("sdk_link") {
+-  if (current_cpu == "x86") {
++  if (!is_mingw && current_cpu == "x86") {
+     ldflags = [
+       "/SAFESEH",  # Not compatible with x64 so use only for x86.
+       "/largeaddressaware",
+@@ -326,6 +338,13 @@
+ # targets who want different library configurations can remove this and specify
+ # their own.
+ config("common_linker_setup") {
++  if (is_mingw) {
++    # Enable DEP and ASLR
++    ldflags = [
++      "-Wl,-dynamicbase",
++      "-Wl,-nxcompat",
++    ]
++  } else {
+   ldflags = [
+     "/FIXED:NO",
+     "/ignore:4199",
+@@ -340,6 +359,7 @@
+       "/verbose:incr",
+     ]
+   }
++  }
+ }
+ 
+ config("default_cfg_compiler") {
+@@ -353,6 +373,8 @@
+     } else {
+       cflags = [ "/guard:cf,nochecks" ]
+     }
++  } else {
++    cflags = [ "-fcf-protection=full" ]
+   }
+ }
+ 
+@@ -362,8 +384,10 @@
+   # Emit table of address-taken functions for Control-Flow Guard (CFG).
+   # This is needed to allow functions to be called by code that is built
+   # with CFG enabled, such as system libraries.
+-  if (is_clang) {
++  if (is_clang && !is_mingw) {
+     cflags = [ "/guard:cf,nochecks" ]
++  } else {
++    cflags = [ "-fcf-protection=none" ]
+   }
+ }
+ 
+@@ -397,6 +421,7 @@
+ # This config should also be used for any test binary whose goal is to run
+ # tests with the full browser.
+ config("delayloads") {
++  if (!is_mingw) {
+   ldflags = [
+     "/DELAYLOAD:api-ms-win-core-winrt-error-l1-1-0.dll",
+     "/DELAYLOAD:api-ms-win-core-winrt-l1-1-0.dll",
+@@ -438,9 +463,11 @@
+     "/DELAYLOAD:wsock32.dll",
+     "/DELAYLOAD:wtsapi32.dll",
+   ]
++  }
+ }
+ 
+ config("delayloads_not_for_child_dll") {
++  if (!is_mingw) {
+   ldflags = [
+     "/DELAYLOAD:advapi32.dll",
+     "/DELAYLOAD:crypt32.dll",
+@@ -458,6 +485,7 @@
+     "/DELAYLOAD:wintrust.dll",
+     "/DELAYLOAD:ws2_32.dll",
+   ]
++  }
+ }
+ 
+ # CRT --------------------------------------------------------------------------
+@@ -466,6 +494,7 @@
+ # See https://msdn.microsoft.com/en-us/library/2kzt1wy3.aspx for a reference of
+ # what each value does.
+ config("default_crt") {
++  if (!is_mingw) {
+   if (is_shared) {
+     # Component mode: dynamic CRT. Since the library is shared, it requires
+     # exceptions or will give errors about things not matching, so keep
+@@ -487,6 +516,7 @@
+       configs = [ ":static_crt" ]
+     }
+   }
++  }
+ }
+ 
+ # Use this to force use of the release CRT when building perf-critical build
+@@ -494,6 +524,7 @@
+ # when the debug CRT is part of the bottleneck. This also avoids *implicitly*
+ # defining _DEBUG.
+ config("release_crt") {
++  if (!is_mingw) {
+   if (is_component_build) {
+     cflags = [ "/MD" ]
+ 
+@@ -508,9 +539,11 @@
+       ldflags = [ "/DEFAULTLIB:libcpmt.lib" ]
+     }
+   }
++  }
+ }
+ 
+ config("dynamic_crt") {
++  if (!is_mingw) {
+   if (is_debug) {
+     # This pulls in the DLL debug CRT and defines _DEBUG
+     cflags = [ "/MDd" ]
+@@ -523,9 +556,11 @@
+       ldflags = [ "/DEFAULTLIB:msvcprt.lib" ]
+     }
+   }
++  }
+ }
+ 
+ config("static_crt") {
++  if (!is_mingw) {
+   if (is_debug) {
+     # This pulls in the static debug CRT and defines _DEBUG
+     cflags = [ "/MTd" ]
+@@ -538,6 +573,7 @@
+       ldflags = [ "/DEFAULTLIB:libcpmt.lib" ]
+     }
+   }
++  }
+ }
+ 
+ # Subsystem --------------------------------------------------------------------
+@@ -636,3 +672,10 @@
+   }
+   ldflags += [ "/pdbpagesize:8192" ]
+ }
++
++# Let unit tests see all "for_testing" dll symbols.
++config("export_all_symbols") {
++  if (is_mingw) {
++    ldflags = [ "-Wl,--export-all-symbols" ]
++  }
++}
+diff -ur a/src/3rdparty/chromium/build/toolchain/gcc_solink_wrapper.py b/src/3rdparty/chromium/build/toolchain/gcc_solink_wrapper.py
+--- a/src/3rdparty/chromium/build/toolchain/gcc_solink_wrapper.py	2023-11-21 00:08:07.000000000 +0800
++++ b/src/3rdparty/chromium/build/toolchain/gcc_solink_wrapper.py	2024-01-02 19:20:22.908100100 +0800
+@@ -24,6 +24,10 @@
+   # TODO(crbug.com/1259067): Come up with a way to get this info without having
+   # to bundle readelf in the toolchain package.
+   toc = ''
++
++  # MinGW's readelf doesn't work on PE files
++  if sys.platform == 'win32' and 'GCC' in sys.version:
++    return 0, toc
+   readelf = subprocess.Popen(wrapper_utils.CommandToRun(
+       [args.readelf, '-d', args.sofile]),
+                              stdout=subprocess.PIPE,
+@@ -38,6 +42,10 @@
+ def CollectDynSym(args):
+   """Replaces: nm --format=posix -g -D -p $sofile | cut -f1-2 -d' '"""
+   toc = ''
++
++  # MinGW's nm doesn't work on PE/COFF files
++  if sys.platform == 'win32' and 'GCC' in sys.version:
++    return 0, toc
+   nm = subprocess.Popen(wrapper_utils.CommandToRun(
+       [args.nm, '--format=posix', '-g', '-D', '-p', args.sofile]),
+                         stdout=subprocess.PIPE,
+@@ -103,6 +111,9 @@
+                       help='The strip binary to run',
+                       metavar='PATH')
+   parser.add_argument('--dwp', help='The dwp binary to run', metavar='PATH')
++  parser.add_argument('--objcopy',
++                      help='The objcopy binary to run',
++                      metavar='PATH')
+   parser.add_argument('--sofile',
+                       required=True,
+                       help='Shared object file produced by linking command',
+@@ -194,9 +205,19 @@
+ 
+     # Finally, strip the linked shared object file (if desired).
+     if args.strip:
++      if args.objcopy:
++        result = subprocess.call(wrapper_utils.CommandToRun(
++            [args.objcopy, '--only-keep-debug', args.sofile, args.output + '.debug']))
++        if result != 0:
++          return result
+       result = subprocess.call(
+           wrapper_utils.CommandToRun(
+               [args.strip, '-o', args.output, args.sofile]))
++    if result != 0:
++      return result
++    if args.objcopy:
++      result = subprocess.call(wrapper_utils.CommandToRun(
++          [args.objcopy, '--add-gnu-debuglink', args.output + '.debug',args.output]))
+ 
+   if dwp_proc:
+     dwp_result = dwp_proc.wait()
+diff -ur a/src/3rdparty/chromium/build/toolchain/gcc_toolchain.gni b/src/3rdparty/chromium/build/toolchain/gcc_toolchain.gni
+--- a/src/3rdparty/chromium/build/toolchain/gcc_toolchain.gni	2023-11-21 00:08:07.000000000 +0800
++++ b/src/3rdparty/chromium/build/toolchain/gcc_toolchain.gni	2024-01-02 19:20:22.908100100 +0800
+@@ -61,6 +61,7 @@
+ #  - cc
+ #  - cxx
+ #  - ld
++#  - rc (mingw only)
+ #
+ # Optional parameters that control the tools:
+ #
+@@ -315,6 +316,11 @@
+     } else {
+       nm = "nm"
+     }
++    if (defined(invoker.rc)) {
++      rc = invoker.rc
++    } else {
++      rc = "windres"
++    }
+     if (defined(invoker.dwp)) {
+       dwp_switch = " --dwp=\"${invoker.dwp}\""
+     } else {
+@@ -408,6 +414,14 @@
+       outputs = [ "$object_subdir/{{source_name_part}}.o" ]
+     }
+ 
++    tool("rc") {
++      depfile = "{{output}}.d"
++      command = "$rc -i {{source}} -o {{output}} {{include_dirs}} -O coff"
++      depsformat = "gcc"
++      description = "RC {{output}}"
++      outputs = [ "$object_subdir/{{source_name_part}}.rc.o" ]
++    }
++
+     tool("asm") {
+       # For GCC we can just use the C compiler to compile assembly.
+       depfile = "{{output}}.d"
+@@ -470,9 +484,12 @@
+       tocfile = sofile + ".TOC"
+ 
+       soname_flag = ""
+-      if (current_os != "aix") {
++      if (current_os != "aix" && current_os != "win") {
+         # -soname flag is not available on aix ld
+         soname_flag = "-Wl,-soname=\"$soname\""
++      } else if (is_mingw) {
++        # Have MinGW linker generate an import library
++        soname_flag = "-Wl,--out-implib=lib\"$soname\".a "
+       }
+       link_command = "$ld -shared $soname_flag {{ldflags}}${extra_ldflags} -o \"$unstripped_sofile\" @\"$rspfile\" {{rlibs}}"
+ 
+@@ -508,6 +525,8 @@
+ 
+       if (target_cpu == "mipsel" && is_component_build && is_android) {
+         rspfile_content = "-Wl,--start-group -Wl,--whole-archive {{inputs}} {{solibs}} -Wl,--no-whole-archive {{libs}} -Wl,--end-group"
++      } else if (is_mingw) {
++        rspfile_content = "-Wl,--whole-archive {{inputs}} {{solibs}} -Wl,--no-whole-archive -Wl,--start-group {{libs}} -Wl,--end-group"
+       } else if (current_os == "aix") {
+         # --whole-archive, --no-whole-archive flags are not available on the aix
+         # ld.
+@@ -611,7 +630,11 @@
+ 
+       default_output_dir = "{{root_out_dir}}${default_shlib_subdir}"
+ 
+-      output_prefix = "lib"
++      if (is_mingw) {
++        output_prefix = ""
++      } else {
++        output_prefix = "lib"
++      }
+ 
+       outputs = [ sofile ]
+       if (sofile != unstripped_sofile) {
+diff -ur a/src/3rdparty/chromium/build/toolchain/win/BUILD.gn b/src/3rdparty/chromium/build/toolchain/win/BUILD.gn
+--- a/src/3rdparty/chromium/build/toolchain/win/BUILD.gn	2023-11-21 00:08:07.000000000 +0800
++++ b/src/3rdparty/chromium/build/toolchain/win/BUILD.gn	2024-01-02 19:20:22.923728600 +0800
+@@ -30,7 +30,7 @@
+               ])
+ }
+ 
+-if (target_cpu == "x86" || target_cpu == "x64") {
++if (is_msvc && (target_cpu == "x86" || target_cpu == "x64")) {
+   win_toolchains("x86") {
+     toolchain_arch = "x86"
+   }
+@@ -39,7 +39,7 @@
+   }
+ }
+ 
+-if (target_cpu == "arm64") {
++if (is_msvc && target_cpu == "arm64") {
+   win_toolchains("arm64") {
+     toolchain_arch = "arm64"
+   }
+@@ -53,10 +53,12 @@
+ # The only reason it's a separate toolchain is so that it can force
+ # is_component_build to false in the toolchain_args() block, because
+ # building nacl64.exe in component style does not work.
+-win_toolchains("nacl_win64") {
+-  toolchain_arch = "x64"
+-  toolchain_args = {
+-    is_component_build = false
++if (is_msvc) {
++  win_toolchains("nacl_win64") {
++    toolchain_arch = "x64"
++    toolchain_args = {
++      is_component_build = false
++    }
+   }
+ }
+ 
+@@ -87,3 +89,17 @@
+     }
+   }
+ }
++
++if (is_mingw) {
++  mingw_toolchain("x86") {
++    toolchain_arch = "x86"
++  }
++
++  mingw_toolchain("x64") {
++    toolchain_arch = "x64"
++  }
++
++  mingw_toolchain("arm64") {
++    toolchain_arch = "arm64"
++  }
++}
+diff -ur a/src/3rdparty/chromium/build/toolchain/win/toolchain.gni b/src/3rdparty/chromium/build/toolchain/win/toolchain.gni
+--- a/src/3rdparty/chromium/build/toolchain/win/toolchain.gni	2023-11-21 00:08:07.000000000 +0800
++++ b/src/3rdparty/chromium/build/toolchain/win/toolchain.gni	2024-01-02 19:20:22.923728600 +0800
+@@ -624,3 +624,30 @@
+     }
+   }
+ }
++
++if (is_mingw) {
++  import("//build/toolchain/gcc_toolchain.gni")
++
++  template("mingw_toolchain") {
++    gcc_toolchain("mingw_" + target_name) {
++      forward_variables_from(invoker, "*")
++      if (is_clang) {
++        cc = "clang"
++        cxx = "clang++"
++      } else {
++        cc = "gcc"
++        cxx = "g++"
++      }
++      ld = cxx
++      nm = "nm"
++      ar = "ar"
++      rc = "windres"
++      strip = "strip"
++      enable_linker_map = false
++      toolchain_args = {
++        current_os = "win"
++        current_cpu = toolchain_arch
++      }
++    }
++  }
++}
+diff -ur a/src/3rdparty/chromium/build/util/lastchange.py b/src/3rdparty/chromium/build/util/lastchange.py
+--- a/src/3rdparty/chromium/build/util/lastchange.py	2023-11-21 00:08:07.000000000 +0800
++++ b/src/3rdparty/chromium/build/util/lastchange.py	2024-01-02 19:20:22.939345000 +0800
+@@ -191,6 +191,8 @@
+   Returns:
+     The output of "git rev-parse --show-toplevel" as a string
+   """
++  if sys.platform == 'win32' and 'GCC' in sys.version:
++    return subprocess.check_output(["cygpath", "-w", directory]).strip(b"\n").decode()
+   return _RunGitCommand(source_dir, ['rev-parse', '--show-toplevel'])
+ 
+ 
+diff -ur a/src/3rdparty/chromium/build/win/BUILD.gn b/src/3rdparty/chromium/build/win/BUILD.gn
+--- a/src/3rdparty/chromium/build/win/BUILD.gn	2023-11-21 00:08:07.000000000 +0800
++++ b/src/3rdparty/chromium/build/win/BUILD.gn	2024-01-02 19:20:22.939345000 +0800
+@@ -16,7 +16,7 @@
+   ]
+ }
+ 
+-if (is_win) {
++if (is_win && !is_mingw) {
+   assert(host_os != "mac" || target_cpu != "x86",
+          "Windows cross-builds from Mac must be 64-bit.")
+ 
+@@ -78,4 +78,8 @@
+       }
+     }
+   }
++} else {
++  group("runtime_libs") {
++    data = []
++  }
+ }
