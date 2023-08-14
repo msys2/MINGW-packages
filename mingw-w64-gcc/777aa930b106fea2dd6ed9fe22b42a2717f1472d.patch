@@ -1,0 +1,364 @@
+From 777aa930b106fea2dd6ed9fe22b42a2717f1472d Mon Sep 17 00:00:00 2001
+From: Aldy Hernandez <aldyh@redhat.com>
+Date: Mon, 15 May 2023 12:25:58 +0200
+Subject: [PATCH] [GCC13] Add auto-resizing capability to irange's [PR109695]
+
+Backport the following from trunk.
+
+	Note that the patch has been adapted to trees.
+
+	The numbers for various sub-ranges on GCC13 are:
+		< 2> =  64 bytes, -3.02% for VRP.
+		< 3> =  80 bytes, -2.67% for VRP.
+		< 8> = 160 bytes, -2.46% for VRP.
+		<16> = 288 bytes, -2.40% for VRP.
+
+<tldr>
+We can now have int_range<N, RESIZABLE=false> for automatically
+resizable ranges.  int_range_max is now int_range<3, true>
+for a 69X reduction in size from current trunk, and 6.9X reduction from
+GCC12.  This incurs a 5% performance penalty for VRP that is more than
+covered by our > 13% improvements recently.
+</tldr>
+
+int_range_max is the temporary range object we use in the ranger for
+integers.  With the conversion to wide_int, this structure bloated up
+significantly because wide_ints are huge (80 bytes a piece) and are
+about 10 times as big as a plain tree.  Since the temporary object
+requires 255 sub-ranges, that's 255 * 80 * 2, plus the control word.
+This means the structure grew from 4112 bytes to 40912 bytes.
+
+This patch adds the ability to resize ranges as needed, defaulting to
+no resizing, while int_range_max now defaults to 3 sub-ranges (instead
+of 255) and grows to 255 when the range being calculated does not fit.
+
+For example:
+
+int_range<1> foo;	// 1 sub-range with no resizing.
+int_range<5> foo;	// 5 sub-ranges with no resizing.
+int_range<5, true> foo;	// 5 sub-ranges with resizing.
+
+I ran some tests and found that 3 sub-ranges cover 99% of cases, so
+I've set the int_range_max default to that:
+
+	typedef int_range<3, /*RESIZABLE=*/true> int_range_max;
+
+We don't bother growing incrementally, since the default covers most
+cases and we have a 255 hard-limit.  This hard limit could be reduced
+to 128, since my tests never saw a range needing more than 124, but we
+could do that as a follow-up if needed.
+
+With 3-subranges, int_range_max is now 592 bytes versus 40912 for
+trunk, and versus 4112 bytes for GCC12!  The penalty is 5.04% for VRP
+and 3.02% for threading, with no noticeable change in overall
+compilation (0.27%).  This is more than covered by our 13.26%
+improvements for the legacy removal + wide_int conversion.
+
+I think this approach is a good alternative, while providing us with
+flexibility going forward.  For example, we could try defaulting to a
+8 sub-ranges for a noticeable improvement in VRP.  We could also use
+large sub-ranges for switch analysis to avoid resizing.
+
+Another approach I tried was always resizing.  With this, we could
+drop the whole int_range<N> nonsense, and have irange just hold a
+resizable range.  This simplified things, but incurred a 7% penalty on
+ipa_cp.  This was hard to pinpoint, and I'm not entirely convinced
+this wasn't some artifact of valgrind.  However, until we're sure,
+let's avoid massive changes, especially since IPA changes are coming
+up.
+
+For the curious, a particular hot spot for IPA in this area was:
+
+ipcp_vr_lattice::meet_with_1 (const value_range *other_vr)
+{
+...
+...
+  value_range save (m_vr);
+  m_vr.union_ (*other_vr);
+  return m_vr != save;
+}
+
+The problem isn't the resizing (since we do that at most once) but the
+fact that for some functions with lots of callers we end up a huge
+range that gets copied and compared for every meet operation.  Maybe
+the IPA algorithm could be adjusted somehow??.
+
+Anywhooo... for now there is nothing to worry about, since value_range
+still has 2 subranges and is not resizable.  But we should probably
+think what if anything we want to do here, as I envision IPA using
+infinite ranges here (well, int_range_max) and handling frange's, etc.
+
+gcc/ChangeLog:
+
+	PR tree-optimization/109695
+	* value-range.cc (irange::operator=): Resize range.
+	(irange::union_): Same.
+	(irange::intersect): Same.
+	(irange::invert): Same.
+	(int_range_max): Default to 3 sub-ranges and resize as needed.
+	* value-range.h (irange::maybe_resize): New.
+	(~int_range): New.
+	(int_range::int_range): Adjust for resizing.
+	(int_range::operator=): Same.
+---
+ gcc/value-range-storage.h |  2 +-
+ gcc/value-range.cc        | 15 ++++++
+ gcc/value-range.h         | 96 +++++++++++++++++++++++++++------------
+ 3 files changed, 83 insertions(+), 30 deletions(-)
+
+diff --git a/gcc/value-range-storage.h b/gcc/value-range-storage.h
+index 6da377ebd2e..1ed6f1ccd61 100644
+--- a/gcc/value-range-storage.h
++++ b/gcc/value-range-storage.h
+@@ -184,7 +184,7 @@ vrange_allocator::alloc_irange (unsigned num_pairs)
+   // Allocate the irange and required memory for the vector.
+   void *r = alloc (sizeof (irange));
+   tree *mem = static_cast <tree *> (alloc (nbytes));
+-  return new (r) irange (mem, num_pairs);
++  return new (r) irange (mem, num_pairs, /*resizable=*/false);
+ }
+ 
+ inline frange *
+diff --git a/gcc/value-range.cc b/gcc/value-range.cc
+index ec826c2fe1b..753f5e8cc76 100644
+--- a/gcc/value-range.cc
++++ b/gcc/value-range.cc
+@@ -831,6 +831,10 @@ irange::operator= (const irange &src)
+       copy_to_legacy (src);
+       return *this;
+     }
++
++  int needed = src.num_pairs ();
++  maybe_resize (needed);
++
+   if (src.legacy_mode_p ())
+     {
+       copy_legacy_to_multi_range (src);
+@@ -2506,6 +2510,7 @@ irange::irange_union (const irange &r)
+   // Now it simply needs to be copied, and if there are too many
+   // ranges, merge some.  We wont do any analysis as to what the
+   // "best" merges are, simply combine the final ranges into one.
++  maybe_resize (i / 2);
+   if (i > m_max_ranges * 2)
+     {
+       res[m_max_ranges * 2 - 1] = res[i - 1];
+@@ -2605,6 +2610,11 @@ irange::irange_intersect (const irange &r)
+   if (r.irange_contains_p (*this))
+     return intersect_nonzero_bits (r);
+ 
++  // ?? We could probably come up with something smarter than the
++  // worst case scenario here.
++  int needed = num_pairs () + r.num_pairs ();
++  maybe_resize (needed);
++
+   signop sign = TYPE_SIGN (TREE_TYPE(m_base[0]));
+   unsigned bld_pair = 0;
+   unsigned bld_lim = m_max_ranges;
+@@ -2831,6 +2841,11 @@ irange::invert ()
+       m_num_ranges = 1;
+       return;
+     }
++
++  // At this point, we need one extra sub-range to represent the
++  // inverse.
++  maybe_resize (m_num_ranges + 1);
++
+   // The algorithm is as follows.  To calculate INVERT ([a,b][c,d]), we
+   // generate [-MIN, a-1][b+1, c-1][d+1, MAX].
+   //
+diff --git a/gcc/value-range.h b/gcc/value-range.h
+index 969b2b68418..96e59ecfa72 100644
+--- a/gcc/value-range.h
++++ b/gcc/value-range.h
+@@ -172,7 +172,8 @@ public:
+   bool legacy_verbose_intersect (const irange *);	// DEPRECATED
+ 
+ protected:
+-  irange (tree *, unsigned);
++  void maybe_resize (int needed);
++  irange (tree *, unsigned nranges, bool resizable);
+   // potential promotion to public?
+   tree tree_lower_bound (unsigned = 0) const;
+   tree tree_upper_bound (unsigned) const;
+@@ -200,6 +201,8 @@ protected:
+   void copy_to_legacy (const irange &);
+   void copy_legacy_to_multi_range (const irange &);
+ 
++  // Hard limit on max ranges allowed.
++  static const int HARD_MAX_RANGES = 255;
+ private:
+   friend void gt_ggc_mx (irange *);
+   friend void gt_pch_nx (irange *);
+@@ -214,15 +217,21 @@ private:
+ 
+   bool intersect (const wide_int& lb, const wide_int& ub);
+   unsigned char m_num_ranges;
++  bool m_resizable;
+   unsigned char m_max_ranges;
+   tree m_nonzero_mask;
++protected:
+   tree *m_base;
+ };
+ 
+ // Here we describe an irange with N pairs of ranges.  The storage for
+ // the pairs is embedded in the class as an array.
++//
++// If RESIZABLE is true, the storage will be resized on the heap when
++// the number of ranges needed goes past N up to a max of
++// HARD_MAX_RANGES.  This new storage is freed upon destruction.
+ 
+-template<unsigned N>
++template<unsigned N, bool RESIZABLE = false>
+ class GTY((user)) int_range : public irange
+ {
+ public:
+@@ -233,7 +242,7 @@ public:
+   int_range (tree type);
+   int_range (const int_range &);
+   int_range (const irange &);
+-  virtual ~int_range () = default;
++  virtual ~int_range ();
+   int_range& operator= (const int_range &);
+ private:
+   template <unsigned X> friend void gt_ggc_mx (int_range<X> *);
+@@ -472,6 +481,38 @@ is_a <frange> (vrange &v)
+   return v.m_discriminator == VR_FRANGE;
+ }
+ 
++// For resizable ranges, resize the range up to HARD_MAX_RANGES if the
++// NEEDED pairs is greater than the current capacity of the range.
++
++inline void
++irange::maybe_resize (int needed)
++{
++  if (!m_resizable || m_max_ranges == HARD_MAX_RANGES)
++    return;
++
++  if (needed > m_max_ranges)
++    {
++      m_max_ranges = HARD_MAX_RANGES;
++      tree *newmem = new tree[m_max_ranges * 2];
++      memcpy (newmem, m_base, sizeof (tree) * num_pairs () * 2);
++      m_base = newmem;
++    }
++}
++
++template<unsigned N, bool RESIZABLE>
++inline
++int_range<N, RESIZABLE>::~int_range ()
++{
++  if (RESIZABLE && m_base != m_ranges)
++    delete m_base;
++}
++
++// This is an "infinite" precision irange for use in temporary
++// calculations.  It starts with a sensible default covering 99% of
++// uses, and goes up to HARD_MAX_RANGES when needed.  Any allocated
++// storage is freed upon destruction.
++typedef int_range<3, /*RESIZABLE=*/true> int_range_max;
++
+ class vrange_visitor
+ {
+ public:
+@@ -490,10 +531,6 @@ public:
+ // There are copy operators to seamlessly copy to/fro multi-ranges.
+ typedef int_range<1> value_range;
+ 
+-// This is an "infinite" precision irange for use in temporary
+-// calculations.
+-typedef int_range<255> int_range_max;
+-
+ // This is an "infinite" precision range object for use in temporary
+ // calculations for any of the handled types.  The object can be
+ // transparently used as a vrange.
+@@ -872,64 +909,65 @@ gt_pch_nx (int_range<N> *x, gt_pointer_operator op, void *cookie)
+ // Constructors for irange
+ 
+ inline
+-irange::irange (tree *base, unsigned nranges)
++irange::irange (tree *base, unsigned nranges, bool resizable)
+ {
+   m_discriminator = VR_IRANGE;
+   m_base = base;
+   m_max_ranges = nranges;
++  m_resizable = resizable;
+   set_undefined ();
+ }
+ 
+ // Constructors for int_range<>.
+ 
+-template<unsigned N>
++template<unsigned N, bool RESIZABLE>
+ inline
+-int_range<N>::int_range ()
+-  : irange (m_ranges, N)
++int_range<N, RESIZABLE>::int_range ()
++  : irange (m_ranges, N, RESIZABLE)
+ {
+ }
+ 
+-template<unsigned N>
+-int_range<N>::int_range (const int_range &other)
+-  : irange (m_ranges, N)
++template<unsigned N, bool RESIZABLE>
++int_range<N, RESIZABLE>::int_range (const int_range &other)
++  : irange (m_ranges, N, RESIZABLE)
+ {
+   irange::operator= (other);
+ }
+ 
+-template<unsigned N>
+-int_range<N>::int_range (tree min, tree max, value_range_kind kind)
+-  : irange (m_ranges, N)
++template<unsigned N, bool RESIZABLE>
++int_range<N, RESIZABLE>::int_range (tree min, tree max, value_range_kind kind)
++  : irange (m_ranges, N, RESIZABLE)
+ {
+   irange::set (min, max, kind);
+ }
+ 
+-template<unsigned N>
+-int_range<N>::int_range (tree type)
+-  : irange (m_ranges, N)
++template<unsigned N, bool RESIZABLE>
++int_range<N, RESIZABLE>::int_range (tree type)
++  : irange (m_ranges, N, RESIZABLE)
+ {
+   set_varying (type);
+ }
+ 
+-template<unsigned N>
+-int_range<N>::int_range (tree type, const wide_int &wmin, const wide_int &wmax,
++template<unsigned N, bool RESIZABLE>
++int_range<N, RESIZABLE>::int_range (tree type, const wide_int &wmin, const wide_int &wmax,
+ 			 value_range_kind kind)
+-  : irange (m_ranges, N)
++  : irange (m_ranges, N, RESIZABLE)
+ {
+   tree min = wide_int_to_tree (type, wmin);
+   tree max = wide_int_to_tree (type, wmax);
+   set (min, max, kind);
+ }
+ 
+-template<unsigned N>
+-int_range<N>::int_range (const irange &other)
+-  : irange (m_ranges, N)
++template<unsigned N, bool RESIZABLE>
++int_range<N, RESIZABLE>::int_range (const irange &other)
++  : irange (m_ranges, N, RESIZABLE)
+ {
+   irange::operator= (other);
+ }
+ 
+-template<unsigned N>
+-int_range<N>&
+-int_range<N>::operator= (const int_range &src)
++template<unsigned N, bool RESIZABLE>
++int_range<N, RESIZABLE>&
++int_range<N, RESIZABLE>::operator= (const int_range &src)
+ {
+   irange::operator= (src);
+   return *this;
+-- 
+2.40.0
+
