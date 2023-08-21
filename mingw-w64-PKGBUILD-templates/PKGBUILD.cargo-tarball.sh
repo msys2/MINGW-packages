@@ -24,7 +24,15 @@ prepare() {
   patch -Np1 -i "${srcdir}"/0001-A-really-important-fix.patch
   patch -Np1 -i "${srcdir}"/0002-A-less-important-fix.patch
 
-  cargo fetch --locked
+  local _target
+  if [[ $MINGW_PACKAGE_PREFIX == *-clang-aarch64 ]]; then
+    _target = "${CARCH}-pc-windows-gnullvm"
+  else
+     _target = "${CARCH}-pc-windows-gnu"
+  fi
+  cargo fetch \
+    --locked \
+    --target ${_target}
 }
 
 build() {
