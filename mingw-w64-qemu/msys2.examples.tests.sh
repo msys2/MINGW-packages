@@ -1227,7 +1227,8 @@ function qemu2018day10 {
 	download https://www.qemu-advent-calendar.org/2018/download/day10.tar.xz
 	tar -xf day10.tar.xz
 	cat day10/readme.txt
-	execute qemu-system-i386 -net none -M q35 $(accel) -cdrom day10/gamebro.iso
+	execute qemu-system-i386 -net none -M $(qemuMinVersion 8 0 90 && echo "pc-q35-8.0" || echo "q35") \
+		$(accel) -cdrom day10/gamebro.iso
 	removeDir day10
 }
 
