@@ -1,0 +1,233 @@
+From 8ad1156a2691109b5de740ffea151926b66f8e3d Mon Sep 17 00:00:00 2001
+From: Luca Bacci <luca.bacci982@gmail.com>
+Date: Thu, 31 Aug 2023 21:51:58 +0200
+Subject: [PATCH] Add support for TLS callbacks on Windows
+
+---
+ docs/reference/glib/meson.build |  1 +
+ glib/gconstructorprivate.h      | 55 +++++++++++++++++++++++++++++++++
+ glib/glib-init.c                | 55 +++++++++++++++++++++++++--------
+ glib/gthread-win32.c            | 22 -------------
+ glib/tests/private.c            | 13 --------
+ 5 files changed, 98 insertions(+), 48 deletions(-)
+ create mode 100644 glib/gconstructorprivate.h
+
+diff --git a/docs/reference/glib/meson.build b/docs/reference/glib/meson.build
+index 3cfff2f0b..fe34e3fff 100644
+--- a/docs/reference/glib/meson.build
++++ b/docs/reference/glib/meson.build
+@@ -34,6 +34,7 @@ if get_option('gtk_doc')
+     'gtranslit-data.h',
+     'glib-init.h',
+     'gconstructor.h',
++    'gconstructorprivate.h',
+     'valgrind.h',
+     'gutilsprivate.h',
+     'gvalgrind.h',
+diff --git a/glib/gconstructorprivate.h b/glib/gconstructorprivate.h
+new file mode 100644
+index 000000000..c3c43bbe9
+--- /dev/null
++++ b/glib/gconstructorprivate.h
+@@ -0,0 +1,55 @@
++/*
++ * Copyright © 2023 Luca Bacci
++ *
++ * SPDX-License-Identifier: LGPL-2.1-or-later
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	 See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "gconstructor.h"
++
++#ifdef _WIN32
++#include <windows.h>
++#endif
++
++#ifdef _WIN32
++
++#ifdef _MSC_VER
++
++#define G_HAS_TLS_CALLBACKS 1
++
++#define G_DEFINE_TLS_CALLBACK(func) \
++__pragma (section (".CRT$XLCE", long, read))                                \
++                                                                            \
++static void NTAPI func (PVOID, DWORD, PVOID);                               \
++                                                                            \
++__declspec (allocate (".CRT$XLCE"))                                         \
++const PIMAGE_TLS_CALLBACK _ptr_##func = func;                               \
++                                                                            \
++__pragma (comment (linker, "/INCLUDE:" G_MSVC_SYMBOL_PREFIX "_tls_used"))   \
++__pragma (comment (linker, "/INCLUDE:" G_MSVC_SYMBOL_PREFIX "_ptr_" #func))
++
++#else
++
++#define G_HAS_TLS_CALLBACKS 1
++
++#define G_DEFINE_TLS_CALLBACK(func)           \
++static void NTAPI func (PVOID, DWORD, PVOID); \
++                                              \
++__attribute__((section(".CRT$XLCE")))         \
++const PIMAGE_TLS_CALLBACK _ptr_##func = func;
++
++#endif /* _MSC_VER */
++
++#endif /* _WIN32 */
+diff --git a/glib/glib-init.c b/glib/glib-init.c
+index 933f891da..7d4a4d5d9 100644
+--- a/glib/glib-init.c
++++ b/glib/glib-init.c
+@@ -26,6 +26,7 @@
+ #include "gtypes.h"
+ #include "gutils.h"     /* for GDebugKey */
+ #include "gconstructor.h"
++#include "gconstructorprivate.h"
+ #include "gmem.h"       /* for g_mem_gc_friendly */
+ 
+ #include <string.h>
+@@ -448,32 +449,60 @@ DllMain (HINSTANCE hinstDLL,
+   return TRUE;
+ }
+ 
+-#elif defined(G_HAS_CONSTRUCTORS) /* && G_PLATFORM_WIN32 && GLIB_STATIC_COMPILATION */
+-#ifdef G_DEFINE_CONSTRUCTOR_NEEDS_PRAGMA
+-#pragma G_DEFINE_CONSTRUCTOR_PRAGMA_ARGS(glib_init_ctor)
++#else
++
++#ifndef G_HAS_CONSTRUCTORS
++#error static compilation on Windows requires constructor support
+ #endif
+-#ifdef G_DEFINE_DESTRUCTOR_NEEDS_PRAGMA
+-#pragma G_DEFINE_DESTRUCTOR_PRAGMA_ARGS(glib_init_dtor)
++
++#ifdef G_DEFINE_CONSTRUCTOR_NEEDS_PRAGMA
++#pragma G_DEFINE_CONSTRUCTOR_PRAGMA_ARGS(glib_priv_constructor)
+ #endif
+ 
+-G_DEFINE_CONSTRUCTOR (glib_init_ctor)
++static gboolean tls_callback_invoked;
++
++G_DEFINE_CONSTRUCTOR (glib_priv_constructor)
+ 
+ static void
+-glib_init_ctor (void)
++glib_priv_constructor (void)
+ {
+   glib_win32_init ();
++
++  if (!tls_callback_invoked)
++    g_critical ("TLS callback not invoked");
+ }
+ 
+-G_DEFINE_DESTRUCTOR (glib_init_dtor)
++#ifndef G_HAS_TLS_CALLBACKS
++#error static compilation on Windows requires TLS callbacks support
++#endif
++
++G_DEFINE_TLS_CALLBACK (glib_priv_tls_callback)
+ 
+-static void
+-glib_init_dtor (void)
++static void NTAPI
++glib_priv_tls_callback (LPVOID hinstance,
++                        DWORD  reason,
++                        LPVOID reserved)
+ {
+-  glib_win32_deinit (FALSE);
++  switch (reason)
++    {
++    case DLL_PROCESS_ATTACH:
++      glib_dll = hinstance;
++      tls_callback_invoked = TRUE;
++      break;
++    case DLL_THREAD_DETACH:
++#ifdef THREADS_WIN32
++      g_thread_win32_thread_detach ();
++#endif
++      break;
++    case DLL_PROCESS_DETACH:
++      glib_win32_deinit (reserved == NULL);
++      break;
++
++    default:
++      break;
++    }
+ }
+ 
+-#else /* G_PLATFORM_WIN32 && GLIB_STATIC_COMPILATION && !G_HAS_CONSTRUCTORS */
+-#error Your platform/compiler is missing constructor support
+ #endif /* GLIB_STATIC_COMPILATION */
+ 
+ #elif defined(G_HAS_CONSTRUCTORS) /* && !G_PLATFORM_WIN32 */
+diff --git a/glib/gthread-win32.c b/glib/gthread-win32.c
+index 58e244ebe..4d768eb67 100644
+--- a/glib/gthread-win32.c
++++ b/glib/gthread-win32.c
+@@ -424,28 +424,6 @@ g_system_thread_free (GRealThread *thread)
+ void
+ g_system_thread_exit (void)
+ {
+-  /* In static compilation, DllMain doesn't exist and so DLL_THREAD_DETACH
+-   * case is never called and thread destroy notifications are not triggered.
+-   * To ensure that notifications are correctly triggered in static
+-   * compilation mode, we call directly the "detach" function here right
+-   * before terminating the thread.
+-   * As all win32 threads initialized through the glib API are run through
+-   * the same proxy function g_thread_win32_proxy() which calls systematically
+-   * g_system_thread_exit() when finishing, we obtain the same behavior as
+-   * with dynamic compilation.
+-   *
+-   * WARNING: unfortunately this mechanism cannot work with threads created
+-   * directly from the Windows API using CreateThread() or _beginthread/ex().
+-   * It only works with threads created by using the glib API with
+-   * g_system_thread_new(). If users need absolutely to use a thread NOT
+-   * created with glib API under Windows and in static compilation mode, they
+-   * should not use glib functions within their thread or they may encounter
+-   * memory leaks when the thread finishes.
+-   */
+-#ifdef GLIB_STATIC_COMPILATION
+-  g_thread_win32_thread_detach ();
+-#endif
+-
+   _endthreadex (0);
+ }
+ 
+diff --git a/glib/tests/private.c b/glib/tests/private.c
+index 37f7761a0..424c34b86 100644
+--- a/glib/tests/private.c
++++ b/glib/tests/private.c
+@@ -148,19 +148,6 @@ test_private3 (void)
+     thread = (HANDLE) _beginthreadex (NULL, 0, private3_func, NULL, 0, &ignore);
+     WaitForSingleObject (thread, INFINITE);
+     CloseHandle (thread);
+-
+-    /* FIXME: with static compilation on Windows this test will fail because
+-     * it is mixing up glib threads with Microsoft native thread API. See
+-     * comment in gthread-win32.c for g_system_thread_exit() implementation.
+-     * Fix is not straightforward, possible solution could be to use FLS
+-     * functions (instead of TLS) as proposed in
+-     * https://gitlab.gnome.org/GNOME/glib/-/merge_requests/1655
+-     */
+-    if (!private3_freed)
+-      {
+-        g_test_skip ("FIXME: GPrivate with native win32 thread");
+-        return;
+-      }
+   }
+ #else
+   {
+-- 
+2.39.1.windows.1
+
