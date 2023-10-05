@@ -1,0 +1,443 @@
+From 70e87f981a7a2f524884beb90dad8c243131cb58 Mon Sep 17 00:00:00 2001
+From: Yue Ni <niyue.com@gmail.com>
+Date: Mon, 25 Sep 2023 10:30:34 +0800
+Subject: [PATCH 1/5] Migrate RemoveUnusedFunctions to use the new PassManager
+ API.
+
+---
+ cpp/src/gandiva/engine.cc | 27 ++++++++++++++++++++-------
+ 1 file changed, 20 insertions(+), 7 deletions(-)
+
+diff --git a/cpp/src/gandiva/engine.cc b/cpp/src/gandiva/engine.cc
+index 7d75793a3e9e7..1ac3e22f1741f 100644
+--- a/cpp/src/gandiva/engine.cc
++++ b/cpp/src/gandiva/engine.cc
+@@ -51,11 +51,20 @@
+ #include <llvm/IR/IRBuilder.h>
+ #include <llvm/IR/LLVMContext.h>
+ #include <llvm/IR/LegacyPassManager.h>
++#include <llvm/IR/PassManager.h>
+ #include <llvm/IR/Verifier.h>
+ #include <llvm/Linker/Linker.h>
+ #include <llvm/MC/SubtargetFeature.h>
++#include <llvm/Passes/PassBuilder.h>
++#include <llvm/Passes/PassPlugin.h>
+ #include <llvm/Support/DynamicLibrary.h>
+ #include <llvm/Support/Host.h>
++#include <llvm/Transforms/IPO.h>
++#include <llvm/Transforms/IPO/GlobalDCE.h>
++#include <llvm/Transforms/IPO/Internalize.h>
++#include <llvm/Transforms/IPO/PassManagerBuilder.h>
++#include <llvm/Transforms/Scalar.h>
++#include <llvm/Transforms/Vectorize.h>
+ #if LLVM_VERSION_MAJOR >= 14
+ #include <llvm/MC/TargetRegistry.h>
+ #else
+@@ -268,18 +277,22 @@ Status Engine::LoadPreCompiledIR() {
+ // a pass for dead code elimination.
+ Status Engine::RemoveUnusedFunctions() {
+   // Setup an optimiser pipeline
+-  std::unique_ptr<llvm::legacy::PassManager> pass_manager(
+-      new llvm::legacy::PassManager());
++  llvm::PassBuilder pass_builder;
++  llvm::ModuleAnalysisManager module_am;
++
++  pass_builder.registerModuleAnalyses(module_am);
++  llvm::ModulePassManager module_pm;
+ 
+   std::unordered_set<std::string> used_functions;
+   used_functions.insert(functions_to_compile_.begin(), functions_to_compile_.end());
+ 
+-  pass_manager->add(
+-      llvm::createInternalizePass([&used_functions](const llvm::GlobalValue& func) {
+-        return (used_functions.find(func.getName().str()) != used_functions.end());
++  module_pm.addPass(
++      llvm::InternalizePass([&used_functions](const llvm::GlobalValue& GV) -> bool {
++        return used_functions.find(GV.getName().str()) != used_functions.end();
+       }));
+-  pass_manager->add(llvm::createGlobalDCEPass());
+-  pass_manager->run(*module_);
++  module_pm.addPass(llvm::GlobalDCEPass());
++
++  module_pm.run(*module_, module_am);
+   return Status::OK();
+ }
+ 
+
+From 3947885d5ee198bc0cae53518bca0737155e7b56 Mon Sep 17 00:00:00 2001
+From: Yue Ni <niyue.com@gmail.com>
+Date: Mon, 25 Sep 2023 15:01:03 +0800
+Subject: [PATCH 2/5] Update the FinalizeModule function to use the new LLVM
+ PassManager API.
+
+---
+ cpp/src/gandiva/engine.cc | 69 ++++++++++++++++++++++++---------------
+ 1 file changed, 43 insertions(+), 26 deletions(-)
+
+diff --git a/cpp/src/gandiva/engine.cc b/cpp/src/gandiva/engine.cc
+index 1ac3e22f1741f..b4eae03e1a2c0 100644
+--- a/cpp/src/gandiva/engine.cc
++++ b/cpp/src/gandiva/engine.cc
+@@ -59,12 +59,14 @@
+ #include <llvm/Passes/PassPlugin.h>
+ #include <llvm/Support/DynamicLibrary.h>
+ #include <llvm/Support/Host.h>
+-#include <llvm/Transforms/IPO.h>
+ #include <llvm/Transforms/IPO/GlobalDCE.h>
++#include <llvm/Transforms/IPO/GlobalOpt.h>
+ #include <llvm/Transforms/IPO/Internalize.h>
+-#include <llvm/Transforms/IPO/PassManagerBuilder.h>
+-#include <llvm/Transforms/Scalar.h>
+-#include <llvm/Transforms/Vectorize.h>
++#include <llvm/Transforms/Scalar/NewGVN.h>
++#include <llvm/Transforms/Scalar/SimplifyCFG.h>
++#include <llvm/Transforms/Utils/Mem2Reg.h>
++#include <llvm/Transforms/Vectorize/LoopVectorize.h>
++#include <llvm/Transforms/Vectorize/SLPVectorizer.h>
+ #if LLVM_VERSION_MAJOR >= 14
+ #include <llvm/MC/TargetRegistry.h>
+ #else
+@@ -302,28 +304,43 @@ Status Engine::FinalizeModule() {
+     ARROW_RETURN_NOT_OK(RemoveUnusedFunctions());
+ 
+     if (optimize_) {
+-      // misc passes to allow for inlining, vectorization, ..
+-      std::unique_ptr<llvm::legacy::PassManager> pass_manager(
+-          new llvm::legacy::PassManager());
+-
+-      llvm::TargetIRAnalysis target_analysis =
+-          execution_engine_->getTargetMachine()->getTargetIRAnalysis();
+-      pass_manager->add(llvm::createTargetTransformInfoWrapperPass(target_analysis));
+-      pass_manager->add(llvm::createFunctionInliningPass());
+-      pass_manager->add(llvm::createInstructionCombiningPass());
+-      pass_manager->add(llvm::createPromoteMemoryToRegisterPass());
+-      pass_manager->add(llvm::createGVNPass());
+-      pass_manager->add(llvm::createNewGVNPass());
+-      pass_manager->add(llvm::createCFGSimplificationPass());
+-      pass_manager->add(llvm::createLoopVectorizePass());
+-      pass_manager->add(llvm::createSLPVectorizerPass());
+-      pass_manager->add(llvm::createGlobalOptimizerPass());
+-
+-      // run the optimiser
+-      llvm::PassManagerBuilder pass_builder;
+-      pass_builder.OptLevel = 3;
+-      pass_builder.populateModulePassManager(*pass_manager);
+-      pass_manager->run(*module_);
++      // Setup an optimiser pipeline
++      llvm::PassBuilder pass_builder;
++      llvm::LoopAnalysisManager loop_am;
++      llvm::FunctionAnalysisManager function_am;
++      llvm::CGSCCAnalysisManager cgscc_am;
++      llvm::ModuleAnalysisManager module_am;
++
++      function_am.registerPass(
++          [&] { return execution_engine_->getTargetMachine()->getTargetIRAnalysis(); });
++
++      // Register required analysis managers
++      pass_builder.registerModuleAnalyses(module_am);
++      pass_builder.registerCGSCCAnalyses(cgscc_am);
++      pass_builder.registerFunctionAnalyses(function_am);
++      pass_builder.registerLoopAnalyses(loop_am);
++      pass_builder.crossRegisterProxies(loop_am, function_am, cgscc_am, module_am);
++
++      pass_builder.registerPipelineStartEPCallback(
++          [&](llvm::ModulePassManager& module_pm, llvm::OptimizationLevel Level) {
++            module_pm.addPass(llvm::ModuleInlinerPass());
++
++            llvm::FunctionPassManager function_pm;
++            function_pm.addPass(llvm::InstCombinePass());
++            function_pm.addPass(llvm::PromotePass());
++            function_pm.addPass(llvm::GVNPass());
++            function_pm.addPass(llvm::NewGVNPass());
++            function_pm.addPass(llvm::SimplifyCFGPass());
++            function_pm.addPass(llvm::LoopVectorizePass());
++            function_pm.addPass(llvm::SLPVectorizerPass());
++            module_pm.addPass(
++                llvm::createModuleToFunctionPassAdaptor(std::move(function_pm)));
++
++            module_pm.addPass(llvm::GlobalOptPass());
++          });
++
++      pass_builder.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3)
++          .run(*module_, module_am);
+     }
+ 
+     ARROW_RETURN_IF(llvm::verifyModule(*module_, &llvm::errs()),
+
+From ba80d886d0dee2897fda42946ed1ef48d505baf5 Mon Sep 17 00:00:00 2001
+From: Yue Ni <niyue.com@gmail.com>
+Date: Tue, 26 Sep 2023 17:56:07 +0800
+Subject: [PATCH 3/5] Support LLVM 17 for Gandiva.
+
+---
+ cpp/CMakeLists.txt             | 1 +
+ cpp/src/gandiva/CMakeLists.txt | 2 --
+ cpp/src/gandiva/engine.cc      | 4 ++++
+ 3 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/cpp/CMakeLists.txt b/cpp/CMakeLists.txt
+index f2906b960eba6..f0acab0389b19 100644
+--- a/cpp/CMakeLists.txt
++++ b/cpp/CMakeLists.txt
+@@ -128,6 +128,7 @@ set(ARROW_DOC_DIR "share/doc/${PROJECT_NAME}")
+ set(BUILD_SUPPORT_DIR "${CMAKE_SOURCE_DIR}/build-support")
+ 
+ set(ARROW_LLVM_VERSIONS
++    "17.0"
+     "16.0"
+     "15.0"
+     "14.0"
+diff --git a/cpp/src/gandiva/CMakeLists.txt b/cpp/src/gandiva/CMakeLists.txt
+index db260b5acc933..d2810c39f723c 100644
+--- a/cpp/src/gandiva/CMakeLists.txt
++++ b/cpp/src/gandiva/CMakeLists.txt
+@@ -31,8 +31,6 @@ if(ARROW_WITH_ZSTD AND "${zstd_SOURCE}" STREQUAL "SYSTEM")
+   provide_find_module(zstdAlt "Gandiva")
+ endif()
+ 
+-add_definitions(-DGANDIVA_LLVM_VERSION=${LLVM_VERSION_MAJOR})
+-
+ # Set the path where the bitcode file generated, see precompiled/CMakeLists.txt
+ set(GANDIVA_PRECOMPILED_BC_PATH "${CMAKE_CURRENT_BINARY_DIR}/irhelpers.bc")
+ set(GANDIVA_PRECOMPILED_CC_PATH "${CMAKE_CURRENT_BINARY_DIR}/precompiled_bitcode.cc")
+diff --git a/cpp/src/gandiva/engine.cc b/cpp/src/gandiva/engine.cc
+index b4eae03e1a2c0..6abe81405349a 100644
+--- a/cpp/src/gandiva/engine.cc
++++ b/cpp/src/gandiva/engine.cc
+@@ -54,7 +54,11 @@
+ #include <llvm/IR/PassManager.h>
+ #include <llvm/IR/Verifier.h>
+ #include <llvm/Linker/Linker.h>
++#if LLVM_VERSION_MAJOR >= 17
++#include <llvm/TargetParser/SubtargetFeature.h>
++#else
+ #include <llvm/MC/SubtargetFeature.h>
++#endif
+ #include <llvm/Passes/PassBuilder.h>
+ #include <llvm/Passes/PassPlugin.h>
+ #include <llvm/Support/DynamicLibrary.h>
+
+From 99a0909b8b556e8e3842c3226c420270292fd974 Mon Sep 17 00:00:00 2001
+From: Yue Ni <niyue.com@gmail.com>
+Date: Wed, 27 Sep 2023 09:38:26 +0800
+Subject: [PATCH 4/5] Adapt the module optimization to use different version of
+ LLVM PassManager API so that the code can work with multiple versions of
+ LLVM.
+
+---
+ cpp/src/gandiva/engine.cc | 122 ++++++++++++++++++++++++--------------
+ 1 file changed, 79 insertions(+), 43 deletions(-)
+
+diff --git a/cpp/src/gandiva/engine.cc b/cpp/src/gandiva/engine.cc
+index 6abe81405349a..fa5db03b6a865 100644
+--- a/cpp/src/gandiva/engine.cc
++++ b/cpp/src/gandiva/engine.cc
+@@ -51,7 +51,6 @@
+ #include <llvm/IR/IRBuilder.h>
+ #include <llvm/IR/LLVMContext.h>
+ #include <llvm/IR/LegacyPassManager.h>
+-#include <llvm/IR/PassManager.h>
+ #include <llvm/IR/Verifier.h>
+ #include <llvm/Linker/Linker.h>
+ #if LLVM_VERSION_MAJOR >= 17
+@@ -60,26 +59,27 @@
+ #include <llvm/MC/SubtargetFeature.h>
+ #endif
+ #include <llvm/Passes/PassBuilder.h>
+-#include <llvm/Passes/PassPlugin.h>
+ #include <llvm/Support/DynamicLibrary.h>
+ #include <llvm/Support/Host.h>
+ #include <llvm/Transforms/IPO/GlobalDCE.h>
+-#include <llvm/Transforms/IPO/GlobalOpt.h>
+ #include <llvm/Transforms/IPO/Internalize.h>
++#if LLVM_VERSION_MAJOR >= 14
++#include <llvm/IR/PassManager.h>
++#include <llvm/MC/TargetRegistry.h>
++#include <llvm/Passes/PassPlugin.h>
++#include <llvm/Transforms/IPO/GlobalOpt.h>
+ #include <llvm/Transforms/Scalar/NewGVN.h>
+ #include <llvm/Transforms/Scalar/SimplifyCFG.h>
+ #include <llvm/Transforms/Utils/Mem2Reg.h>
+ #include <llvm/Transforms/Vectorize/LoopVectorize.h>
+ #include <llvm/Transforms/Vectorize/SLPVectorizer.h>
+-#if LLVM_VERSION_MAJOR >= 14
+-#include <llvm/MC/TargetRegistry.h>
+ #else
+ #include <llvm/Support/TargetRegistry.h>
++#include <llvm/Transforms/IPO/PassManagerBuilder.h>
+ #endif
+ #include <llvm/Support/TargetSelect.h>
+ #include <llvm/Support/raw_ostream.h>
+ #include <llvm/Transforms/IPO.h>
+-#include <llvm/Transforms/IPO/PassManagerBuilder.h>
+ #include <llvm/Transforms/InstCombine/InstCombine.h>
+ #include <llvm/Transforms/Scalar.h>
+ #include <llvm/Transforms/Scalar/GVN.h>
+@@ -302,49 +302,85 @@ Status Engine::RemoveUnusedFunctions() {
+   return Status::OK();
+ }
+ 
++// several passes requiring LLVM 14+ that are not available in the legacy pass manager
++#if LLVM_VERSION_MAJOR >= 14
++static void OptimizeModuleWithNewPassManager(llvm::Module& module,
++                                             llvm::TargetIRAnalysis target_analysis) {
++  // Setup an optimiser pipeline
++  llvm::PassBuilder pass_builder;
++  llvm::LoopAnalysisManager loop_am;
++  llvm::FunctionAnalysisManager function_am;
++  llvm::CGSCCAnalysisManager cgscc_am;
++  llvm::ModuleAnalysisManager module_am;
++
++  function_am.registerPass([&] { return target_analysis; });
++
++  // Register required analysis managers
++  pass_builder.registerModuleAnalyses(module_am);
++  pass_builder.registerCGSCCAnalyses(cgscc_am);
++  pass_builder.registerFunctionAnalyses(function_am);
++  pass_builder.registerLoopAnalyses(loop_am);
++  pass_builder.crossRegisterProxies(loop_am, function_am, cgscc_am, module_am);
++
++  pass_builder.registerPipelineStartEPCallback([&](llvm::ModulePassManager& module_pm,
++                                                   llvm::OptimizationLevel Level) {
++    module_pm.addPass(llvm::ModuleInlinerPass());
++
++    llvm::FunctionPassManager function_pm;
++    function_pm.addPass(llvm::InstCombinePass());
++    function_pm.addPass(llvm::PromotePass());
++    function_pm.addPass(llvm::GVNPass());
++    function_pm.addPass(llvm::NewGVNPass());
++    function_pm.addPass(llvm::SimplifyCFGPass());
++    function_pm.addPass(llvm::LoopVectorizePass());
++    function_pm.addPass(llvm::SLPVectorizerPass());
++    module_pm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(function_pm)));
++
++    module_pm.addPass(llvm::GlobalOptPass());
++  });
++
++  pass_builder.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3)
++      .run(module, module_am);
++}
++#else
++static void OptimizeModuleWithLegacyPassManager(llvm::Module& module,
++                                                llvm::TargetIRAnalysis target_analysis) {
++  std::unique_ptr<llvm::legacy::PassManager> pass_manager(
++      new llvm::legacy::PassManager());
++
++  pass_manager->add(llvm::createTargetTransformInfoWrapperPass(target_analysis));
++  pass_manager->add(llvm::createFunctionInliningPass());
++  pass_manager->add(llvm::createInstructionCombiningPass());
++  pass_manager->add(llvm::createPromoteMemoryToRegisterPass());
++  pass_manager->add(llvm::createGVNPass());
++  pass_manager->add(llvm::createNewGVNPass());
++  pass_manager->add(llvm::createCFGSimplificationPass());
++  pass_manager->add(llvm::createLoopVectorizePass());
++  pass_manager->add(llvm::createSLPVectorizerPass());
++  pass_manager->add(llvm::createGlobalOptimizerPass());
++
++  // run the optimiser
++  llvm::PassManagerBuilder pass_builder;
++  pass_builder.OptLevel = 3;
++  pass_builder.populateModulePassManager(*pass_manager);
++  pass_manager->run(module);
++}
++#endif
++
+ // Optimise and compile the module.
+ Status Engine::FinalizeModule() {
+   if (!cached_) {
+     ARROW_RETURN_NOT_OK(RemoveUnusedFunctions());
+ 
+     if (optimize_) {
+-      // Setup an optimiser pipeline
+-      llvm::PassBuilder pass_builder;
+-      llvm::LoopAnalysisManager loop_am;
+-      llvm::FunctionAnalysisManager function_am;
+-      llvm::CGSCCAnalysisManager cgscc_am;
+-      llvm::ModuleAnalysisManager module_am;
+-
+-      function_am.registerPass(
+-          [&] { return execution_engine_->getTargetMachine()->getTargetIRAnalysis(); });
+-
+-      // Register required analysis managers
+-      pass_builder.registerModuleAnalyses(module_am);
+-      pass_builder.registerCGSCCAnalyses(cgscc_am);
+-      pass_builder.registerFunctionAnalyses(function_am);
+-      pass_builder.registerLoopAnalyses(loop_am);
+-      pass_builder.crossRegisterProxies(loop_am, function_am, cgscc_am, module_am);
+-
+-      pass_builder.registerPipelineStartEPCallback(
+-          [&](llvm::ModulePassManager& module_pm, llvm::OptimizationLevel Level) {
+-            module_pm.addPass(llvm::ModuleInlinerPass());
+-
+-            llvm::FunctionPassManager function_pm;
+-            function_pm.addPass(llvm::InstCombinePass());
+-            function_pm.addPass(llvm::PromotePass());
+-            function_pm.addPass(llvm::GVNPass());
+-            function_pm.addPass(llvm::NewGVNPass());
+-            function_pm.addPass(llvm::SimplifyCFGPass());
+-            function_pm.addPass(llvm::LoopVectorizePass());
+-            function_pm.addPass(llvm::SLPVectorizerPass());
+-            module_pm.addPass(
+-                llvm::createModuleToFunctionPassAdaptor(std::move(function_pm)));
+-
+-            module_pm.addPass(llvm::GlobalOptPass());
+-          });
+-
+-      pass_builder.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3)
+-          .run(*module_, module_am);
++      auto target_analysis = execution_engine_->getTargetMachine()->getTargetIRAnalysis();
++
++// misc passes to allow for inlining, vectorization, ..
++#if LLVM_VERSION_MAJOR >= 14
++      OptimizeModuleWithNewPassManager(*module_, target_analysis);
++#else
++      OptimizeModuleWithLegacyPassManager(*module_, target_analysis);
++#endif
+     }
+ 
+     ARROW_RETURN_IF(llvm::verifyModule(*module_, &llvm::errs()),
+
+From 7d775c813241cab44d88811da019a40ac48c435c Mon Sep 17 00:00:00 2001
+From: Sutou Kouhei <kou@clear-code.com>
+Date: Sun, 1 Oct 2023 15:17:49 +0900
+Subject: [PATCH 5/5] Use passes for new PassManager API
+
+---
+ cpp/cmake_modules/FindLLVMAlt.cmake | 24 ++++++++++++++----------
+ 1 file changed, 14 insertions(+), 10 deletions(-)
+
+diff --git a/cpp/cmake_modules/FindLLVMAlt.cmake b/cpp/cmake_modules/FindLLVMAlt.cmake
+index e980f53fd3407..69f680824b082 100644
+--- a/cpp/cmake_modules/FindLLVMAlt.cmake
++++ b/cpp/cmake_modules/FindLLVMAlt.cmake
+@@ -69,16 +69,20 @@ if(LLVM_FOUND)
+ 
+ if(LLVM_FOUND)
+   # Find the libraries that correspond to the LLVM components
+-  llvm_map_components_to_libnames(LLVM_LIBS
+-                                  core
+-                                  mcjit
+-                                  native
+-                                  ipo
+-                                  bitreader
+-                                  target
+-                                  linker
+-                                  analysis
+-                                  debuginfodwarf)
++  set(LLVM_TARGET_COMPONENTS
++      analysis
++      bitreader
++      core
++      debuginfodwarf
++      ipo
++      linker
++      mcjit
++      native
++      target)
++  if(LLVM_VERSION_MAJOR GREATER_EQUAL 14)
++    list(APPEND LLVM_TARGET_COMPONENTS passes)
++  endif()
++  llvm_map_components_to_libnames(LLVM_LIBS ${LLVM_TARGET_COMPONENTS})
+ 
+   find_program(LLVM_LINK_EXECUTABLE llvm-link HINTS ${LLVM_TOOLS_BINARY_DIR})
+ 

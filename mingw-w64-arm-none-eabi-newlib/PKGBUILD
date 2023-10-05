@@ -4,17 +4,14 @@
 # Contributor: Tim Stahlhut <stahta01@gmail.com>
 
 _bootstrap=0
-if [[ ${MSYSTEM} == CLANG64 || ${MSYSTEM} == UCRT64 ]]; then
-  _bootstrap=1
-fi
 
 _realname=newlib
 _target=arm-none-eabi
-_gccver=12.2.0
+_gccver=13.2.0
 
 pkgbase=mingw-w64-${_target}-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_target}-${_realname}")
-pkgver=4.2.0.20211231
+pkgver=4.3.0.20230120
 pkgrel=2
 pkgdesc='GNU Tools for ARM Embedded Processors - Newlib (mingw-w64)'
 arch=('any')
@@ -30,38 +27,28 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-autotools"
              "${MINGW_PACKAGE_PREFIX}-mpfr"
              "${MINGW_PACKAGE_PREFIX}-isl"
              $( (( _bootstrap )) || echo "${MINGW_PACKAGE_PREFIX}-${_target}-gcc"))
-options=('staticlibs' '!strip' '!emptydirs')
+options=('!strip' '!emptydirs')
 source=(
     "https://sourceware.org/pub/newlib/newlib-${pkgver}.tar.gz"
     $( (( !_bootstrap )) || echo "https://ftp.gnu.org/gnu/gcc/gcc-${_gccver}/gcc-${_gccver}.tar.xz")
 )
 sha256sums=(
-    'c3a0e8b63bc3bef1aeee4ca3906b53b3b86c8d139867607369cb2915ffc54435'
-    $( (( !_bootstrap )) || echo 'e549cf9cf3594a00e27b6589d4322d70e0720cdd213f39beb4181e06926230ff')
+    '83a62a99af59e38eb9b0c58ed092ee24d700fff43a22c03e433955113ef35150'
+    $( (( !_bootstrap )) || echo 'e275e76442a6067341a27f04c5c6b83d8613144004c0413528863dc6b5c743da')
 )
 noextract=("newlib-${pkgver}.tar.gz")
+
 
 prepare() {
     cd ${srcdir}
     # bsdtar doesn't like the symlinks
     tar -xf newlib-${pkgver}.tar.gz
-
-    if (( _bootstrap )); then
-      cd ${srcdir}/gcc-${_gccver}
-      mkdir gcc-build-${MSYSTEM}
-      mkdir gcc-install-${MSYSTEM}
-    fi
-
-    cd ${srcdir}/newlib-${pkgver}
-    mkdir {newlib,nano}-build-${MSYSTEM}
 }
 
 # Newlib is required to build GCC, but GCC is also required to compile newlib
 # So we must build a minimal GCC first, to avoid the circular dependency
 _build_gcc() {
-    cd ${srcdir}/gcc-${_gccver}/gcc-build-${MSYSTEM}
-
-    cp -a ${MINGW_PREFIX}/${_target} ${srcdir}/gcc-${_gccver}/gcc-install-${MSYSTEM}
+    cp -a ${MINGW_PREFIX}/${_target} ${srcdir}/gcc-install-${MSYSTEM}
 
     if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
         CFLAGS+=" -Wno-int-conversion -Wno-array-bounds -Wno-mismatched-tags"
@@ -69,7 +56,7 @@ _build_gcc() {
     fi
 
     local _GCC_LDFLAGS="${LDFLAGS} -Wl,--disable-dynamicbase"
-    ../configure \
+    ../gcc-${_gccver}/configure \
         --build=${MINGW_CHOST} \
         --host=${MINGW_CHOST} \
         --prefix=/ \
@@ -97,23 +84,25 @@ _build_gcc() {
         --with-multilib-list=rmprofile \
         --with-host-libstdcxx="-static-libgcc -Wl,-Bstatic,-lstdc++,-Bdynamic -lm" \
         --with-sysroot=${MINGW_PREFIX} \
-        --with-build-sysroot=${srcdir}/gcc-${_gccver}/gcc-install-${MSYSTEM} \
+        --with-build-sysroot=${srcdir}/gcc-install-${MSYSTEM} \
         --with-build-time-tools=${MINGW_PREFIX}/${_target}/bin \
         LDFLAGS="${_GCC_LDFLAGS}"
 
     make all-gcc
-    make DESTDIR=${srcdir}/gcc-${_gccver}/gcc-install-${MSYSTEM} install-gcc
+    make DESTDIR=${srcdir}/gcc-install-${MSYSTEM} install-gcc
 }
 
 build() {
     if (( _bootstrap )); then
+      mkdir -p gcc-install-${MSYSTEM}
+      mkdir -p gcc-build-${MSYSTEM} && cd gcc-build-${MSYSTEM}
       _build_gcc
-      export PATH="${srcdir}/gcc-${_gccver}/gcc-install-${MSYSTEM}/bin:${PATH}"
+      export PATH="${srcdir}/gcc-install-${MSYSTEM}/bin:${PATH}"
     fi
 
-    cd ${srcdir}/newlib-${pkgver}/newlib-build-${MSYSTEM}
+    mkdir -p ${srcdir}/build-${MSYSTEM} && cd ${srcdir}/build-${MSYSTEM}
 
-    ../configure \
+    ../newlib-${pkgver}/configure \
         --build=${MINGW_CHOST} \
         --host=${MINGW_CHOST} \
         --target=${_target} \
@@ -126,9 +115,9 @@ build() {
         --disable-nls
     make
 
-    cd ${srcdir}/newlib-${pkgver}/nano-build-${MSYSTEM}
+    mkdir -p ${srcdir}/nano-build-${MSYSTEM} && cd ${srcdir}/nano-build-${MSYSTEM}
 
-    ../configure \
+    ../newlib-${pkgver}/configure \
         --build=${MINGW_CHOST} \
         --host=${MINGW_CHOST} \
         --target=${_target} \
@@ -151,22 +140,19 @@ build() {
 package() {
     cd ${pkgdir}
 
-    # make install complains if theses dirs do not already exist, for some reason
-    mkdir -p ${pkgdir}${MINGW_PREFIX}/${_target}/lib/arm/v5te/{hard,softfp}
-    mkdir -p ${pkgdir}${MINGW_PREFIX}/${_target}/lib/thumb/nofp
-    mkdir -p ${pkgdir}${MINGW_PREFIX}/${_target}/lib/thumb/v{6-m,7,7-m,7e-m,8-m.base,8-m.main}/nofp
-    mkdir -p ${pkgdir}${MINGW_PREFIX}/${_target}/lib/thumb/v{7+fp,7e-m+fp,7e-m+dp,7-r+fp.sp,8-m.main+fp,8-m.main+dp,8.1-m.main+mve}/{hard,softfp}
-
-    cd ${srcdir}/newlib-${pkgver}/nano-build-${MSYSTEM}
+    cd ${srcdir}/nano-build-${MSYSTEM}
 
     make DESTDIR=${pkgdir} install
 
     find ${pkgdir} -regex ".*/lib\(c\|g\|rdimon\)\.a" -exec rename .a _nano.a '{}' \;
     install -Dm644 -t ${pkgdir}${MINGW_PREFIX}/${_target}/include/newlib-nano ${pkgdir}${MINGW_PREFIX}/${_target}/include/newlib.h
 
-    cd ${srcdir}/newlib-${pkgver}/newlib-build-${MSYSTEM}
+    cd ${srcdir}/build-${MSYSTEM}
 
     make DESTDIR=${pkgdir} install
 
     find ${pkgdir}${MINGW_PREFIX}/${_target}/lib \( -name "*.a" -or -name "*.o" \) -exec ${_target}-objcopy -R .comment -R .note -R .debug_info -R .debug_aranges -R .debug_pubnames -R .debug_pubtypes -R .debug_abbrev -R .debug_line -R .debug_str -R .debug_ranges -R .debug_loc '{}' \;
+
+    # Avoid conflict with other targets newlib
+    mv ${pkgdir}${MINGW_PREFIX}/share/info/porting.info ${pkgdir}${MINGW_PREFIX}/share/info/${_target}-porting.info
 }
