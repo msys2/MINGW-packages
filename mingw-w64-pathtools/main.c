@@ -10,7 +10,6 @@
 #include <string.h>
 
 #include "pathtools.h"
-#include "pathtools-private.h"
 
 void
 sanitise_path_debug(char const * path, char const * expected)

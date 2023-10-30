@@ -18,6 +18,9 @@
 extern "C" {
 #endif
 
+/* In-place replaces any '\' with '/' and any '//' with '/' */
+void sanitise_path(char * path);
+
 /* Uses a host OS specific function to determine the path of the executable,
    if IMPLEMENT_SYS_GET_EXECUTABLE_PATH is defined, otherwise uses argv0. */
 int get_executable_path(char const * argv0, char * result, ssize_t max_size);
