@@ -10,9 +10,13 @@
 if [[ $MINGW_PACKAGE_PREFIX == *-clang-* ]]; then
   _clangprefix=1
   _compiler=clang
+  if [[ ${CARCH} != i686 ]]; then
+    _pgo=1
+  fi
 else
   _compiler=clang
 fi
+
 _realname=clang
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
@@ -28,7 +32,7 @@ _version=17.0.6
 _rc=
 _tag=llvmorg-${_version}${_rc}
 pkgver=${_version}${_rc/-/}
-pkgrel=1
+pkgrel=2
 pkgdesc="C language family frontend for LLVM (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
@@ -170,6 +174,10 @@ build() {
   local -a platform_config
   local -a common_cmake_args
 
+  # Include location of libffi headers in CPPFLAGS
+  FFI_INCLUDE_DIR="$(pkg-config --cflags libffi)"
+  FFI_INCLUDE_DIR=$(echo $FFI_INCLUDE_DIR | sed 's|-I||g')
+
   if check_option "debug" "y"; then
     common_cmake_args+=(-DCMAKE_BUILD_TYPE=Debug)
     VERBOSE="VERBOSE=1"
@@ -182,15 +190,58 @@ build() {
     -DLLVM_HOST_TRIPLE="${CARCH}-w64-windows-gnu"
     -DPython3_EXECUTABLE=${MINGW_PREFIX}/bin/python.exe
     -DPython3_FIND_REGISTRY=NEVER
-    -DPython3_ROOT_DIR=${MINGW_PREFIX})
-
-  # Include location of libffi headers in CPPFLAGS
-  FFI_INCLUDE_DIR="$(pkg-config --cflags libffi)"
-  FFI_INCLUDE_DIR=$(echo $FFI_INCLUDE_DIR | sed 's|-I||g')
+    -DPython3_ROOT_DIR=${MINGW_PREFIX}
+    -DFFI_INCLUDE_DIR="${FFI_INCLUDE_DIR}"
+    -DLLVM_ENABLE_ASSERTIONS=OFF
+    -DLLVM_ENABLE_FFI=ON
+    -DLLVM_INCLUDE_EXAMPLES=OFF
+    -DLLVM_INCLUDE_BENCHMARKS=OFF
+    -DLLVM_INCLUDE_TESTS=OFF
+    -DLLVM_BUILD_LLVM_DYLIB=ON
+    -DLLVM_BUILD_STATIC=OFF
+    -DLLVM_LINK_LLVM_DYLIB=ON
+    -DLLVM_ENABLE_THREADS=ON)
 
   if [ "${_compiler}" == "clang" ]; then
     export CC='clang'
     export CXX='clang++'
+  fi
+
+  if (( _pgo )); then
+    # Build Clang with instrumentation.
+    mkdir -p "${srcdir}"/build-${MSYSTEM}-instrument && cd "${srcdir}"/build-${MSYSTEM}-instrument
+    ${MINGW_PREFIX}/bin/cmake.exe \
+      -GNinja \
+      -DDEFAULT_SYSROOT=${MINGW_PREFIX} \
+      -DLLVM_ENABLE_PROJECTS="clang;compiler-rt" \
+      -DLLVM_BUILD_INSTRUMENTED=IR \
+      -DLLVM_TARGETS_TO_BUILD=Native \
+      -DLLVM_NATIVE_TOOL_DIR=${MINGW_PREFIX}/bin \
+      -DCLANG_DEFAULT_RTLIB=compiler-rt \
+      -DCLANG_DEFAULT_UNWINDLIB=libunwind \
+      -DCLANG_DEFAULT_CXX_STDLIB=libc++ \
+      -DCOMPILER_RT_BUILD_SANITIZERS=OFF \
+      -DCOMPILER_RT_BUILD_PROFILE=OFF \
+      "${common_cmake_args[@]}" \
+      ../llvm
+    ${MINGW_PREFIX}/bin/cmake --build . --target compiler-rt --target clang
+    # Use that to build part of llvm to generate a profile.
+    mkdir -p "${srcdir}"/build-${MSYSTEM}-train && cd "${srcdir}"/build-${MSYSTEM}-train
+    ${MINGW_PREFIX}/bin/cmake.exe \
+      -GNinja \
+      -DCMAKE_C_COMPILER="${srcdir}"/build-${MSYSTEM}-instrument/bin/clang.exe \
+      -DCMAKE_CXX_COMPILER="${srcdir}"/build-${MSYSTEM}-instrument/bin/clang++.exe \
+      -DLLVM_ENABLE_PROJECTS="clang" \
+      -DLLVM_TARGETS_TO_BUILD=Native \
+      -DLLVM_NATIVE_TOOL_DIR=${MINGW_PREFIX}/bin \
+      "${common_cmake_args[@]}" \
+      ../llvm
+    # Drop profiles generated from running cmake; those are not representative.
+    rm "${srcdir}"/build-${MSYSTEM}-instrument/profiles/*.profraw
+    ${MINGW_PREFIX}/bin/cmake --build . --target clangSema
+    # Save Profile data
+    ${MINGW_PREFIX}/bin/llvm-profdata merge -output="${srcdir}"/profdata "${srcdir}"/build-${MSYSTEM}-instrument/profiles/*.profraw
+    common_cmake_args+=("-DLLVM_PROFDATA_FILE="${srcdir}"/profdata")
   fi
 
   if (( _clangprefix )); then
@@ -229,27 +280,17 @@ build() {
     platform_config+=(-DLLVM_TARGETS_TO_BUILD="AArch64;AMDGPU;ARM;AVR;BPF;Mips;MSP430;NVPTX;RISCV;WebAssembly;X86")
   fi
 
-  mkdir build-${MSYSTEM} && cd build-${MSYSTEM}
+  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake.exe \
     -GNinja \
-    -DFFI_INCLUDE_DIR="${FFI_INCLUDE_DIR}" \
     -DLIBCLANG_BUILD_STATIC=ON \
     -DLLD_DEFAULT_LD_LLD_IS_MINGW=ON \
-    -DLLVM_BUILD_LLVM_DYLIB=ON \
-    -DLLVM_BUILD_STATIC=OFF \
-    -DLLVM_ENABLE_ASSERTIONS=OFF \
-    -DLLVM_ENABLE_FFI=ON \
     -DLLVM_ENABLE_PROJECTS="${_projects}" \
     -DLLVM_ENABLE_SPHINX=ON \
-    -DLLVM_ENABLE_THREADS=ON \
     -DLLVM_ENABLE_RTTI=ON \
-    -DLLVM_INCLUDE_EXAMPLES=OFF \
-    -DLLVM_INCLUDE_BENCHMARKS=OFF \
-    -DLLVM_INCLUDE_TESTS=OFF \
     -DLLVM_INSTALL_UTILS=ON \
-    -DLLVM_LINK_LLVM_DYLIB=ON \
     "${common_cmake_args[@]}" \
     "${platform_config[@]}" \
     ../llvm
