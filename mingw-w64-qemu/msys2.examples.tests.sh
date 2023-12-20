@@ -49,7 +49,8 @@ echo
 echo "Name block of qemu examples/tests to execute."
 echo "Choose year of qemu-advent-calender (2014, 2016, 2018, 2020) or"
 echo " qemu-desktop (DVD), qemu-image-util (QIMG), qemu-guest-agent (QGA)"
-read -p "Your choice? (2014|2016|2018|2020|QIMG|QGA|[DVD]) " BLOCK
+echo " qemu-plugins (QPI)"
+read -p "Your choice? (2014|2016|2018|2020|QIMG|QGA|QPI|[DVD]) " BLOCK
 echo
 if [ -n "$MINGW_PACKAGE_PREFIX" ]
 then
@@ -426,9 +427,25 @@ function qemuMinVersion {
 }
 
 function determineAccel {
-	qemuMinVersion 6 0 && WHPX="whpx,kernel-irqchip=off" || WHPX=whpx
-	isWindows && TESTACCELS="$WHPX hax"
-	isLinux && TESTACCELS="kvm xen"
+	if ! isQemuSystem x86_64
+	then
+		return
+	fi
+	if isWindows
+	then
+		if qemuMinVersion 8 1 90
+		then
+			TESTACCELS="whpx,kernel-irqchip=off"
+		elif qemuMinVersion 6 0
+		then
+			TESTACCELS="whpx,kernel-irqchip=off hax"
+		else
+			TESTACCELS="whpx hax"
+		fi
+	elif isLinux
+	then
+		TESTACCELS="kvm xen"
+	fi
 	local TESTACCEL
 	for TESTACCEL in $TESTACCELS
 	do
@@ -490,8 +507,24 @@ function firmwareAvailable {
 function audiodev {
 	local ID=$1 APPEND=""
 	[ -z "$MICROPHONE" ] && APPEND=",in.voices=0"
-	qemu-system-x86_64 -audio-help 2> /dev/null | grep "^-audiodev" | head -n1 |
-		sed "s/ id=[a-z]*,/ id=$ID,/" | sed "s/\s*$/$APPEND/"
+	if qemuMinVersion 8 1 90
+	then
+		if [ -z "$AUDIODRIVER" ]
+		then
+			for ADRIVER in dsound coreaudio pipewire sndio pa oss alsa sdl
+			do
+				if qemu-system-x86_64 -audiodev help | grep $ADRIVER &> /dev/null
+				then
+					AUDIODRIVER=$ADRIVER
+					break
+				fi
+			done
+		fi
+		echo "-audiodev id=${ID},driver=${AUDIODRIVER}${APPEND}"
+	else
+		qemu-system-x86_64 -audio-help 2> /dev/null | grep "^-audiodev" | head -n1 |
+			sed "s/ id=[a-z]*,/ id=$ID,/" | sed "s/\s*$/$APPEND/"
+	fi
 }
 
 function pcspk {
@@ -822,6 +855,7 @@ function qemuElevatedInstallWinGuestAgent {
 					echo
 					echo "Send test requests to $QGA now!"
 					echo "E.g. send '{\"execute\":\"guest-info\"}'"
+					echo "       or '{\"execute\":\"guest-suspend-disk\"}'"
 					read -p "All test requests sent? RETURN " TEST
 					net stop "$QGA"
 				fi
@@ -849,6 +883,44 @@ function qemuElevatedInstallWinGuestAgent {
 			[ -n "$QGA_RUN" ] && net start "$QGA"
 		fi
 	fi
+}
+
+function qemuPlugins {
+	local -A PLUGIN_OPTS
+	PLUGIN_OPTS["libmem.dll"]=",inline=true,callback=true"
+	PLUGIN_OPTS["libbb.dll"]=",inline=false,idle=true"
+	PLUGIN_OPTS["libinsn.dll"]=",inline=false,sizes=true"
+	PLUGIN_OPTS["libhotpages.dll"]=",sortby=reads,io=on"
+	echo "QEMU plugin dir for $MSYSTEM is '$MINGW_PREFIX/lib/qemu/plugins'"
+	local PLUGIN
+	for PLUGIN in $(find $MINGW_PREFIX/lib/qemu/plugins -type f | sort -r)
+	do
+		local PLUGIN_NAME=$(basename $PLUGIN)
+		echo "--------------------------------------------------------------------------------"
+		echo "Testing plugin: $PLUGIN_NAME"
+		mkdir -p $PLUGIN_NAME
+		cd $PLUGIN_NAME
+		if execute qemu-system-i386 -plugin ${PLUGIN}${PLUGIN_OPTS[${PLUGIN_NAME}]} -d plugin -D plugin.log
+		then
+			if [ -n "$(cat plugin.log)" ]
+			then
+				head -n 15 plugin.log
+				local PLUGIN_LOG_LENGTH="$(cat plugin.log | wc -l)"
+				if (( PLUGIN_LOG_LENGTH > 15 ))
+				then
+					echo "..."
+				fi
+				echo
+			fi
+			echo "Plugin $PLUGIN_NAME successfully executed"
+		else
+			echo "Plugin $PLUGIN_NAME execution failed"
+		fi
+		echo
+		cd ..
+		removeDir $PLUGIN_NAME
+	done
+
 }
 
 # Extended SDL-Desktop (HDImage)
@@ -1128,6 +1200,11 @@ function qemu2020day23 {
 	download https://www.qemu-advent-calendar.org/2020/download/day23.tar.gz
 	tar -xf day23.tar.gz
 	cat day23/README
+	echo
+	echo 'Test:'
+	echo 'wget -O - http://localhost:8080/'
+	echo 'telnet localhost 2323'
+	echo
 	execute qemu-system-x86_64 -L day23/bios -nodefaults -name ELKS -machine isapc -cpu 486,tsc \
 		-m 1M -vga std -rtc base=utc \
 		-netdev user,id=mynet,hostfwd=tcp::8080-:80,hostfwd=tcp::2323-:23 \
@@ -1497,6 +1574,11 @@ function qemu2016day14 {
 	download https://www.qemu-advent-calendar.org/2016/download/day14.tar.xz
 	tar -xf day14.tar.xz
 	cat acorn/readme.txt
+	echo
+	echo 'Test:'
+	echo 'wget -O - http://localhost:8080/'
+	echo
+	sleep 2
 	execute qemu-system-x86_64 $(accel) -net nic,model=virtio -net user,hostfwd=tcp::8080-:80 \
 		 -smp 4 -serial stdio -m 128 -drive file=acorn/acorn.img,format=raw,if=ide -k en-us
 	removeDir acorn
@@ -1646,6 +1728,11 @@ function qemu2014day20 {
 	download https://www.qemu-advent-calendar.org/2014/download/helenos.tar.xz
 	tar -xf helenos.tar.xz
 	extractReadme helenos/run
+	echo
+	echo 'Test:'
+	echo 'telnet localhost 2223'
+	echo '# /app/wavplay demo.wav'
+	echo
 	execute qemu-system-x86_64 $(accel) -net nic,model=e1000 \
 		-net user,hostfwd=::2223-:2223,hostfwd=::8080-:8080 \
 		-usb $(audio hda-duplex) -boot d -cdrom helenos/HelenOS-0.6.0-rc3-amd64.iso
@@ -1664,6 +1751,10 @@ function qemu2014day18 {
 	download https://www.qemu-advent-calendar.org/2014/download/ceph.tar.xz
 	tar -xf ceph.tar.xz
 	extractReadme ceph/run
+	echo
+	echo 'Test:'
+	echo 'ssh -p 10022 -o "UserKnownHostsFile=/dev/null" ceph@localhost'
+	echo
 	execute qemu-system-x86_64 $(accel) -m 1024M -drive file=ceph/ceph.qcow2,format=qcow2 \
 		-netdev user,id=net0,hostfwd=tcp::10022-:22 -device virtio-net-pci,netdev=net0
 	removeDir ceph
@@ -1721,6 +1812,10 @@ function qemu2014day11 {
 	download https://www.qemu-advent-calendar.org/2014/download/osv-redis.tar.xz
 	tar -xf osv-redis.tar.xz
 	extractReadme osv-redis/run
+	echo
+	echo 'Test:'
+	echo 'wget -O - http://localhost:18000/'
+	echo
 	execute qemu-system-x86_64 $(accel) -m 256 \
 		-netdev user,id=user0,hostfwd=tcp::18000-:8000,hostfwd=tcp::16379-:6379 \
 		-device virtio-net-pci,netdev=user0 osv-redis/osv-redis-memonly-v0.16.qemu.qcow2
@@ -1740,6 +1835,10 @@ function qemu2014day09 {
 	download https://www.qemu-advent-calendar.org/2014/download/ubuntu-core-alpha.tar.xz
 	tar -xf ubuntu-core-alpha.tar.xz
 	extractReadme ubuntu-core-alpha/run
+	echo
+	echo 'Test:'
+	echo 'ssh -p 12222 -o "UserKnownHostsFile=/dev/null" ubuntu@localhost'
+	echo
 	execute qemu-system-x86_64 $(accel) -m 1024 \
 		-drive if=virtio,file=ubuntu-core-alpha/ubuntu-core-alpha-01.img,format=qcow2 \
 		-netdev user,id=user0,hostfwd=tcp::18000-:80,hostfwd=tcp::12222-:22 \
@@ -1788,6 +1887,10 @@ function qemu2014day05 {
 	tar -xf arm64.tar.xz
 	extractReadme arm64/run
 	cat arm64/README
+	echo
+	echo 'Test:'
+	echo 'ssh -p 5555 -o "UserKnownHostsFile=/dev/null" root@localhost'
+	echo
 	export MSYS2_ARG_CONV_EXCL='*'
 	execute qemu-system-aarch64 -m 1024 -cpu cortex-a57 -machine virt -monitor none -kernel arm64/Image \
 		-append 'root=/dev/vda2 rw rootwait mem=1024M console=ttyAMA0,38400n8' \
@@ -1827,6 +1930,13 @@ function qemu2014day01 {
 	xzcat qemu-xmas-slackware/slackware.qcow2.xz > qemu-xmas-slackware/slackware.qcow2
 	extractReadme qemu-xmas-slackware/run
 	cat qemu-xmas-slackware/README
+	echo
+	echo 'Test after login as root:'
+	echo '# telnet www.google.com 80'
+	echo 'GET / HTTP/1.1'
+	echo 'Host: www.google.com'
+	echo '<NEWLINE>'
+	echo
 	execute qemu-system-x86_64 $(accel) -m 16M \
 		-drive if=ide,format=qcow2,file=qemu-xmas-slackware/slackware.qcow2 \
 		-netdev user,id=slirp -device ne2k_isa,netdev=slirp
@@ -1972,6 +2082,10 @@ case $BLOCK in
 		DIR="$DOWNLOADDIR/qemu-desktop"
 		require ${MINGW_PACKAGE_PREFIX}-qemu-guest-agent
 		isWindows && perform qemuElevatedInstallWinGuestAgent
+		;;
+	QPI)
+		DIR="$DOWNLOADDIR/qemu-plugins"
+		isWindows && perform qemuPlugins
 		;;
 	*)
 		BLOCK=DVD
