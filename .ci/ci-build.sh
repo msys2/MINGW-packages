@@ -65,7 +65,7 @@ install_packages() {
 list_dll_deps(){
     local target="${1}"
     echo "$(tput setaf 2)MSYS2 DLL dependencies:$(tput sgr0)"
-    find "$target" -regex ".*\.\(exe\|dll\)" -print0 | xargs -0 -r ldd | GREP_COLOR="1;35" grep --color=always "msys-.*\|" \
+    find "$target" -regex ".*\.\(exe\|dll\)" -exec "echo '{}:' && ldd '{}';" | GREP_COLOR="1;35" grep --color=always "msys-.*\|" \
     || echo "        None"
 }
 
