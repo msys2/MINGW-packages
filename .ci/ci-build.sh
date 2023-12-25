@@ -126,6 +126,13 @@ pacman -R --recursive --unneeded --noconfirm --noprogressbar git python
 # Enable linting
 export MAKEPKG_LINT_PKGBUILD=1
 
+# Run function CHECK if env var CI_MAKEPKG_RUN_CHECK is set (to any value)
+if test "${CI_MAKEPKG_RUN_CHECK+set}" = set; then
+    MAKEPKG_RUN_CHECK_FLAG=''
+else
+    MAKEPKG_RUN_CHECK_FLAG='--nocheck'
+fi
+
 message 'Building packages'
 for package in "${packages[@]}"; do
     echo "::group::[build] ${package}"
@@ -133,7 +140,7 @@ for package in "${packages[@]}"; do
     execute 'Fetch keys' "$DIR/fetch-validpgpkeys.sh"
     cp -r ${package} B && cd B
     message 'Building binary'
-    makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild || failure "${status} failed"
+    makepkg-mingw --noconfirm --noprogressbar --syncdeps --rmdeps --cleanbuild "${MAKEPKG_RUN_CHECK_FLAG}" || failure "${status} failed"
     cd - > /dev/null
     repo-add $PWD/artifacts/ci.db.tar.gz $PWD/B/*.pkg.tar.*
     pacman -Sy
