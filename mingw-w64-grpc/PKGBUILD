@@ -3,9 +3,10 @@
 
 _realname=grpc
 pkgbase=mingw-w64-${_realname}
-pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-python-grpcio")
 pkgver=1.60.0
-pkgrel=1
+pkgrel=2
 _opencensus_proto_ver=0.4.1
 pkgdesc="Google's high performance, open source, general RPC framework (mingw-w64)"
 arch=('any')
@@ -18,20 +19,28 @@ msys2_references=(
 license=('spdx:Apache-2.0')
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-abseil-cpp"
-         "${MINGW_PACKAGE_PREFIX}-c-ares"
          "${MINGW_PACKAGE_PREFIX}-openssl"
-         "${MINGW_PACKAGE_PREFIX}-protobuf"
-         "${MINGW_PACKAGE_PREFIX}-zlib"
-         "${MINGW_PACKAGE_PREFIX}-re2")
+         "${MINGW_PACKAGE_PREFIX}-re2"
+         "${MINGW_PACKAGE_PREFIX}-zlib")
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-cmake"
-             "${MINGW_PACKAGE_PREFIX}-ninja")
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-c-ares"
+             "${MINGW_PACKAGE_PREFIX}-protobuf"
+             "${MINGW_PACKAGE_PREFIX}-cython0"
+             "${MINGW_PACKAGE_PREFIX}-python-build"
+             "${MINGW_PACKAGE_PREFIX}-python-installer"
+             "${MINGW_PACKAGE_PREFIX}-python-setuptools"
+             "${MINGW_PACKAGE_PREFIX}-python-wheel")
 source=("https://github.com/grpc/grpc/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz"
         "https://github.com/census-instrumentation/opencensus-proto/archive/v${_opencensus_proto_ver}/opencensus-proto-${_opencensus_proto_ver}.tar.gz"
-        "001-fix-building-shared-libraries-with-clang.patch")
+        "001-fix-building-shared-libraries-with-clang.patch"
+        "002-fix-building-python-module.patch")
 sha256sums=('437068b8b777d3b339da94d3498f1dc20642ac9bfa76db43abdd522186b1542b'
             'e3d89f7f9ed84c9b6eee818c2e9306950519402bf803698b15c310b77ca2f0f3'
-            '3f1b6b6787d8c31c8b88ec04ea2a4e4c2deae86b106349a89c78948cfae15f62')
+            '3f1b6b6787d8c31c8b88ec04ea2a4e4c2deae86b106349a89c78948cfae15f62'
+            '800c92355fd53664d8bccd672452797e6dfe67e3b1a9077d650d3b70e3b64b16')
 noextract=(${_realname}-${pkgver}.tar.gz)
 
 prepare() {
@@ -43,13 +52,13 @@ prepare() {
     patch -p1 -i "${srcdir}"/001-fix-building-shared-libraries-with-clang.patch
   fi
 
+  patch -p1 -i "${srcdir}"/002-fix-building-python-module.patch
+
   rm -rf third_party/opencensus-proto
   mv "${srcdir}"/opencensus-proto-${_opencensus_proto_ver} third_party/opencensus-proto
 }
 
 build() {
-  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
-
   declare -a extra_config
   if check_option "debug" "n"; then
     extra_config+=("-DCMAKE_BUILD_TYPE=Release")
@@ -84,9 +93,26 @@ build() {
       -DgRPC_SSL_PROVIDER="package" \
       -DgRPC_PROTOBUF_PROVIDER="package" \
       -DgRPC_ABSL_PROVIDER="package" \
-      ../${_realname}-${pkgver}
+      -S "${_realname}-${pkgver}" \
+      -B "build-${MSYSTEM}"
 
-  ${MINGW_PREFIX}/bin/cmake.exe --build .
+  ${MINGW_PREFIX}/bin/cmake.exe --build "build-${MSYSTEM}"
+
+
+  rm -rf "${srcdir}"/python-build-${MSYSTEM}
+  cp -r "${srcdir}/${_realname}-${pkgver}" "${srcdir}"/python-build-${MSYSTEM}
+  cd "${srcdir}"/python-build-${MSYSTEM}
+
+  GRPC_PYTHON_BUILD_WITH_CYTHON=1 \
+  GRPC_PYTHON_BUILD_SYSTEM_OPENSSL=1 \
+  GRPC_PYTHON_BUILD_SYSTEM_ZLIB=1 \
+  GRPC_PYTHON_BUILD_SYSTEM_CARES=1 \
+  GRPC_PYTHON_BUILD_SYSTEM_RE2=1 \
+  GRPC_PYTHON_BUILD_SYSTEM_ABSL=1 \
+  GRPC_BUILD_WITH_BORING_SSL_ASM=0 \
+  GRPC_PYTHON_CFLAGS="-DGPR_MSVC_EMPTY_BASE_CLASS_WORKAROUND='' -DSTRSAFE_NO_DEPRECATE" \
+  LDFLAGS="$LDFLAGS -L../build-${MSYSTEM}" \
+  ${MINGW_PREFIX}/bin/python -m build --wheel --skip-dependency-check --no-isolation
 }
 
 check() {
@@ -95,10 +121,36 @@ check() {
   #${MINGW_PREFIX}/bin/cmake.exe --build . --target test
 }
 
-package() {
+package_grpc() {
   cd "${srcdir}/build-${MSYSTEM}"
+  depends+=("${MINGW_PACKAGE_PREFIX}-c-ares"
+            "${MINGW_PACKAGE_PREFIX}-protobuf")
 
   DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install .
 
   install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }
+
+package_python-grpcio() {
+  pkgdesc='Python language bindings for grpc, remote procedure call (RPC) framework (mingw-w64)'
+  depends+=("${MINGW_PACKAGE_PREFIX}-python")
+
+  cd "${srcdir}"/python-build-${MSYSTEM}
+
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+    ${MINGW_PREFIX}/bin/python -m installer --prefix=${MINGW_PREFIX} \
+    --destdir="${pkgdir}" dist/*.whl
+
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/python-grpcio/LICENSE"
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;
