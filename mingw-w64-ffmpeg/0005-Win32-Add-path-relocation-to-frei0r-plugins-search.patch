@@ -1,13 +1,3 @@
-From f844bcc97a003a95e0aaef00a4af47115b53f2b6 Mon Sep 17 00:00:00 2001
-From: Ray Donnelly <mingw.android@gmail.com>
-Date: Tue, 8 Dec 2020 16:27:34 +0100
-Subject: [PATCH 2/2] Win32: Add path relocation to frei0r-plugins search
-
----
- libavfilter/Makefile    |   1 +
- libavfilter/vf_frei0r.c |  57 ++++-
- 4 files changed, 642 insertions(+), 7 deletions(-)
-
 diff --git a/libavfilter/Makefile b/libavfilter/Makefile
 index 03998dc064..c8c16a9332 100644
 --- a/libavfilter/Makefile
@@ -20,11 +10,9 @@ index 03998dc064..c8c16a9332 100644
         version.o                                                        \
         video.o                                                          \
  
-diff --git a/libavfilter/vf_frei0r.c b/libavfilter/vf_frei0r.c
-index c084d5b13b..35feb75de0 100644
---- a/libavfilter/vf_frei0r.c
-+++ b/libavfilter/vf_frei0r.c
-@@ -41,6 +41,7 @@
+--- ffmpeg-6.0/libavfilter/vf_frei0r.c.orig	2023-02-27 21:43:45.000000000 +0100
++++ ffmpeg-6.0/libavfilter/vf_frei0r.c	2023-11-06 19:53:02.978838800 +0100
+@@ -42,6 +42,7 @@
  #include "formats.h"
  #include "internal.h"
  #include "video.h"
@@ -32,89 +20,26 @@ index c084d5b13b..35feb75de0 100644
  
  typedef f0r_instance_t (*f0r_construct_f)(unsigned int width, unsigned int height);
  typedef void (*f0r_destruct_f)(f0r_instance_t instance);
-@@ -181,6 +182,47 @@ static int load_path(AVFilterContext *ctx, void **handle_ptr, const char *prefix
-     return 0;
- }
- 
-+#ifdef _WIN32
-+static const char* const * get_frei0r_pathlist(AVFilterContext *ctx)
-+{
-+    static char exe_path[PATH_MAX*10];
-+    static const char* const pathlist[] = {
-+        &exe_path[0],
-+        "/usr/local/lib/frei0r-1/",
-+        "/usr/lib/frei0r-1/",
-+        "/usr/local/lib64/frei0r-1/",
-+        "/usr/lib64/frei0r-1/",
-+        NULL
-+    };
-+    const char * rel_to_exedir = "../lib/frei0r-1/";
-+
-+    get_executable_path (NULL, &exe_path[0], sizeof (exe_path) / sizeof (exe_path[0]));
-+    av_log(ctx, AV_LOG_DEBUG, "Running Windows customization of get_frei0r_pathlist(), good.");
-+    av_log(ctx, AV_LOG_DEBUG, "executable path is %s\n", exe_path);
-+
-+    if (strrchr (exe_path, '/') != NULL) {
-+        strrchr (exe_path, '/')[1] = '\0';
-+    }
-+  strcat (exe_path, rel_to_exedir);
-+  simplify_path (&exe_path[0]);
-+  av_log(ctx, AV_LOG_DEBUG, "real path of DATADIR is %s\n", exe_path);
-+
-+  return pathlist;
-+}
-+#else
-+static const char* const * get_frei0r_pathlist(AVFilterContext *ctx)
-+{
-+    static const char* const pathlist[] = {
-+        "/usr/local/lib/frei0r-1/",
-+        "/usr/lib/frei0r-1/",
-+        "/usr/local/lib64/frei0r-1/",
-+        "/usr/lib64/frei0r-1/",
-+        NULL
-+    };
-+    return pathlist;
-+}
-+#endif
-+
- static av_cold int frei0r_init(AVFilterContext *ctx,
-                                const char *dl_name, int type)
- {
-@@ -191,18 +233,19 @@ static av_cold int frei0r_init(AVFilterContext *ctx,
+@@ -192,12 +193,22 @@
      char *path;
      int ret = 0;
      int i;
--    static const char* const frei0r_pathlist[] = {
--        "/usr/local/lib/frei0r-1/",
--        "/usr/lib/frei0r-1/",
--        "/usr/local/lib64/frei0r-1/",
--        "/usr/lib64/frei0r-1/"
--    };
-+    char* const * frei0r_pathlist = get_frei0r_pathlist(ctx);
-+    int pathlist_count = 0;
++#ifdef _WIN32
++    static char pathlist_entry[PATH_MAX];
++    static const char* const frei0r_pathlist[] = {
++        &pathlist_entry[0]
++    };
++    char *plugin_path = single_path_relocation_lib("/prefix/bin/", "/prefix/lib/frei0r-1/");
++    av_strlcpy(pathlist_entry, plugin_path, sizeof (pathlist_entry) / sizeof (pathlist_entry[0]));
++    free(plugin_path);
++#else
+     static const char* const frei0r_pathlist[] = {
+         "/usr/local/lib/frei0r-1/",
+         "/usr/lib/frei0r-1/",
+         "/usr/local/lib64/frei0r-1/",
+         "/usr/lib64/frei0r-1/"
+     };
++#endif
  
      if (!dl_name) {
          av_log(ctx, AV_LOG_ERROR, "No filter name provided.\n");
-         return AVERROR(EINVAL);
-     }
- 
-+    if (frei0r_pathlist) {
-+        while(frei0r_pathlist[++pathlist_count]);
-+    }
-+    av_log(ctx, AV_LOG_DEBUG, "pathlist_count is %d\n", pathlist_count);
-+
-     /* see: http://frei0r.dyne.org/codedoc/html/group__pluglocations.html */
-     if ((path = av_strdup(getenv("FREI0R_PATH")))) {
- #ifdef _WIN32
-@@ -240,7 +283,7 @@ static av_cold int frei0r_init(AVFilterContext *ctx,
-         if (ret < 0)
-             return ret;
-     }
--    for (i = 0; !s->dl_handle && i < FF_ARRAY_ELEMS(frei0r_pathlist); i++) {
-+    for (i = 0; !s->dl_handle && i < pathlist_count; i++) {
-         ret = load_path(ctx, &s->dl_handle, frei0r_pathlist[i], dl_name);
-         if (ret < 0)
-             return ret;
--- 
-2.29.2.windows.2
-

@@ -39,7 +39,7 @@
 
 #include "pathtools.h"
 
-char *
+static char *
 malloc_copy_string(char const * original)
 {
   char * result = (char *) malloc (sizeof (char*) * strlen (original)+1);
@@ -361,7 +361,7 @@ get_dll_path(char * result, unsigned long max_size)
 }
 #endif
 
-char const *
+static char const *
 strip_n_prefix_folders(char const * path, size_t n)
 {
   if (path == NULL)
@@ -404,7 +404,7 @@ strip_n_suffix_folders(char * path, size_t n)
   return;
 }
 
-size_t
+static size_t
 split_path_list(char const * path_list, char split_char, char *** arr)
 {
   size_t path_count;
@@ -586,42 +586,55 @@ single_path_relocation_lib(const char *from, const char *to)
 #endif
 }
 
-char *
-pathlist_relocation(const char *from_path, const char *to_path_list)
+char const *
+msys2_get_relocated_single_path(char const * unix_path)
 {
-#if defined(__MINGW32__)
-  static char stored_path[PATH_MAX];
-  static int stored = 0;
-  if (stored == 0)
-  {
-    char const * relocated = get_relocated_path_list(from_path, to_path_list);
-    strncpy (stored_path, relocated, PATH_MAX);
-    stored_path[PATH_MAX-1] = '\0';
-    free ((void *)relocated);
-    stored = 1;
-  }
-  return stored_path;
-#else
-  return (to_path_list);
-#endif
+  char * unix_part = (char *) strip_n_prefix_folders (unix_path, 1);
+  char win_part[MAX_PATH];
+  get_executable_path (NULL, &win_part[0], MAX_PATH);
+  strip_n_suffix_folders (&win_part[0], 2); /* 2 because the file name is present. */
+  char * new_path = (char *) malloc (strlen (unix_part) + strlen (win_part) + 1);
+  strcpy (new_path, win_part);
+  strcat (new_path, unix_part);
+  return new_path;
 }
 
 char *
-pathlist_relocation_lib(const char *from_path, const char *to_path_list)
+msys2_get_relocated_path_list(char const * paths)
 {
-#if defined(__MINGW32__)
-  static char stored_path[PATH_MAX];
-  static int stored = 0;
-  if (stored == 0)
+  char win_part[MAX_PATH];
+  get_executable_path (NULL, &win_part[0], MAX_PATH);
+  strip_n_suffix_folders (&win_part[0], 2); /* 2 because the file name is present. */
+
+  char **arr = NULL;
+
+  size_t count = split_path_list (paths, ':', &arr);
+  int result_size = 1 + (count - 1); /* count - 1 is for ; delim. */
+  size_t i;
+  for (i = 0; i < count; ++i)
   {
-    char const * relocated = get_relocated_path_list_lib(from_path, to_path_list);
-    strncpy (stored_path, relocated, PATH_MAX);
-    stored_path[PATH_MAX-1] = '\0';
-    free ((void *)relocated);
-    stored = 1;
+    arr[i] = (char *) strip_n_prefix_folders (arr[i], 1);
+    result_size += strlen (arr[i]) + strlen (win_part);
   }
-  return stored_path;
+  char * result = (char *) malloc (result_size);
+  if (result == NULL)
+  {
+    return NULL;
+  }
+  result[0] = '\0';
+  for (i = 0; i < count; ++i)
+  {
+    strcat (result, win_part);
+    strcat (result, arr[i]);
+    if (i != count-1)
+    {
+#if defined(_WIN32)
+      strcat (result, ";");
 #else
-  return (to_path_list);
+      strcat (result, ":");
 #endif
+    }
+  }
+  free ((void*)arr);
+  return result;
 }

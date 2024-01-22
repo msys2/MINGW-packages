@@ -382,7 +382,7 @@ namespace eval ::tclbuildtest {
 	# Obtain compilation and linking flags for the specified packages via PkgConfig
 	proc require {args} {
 		if {[constraint? static]} {set flags --static} else {set flags {}}
-		xflags {*}[lindex [dict get [system [pkg-config] {*}$args --cflags {*}$flags] stdout] 0]
+		xflags {*}[lindex [dict get [system [pkg-config] {*}$args --keep-system-cflags --cflags {*}$flags] stdout] 0]
 		ldflags {*}[lindex [dict get [system [pkg-config] {*}$args --libs {*}$flags] stdout] 0]
 		return
 	}

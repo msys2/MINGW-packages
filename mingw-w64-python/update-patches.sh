@@ -8,7 +8,7 @@ die () {
 }
 
 cd "$(dirname "$0")" ||
-die "Could not cd to mingw-w64-python3.10/"
+die "Could not cd to mingw-w64-python3.11/"
 
 git rev-parse --verify HEAD >/dev/null &&
 git update-index -q --ignore-submodules --refresh &&
@@ -51,6 +51,7 @@ git -c core.abbrev=7 \
 		--subject-prefix=PATCH \
 		--output-directory .. \
 			$base_tag..$msys2_branch ||
+			-- ':(exclude).github/' ||
 die "Could not generate new patch set"
 
 patches="$(ls -1 0*.patch)" &&

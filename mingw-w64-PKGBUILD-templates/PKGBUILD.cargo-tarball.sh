@@ -7,7 +7,7 @@ pkgver=1.0
 pkgrel=1
 pkgdesc="Some package (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url='https://www.somepackage.org/'
 license=('LICENSE')
 makedepends=("${MINGW_PACKAGE_PREFIX}-rust")
@@ -24,7 +24,12 @@ prepare() {
   patch -Np1 -i "${srcdir}"/0001-A-really-important-fix.patch
   patch -Np1 -i "${srcdir}"/0002-A-less-important-fix.patch
 
-  cargo fetch --locked
+  # if packaging fails at build, use `cargo fetch --locked` instead
+  local _target="${CARCH}-pc-windows-gnu"
+  if [[ $MINGW_PACKAGE_PREFIX == *-clang-aarch64 ]]; then
+    _target="${CARCH}-pc-windows-gnullvm"
+  fi
+  cargo fetch --locked --target "${_target}"
 }
 
 build() {

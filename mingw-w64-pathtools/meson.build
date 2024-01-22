@@ -6,4 +6,4 @@ project('msys2-pathtools', 'c', 'cpp',
   ]
 )
 
-test('main', executable('main', 'main.c', 'msys2_relocate.c', 'pathtools.c'))
+test('main', executable('main', 'main.c', 'pathtools.c'))
