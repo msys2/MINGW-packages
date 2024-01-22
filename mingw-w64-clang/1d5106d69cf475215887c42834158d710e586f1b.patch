@@ -1,0 +1,254 @@
+From 1d5106d69cf475215887c42834158d710e586f1b Mon Sep 17 00:00:00 2001
+From: Frederik Carlier <frederik.carlier@keysight.com>
+Date: Wed, 10 Jan 2024 08:52:13 -0800
+Subject: [PATCH] Objective C: use C++ exceptions on MinGW+GNUstep (#77255)
+
+The GNUstep Objective C runtime (libobjc2) is adding support for the GNU
+ABI on Windows (more specifically, MinGW). The libobjc2 runtime uses C++
+exceptions in that configuration; this PR updates clang to act
+accordingly.
+
+The corresponding change to libobjc2 is here:
+https://github.com/gnustep/libobjc2/pull/267
+---
+ clang/lib/CodeGen/CGException.cpp             |  7 ++-
+ clang/lib/CodeGen/CGObjCGNU.cpp               | 35 +++++++-----
+ .../test/CodeGenObjC/exceptions-personality.m | 53 +++++++++++++++++++
+ clang/test/CodeGenObjC/personality.m          |  5 +-
+ clang/test/CodeGenObjCXX/personality.mm       |  5 +-
+ 5 files changed, 87 insertions(+), 18 deletions(-)
+ create mode 100644 clang/test/CodeGenObjC/exceptions-personality.m
+
+diff --git a/clang/lib/CodeGen/CGException.cpp b/clang/lib/CodeGen/CGException.cpp
+index 0d507da5c1ba92f..56a246eb65e0a82 100644
+--- a/clang/lib/CodeGen/CGException.cpp
++++ b/clang/lib/CodeGen/CGException.cpp
+@@ -156,7 +156,9 @@ static const EHPersonality &getObjCPersonality(const TargetInfo &Target,
+   case ObjCRuntime::WatchOS:
+     return EHPersonality::NeXT_ObjC;
+   case ObjCRuntime::GNUstep:
+-    if (L.ObjCRuntime.getVersion() >= VersionTuple(1, 7))
++    if (T.isOSCygMing())
++      return EHPersonality::GNU_CPlusPlus_SEH;
++    else if (L.ObjCRuntime.getVersion() >= VersionTuple(1, 7))
+       return EHPersonality::GNUstep_ObjC;
+     [[fallthrough]];
+   case ObjCRuntime::GCC:
+@@ -210,7 +212,8 @@ static const EHPersonality &getObjCXXPersonality(const TargetInfo &Target,
+     return getObjCPersonality(Target, L);
+ 
+   case ObjCRuntime::GNUstep:
+-    return EHPersonality::GNU_ObjCXX;
++    return Target.getTriple().isOSCygMing() ? EHPersonality::GNU_CPlusPlus_SEH
++                                            : EHPersonality::GNU_ObjCXX;
+ 
+   // The GCC runtime's personality function inherently doesn't support
+   // mixed EH.  Use the ObjC personality just to avoid returning null.
+diff --git a/clang/lib/CodeGen/CGObjCGNU.cpp b/clang/lib/CodeGen/CGObjCGNU.cpp
+index 9443fecf9b79469..cd1a0b6a130ff01 100644
+--- a/clang/lib/CodeGen/CGObjCGNU.cpp
++++ b/clang/lib/CodeGen/CGObjCGNU.cpp
+@@ -168,6 +168,8 @@ class CGObjCGNU : public CGObjCRuntime {
+   /// Does the current target use SEH-based exceptions? False implies
+   /// Itanium-style DWARF unwinding.
+   bool usesSEHExceptions;
++  /// Does the current target uses C++-based exceptions?
++  bool usesCxxExceptions;
+ 
+   /// Helper to check if we are targeting a specific runtime version or later.
+   bool isRuntime(ObjCRuntime::Kind kind, unsigned major, unsigned minor=0) {
+@@ -819,12 +821,18 @@ class CGObjCGNUstep : public CGObjCGNU {
+       SlotLookupSuperFn.init(&CGM, "objc_slot_lookup_super", SlotTy,
+                              PtrToObjCSuperTy, SelectorTy);
+       // If we're in ObjC++ mode, then we want to make
+-      if (usesSEHExceptions) {
+-          llvm::Type *VoidTy = llvm::Type::getVoidTy(VMContext);
+-          // void objc_exception_rethrow(void)
+-          ExceptionReThrowFn.init(&CGM, "objc_exception_rethrow", VoidTy);
++      llvm::Type *VoidTy = llvm::Type::getVoidTy(VMContext);
++      if (usesCxxExceptions) {
++        // void *__cxa_begin_catch(void *e)
++        EnterCatchFn.init(&CGM, "__cxa_begin_catch", PtrTy, PtrTy);
++        // void __cxa_end_catch(void)
++        ExitCatchFn.init(&CGM, "__cxa_end_catch", VoidTy);
++        // void objc_exception_rethrow(void*)
++        ExceptionReThrowFn.init(&CGM, "__cxa_rethrow", PtrTy);
++      } else if (usesSEHExceptions) {
++        // void objc_exception_rethrow(void)
++        ExceptionReThrowFn.init(&CGM, "objc_exception_rethrow", VoidTy);
+       } else if (CGM.getLangOpts().CPlusPlus) {
+-        llvm::Type *VoidTy = llvm::Type::getVoidTy(VMContext);
+         // void *__cxa_begin_catch(void *e)
+         EnterCatchFn.init(&CGM, "__cxa_begin_catch", PtrTy, PtrTy);
+         // void __cxa_end_catch(void)
+@@ -833,7 +841,6 @@ class CGObjCGNUstep : public CGObjCGNU {
+         ExceptionReThrowFn.init(&CGM, "_Unwind_Resume_or_Rethrow", VoidTy,
+                                 PtrTy);
+       } else if (R.getVersion() >= VersionTuple(1, 7)) {
+-        llvm::Type *VoidTy = llvm::Type::getVoidTy(VMContext);
+         // id objc_begin_catch(void *e)
+         EnterCatchFn.init(&CGM, "objc_begin_catch", IdTy, PtrTy);
+         // void objc_end_catch(void)
+@@ -841,7 +848,6 @@ class CGObjCGNUstep : public CGObjCGNU {
+         // void _Unwind_Resume_or_Rethrow(void*)
+         ExceptionReThrowFn.init(&CGM, "objc_exception_rethrow", VoidTy, PtrTy);
+       }
+-      llvm::Type *VoidTy = llvm::Type::getVoidTy(VMContext);
+       SetPropertyAtomic.init(&CGM, "objc_setProperty_atomic", VoidTy, IdTy,
+                              SelectorTy, IdTy, PtrDiffTy);
+       SetPropertyAtomicCopy.init(&CGM, "objc_setProperty_atomic_copy", VoidTy,
+@@ -2126,6 +2132,9 @@ CGObjCGNU::CGObjCGNU(CodeGenModule &cgm, unsigned runtimeABIVersion,
+   msgSendMDKind = VMContext.getMDKindID("GNUObjCMessageSend");
+   usesSEHExceptions =
+       cgm.getContext().getTargetInfo().getTriple().isWindowsMSVCEnvironment();
++  usesCxxExceptions =
++      cgm.getContext().getTargetInfo().getTriple().isOSCygMing() &&
++      isRuntime(ObjCRuntime::GNUstep, 2);
+ 
+   CodeGenTypes &Types = CGM.getTypes();
+   IntTy = cast<llvm::IntegerType>(
+@@ -2212,7 +2221,10 @@ CGObjCGNU::CGObjCGNU(CodeGenModule &cgm, unsigned runtimeABIVersion,
+ 
+   // void objc_exception_throw(id);
+   ExceptionThrowFn.init(&CGM, "objc_exception_throw", VoidTy, IdTy);
+-  ExceptionReThrowFn.init(&CGM, "objc_exception_throw", VoidTy, IdTy);
++  ExceptionReThrowFn.init(&CGM,
++                          usesCxxExceptions ? "objc_exception_rethrow"
++                                            : "objc_exception_throw",
++                          VoidTy, IdTy);
+   // int objc_sync_enter(id);
+   SyncEnterFn.init(&CGM, "objc_sync_enter", IntTy, IdTy);
+   // int objc_sync_exit(id);
+@@ -2389,7 +2401,7 @@ llvm::Constant *CGObjCGNUstep::GetEHType(QualType T) {
+   if (usesSEHExceptions)
+     return CGM.getCXXABI().getAddrOfRTTIDescriptor(T);
+ 
+-  if (!CGM.getLangOpts().CPlusPlus)
++  if (!CGM.getLangOpts().CPlusPlus && !usesCxxExceptions)
+     return CGObjCGNU::GetEHType(T);
+ 
+   // For Objective-C++, we want to provide the ability to catch both C++ and
+@@ -3995,7 +4007,7 @@ void CGObjCGNU::EmitThrowStmt(CodeGenFunction &CGF,
+     ExceptionAsObject = CGF.ObjCEHValueStack.back();
+     isRethrow = true;
+   }
+-  if (isRethrow && usesSEHExceptions) {
++  if (isRethrow && (usesSEHExceptions || usesCxxExceptions)) {
+     // For SEH, ExceptionAsObject may be undef, because the catch handler is
+     // not passed it for catchalls and so it is not visible to the catch
+     // funclet.  The real thrown object will still be live on the stack at this
+@@ -4005,8 +4017,7 @@ void CGObjCGNU::EmitThrowStmt(CodeGenFunction &CGF,
+     // argument.
+     llvm::CallBase *Throw = CGF.EmitRuntimeCallOrInvoke(ExceptionReThrowFn);
+     Throw->setDoesNotReturn();
+-  }
+-  else {
++  } else {
+     ExceptionAsObject = CGF.Builder.CreateBitCast(ExceptionAsObject, IdTy);
+     llvm::CallBase *Throw =
+         CGF.EmitRuntimeCallOrInvoke(ExceptionThrowFn, ExceptionAsObject);
+diff --git a/clang/test/CodeGenObjC/exceptions-personality.m b/clang/test/CodeGenObjC/exceptions-personality.m
+new file mode 100644
+index 000000000000000..9c25ee38b6d7cf5
+--- /dev/null
++++ b/clang/test/CodeGenObjC/exceptions-personality.m
+@@ -0,0 +1,53 @@
++// RUN: %clang_cc1 -triple x86_64-w64-windows-gnu  -emit-llvm -fobjc-runtime=gnustep-2.0 -fexceptions -fobjc-exceptions -o %t %s
++// RUN: FileCheck --check-prefixes=CHECK-MINGW-OBJC2 < %t %s
++
++// RUN: %clang_cc1 -triple x86_64-w64-windows-gnu  -emit-llvm -fobjc-runtime=gcc -fexceptions -fobjc-exceptions -o %t %s
++// RUN: FileCheck --check-prefixes=CHECK-MINGW-GCC < %t %s
++
++// RUN: %clang_cc1 -triple x86_64-w64-windows-msvc  -emit-llvm -fobjc-runtime=gnustep-2.0 -fexceptions -fobjc-exceptions -o %t %s
++// RUN: FileCheck --check-prefixes=CHECK-MSVC-OBJC2 < %t %s
++
++// RUN: %clang_cc1 -triple x86_64-pc-linux-gnu  -emit-llvm -fobjc-runtime=gnustep-2.0 -fexceptions -fobjc-exceptions -o %t %s
++// RUN: FileCheck --check-prefixes=CHECK-LINUX-OBJC2 < %t %s
++
++// RUN: %clang_cc1 -triple x86_64-pc-linux-gnu  -emit-llvm -fobjc-runtime=gcc -fexceptions -fobjc-exceptions -o %t %s
++// RUN: FileCheck --check-prefixes=CHECK-LINUX-GCC < %t %s
++@interface Foo @end
++
++void throwing(void) {
++  @try
++  {
++    // CHECK-MINGW-OBJC2: personality ptr @__gxx_personality_seh0
++    // CHECK-MINGW-OBJC2: invoke void @objc_exception_throw
++
++    // CHECK-MINGW-GCC: personality ptr @__gnu_objc_personality_v0
++    // CHECK-MINGW-GCC: invoke void @objc_exception_throw
++
++    // CHECK-MSVC-OBJC2: personality ptr @__CxxFrameHandler3
++    // CHECK-MSVC-OBJC2: invoke void @objc_exception_throw
++
++    // CHECK-LINUX-OBJC2: personality ptr @__gnustep_objc_personality_v0
++    // CHECK-LINUX-OBJC2: invoke void @objc_exception_throw
++
++    // CHECK-LINUX-GCC: personality ptr @__gnu_objc_personality_v0
++    @throw(@"error!");
++  }
++  @catch(...) 
++  {
++    // CHECK-MINGW-OBJC2: call ptr @__cxa_begin_catch
++    // CHECK-MINGW-OBJC2: invoke ptr @__cxa_rethrow
++    // CHECK-MINGW-OBJC2: invoke void @__cxa_end_catch
++    
++    // CHECK-MINGW-GCC: call void @objc_exception_throw
++
++    // CHECK-MSVC-OBJC2: call void @objc_exception_rethrow
++
++    // CHECK-LINUX-OBJC2: call ptr @objc_begin_catch
++    // CHECK-LINUX-OBJC2: invoke void @objc_exception_throw
++    // CHECK-LINUX-OBJC2: invoke void @objc_end_catch()
++
++    // CHECK-LINUX-GCC: invoke void @objc_exception_throw
++    
++    @throw;
++  }
++}
+diff --git a/clang/test/CodeGenObjC/personality.m b/clang/test/CodeGenObjC/personality.m
+index 6ec67ace3f1ac31..ede0aa34eaf6256 100644
+--- a/clang/test/CodeGenObjC/personality.m
++++ b/clang/test/CodeGenObjC/personality.m
+@@ -27,8 +27,8 @@
+ // RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -fobjc-exceptions -fobjc-runtime=ios -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-NS
+ // RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -fobjc-exceptions -fobjc-runtime=macosx -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-NS
+ // RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -fobjc-exceptions -fobjc-runtime=watchos -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-NS
+-// RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -fobjc-exceptions -fobjc-runtime=gnustep-1.7 -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-GNUSTEP-1_7
+-// RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -fobjc-exceptions -fobjc-runtime=gnustep -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-GNUSTEP
++// RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -fobjc-exceptions -fobjc-runtime=gnustep-1.7 -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-WIN-GNU
++// RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -fobjc-exceptions -fobjc-runtime=gnustep -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-WIN-GNU
+ // RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -fobjc-exceptions -fobjc-runtime=gcc -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-GCC
+ // RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -exception-model=seh -fobjc-exceptions -fobjc-runtime=gcc -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-GCC-SEH
+ // RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -exception-model=sjlj -fobjc-exceptions -fobjc-runtime=gcc -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-GCC-SJLJ
+@@ -50,6 +50,7 @@
+ // CHECK-OBJFW-SJLJ: personality ptr @__gnu_objc_personality_sj0
+ 
+ // CHECK-WIN-MSVC: personality ptr @__CxxFrameHandler3
++// CHECK-WIN-GNU: personality ptr @__gxx_personality_seh0
+ 
+ // CHECK-MACOSX-FRAGILE-MINGW-DWARF: personality ptr @__gcc_personality_v0
+ // CHECK-MACOSX-FRAGILE-MINGW-SEH: personality ptr @__gcc_personality_seh0
+diff --git a/clang/test/CodeGenObjCXX/personality.mm b/clang/test/CodeGenObjCXX/personality.mm
+index c6debe6f60c2a25..b8c7af962bd0bd6 100644
+--- a/clang/test/CodeGenObjCXX/personality.mm
++++ b/clang/test/CodeGenObjCXX/personality.mm
+@@ -50,8 +50,8 @@
+ // RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -exception-model=dwarf -fobjc-exceptions -fcxx-exceptions -fobjc-runtime=watchos -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-NS
+ // RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -exception-model=seh -fobjc-exceptions -fcxx-exceptions -fobjc-runtime=watchos -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-NS
+ // RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -exception-model=sjlj -fobjc-exceptions -fcxx-exceptions -fobjc-runtime=watchos -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-NS
+-// RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -fobjc-exceptions -fcxx-exceptions -fobjc-runtime=gnustep-1.7 -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-GNUSTEP-1_7
+-// RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -fobjc-exceptions -fcxx-exceptions -fobjc-runtime=gnustep -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-GNUSTEP
++// RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -fobjc-exceptions -fcxx-exceptions -fobjc-runtime=gnustep-1.7 -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-WIN-GNU
++// RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -fobjc-exceptions -fcxx-exceptions -fobjc-runtime=gnustep -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-WIN-GNU
+ // RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -fobjc-exceptions -fcxx-exceptions -fobjc-runtime=gcc -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-GCC
+ // RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -exception-model=dwarf -fobjc-exceptions -fcxx-exceptions -fobjc-runtime=gcc -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-GCC
+ // RUN: %clang_cc1 -triple i686-unknown-windows-gnu -fexceptions -exception-model=seh -fobjc-exceptions -fcxx-exceptions -fobjc-runtime=gcc -S -emit-llvm %s -o - | FileCheck %s -check-prefix CHECK-GCC-SEH
+@@ -81,6 +81,7 @@ + (void)e:(id)xception;
+ // CHECK-OBJFW-SJLJ: personality ptr @__gnu_objc_personality_sj0
+ 
+ // CHECK-WIN-MSVC: personality ptr @__CxxFrameHandler3
++// CHECK-WIN-GNU: personality ptr @__gxx_personality_seh0
+ 
+ void f(void) {
+   @try {
