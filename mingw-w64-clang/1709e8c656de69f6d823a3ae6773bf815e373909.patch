@@ -1,0 +1,91 @@
+From 1709e8c656de69f6d823a3ae6773bf815e373909 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Martin=20Storsj=C3=B6?= <martin@martin.st>
+Date: Fri, 15 Dec 2023 20:16:19 +0200
+Subject: [PATCH] [llvm-windres] Resolve the --preprocessor executable in $PATH
+ (#75390)
+
+The llvm::sys::ExecuteAndWait function doesn't resolve the file to be
+executed from $PATH - i.e. it is similar to execv(), not execvp().
+
+Due to this, specifying a --preprocessor argument to llvm-windres only
+worked if it specified an absolute path to the preprocessor executable.
+This was observed as one of the issues in
+https://github.com/msys2/MINGW-packages/pull/19157.
+
+Before d2fa6b694c2052cef1ddd507f6569bc84e3bbe35, this usage of
+--preprocessor seemed to work, because the first argument of Args[] was
+ignored and llvm-windres just executed the autodetected clang executable
+regardless.
+
+Also improve the error messages printed if preprocessing failed. (If the
+preprocessor executable was started but itself returned an error, we
+don't get any error string.)
+---
+ llvm/test/tools/llvm-rc/windres-preproc.test | 16 +++++++++++++++-
+ llvm/tools/llvm-rc/llvm-rc.cpp               | 17 +++++++++++++++--
+ 2 files changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/llvm/test/tools/llvm-rc/windres-preproc.test b/llvm/test/tools/llvm-rc/windres-preproc.test
+index 42e83ba13021c2..74e888614aa2b9 100644
+--- a/llvm/test/tools/llvm-rc/windres-preproc.test
++++ b/llvm/test/tools/llvm-rc/windres-preproc.test
+@@ -7,4 +7,18 @@
+ ; RUN: llvm-windres -### --include-dir %p/incdir1 --include %p/incdir2 "-DFOO1=\"foo bar\"" -UFOO2 -D FOO3 --preprocessor-arg "-DFOO4=\"baz baz\"" "-DFOO5=bar" %p/Inputs/empty.rc %t.res --use-temp-file | FileCheck %s --check-prefix=CHECK1
+ ; CHECK1: {{^}} "clang" "--driver-mode=gcc" "-target" "{{.*}}-{{.*}}{{mingw32|windows-gnu}}" "-E" "-xc" "-DRC_INVOKED" "-I" "{{.*}}incdir1" "-I" "{{.*}}incdir2" "-D" "FOO1=\"foo bar\"" "-U" "FOO2" "-D" "FOO3" "-DFOO4=\"baz baz\"" "-D" "FOO5=bar" "{{.*}}empty.rc" "-o" "{{.*}}preproc-{{.*}}.rc"{{$}}
+ ; RUN: llvm-windres -### --preprocessor "i686-w64-mingw32-gcc -E -DFOO=\\\"foo\\ bar\\\"" %p/Inputs/empty.rc %t.res | FileCheck %s --check-prefix=CHECK2
+-; CHECK2: {{^}} "i686-w64-mingw32-gcc" "-E" "-DFOO=\"foo bar\"" "{{.*}}empty.rc" "-o" "{{.*}}preproc-{{.*}}.rc"{{$}}
++; CHECK2: {{^}} "{{.*}}i686-w64-mingw32-gcc" "-E" "-DFOO=\"foo bar\"" "{{.*}}empty.rc" "-o" "{{.*}}preproc-{{.*}}.rc"{{$}}
++
++;; Test resolving the --preprocessor executable from PATH
++
++; RUN: rm -rf %t-bin/testbin
++; RUN: mkdir -p %t-bin/testbin
++; RUN: ln -s llvm-windres %t-bin/testbin/i686-w64-mingw32-gcc
++; RUN: env PATH=%t-bin/testbin llvm-windres -### --preprocessor i686-w64-mingw32-gcc --preprocessor-arg -E --preprocessor-arg -xc -DRC_INVOKED %p/Inputs/empty.rc %t.res | FileCheck %s --check-prefix=CHECK3
++; CHECK3: {{^}} "{{.*}}/testbin/i686-w64-mingw32-gcc" "-E" "-xc" "-D" "RC_INVOKED" "{{.*}}empty.rc" "-o" "{{.*}}preproc-{{.*}}.rc"{{$}}
++
++
++;; Test error messages when unable to execute the preprocessor.
++
++; RUN: not llvm-windres --preprocessor intentionally-missing-executable %p/Inputs/empty.rc %t.res 2>&1 | FileCheck %s --check-prefix=CHECK4
++; CHECK4: llvm-rc: Preprocessing failed: Executable "intentionally-missing-executable" doesn't exist!
+diff --git a/llvm/tools/llvm-rc/llvm-rc.cpp b/llvm/tools/llvm-rc/llvm-rc.cpp
+index 43756971fc9ba0..27fb0309e0ee54 100644
+--- a/llvm/tools/llvm-rc/llvm-rc.cpp
++++ b/llvm/tools/llvm-rc/llvm-rc.cpp
+@@ -248,10 +248,17 @@ void preprocess(StringRef Src, StringRef Dst, const RcOptions &Opts,
+   SmallVector<StringRef, 8> Args = {
+       Clang, "--driver-mode=gcc", "-target", Opts.Triple, "-E",
+       "-xc", "-DRC_INVOKED"};
++  std::string PreprocessorExecutable;
+   if (!Opts.PreprocessCmd.empty()) {
+     Args.clear();
+     for (const auto &S : Opts.PreprocessCmd)
+       Args.push_back(S);
++    if (!sys::fs::can_execute(Args[0])) {
++      if (auto P = sys::findProgramByName(Args[0])) {
++        PreprocessorExecutable = *P;
++        Args[0] = PreprocessorExecutable;
++      }
++    }
+   }
+   for (const auto &S : Opts.PreprocessArgs)
+     Args.push_back(S);
+@@ -269,9 +276,15 @@ void preprocess(StringRef Src, StringRef Dst, const RcOptions &Opts,
+   }
+   // The llvm Support classes don't handle reading from stdout of a child
+   // process; otherwise we could avoid using a temp file.
+-  int Res = sys::ExecuteAndWait(Args[0], Args);
++  std::string ErrMsg;
++  int Res =
++      sys::ExecuteAndWait(Args[0], Args, /*Env=*/std::nullopt, /*Redirects=*/{},
++                          /*SecondsToWait=*/0, /*MemoryLimit=*/0, &ErrMsg);
+   if (Res) {
+-    fatalError("llvm-rc: Preprocessing failed.");
++    if (!ErrMsg.empty())
++      fatalError("llvm-rc: Preprocessing failed: " + ErrMsg);
++    else
++      fatalError("llvm-rc: Preprocessing failed.");
+   }
+ }
+ 
