@@ -1,0 +1,268 @@
+
+# HG changeset patch
+# User Elliott Sales de Andrade <quantum.analyst@gmail.com>
+# Date 1706683885 21600
+# Node ID 488055ab5531f11c3a3439a49ea90deb9e43017d
+# Parent  a91c43b65d3e0edff6af311e7e457438cbe74b63
+Fix incompatible type conversion errors
+
+- A recent libxml2 changed its handler function to take a `const` pointer. It's
+  safe for us to have it, and them not, but the opposite way causes an implicit
+  cast warning.
+- In relatively new GLib (many years now), `g_object_ref` casts its output to
+  match its input. This means we should not be casting to `G_OBJECT`, as that
+  is not the type it expects, and would translate to the output being `GObject`
+  instead of the original type.
+
+This fixes the build in Fedora 40, which changes several incompatible pointer
+conversion warnings into errors.
+
+This patch is partially from the Fedora maintainer @yarda, with some corrections by me (to the `g_object_ref` portions.)
+
+Testing Done:
+Compiled in a Rawhide environment with this patch applied.
+
+Bugs closed: PIDGIN-17850
+
+Reviewed at https://reviews.imfreedom.org/r/2944/
+
+diff -r a91c43b65d3e -r 488055ab5531 COPYRIGHT
+--- a/COPYRIGHT	Wed Oct 25 20:32:49 2023 -0500
++++ b/COPYRIGHT	Wed Jan 31 00:51:25 2024 -0600
+@@ -532,6 +532,7 @@
+ Renato Silva
+ John Silvestri
+ Mukund Sivaraman
++Jaroslav Škarvada
+ Craig Slusher
+ Alex Smith
+ Brad Smith
+diff -r a91c43b65d3e -r 488055ab5531 libpurple/protocols/bonjour/parser.c
+--- a/libpurple/protocols/bonjour/parser.c	Wed Oct 25 20:32:49 2023 -0500
++++ b/libpurple/protocols/bonjour/parser.c	Wed Jan 31 00:51:25 2024 -0600
+@@ -154,7 +154,7 @@
+ }
+ 
+ static void
+-bonjour_parser_structured_error_handler(void *user_data, xmlErrorPtr error)
++bonjour_parser_structured_error_handler(void *user_data, const xmlError *error)
+ {
+ 	BonjourJabberConversation *bconv = user_data;
+ 
+diff -r a91c43b65d3e -r 488055ab5531 libpurple/protocols/irc/msgs.c
+--- a/libpurple/protocols/irc/msgs.c	Wed Oct 25 20:32:49 2023 -0500
++++ b/libpurple/protocols/irc/msgs.c	Wed Jan 31 00:51:25 2024 -0600
+@@ -1618,22 +1618,22 @@
+ 	irc->sasl_cb = g_new0(sasl_callback_t, 5);
+ 
+ 	irc->sasl_cb[id].id = SASL_CB_AUTHNAME;
+-	irc->sasl_cb[id].proc = irc_sasl_cb_simple;
++	irc->sasl_cb[id].proc = (void *)irc_sasl_cb_simple;
+ 	irc->sasl_cb[id].context = (void *)irc;
+ 	id++;
+ 
+ 	irc->sasl_cb[id].id = SASL_CB_USER;
+-	irc->sasl_cb[id].proc = irc_sasl_cb_simple;
++	irc->sasl_cb[id].proc = (void *)irc_sasl_cb_simple;
+ 	irc->sasl_cb[id].context = (void *)irc;
+ 	id++;
+ 
+ 	irc->sasl_cb[id].id = SASL_CB_PASS;
+-	irc->sasl_cb[id].proc = irc_sasl_cb_secret;
++	irc->sasl_cb[id].proc = (void *)irc_sasl_cb_secret;
+ 	irc->sasl_cb[id].context = (void *)irc;
+ 	id++;
+ 
+ 	irc->sasl_cb[id].id = SASL_CB_LOG;
+-	irc->sasl_cb[id].proc = irc_sasl_cb_log;
++	irc->sasl_cb[id].proc = (void *)irc_sasl_cb_log;
+ 	irc->sasl_cb[id].context = (void *)irc;
+ 	id++;
+ 
+diff -r a91c43b65d3e -r 488055ab5531 libpurple/protocols/jabber/auth_cyrus.c
+--- a/libpurple/protocols/jabber/auth_cyrus.c	Wed Oct 25 20:32:49 2023 -0500
++++ b/libpurple/protocols/jabber/auth_cyrus.c	Wed Jan 31 00:51:25 2024 -0600
+@@ -373,30 +373,30 @@
+ 
+ 	id = 0;
+ 	js->sasl_cb[id].id = SASL_CB_GETREALM;
+-	js->sasl_cb[id].proc = jabber_sasl_cb_realm;
++	js->sasl_cb[id].proc = (void *)jabber_sasl_cb_realm;
+ 	js->sasl_cb[id].context = (void *)js;
+ 	id++;
+ 
+ 	js->sasl_cb[id].id = SASL_CB_AUTHNAME;
+-	js->sasl_cb[id].proc = jabber_sasl_cb_simple;
++	js->sasl_cb[id].proc = (void *)jabber_sasl_cb_simple;
+ 	js->sasl_cb[id].context = (void *)js;
+ 	id++;
+ 
+ 	js->sasl_cb[id].id = SASL_CB_USER;
+-	js->sasl_cb[id].proc = jabber_sasl_cb_simple;
++	js->sasl_cb[id].proc = (void *)jabber_sasl_cb_simple;
+ 	js->sasl_cb[id].context = (void *)js;
+ 	id++;
+ 
+ 	account = purple_connection_get_account(js->gc);
+ 	if (purple_account_get_password(account) != NULL ) {
+ 		js->sasl_cb[id].id = SASL_CB_PASS;
+-		js->sasl_cb[id].proc = jabber_sasl_cb_secret;
++		js->sasl_cb[id].proc = (void *)jabber_sasl_cb_secret;
+ 		js->sasl_cb[id].context = (void *)js;
+ 		id++;
+ 	}
+ 
+ 	js->sasl_cb[id].id = SASL_CB_LOG;
+-	js->sasl_cb[id].proc = jabber_sasl_cb_log;
++	js->sasl_cb[id].proc = (void *)jabber_sasl_cb_log;
+ 	js->sasl_cb[id].context = (void*)js;
+ 	id++;
+ 
+diff -r a91c43b65d3e -r 488055ab5531 libpurple/protocols/jabber/parser.c
+--- a/libpurple/protocols/jabber/parser.c	Wed Oct 25 20:32:49 2023 -0500
++++ b/libpurple/protocols/jabber/parser.c	Wed Jan 31 00:51:25 2024 -0600
+@@ -187,7 +187,7 @@
+ }
+ 
+ static void
+-jabber_parser_structured_error_handler(void *user_data, xmlErrorPtr error)
++jabber_parser_structured_error_handler(void *user_data, const xmlError *error)
+ {
+ 	JabberStream *js = user_data;
+ 
+diff -r a91c43b65d3e -r 488055ab5531 libpurple/xmlnode.c
+--- a/libpurple/xmlnode.c	Wed Oct 25 20:32:49 2023 -0500
++++ b/libpurple/xmlnode.c	Wed Jan 31 00:51:25 2024 -0600
+@@ -647,7 +647,7 @@
+ }
+ 
+ static void
+-xmlnode_parser_structural_error_libxml(void *user_data, xmlErrorPtr error)
++xmlnode_parser_structural_error_libxml(void *user_data, const xmlError *error)
+ {
+ 	struct _xmlnode_parser_data *xpd = user_data;
+ 
+diff -r a91c43b65d3e -r 488055ab5531 pidgin/gtkaccount.c
+--- a/pidgin/gtkaccount.c	Wed Oct 25 20:32:49 2023 -0500
++++ b/pidgin/gtkaccount.c	Wed Jan 31 00:51:25 2024 -0600
+@@ -2065,9 +2065,9 @@
+ 		prpl_info = PURPLE_PLUGIN_PROTOCOL_INFO(prpl);
+ 	if (prpl_info != NULL && prpl_info->icon_spec.format != NULL) {
+ 		if (purple_account_get_bool(account, "use-global-buddyicon", TRUE)) {
+-			if (global_buddyicon != NULL)
+-				buddyicon = g_object_ref(G_OBJECT(global_buddyicon));
+-			else {
++			if (global_buddyicon != NULL) {
++				buddyicon = g_object_ref(global_buddyicon);
++			} else {
+ 				/* This is for when set_account() is called for a single account */
+ 				const char *path;
+ 				path = purple_prefs_get_path(PIDGIN_PREFS_ROOT "/accounts/buddyicon");
+diff -r a91c43b65d3e -r 488055ab5531 pidgin/gtkimhtml.c
+--- a/pidgin/gtkimhtml.c	Wed Oct 25 20:32:49 2023 -0500
++++ b/pidgin/gtkimhtml.c	Wed Jan 31 00:51:25 2024 -0600
+@@ -1881,11 +1881,16 @@
+ }
+ 
+ /* The callback for an event on a link tag. */
+-static gboolean tag_event(GtkTextTag *tag, GObject *imhtml, GdkEvent *event, GtkTextIter *arg2, gpointer unused)
+-{
++static gboolean
++tag_event(GtkTextTag *tag, GObject *event_object, GdkEvent *event, GtkTextIter *arg2, gpointer unused)
++{
++	GtkIMHtml *imhtml = GTK_IMHTML(event_object);
+ 	GdkEventButton *event_button = (GdkEventButton *) event;
+-	if (GTK_IMHTML(imhtml)->editable)
++
++	if (imhtml->editable) {
+ 		return FALSE;
++	}
++
+ 	if (event->type == GDK_BUTTON_RELEASE) {
+ 		if ((event_button->button == 1) || (event_button->button == 2)) {
+ 			GtkTextIter start, end;
+@@ -1893,7 +1898,7 @@
+ 			if (gtk_text_buffer_get_selection_bounds(
+ 						gtk_text_iter_get_buffer(arg2),	&start, &end))
+ 				return FALSE;
+-			gtk_imhtml_activate_tag(GTK_IMHTML(imhtml), tag);
++			gtk_imhtml_activate_tag(imhtml, tag);
+ 			return FALSE;
+ 		} else if(event_button->button == 3) {
+ 			GList *children;
+@@ -1905,18 +1910,19 @@
+ 			link->tag = g_object_ref(tag);
+ 
+ 			/* Don't want the tooltip around if user right-clicked on link */
+-			if (GTK_IMHTML(imhtml)->tip_window) {
+-				gtk_widget_destroy(GTK_IMHTML(imhtml)->tip_window);
+-				GTK_IMHTML(imhtml)->tip_window = NULL;
++			if (imhtml->tip_window) {
++				gtk_widget_destroy(imhtml->tip_window);
++				imhtml->tip_window = NULL;
+ 			}
+-			if (GTK_IMHTML(imhtml)->tip_timer) {
+-				g_source_remove(GTK_IMHTML(imhtml)->tip_timer);
+-				GTK_IMHTML(imhtml)->tip_timer = 0;
++			if (imhtml->tip_timer) {
++				g_source_remove(imhtml->tip_timer);
++				imhtml->tip_timer = 0;
+ 			}
+-			if (GTK_IMHTML(imhtml)->editable)
+-				gdk_window_set_cursor(event_button->window, GTK_IMHTML(imhtml)->text_cursor);
+-			else
+-				gdk_window_set_cursor(event_button->window, GTK_IMHTML(imhtml)->arrow_cursor);
++			if (imhtml->editable) {
++				gdk_window_set_cursor(event_button->window, imhtml->text_cursor);
++			} else {
++				gdk_window_set_cursor(event_button->window, imhtml->arrow_cursor);
++			}
+ 			menu = gtk_menu_new();
+ 			g_object_set_data_full(G_OBJECT(menu), "x-imhtml-url-data", link,
+ 					(GDestroyNotify)gtk_imhtml_link_destroy);
+@@ -1924,7 +1930,7 @@
+ 			proto = imhtml_find_protocol(link->url, FALSE);
+ 
+ 			if (proto && proto->context_menu) {
+-				proto->context_menu(GTK_IMHTML(link->imhtml), link, menu);
++				proto->context_menu(link->imhtml, link, menu);
+ 			}
+ 
+ 			children = gtk_container_get_children(GTK_CONTAINER(menu));
+diff -r a91c43b65d3e -r 488055ab5531 pidgin/gtkimhtmltoolbar.c
+--- a/pidgin/gtkimhtmltoolbar.c	Wed Oct 25 20:32:49 2023 -0500
++++ b/pidgin/gtkimhtmltoolbar.c	Wed Jan 31 00:51:25 2024 -0600
+@@ -952,7 +952,7 @@
+ 	GObject *object;
+ 	g_return_if_fail(toolbar);
+ 
+-	object = g_object_ref(button);
++	object = g_object_ref(G_OBJECT(button));
+ 	g_signal_handlers_block_matched(object, G_SIGNAL_MATCH_DATA,
+ 									0, 0, NULL, NULL, toolbar);
+ 	gtk_toggle_button_set_active(button, is_active);
+diff -r a91c43b65d3e -r 488055ab5531 pidgin/gtksmiley.c
+--- a/pidgin/gtksmiley.c	Wed Oct 25 20:32:49 2023 -0500
++++ b/pidgin/gtksmiley.c	Wed Jan 31 00:51:25 2024 -0600
+@@ -495,7 +495,7 @@
+ {
+ 	if (editor->custom_pixbuf)
+ 		g_object_unref(G_OBJECT(editor->custom_pixbuf));
+-	editor->custom_pixbuf = image ? g_object_ref(G_OBJECT(image)) : NULL;
++	editor->custom_pixbuf = image ? g_object_ref(image) : NULL;
+ 	if (image) {
+ 		gtk_image_set_from_pixbuf(GTK_IMAGE(editor->smiley_image), image);
+ 		if (editor->entry_len > 0)
+diff -r a91c43b65d3e -r 488055ab5531 pidgin/gtkutils.c
+--- a/pidgin/gtkutils.c	Wed Oct 25 20:32:49 2023 -0500
++++ b/pidgin/gtkutils.c	Wed Jan 31 00:51:25 2024 -0600
+@@ -2363,7 +2363,7 @@
+ 		g_strfreev(prpl_formats);
+ 		return NULL;
+ 	}
+-	original = g_object_ref(G_OBJECT(pixbuf));
++	original = g_object_ref(pixbuf);
+ 
+ 	new_width = orig_width;
+ 	new_height = orig_height;
+
