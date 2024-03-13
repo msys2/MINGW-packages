@@ -12,17 +12,17 @@ _version=18.1.1
 _rc=""
 _tag=llvmorg-${_version}${_rc}
 pkgver=${_version}${_rc/-/}
-pkgrel=1
-url="https://libcxx.llvm.org/"
+pkgrel=2
 arch=(any)
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
+url="https://libcxx.llvm.org/"
 license=("spdx:Apache-2.0 WITH LLVM-exception")
 groups=($( (( _clangprefix )) && echo "${MINGW_PACKAGE_PREFIX}-toolchain"))
 makedepends=("${MINGW_PACKAGE_PREFIX}-clang"
              "${MINGW_PACKAGE_PREFIX}-cmake"
              "${MINGW_PACKAGE_PREFIX}-ninja"
              "${MINGW_PACKAGE_PREFIX}-lld"
-             "${MINGW_PACKAGE_PREFIX}-compiler-rt"
+             $( (( _clangprefix )) && echo "${MINGW_PACKAGE_PREFIX}-compiler-rt")
              "${MINGW_PACKAGE_PREFIX}-python")
 if [[ ${MINGW_PACKAGE_PREFIX} != *-clang-* ]]; then
   # GNU's strip breaks the library #11553
@@ -63,11 +63,25 @@ prepare() {
 }
 
 build() {
+  mkdir -p build-${MSYSTEM} && cd build-${MSYSTEM}
 
-  if check_option "debug" "y"; then
-    _build_type="Debug"
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
   else
-    _build_type="Release"
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  if (( _clangprefix )); then
+    _extra_config+=(
+      -DLIBCXX_USE_COMPILER_RT=ON
+      -DLIBCXXABI_USE_COMPILER_RT=ON
+      -DLIBCXXABI_USE_LLVM_UNWINDER=ON
+      -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON
+      -DLIBUNWIND_USE_COMPILER_RT=ON
+    )
+  else
+    _extra_config+=(-DLIBCXXABI_USE_LLVM_UNWINDER=OFF)
   fi
 
   # Targeting Win 7 will just lead to libc++ looking
@@ -79,48 +93,33 @@ build() {
       _win32_winnt=0x601 # Windows 7
   fi
 
-  local -a libcxx_config
-  if (( _clangprefix )); then
-    libcxx_config+=(-DLIBCXX_USE_COMPILER_RT=ON
-      -DLIBCXXABI_USE_COMPILER_RT=ON
-      -DLIBCXXABI_USE_LLVM_UNWINDER=ON)
-  fi
-
-  libcxx_config+=(-DCMAKE_AR="${MINGW_PREFIX}/bin/llvm-ar.exe"
-    -DCMAKE_ASM_COMPILER="${MINGW_PREFIX}/bin/clang.exe"
-    -DCMAKE_C_COMPILER="${MINGW_PREFIX}/bin/clang.exe"
-    -DCMAKE_CXX_COMPILER="${MINGW_PREFIX}/bin/clang++.exe"
-    -DCMAKE_RANLIB="${MINGW_PREFIX}/bin/llvm-ranlib.exe"
-    -DCMAKE_CXX_FLAGS="-D_WIN32_WINNT=${_win32_winnt}"
-    -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON
-    -DLIBCXX_HAS_WIN32_THREAD_API=ON
-    -DLIBCXX_INCLUDE_BENCHMARKS=OFF
-    -DLIBCXXABI_HAS_WIN32_THREAD_API=ON
-    -DLIBCXXABI_ENABLE_SHARED=OFF
-    -DLIBCXXABI_ENABLE_STATIC=ON
-    -DLIBUNWIND_USE_COMPILER_RT=ON
-    -DLLVM_ENABLE_LLD=ON
-    -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind")
-
-  cd ${srcdir}
-  mkdir build-${MSYSTEM} && cd build-${MSYSTEM}
-
+  CC=${MINGW_PREFIX}/bin/clang.exe \
+  CXX=${MINGW_PREFIX}/bin/clang++.exe \
+  CXXFLAGS+=" -D_WIN32_WINNT=${_win32_winnt}" \
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake.exe \
     -GNinja \
-    -DCMAKE_BUILD_TYPE=${_build_type} \
     -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
     -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib \
+    -DCMAKE_AR="${MINGW_PREFIX}/bin/llvm-ar.exe" \
+    -DCMAKE_ASM_COMPILER="${MINGW_PREFIX}/bin/clang.exe" \
+    -DCMAKE_RANLIB="${MINGW_PREFIX}/bin/llvm-ranlib.exe" \
     -DLLVM_HOST_TRIPLE="${CARCH}-w64-windows-gnu" \
-    -DPython3_EXECUTABLE=${MINGW_PREFIX}/bin/python.exe \
-    -DPython3_FIND_REGISTRY=NEVER \
-    -DPython3_ROOT_DIR=${MINGW_PREFIX} \
+    -DLLVM_ENABLE_LLD=ON \
+    -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
     -DLIBCXX_ENABLE_SHARED=ON \
     -DLIBCXX_ENABLE_STATIC=ON \
-    -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON \
+    -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON \
+    -DLIBCXX_HAS_WIN32_THREAD_API=ON \
+    -DLIBCXX_INSTALL_MODULES=ON \
+    -DLIBCXX_INCLUDE_BENCHMARKS=OFF \
+    -DLIBCXXABI_ENABLE_SHARED=OFF \
+    -DLIBCXXABI_ENABLE_STATIC=ON \
+    -DLIBCXXABI_HAS_WIN32_THREAD_API=ON \
     -DLIBUNWIND_ENABLE_SHARED=ON \
     -DLIBUNWIND_ENABLE_STATIC=ON \
-    "${libcxx_config[@]}" \
+    "${_extra_config[@]}" \
+    -DPython3_EXECUTABLE=${MINGW_PREFIX}/bin/python.exe \
     -Wno-dev \
     ../runtimes
 
