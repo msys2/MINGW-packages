@@ -24,12 +24,8 @@ prepare() {
   patch -Np1 -i "${srcdir}"/0001-A-really-important-fix.patch
   patch -Np1 -i "${srcdir}"/0002-A-less-important-fix.patch
 
-  # if packaging fails at build, use `cargo fetch --locked` instead
-  local _target="${CARCH}-pc-windows-gnu"
-  if [[ $MINGW_PACKAGE_PREFIX == *-clang-aarch64 ]]; then
-    _target="${CARCH}-pc-windows-gnullvm"
-  fi
-  cargo fetch --locked --target "${_target}"
+  # if cargo wants to make an http request at build stage, use `cargo fetch --locked` instead
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
