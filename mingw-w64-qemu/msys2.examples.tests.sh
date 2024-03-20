@@ -568,7 +568,7 @@ function qemuLiveDesktopUEFI_Pflash {
 			-drive file=$TESTDIR/edk2-i386-vars.fd,if=pflash,format=raw,readonly=off \
 			-drive id=hd0,if=none,file=$TESTDIR/testimage.qcow2,format=qcow2 \
 			-device ide-hd,drive=hd0,bus=ide.0,bootindex=0 \
-			-drive id=cd0,if=none,file=$LIVE_IMAGE_FILE,format=raw \
+			-drive id=cd0,if=none,file=$LIVE_IMAGE_FILE,format=raw,read-only=on \
 			-device ide-cd,drive=cd0,bus=ide.1,bootindex=1
 	)
 	removeDir $TESTDIR
@@ -595,7 +595,7 @@ function qemuLiveDesktopUEFI_Bios {
 			-bios $TESTDIR/edk2-x86_64.fd \
 			-drive id=hd0,if=none,file=$TESTDIR/testimage.qcow2,format=qcow2 \
 			-device ide-hd,drive=hd0,bus=ide.0,bootindex=0 \
-			-drive id=cd0,if=none,file=$LIVE_IMAGE_FILE,format=raw \
+			-drive id=cd0,if=none,file=$LIVE_IMAGE_FILE,format=raw,read-only=on \
 			-device ide-cd,drive=cd0,bus=ide.1,bootindex=1
 	)
 	removeDir $TESTDIR
@@ -902,7 +902,7 @@ function qemuPlugins {
 		cd $PLUGIN_NAME
 		if execute qemu-system-i386 -plugin ${PLUGIN}${PLUGIN_OPTS[${PLUGIN_NAME}]} -d plugin -D plugin.log
 		then
-			if [ -n "$(cat plugin.log)" ]
+			if [ -f plugin.log ] && [ -n "$(cat plugin.log)" ]
 			then
 				head -n 15 plugin.log
 				local PLUGIN_LOG_LENGTH="$(cat plugin.log | wc -l)"
