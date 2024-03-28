@@ -1,0 +1,134 @@
+# Maintainer: Maksim Bondarenkov <maksapple2306@gmail.com>
+
+_realname=zed
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=0.130.0.r18888.5da951ce2
+pkgrel=1
+pkgdesc="A high-performance, multiplayer code editor (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64')
+url='https://github.com/zed-industries/zed'
+license=('spdx:AGPL-3.0-or-later AND Apache-2.0 AND GPL-3.0-or-later')
+depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
+         "${MINGW_PACKAGE_PREFIX}-zlib"
+         "${MINGW_PACKAGE_PREFIX}-curl"
+         "${MINGW_PACKAGE_PREFIX}-zstd")
+makedepends=("${MINGW_PACKAGE_PREFIX}-rust"
+             "${MINGW_PACKAGE_PREFIX}-clang"
+             "${MINGW_PACKAGE_PREFIX}-lld"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-fontconfig"
+             "${MINGW_PACKAGE_PREFIX}-libgit2"
+             "${MINGW_PACKAGE_PREFIX}-openssl"
+             "${MINGW_PACKAGE_PREFIX}-sqlite3"
+             'git')
+# git submodules with vendored dependencies (workaround from AUR)
+# declare -gA _tags=(
+#     [protocol]="8645a138fb2ea72c4dab13e739b1f3c9ea29ac84"
+# )
+_commit=5da951ce29037bea5be9051f5089febb21ef4caa
+source=("${_realname}::git+https://github.com/zed-industries/zed.git#commit=${_commit}"
+        #"https://github.com/zed-industries/zed/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz"
+        #"https://github.com/livekit/protocol/archive/${_tags[protocol]}/protocol-${_tags[protocol]}.tar.gz"
+        "https://github.com/zed-industries/zed/pull/9843.patch"
+        "001-rename-the-binary.patch"
+        "002-link-sys-libs-dynamically.patch"
+        "003-download-pc-windows-gnu-assets.patch")
+sha256sums=('SKIP'
+            '2cdd620ff5a4ad4a44bb5fee9f87a57c8513f05e825efe884107c76e5ff5c1e8'
+            'd89277724f4302c3ec53a76c4b5bd4111bf0afcd812d748437f7353d8d46cd88'
+            '07f0291e3f3e4108c1919ecc7515bd87513afb86f14e94b149ce5f52f9398a99'
+            '2a3ae05ac93a03129182c23c90a6078bed473f291b0dcffea0cf873d22edde18')
+# noextract=("${_realname}-${pkgver}.tar.gz")
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Np1 -i "${srcdir}/${_patch}"
+  done
+}
+
+pkgver() {
+  cd "${srcdir}/${_realname}"
+  printf "%s.r%s.%s" "$(grep -m1 version crates/zed/Cargo.toml | sed 's/.*"\(.*\)"/\1/')" \
+    "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  # tar -xzf "${_realname}-${pkgver}.tar.gz" || true
+  # cd "${srcdir}/${_realname}-${pkgver}"
+  cd "${srcdir}/${_realname}"
+
+  rm -f rust-toolchain.toml
+  # rm -rf crates/live_kit_server/protocol
+  # ln -sT "${srcdir}/protocol-${_tags[protocol]}" crates/live_kit_server/protocol
+  git submodule init
+  git submodule update --recursive
+
+  apply_patch_with_msg \
+    001-rename-the-binary.patch \
+    003-download-pc-windows-gnu-assets.patch
+
+  # https://github.com/zed-industries/zed/pull/9843
+  apply_patch_with_msg \
+    9843.patch
+
+  cargo vendor --locked --versioned-dirs
+  mkdir -p .cargo
+  cat >> .cargo/config.toml <<END
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
+END
+
+  apply_patch_with_msg \
+    002-link-sys-libs-dynamically.patch
+}
+
+_env() {
+  export OPENSSL_NO_VENDOR=1
+  export LIBGIT2_NO_VENDOR=1
+  export PKG_CONFIG_ALL_DYNAMIC=1
+  export ZSTD_SYS_USE_PKG_CONFIG=1
+  export WINAPI_NO_BUNDLED_LIBRARIES=1
+  export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+  if [[ $MINGW_PACKAGE_PREFIX != *-clang-* ]]; then
+    export RUSTFLAGS="-C linker=clang -C link-arg=-fuse-ld=lld"
+  fi
+}
+
+build() {
+  # cd "${srcdir}/${_realname}-${pkgver}"
+  cd "${srcdir}/${_realname}"
+
+  _env
+  cargo build --release --frozen -p zed
+}
+
+check() {
+  # cd "${srcdir}/${_realname}-${pkgver}"
+  cd "${srcdir}/${_realname}"
+
+  _env
+  cargo test --release --frozen -p zed
+}
+
+package() {
+  # cd "${srcdir}/${_realname}-${pkgver}"
+  cd "${srcdir}/${_realname}"
+
+  _env
+  cargo install \
+    --frozen \
+    --offline \
+    --no-track \
+    --path crates/zed \
+    --root "${pkgdir}${MINGW_PREFIX}"
+
+  install -Dm644 LICENSE-{AGPL,APACHE,GPL} -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/"
+}
