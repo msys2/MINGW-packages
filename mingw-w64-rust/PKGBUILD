@@ -8,11 +8,14 @@ if [[ $MINGW_PACKAGE_PREFIX == *-clang-aarch64 ]]; then
   _bootstrapping=no
 fi
 
+rust_dist_server=https://static.rust-lang.org/dist
+#rust_dist_server=https://dev-static.rust-lang.org/dist/2024-03-17
+
 _realname=rust
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
          $([[ ${CARCH} == i686 ]] || echo "${MINGW_PACKAGE_PREFIX}-rust-docs"))
-pkgver=1.76.0
+pkgver=1.77.1
 pkgrel=1
 pkgdesc="Systems programming language focused on safety, speed and concurrency (mingw-w64)"
 arch=('any')
@@ -37,20 +40,24 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-autotools"
              $([[ "$_bootstrapping" == "no" ]] && echo "${MINGW_PACKAGE_PREFIX}-rust")
              "${MINGW_PACKAGE_PREFIX}-zlib")
-source=("https://static.rust-lang.org/dist/${_realname}c-${pkgver}-src.tar.gz"{,.asc}
+source=("${rust_dist_server}/${_realname}c-${pkgver}-src.tar.gz"{,.asc}
         "0001-rustc-llvm-fix-libs.patch"
         "0005-win32-config.patch"
         "0007-clang-subsystem.patch"
         "0008-disable-self-contained.patch"
-        "0011-disable-uac-for-installer.patch")
+        "0011-disable-uac-for-installer.patch"
+        "0012-backport-compiler-builtins.patch"
+        "0013-vendor-embed-manifest.patch")
 noextract=(${_realname}c-${pkgver}-src.tar.gz)
-sha256sums=('9e5cff033a7f0d2266818982ad90e4d3e4ef8f8ee1715776c6e25073a136c021'
+sha256sums=('ee106e4c569f52dba3b5b282b105820f86bd8f6b3d09c06b8dce82fb1bb3a4a1'
             'SKIP'
             '7cb1773c288ffb1c1e751edc49b1890c84bf9c362742bc5225d19d474edb73a0'
             '7d1c4e49524b835a8eadc961b39f5594b12a522a1e24368999be2c7e85399e4e'
             '1f668f4aed56060ec74fd53a39da1fbaef69b84de510d955baf349db672a8d15'
             '7a3b5722ff576b0661f36796f088dee4ce318b5dbc3fdcd65b48972de68a0edf'
-            'e7c13f738c670f3d5ce1742eff71e15bb6675ebe86a58dee44d6a58541bdd5a8')
+            '761d73328d9695a7a2bd2a10be8225f4a56801fee54cbb51c0841b7f16e2bde6'
+            '914fbc9902f72cd0d1bde9c4bc045f1cb3975ebc3bfe26a8db03f237914cf04b'
+            'faab966d818c0bb2e163b5b210c9602d7b1407b3a626fa771f1439c598b5721a')
 validpgpkeys=('108F66205EAEB0AAA8DD5E1C85AB96E6FA1BE5FE'  # Rust Language (Tag and Release Signing Key) <rust-key@rust-lang.org>
               '474E22316ABF4785A88C6E8EA2C794A986419D8A'  # Tom Stellard <tstellar@redhat.com>
               'B6C8F98282B944E3B0D5C2530FC3042E345AD05D') # Hans Wennborg <hans@chromium.org>
@@ -92,10 +99,13 @@ prepare() {
     apply_patch_with_msg \
       0007-clang-subsystem.patch
   fi
-  if [[ $MINGW_PACKAGE_PREFIX == *-clang-i686 ]]; then
+  if [[ $MINGW_PACKAGE_PREFIX == *-clang-* ]]; then
     apply_patch_with_msg \
       0011-disable-uac-for-installer.patch
   fi
+  apply_patch_with_msg \
+    0012-backport-compiler-builtins.patch \
+    0013-vendor-embed-manifest.patch
 }
 
 build() {
@@ -126,7 +136,6 @@ build() {
 
     # Otherwise it uses gcc during bootstrap, even when we build for clang
     export CARGO_TARGET_${CARCH^^}_PC_WINDOWS_GNULLVM_LINKER="${CC}"
-
   else
     # We have to do the following because rust doesn't count x86_64-w64-mingw32 as a target triple
     OSTYPE="$CARCH-pc-windows-gnu"
@@ -139,9 +148,7 @@ build() {
   if [ "${_bootstrapping}" = "no" ]; then
     _rust_conf+=("--local-rust-root=$(cygpath -m ${MINGW_PREFIX})")
   fi
-  if [[ $MINGW_PACKAGE_PREFIX != *-clang-i686 ]]; then
-    _rust_conf+=("--enable-vendor")
-  fi
+  _rust_conf+=("--enable-vendor")
 
   if [[ ${CARCH} == i686 ]]; then
     _rust_conf+=("--disable-docs" "--disable-compiler-docs")
@@ -178,17 +185,19 @@ build() {
     --python=${MINGW_PREFIX}/bin/python \
     "${_rust_conf[@]}"
 
-  if [[ $MINGW_PACKAGE_PREFIX != *-clang-i686 ]]; then
-    # Building out of tree is not officially supported so we have to workaround some things like vendored deps
-    cp -r ../${_realname}c-${pkgver}-src/.cargo .
-    sed -i "s|directory = \"vendor\"|directory = \"../${_realname}c-${pkgver}-src/vendor\"|" .cargo/config.toml
-  fi
+  # Building out of tree is not officially supported so we have to workaround some things like vendored deps
+  cp -r ../${_realname}c-${pkgver}-src/.cargo .
+  sed -i "s|directory = \"vendor\"|directory = \"../${_realname}c-${pkgver}-src/vendor\"|" .cargo/config.toml
+
+  local -a _rust_build=()
+  _rust_build+=("--stage" "2")
+  #_rust_build+=("--verbose")
 
   # create the install at a temporary directory
   DEP_NGHTTP_ROOT=${MINGW_PREFIX} \
   DEP_OPENSSL_ROOT=${MINGW_PREFIX} \
   DEP_Z_ROOT=${MINGW_PREFIX} \
-  DESTDIR="$PWD"/dest-rust ${MINGW_PREFIX}/bin/python ../${_realname}c-${pkgver}-src/x.py install --stage 2
+  DESTDIR="$PWD"/dest-rust ${MINGW_PREFIX}/bin/python ../${_realname}c-${pkgver}-src/x.py install "${_rust_build[@]}"
 
   if [[ ${CARCH} != i686 ]]; then
     # move docs out of the way for splitting
