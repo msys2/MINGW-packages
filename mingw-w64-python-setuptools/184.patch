@@ -1,0 +1,423 @@
+From ca6e6ad836d4b441ed2a36eb672eb067658f0fc2 Mon Sep 17 00:00:00 2001
+From: Naveen M K <naveen521kk@gmail.com>
+Date: Tue, 4 Oct 2022 13:49:49 +0530
+Subject: [PATCH 1/9]  Add support for building extensions using MinGW
+ compilers
+
+---
+ distutils/ccompiler.py         | 6 +++++-
+ distutils/command/build_ext.py | 8 ++++----
+ distutils/cygwinccompiler.py   | 4 ++--
+ distutils/sysconfig.py         | 9 ++++++---
+ distutils/util.py              | 9 +++++++++
+ 5 files changed, 26 insertions(+), 10 deletions(-)
+
+diff --git a/distutils/ccompiler.py b/distutils/ccompiler.py
+index c1c7d547..dba2e615 100644
+--- a/distutils/ccompiler.py
++++ b/distutils/ccompiler.py
+@@ -19,7 +19,7 @@
+ from .file_util import move_file
+ from .dir_util import mkpath
+ from ._modified import newer_group
+-from .util import split_quoted, execute
++from .util import split_quoted, execute, is_mingw
+ from ._log import log
+ 
+ 
+@@ -1076,6 +1076,10 @@ def get_default_compiler(osname=None, platform=None):
+         osname = os.name
+     if platform is None:
+         platform = sys.platform
++    # Mingw is a special case where sys.platform is 'win32' but we
++    # want to use the 'mingw32' compiler, so check it first
++    if is_mingw():
++        return 'mingw32'
+     for pattern, compiler in _default_compilers:
+         if (
+             re.match(pattern, platform) is not None
+diff --git a/distutils/command/build_ext.py b/distutils/command/build_ext.py
+index b48f4626..4a69e9c1 100644
+--- a/distutils/command/build_ext.py
++++ b/distutils/command/build_ext.py
+@@ -21,7 +21,7 @@
+ from ..sysconfig import get_config_h_filename
+ from .._modified import newer_group
+ from ..extension import Extension
+-from ..util import get_platform
++from ..util import get_platform, is_mingw
+ from distutils._log import log
+ from . import py37compat
+ 
+@@ -189,7 +189,7 @@ def finalize_options(self):  # noqa: C901
+         # for extensions under windows use different directories
+         # for Release and Debug builds.
+         # also Python's library directory must be appended to library_dirs
+-        if os.name == 'nt':
++        if os.name == 'nt' and not is_mingw():
+             # the 'libs' directory is for binary installs - we assume that
+             # must be the *native* platform.  But we don't really support
+             # cross-compiling via a binary install anyway, so we let it go.
+@@ -742,7 +742,7 @@ def get_libraries(self, ext):  # noqa: C901
+         # pyconfig.h that MSVC groks.  The other Windows compilers all seem
+         # to need it mentioned explicitly, though, so that's what we do.
+         # Append '_d' to the python import library on debug builds.
+-        if sys.platform == "win32":
++        if sys.platform == "win32" and not is_mingw():
+             from .._msvccompiler import MSVCCompiler
+ 
+             if not isinstance(self.compiler, MSVCCompiler):
+@@ -772,7 +772,7 @@ def get_libraries(self, ext):  # noqa: C901
+                 # A native build on an Android device or on Cygwin
+                 if hasattr(sys, 'getandroidapilevel'):
+                     link_libpython = True
+-                elif sys.platform == 'cygwin':
++                elif sys.platform == 'cygwin' or is_mingw():
+                     link_libpython = True
+                 elif '_PYTHON_HOST_PLATFORM' in os.environ:
+                     # We are cross-compiling for one of the relevant platforms
+diff --git a/distutils/cygwinccompiler.py b/distutils/cygwinccompiler.py
+index 47efa377..7ed169f3 100644
+--- a/distutils/cygwinccompiler.py
++++ b/distutils/cygwinccompiler.py
+@@ -57,7 +57,7 @@ def get_msvcr():
+     try:
+         msc_ver = int(match.group(1))
+     except AttributeError:
+-        return
++        return []
+     try:
+         return _msvcr_lookup[msc_ver]
+     except KeyError:
+@@ -277,7 +277,7 @@ def __init__(self, verbose=0, dry_run=0, force=0):
+ 
+         self.set_executables(
+             compiler='%s -O -Wall' % self.cc,
+-            compiler_so='%s -mdll -O -Wall' % self.cc,
++            compiler_so='%s -shared -O -Wall' % self.cc,
+             compiler_cxx='%s -O -Wall' % self.cxx,
+             linker_exe='%s' % self.cc,
+             linker_so='{} {}'.format(self.linker_dll, shared_option),
+diff --git a/distutils/sysconfig.py b/distutils/sysconfig.py
+index a40a7231..166d8543 100644
+--- a/distutils/sysconfig.py
++++ b/distutils/sysconfig.py
+@@ -18,6 +18,7 @@
+ from .errors import DistutilsPlatformError
+ from . import py39compat
+ from ._functools import pass_none
++from .util import is_mingw
+ 
+ IS_PYPY = '__pypy__' in sys.builtin_module_names
+ 
+@@ -120,8 +121,10 @@ def get_python_inc(plat_specific=0, prefix=None):
+     """
+     default_prefix = BASE_EXEC_PREFIX if plat_specific else BASE_PREFIX
+     resolved_prefix = prefix if prefix is not None else default_prefix
++    # MinGW imitates posix like layout, but os.name != posix
++    os_name = "posix" if is_mingw() else os.name
+     try:
+-        getter = globals()[f'_get_python_inc_{os.name}']
++        getter = globals()[f'_get_python_inc_{os_name}']
+     except KeyError:
+         raise DistutilsPlatformError(
+             "I don't know where Python installs its C header files "
+@@ -244,7 +247,7 @@ def get_python_lib(plat_specific=0, standard_lib=0, prefix=None):
+         else:
+             prefix = plat_specific and EXEC_PREFIX or PREFIX
+ 
+-    if os.name == "posix":
++    if os.name == "posix" or is_mingw():
+         if plat_specific or standard_lib:
+             # Platform-specific modules (any module from a non-pure-Python
+             # module distribution) or standard Python library modules.
+@@ -273,7 +276,7 @@ def customize_compiler(compiler):  # noqa: C901
+     Mainly needed on Unix, so we can plug in the information that
+     varies across Unices and is stored in Python's Makefile.
+     """
+-    if compiler.compiler_type == "unix":
++    if compiler.compiler_type in ["unix", "cygwin", "mingw32"]:
+         if sys.platform == "darwin":
+             # Perform first-time customization of compiler-related
+             # config vars on OS X now that we know we need a compiler.
+diff --git a/distutils/util.py b/distutils/util.py
+index 7ae914f7..5a29d072 100644
+--- a/distutils/util.py
++++ b/distutils/util.py
+@@ -511,3 +511,12 @@ def rfc822_escape(header):
+     lines = header.split('\n')
+     sep = '\n' + 8 * ' '
+     return sep.join(lines)
++
++
++def is_mingw():
++    """Returns True if the current platform is mingw.
++
++    Python compiled with Mingw-w64 has sys.platform == 'win32' and
++    get_platform() starts with 'mingw'.
++    """
++    return sys.platform == 'win32' and get_platform().startswith('mingw')
+
+From 941a74ee7bed2ab0f653d872198539f5a54ef456 Mon Sep 17 00:00:00 2001
+From: Naveen M K <naveen521kk@gmail.com>
+Date: Sat, 8 Oct 2022 11:26:48 +0530
+Subject: [PATCH 2/9] Fix tests for `get_msvcr` function
+
+---
+ distutils/tests/test_cygwinccompiler.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/distutils/tests/test_cygwinccompiler.py b/distutils/tests/test_cygwinccompiler.py
+index 6fb449a6..3cb95e12 100644
+--- a/distutils/tests/test_cygwinccompiler.py
++++ b/distutils/tests/test_cygwinccompiler.py
+@@ -71,12 +71,12 @@ def test_check_config_h(self):
+         assert check_config_h()[0] == CONFIG_H_OK
+ 
+     def test_get_msvcr(self):
+-        # none
++        # []
+         sys.version = (
+             '2.6.1 (r261:67515, Dec  6 2008, 16:42:21) '
+             '\n[GCC 4.0.1 (Apple Computer, Inc. build 5370)]'
+         )
+-        assert get_msvcr() is None
++        assert get_msvcr() == []
+ 
+         # MSVC 7.0
+         sys.version = (
+
+From f250940930b8b92a97b4b411966127158a72de28 Mon Sep 17 00:00:00 2001
+From: Naveen M K <naveen521kk@gmail.com>
+Date: Thu, 17 Nov 2022 13:25:32 +0530
+Subject: [PATCH 3/9] Make `test_customize_compiler` run on mingw
+
+Simply, run it for the subclasses for `UnixCCompiler`
+---
+ distutils/tests/test_sysconfig.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/distutils/tests/test_sysconfig.py b/distutils/tests/test_sysconfig.py
+index bfeaf9a6..c7af690b 100644
+--- a/distutils/tests/test_sysconfig.py
++++ b/distutils/tests/test_sysconfig.py
+@@ -12,7 +12,7 @@
+ 
+ import distutils
+ from distutils import sysconfig
+-from distutils.ccompiler import get_default_compiler  # noqa: F401
++from distutils.ccompiler import new_compiler  # noqa: F401
+ from distutils.unixccompiler import UnixCCompiler
+ from test.support import swap_item
+ 
+@@ -109,7 +109,7 @@ def set_executables(self, **kw):
+ 
+         return comp
+ 
+-    @pytest.mark.skipif("get_default_compiler() != 'unix'")
++    @pytest.mark.skipif("not isinstance(new_compiler(), UnixCCompiler)")
+     def test_customize_compiler(self):
+         # Make sure that sysconfig._config_vars is initialized
+         sysconfig.get_config_vars()
+
+From 5e00c0d684c3a8be64595f1dd42c74d00e5ad03f Mon Sep 17 00:00:00 2001
+From: Naveen M K <naveen521kk@gmail.com>
+Date: Thu, 17 Nov 2022 13:54:18 +0530
+Subject: [PATCH 4/9] CI: add msys2 mingw test
+
+---
+ .github/workflows/main.yml | 39 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 39 insertions(+)
+
+From 7a9687a5f1adcfc305753fdd120936e863ee7857 Mon Sep 17 00:00:00 2001
+From: Naveen M K <naveen521kk@gmail.com>
+Date: Wed, 8 Nov 2023 20:30:29 +0530
+Subject: [PATCH 5/9] Fix path separator issue in change_root function
+
+use `os.sep` instead of hardcoding `\\`
+also, fix appropriate tests
+---
+ distutils/tests/test_util.py | 1 +
+ distutils/util.py            | 2 +-
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/distutils/tests/test_util.py b/distutils/tests/test_util.py
+index 070a2770..2bef9ac8 100644
+--- a/distutils/tests/test_util.py
++++ b/distutils/tests/test_util.py
+@@ -105,6 +105,7 @@ def _join(*path):
+ 
+         # windows
+         os.name = 'nt'
++        os.sep = '\\'
+ 
+         def _isabs(path):
+             return path.startswith('c:\\')
+diff --git a/distutils/util.py b/distutils/util.py
+index 5a29d072..b8da885c 100644
+--- a/distutils/util.py
++++ b/distutils/util.py
+@@ -165,7 +165,7 @@ def change_root(new_root, pathname):
+ 
+     elif os.name == 'nt':
+         (drive, path) = os.path.splitdrive(pathname)
+-        if path[0] == '\\':
++        if path[0] == os.sep:
+             path = path[1:]
+         return os.path.join(new_root, path)
+ 
+
+From 6da8d87f5ec339d6079c71e78bfa1a5940f752a0 Mon Sep 17 00:00:00 2001
+From: Naveen M K <naveen521kk@gmail.com>
+Date: Wed, 8 Nov 2023 20:39:37 +0530
+Subject: [PATCH 6/9] test_install: fix an issue specific to mingw
+
+---
+ distutils/tests/test_install.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/distutils/tests/test_install.py b/distutils/tests/test_install.py
+index 3f525db4..7ce68a10 100644
+--- a/distutils/tests/test_install.py
++++ b/distutils/tests/test_install.py
+@@ -16,6 +16,7 @@
+ from distutils.core import Distribution
+ from distutils.errors import DistutilsOptionError
+ from distutils.extension import Extension
++from distutils.util import is_mingw
+ 
+ from distutils.tests import support
+ from test import support as test_support
+@@ -121,7 +122,7 @@ def _expanduser(path):
+         assert 'usersite' in cmd.config_vars
+ 
+         actual_headers = os.path.relpath(cmd.install_headers, site.USER_BASE)
+-        if os.name == 'nt':
++        if os.name == 'nt' and not is_mingw():
+             site_path = os.path.relpath(os.path.dirname(orig_site), orig_base)
+             include = os.path.join(site_path, 'Include')
+         else:
+
+From 3c302383a86f8101dd6167aa1ca931458e17b8a9 Mon Sep 17 00:00:00 2001
+From: Naveen M K <naveen521kk@gmail.com>
+Date: Wed, 8 Nov 2023 23:23:42 +0530
+Subject: [PATCH 7/9] Remove testing dependency on jaraco.text
+
+it depends on pydantic-core which requires rust to work
+also, takes a few minutes to build.
+---
+ distutils/tests/test_sysconfig.py | 6 +++++-
+ setup.cfg                         | 1 -
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/distutils/tests/test_sysconfig.py b/distutils/tests/test_sysconfig.py
+index c7af690b..c4e1648f 100644
+--- a/distutils/tests/test_sysconfig.py
++++ b/distutils/tests/test_sysconfig.py
+@@ -8,7 +8,7 @@
+ import pytest
+ import jaraco.envs
+ import path
+-from jaraco.text import trim
++from textwrap import dedent
+ 
+ import distutils
+ from distutils import sysconfig
+@@ -19,6 +19,10 @@
+ from . import py37compat
+ 
+ 
++def trim(s):
++    return dedent(s).strip()
++
++
+ @pytest.mark.usefixtures('save_env')
+ class TestSysconfig:
+     def test_get_config_h_filename(self):
+From e414926d49fb3b4014fe03959e17e243d64779dd Mon Sep 17 00:00:00 2001
+From: Naveen M K <naveen521kk@gmail.com>
+Date: Thu, 9 Nov 2023 18:48:16 +0530
+Subject: [PATCH 8/9] Add test for dll_libraries attribute in CygwinCCompiler
+ class
+
+---
+ distutils/tests/test_cygwinccompiler.py | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/distutils/tests/test_cygwinccompiler.py b/distutils/tests/test_cygwinccompiler.py
+index 3cb95e12..ffbaf1ea 100644
+--- a/distutils/tests/test_cygwinccompiler.py
++++ b/distutils/tests/test_cygwinccompiler.py
+@@ -114,3 +114,10 @@ def test_get_msvcr(self):
+         )
+         with pytest.raises(ValueError):
+             get_msvcr()
++
++    @pytest.mark.skipif('sys.platform != "cygwin"')
++    def test_dll_libraries_not_none(self):
++        from distutils.cygwinccompiler import CygwinCCompiler
++
++        compiler = CygwinCCompiler()
++        assert compiler.dll_libraries is not None
+
+From 3ce23810b854f0d067ec755f6d3ee167110707a4 Mon Sep 17 00:00:00 2001
+From: Naveen M K <naveen521kk@gmail.com>
+Date: Thu, 9 Nov 2023 18:48:50 +0530
+Subject: [PATCH 9/9] Add some tests for Mingw32CCompiler class
+
+---
+ distutils/tests/test_mingwccompiler.py | 45 ++++++++++++++++++++++++++
+ 1 file changed, 45 insertions(+)
+ create mode 100644 distutils/tests/test_mingwccompiler.py
+
+diff --git a/distutils/tests/test_mingwccompiler.py b/distutils/tests/test_mingwccompiler.py
+new file mode 100644
+index 00000000..d81360e7
+--- /dev/null
++++ b/distutils/tests/test_mingwccompiler.py
+@@ -0,0 +1,45 @@
++import pytest
++
++from distutils.util import split_quoted, is_mingw
++from distutils.errors import DistutilsPlatformError, CCompilerError
++
++
++class TestMingw32CCompiler:
++    @pytest.mark.skipif(not is_mingw(), reason='not on mingw')
++    def test_compiler_type(self):
++        from distutils.cygwinccompiler import Mingw32CCompiler
++
++        compiler = Mingw32CCompiler()
++        assert compiler.compiler_type == 'mingw32'
++
++    @pytest.mark.skipif(not is_mingw(), reason='not on mingw')
++    def test_set_executables(self, monkeypatch):
++        from distutils.cygwinccompiler import Mingw32CCompiler
++
++        monkeypatch.setenv('CC', 'cc')
++        monkeypatch.setenv('CXX', 'c++')
++
++        compiler = Mingw32CCompiler()
++
++        assert compiler.compiler == split_quoted('cc -O -Wall')
++        assert compiler.compiler_so == split_quoted('cc -shared -O -Wall')
++        assert compiler.compiler_cxx == split_quoted('c++ -O -Wall')
++        assert compiler.linker_exe == split_quoted('cc')
++        assert compiler.linker_so == split_quoted('cc -shared')
++
++    @pytest.mark.skipif(not is_mingw(), reason='not on mingw')
++    def test_runtime_library_dir_option(self):
++        from distutils.cygwinccompiler import Mingw32CCompiler
++
++        compiler = Mingw32CCompiler()
++        with pytest.raises(DistutilsPlatformError):
++            compiler.runtime_library_dir_option('/usr/lib')
++
++    @pytest.mark.skipif(not is_mingw(), reason='not on mingw')
++    def test_cygwincc_error(self, monkeypatch):
++        import distutils.cygwinccompiler
++
++        monkeypatch.setattr(distutils.cygwinccompiler, 'is_cygwincc', lambda _: True)
++
++        with pytest.raises(CCompilerError):
++            distutils.cygwinccompiler.Mingw32CCompiler()

@@ -7,7 +7,7 @@ pkgver=1.0
 pkgrel=1
 pkgdesc="Some package (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+mingw_arch=('ucrt64' 'clang64' 'clangarm64')
 url='https://www.somepackage.org/'
 license=('LICENSE')
 makedepends=("${MINGW_PACKAGE_PREFIX}-rust")
@@ -24,7 +24,8 @@ prepare() {
   patch -Np1 -i "${srcdir}"/0001-A-really-important-fix.patch
   patch -Np1 -i "${srcdir}"/0002-A-less-important-fix.patch
 
-  cargo fetch --locked
+  # if cargo wants to make an http request at build stage, use `cargo fetch --locked` instead
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
@@ -49,5 +50,5 @@ package() {
     --path . \
     --root "${pkgdir}${MINGW_PREFIX}"
 
-  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+  install -Dm644 LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }

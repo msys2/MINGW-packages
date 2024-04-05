@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  update-srcinfo:
+  update-srcinfo-win:
     runs-on: windows-2022
     if: ${{ github.repository == 'msys2/MINGW-packages' || github.event_name == 'workflow_dispatch' }}
 
@@ -18,7 +18,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         id: setup-python
         with:
           python-version: '3.11'
@@ -51,26 +51,51 @@ jobs:
         run: |
           msys2-pypi-cache srcinfo.json.gz pypi.json.gz
 
+      - name: Generate SBOM
+        run: |
+          msys2-sbom srcinfo.json.gz sbom.cdx.json
+
       - uses: actions/upload-artifact@v4
         with:
-          name: result
+          name: result-win
           path: |
             srcinfo.json.gz
             pypi.json.gz
+            sbom.cdx.json
+
+  update-srcinfo-linux:
+    needs: update-srcinfo-win
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: result-win
+
+      - name: Update vulnerability database
+        run: |
+          curl --retry 5 -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s --
+          ./bin/grype sbom:sbom.cdx.json -o cyclonedx-json --file sbom.vuln.cdx.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: result-linux
+          path: |
+            sbom.vuln.cdx.json
 
   upload-srcinfo:
-    needs: update-srcinfo
+    needs: [update-srcinfo-win, update-srcinfo-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: result
+          pattern: result-*
+          merge-multiple: true
 
       - name: Upload srcinfo.json.gz
         run: |
-          gh release upload srcinfo-cache srcinfo.json.gz pypi.json.gz --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload srcinfo-cache srcinfo.json.gz pypi.json.gz sbom.cdx.json sbom.vuln.cdx.json --clobber --repo "$GITHUB_REPOSITORY"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
