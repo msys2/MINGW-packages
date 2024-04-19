@@ -29,29 +29,24 @@ prepare() {
 }
 
 build() {
-  mkdir -p build-${MSYSTEM} && cd build-${MSYSTEM}
-
   MSYS2_ARG_CONV_EXCL="--prefix=" \
     meson setup \
       --prefix="${MINGW_PREFIX}" \
       --wrap-mode=nodownload \
       --auto-features=enabled \
       --buildtype=plain \
-      ../${_realname}-${pkgver}
+      "build-${MSYSTEM}" \
+      "${_realname}-${pkgver}"
 
-  meson compile
+  meson compile -C "build-${MSYSTEM}"
 }
 
 check() {
-  cd "${srcdir}/build-${MSYSTEM}"
-
-  meson test
+  meson test -C "build-${MSYSTEM}"
 }
 
 package() {
-  cd "${srcdir}/build-${MSYSTEM}"
-
-  DESTDIR="${pkgdir}" meson install
+  meson install -C "build-${MSYSTEM}" --destdir "${pkgdir}"
 
   install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING"
 }
