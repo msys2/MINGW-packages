@@ -1,2 +1,2 @@
-append_path '/usr/lib/rustup/bin'
+append_path "${MINGW_PREFIX}/lib/rustup/bin"
 export PATH
