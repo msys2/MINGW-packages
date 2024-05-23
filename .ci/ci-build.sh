@@ -110,7 +110,7 @@ for package in "${skipped_packages[@]}"; do
     unset package
 done
 
-test -z "${packages[@]}" && success 'No changes in package recipes'
+[ "${#packages[@]}" -eq 0 ] && success 'No changes in package recipes'
 
 # Build
 message 'Building packages' "${packages[@]}"
