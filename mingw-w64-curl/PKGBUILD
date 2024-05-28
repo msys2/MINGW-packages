@@ -7,7 +7,7 @@ pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
            "${MINGW_PACKAGE_PREFIX}-${_realname}-gnutls" \
            "${MINGW_PACKAGE_PREFIX}-${_realname}-winssl"))
 pkgver=8.8.0
-pkgrel=3
+pkgrel=4
 pkgdesc="Command line tool and library for transferring data with URLs (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
@@ -30,7 +30,8 @@ _openssl_depends=("${MINGW_PACKAGE_PREFIX}-openssl"
 _gnutls_depends=("${MINGW_PACKAGE_PREFIX}-rtmpdump"
                  "${MINGW_PACKAGE_PREFIX}-gnutls")
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
-             "${MINGW_PACKAGE_PREFIX}-autotools"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
              "${_cert_depends[@]}"
              "${_openssl_depends[@]}"
              $([[ ${CARCH} == i686 ]] || echo "${_gnutls_depends[@]}"))
@@ -45,13 +46,15 @@ source=("https://github.com/curl/curl/releases/download/${_realname}-${pkgver//.
         "pathtools.c"
         "pathtools.h"
         "0001-Make-cURL-relocatable.patch"
+        "0003-enable-soversion-on-mingw.patch"
         "0004-more-static-fixes.patch")
 sha256sums=('0f58bb95fc330c8a46eeb3df5701b0d90c9d9bfcc42bd1cd08791d12551d4400'
             'SKIP'
             'ebf471173f5ee9c4416c10a78760cea8afaf1a4a6e653977321e8547ce7bf3c0'
             '1585ef1b61cf53a2ca27049c11d49e0834683dfda798f03547761375df482a90'
-            '3651bd543cc574556ccea185bc6b519284ed55792b65b37ebac99a8d85c4b2a0'
-            '590eb65e90e756eaad993d52a101f29091ada2c742c5a607684e88fc5c560d54')
+            '4bd59182c6da8679cec015c9fd28fb512cfdc4d2be5fe5904a4955980b4cce93'
+            'f411ae7662fc67ff52bdc7d42a92e255e52154bb7d06251694802ba8d709319d'
+            'e1f32a6b03e337f188262b6201980c874138f0524123afb11285d0802451e5b1')
 validpgpkeys=('27EDEAF22F3ABCEB50DB9A125CC908FDB71E12C2')  # Daniel Stenberg
 
 apply_patch_with_msg() {
@@ -73,9 +76,8 @@ prepare() {
 
   apply_patch_with_msg \
     0001-Make-cURL-relocatable.patch \
+    0003-enable-soversion-on-mingw.patch \
     0004-more-static-fixes.patch
-
-  autoreconf -vfi
 }
 
 do_build() {
@@ -86,83 +88,84 @@ do_build() {
     _destdir="${_destdir}${_variant}"
   fi
 
-  local -a extra_config
-  if check_option "debug" "y"; then
-    extra_config+=( --enable-debug )
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
   else
-    extra_config+=( --disable-debug )
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
   fi
 
-  local -a _variant_config
+  declare -a _variant_config
   if [ "${_variant}" = "-winssl" ]; then
-    _variant_config+=("--with-schannel")
-    _variant_config+=('--without-nghttp2')
-    _variant_config+=("--without-ca-bundle")
-    _variant_config+=("--without-ca-path")
-    _variant_config+=("--without-librtmp")
+    _variant_config+=("-DCURL_DEFAULT_SSL_BACKEND=schannel")
+    _variant_config+=("-DCURL_USE_SCHANNEL=ON")
+    _variant_config+=('-DUSE_NGHTTP2=OFF')
+    _variant_config+=("-DCURL_CA_BUNDLE=none")
+    _variant_config+=("-DCURL_CA_PATH=none")
+    _variant_config+=("-DUSE_LIBRTMP=OFF")
   elif [ "${_variant}" = "-gnutls" ]; then
-    _variant_config+=("--with-default-ssl-backend=gnutls")
-    _variant_config+=("--with-gnutls")
-    _variant_config+=("--with-schannel")
-    _variant_config+=('--without-nghttp2')
-    _variant_config+=("--with-ca-bundle=${MINGW_PREFIX}/etc/ssl/certs/ca-bundle.crt")
-    _variant_config+=("--with-librtmp")
+    _variant_config+=("-DCURL_DEFAULT_SSL_BACKEND=gnutls")
+    _variant_config+=("-DCURL_USE_GNUTLS=ON")
+    _variant_config+=("-DCURL_USE_SCHANNEL=ON")
+    _variant_config+=('-DUSE_NGHTTP2=OFF')
+    _variant_config+=("-DCURL_CA_BUNDLE=${MINGW_PREFIX}/etc/ssl/certs/ca-bundle.crt")
+    _variant_config+=("-DUSE_LIBRTMP=ON")
   elif [ "${_variant}" = "-openssl" ]; then
-    _variant_config+=("--with-default-ssl-backend=openssl")
-    _variant_config+=("--with-openssl")
-    _variant_config+=("--with-ca-bundle=${MINGW_PREFIX}/etc/ssl/certs/ca-bundle.crt")
-    _variant_config+=("--with-nghttp2=${MINGW_PREFIX}")
-    _variant_config+=("--without-librtmp")
+    _variant_config+=("-DCURL_DEFAULT_SSL_BACKEND=openssl")
+    _variant_config+=("-DCURL_USE_OPENSSL=ON")
+    _variant_config+=("-DCURL_CA_BUNDLE=${MINGW_PREFIX}/etc/ssl/certs/ca-bundle.crt")
+    _variant_config+=("-DUSE_NGHTTP2=ON")
+    _variant_config+=("-DUSE_LIBRTMP=OFF")
     if [[ ${CARCH} != i686 ]]; then
-      _variant_config+=("--with-openssl-quic" "--with-nghttp3=${MINGW_PREFIX}")
+      _variant_config+=("-DUSE_OPENSSL_QUIC=ON")
     fi
   fi
 
   msg2 "Building static library for curl${_variant}"
   mkdir -p "${_destdir}-static" && cd "${_destdir}-static"
+
   CFLAGS+=" -DNGHTTP2_STATICLIB -DNGHTTP3_STATICLIB" \
   CXXFLAGS+=" -DNGHTTP2_STATICLIB -DNGHTTP3_STATICLIB" \
-  ../${_realname}-${pkgver}/configure \
-    --prefix=${MINGW_PREFIX} \
-    --disable-pthreads \
-    --without-random \
-    --enable-static \
-    --disable-shared \
-    --enable-sspi \
-    --enable-ldap \
-    --enable-ldaps \
-    --with-brotli \
-    --with-ldap-lib=wldap32 \
-    --with-libssh2 \
-    --with-zstd \
-    "${_variant_config[@]}" \
-    "${extra_config[@]}"
-  # there's a bug with zsh completion generation script and Windows.
-  # curl has to be specified with the file extension.
-  sed -i "s|\/curl > \$\@|\/curl\$\{EXEEXT\} > \$\@|" scripts/Makefile
-  make
+  LDFLAGS+=" -static" \
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    "${MINGW_PREFIX}"/bin/cmake.exe \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+      -DCMAKE_FIND_STATIC_LIBRARIES=ON \
+      "${_extra_config[@]}" \
+      "${_variant_config[@]}" \
+      -DPICKY_COMPILER=OFF \
+      -DBUILD_CURL_EXE=OFF \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DBUILD_STATIC_LIBS=ON \
+      -DCURL_WINDOWS_SSPI=ON \
+      -DCURL_BROTLI=ON \
+      -DCURL_ZSTD=ON \
+      -DCURL_USE_LIBSSH2=ON \
+      ../"${_realname}-${pkgver}"
+
+  "${MINGW_PREFIX}"/bin/cmake.exe --build .
 
   msg2 "Building shared library for curl${_variant}"
   mkdir -p "${_destdir}-shared" && cd "${_destdir}-shared"
-  ../${_realname}-${pkgver}/configure \
-    --prefix=${MINGW_PREFIX} \
-    --disable-pthreads \
-    --without-random \
-    --disable-static \
-    --enable-shared \
-    --enable-sspi \
-    --enable-ldap \
-    --enable-ldaps \
-    --with-brotli \
-    --with-ldap-lib=wldap32 \
-    --with-libssh2 \
-    --with-zstd \
-    "${_variant_config[@]}" \
-    "${extra_config[@]}"
-  # there's a bug with zsh completion generation script and Windows.
-  # curl has to be specified with the file extension.
-  sed -i "s|\/curl > \$\@|\/curl\$\{EXEEXT\} > \$\@|" scripts/Makefile
-  make
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    "${MINGW_PREFIX}"/bin/cmake.exe \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+      -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
+      "${_extra_config[@]}" \
+      "${_variant_config[@]}" \
+      -DPICKY_COMPILER=OFF \
+      -DBUILD_SHARED_LIBS=ON \
+      -DBUILD_STATIC_LIBS=OFF \
+      -DCURL_WINDOWS_SSPI=ON \
+      -DCURL_BROTLI=ON \
+      -DCURL_ZSTD=ON \
+      -DCURL_USE_LIBSSH2=ON \
+      ../"${_realname}-${pkgver}"
+
+  "${MINGW_PREFIX}"/bin/cmake.exe --build .
 }
 
 build() {
@@ -175,10 +178,10 @@ build() {
 
 do_package() {
   cd "${srcdir}/build-${MSYSTEM}$1-static"
-  make DESTDIR="${pkgdir}" install
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
 
   cd "${srcdir}/build-${MSYSTEM}$1-shared"
-  make DESTDIR="${pkgdir}" install
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
 
   local PREFIX_DEPS=$(cygpath -am ${MINGW_PREFIX})
   sed -s "s|${PREFIX_DEPS}|${MINGW_PREFIX}|g" -i ${pkgdir}${MINGW_PREFIX}/bin/curl-config
