@@ -1,0 +1,182 @@
+# Contributor: Mehdi Chinoune <mehdi.chinoune@hotmail.com>
+# Contributor: Raed Rizqie <raed.rizqie@gmail.com>
+
+if [[ $MINGW_PACKAGE_PREFIX == *-clang-* ]]; then
+  _clangprefix=1
+fi
+
+_realname=libc++
+pkgbase=mingw-w64-${_realname}-bootstrap
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}-bootstrap"
+         "${MINGW_PACKAGE_PREFIX}-libunwind-bootstrap")
+_version=19.1.6
+_rc=""
+_tag=llvmorg-${_version}${_rc}
+pkgver=${_version}${_rc/-/}
+pkgrel=1
+arch=(any)
+mingw_arch=('mingw64' 'ucrt64' 'clang64')
+url="https://libcxx.llvm.org/"
+msys2_references=(
+  "cpe: cpe:/a:llvm:llvm"
+)
+license=("spdx:Apache-2.0 WITH LLVM-exception")
+makedepends=("${MINGW_PACKAGE_PREFIX}-clang"
+             $( (( _clangprefix )) || echo "${MINGW_PACKAGE_PREFIX}-gcc")
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-lld"
+             $( (( _clangprefix )) && echo "${MINGW_PACKAGE_PREFIX}-compiler-rt")
+             "${MINGW_PACKAGE_PREFIX}-python")
+_url=https://github.com/llvm/llvm-project/releases/download/${_tag}
+source=("${_url}/libcxx-${pkgver}.src.tar.xz"{,.sig}
+        "${_url}/libcxxabi-${pkgver}.src.tar.xz"{,.sig}
+        "${_url}/libunwind-${pkgver}.src.tar.xz"{,.sig}
+        "${_url}/runtimes-${pkgver}.src.tar.xz"{,.sig}
+        "${_url}/llvm-${pkgver}.src.tar.xz"{,.sig}
+        "${_url}/cmake-${pkgver}.src.tar.xz"{,.sig}
+        001-libunwind-without-compiler-rt.patch
+        002-libcxx-without-compiler-rt.patch
+        003-libcxxabi-without-compiler-rt.patch)
+sha256sums=('bfa95b7777d1aafde91df6362542cea4b2f8b8575cf2c4c950e382f5962fe2df'
+            'SKIP'
+            '8821056b55d01f6902cac47ea9db87c27f541922eedea830e27b51c85825d7dc'
+            'SKIP'
+            '34eab971069837be770e44f3543f1eb50f385575e8f29d1b5e1a67e7c482f680'
+            'SKIP'
+            'a242d2aeaafbc259901d0f5b962874ed8e6ff0b51993036e08ae5d28be2f6e68'
+            'SKIP'
+            'ad1a3b125ff014ded290094088de40efb9193ce81a24278184230b7d401f8a3e'
+            'SKIP'
+            '9c7ec82d9a240dc2287b8de89d6881bb64ceea0dcd6ce133c34ef65bda22d99e'
+            'SKIP'
+            'SKIP'
+            'SKIP'
+            'SKIP')
+validpgpkeys=('B6C8F98282B944E3B0D5C2530FC3042E345AD05D'  # Hans Wennborg, Google.
+              '474E22316ABF4785A88C6E8EA2C794A986419D8A'  # Tom Stellard
+              'D574BD5D1D0E98895E3BF90044F2485E45D59042') # Tobias Hieta
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Np1 -i "${srcdir}/${_patch}"
+  done
+}
+
+prepare() {
+  # Rename Directories
+  for pkg in cmake libcxx libcxxabi libunwind llvm runtimes; do
+    mv ${pkg}-$pkgver.src ${pkg}
+  done
+
+  cd ${srcdir}/libunwind
+  apply_patch_with_msg \
+    001-libunwind-without-compiler-rt.patch
+
+  cd ${srcdir}/libcxx
+  apply_patch_with_msg \
+    002-libcxx-without-compiler-rt.patch
+
+  cd ${srcdir}/libcxxabi
+  apply_patch_with_msg \
+    003-libcxxabi-without-compiler-rt.patch
+}
+
+build() {
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  if (( _clangprefix )); then
+    _extra_config+=(
+      -DLIBCXX_USE_COMPILER_RT=ON
+      -DLIBCXXABI_USE_COMPILER_RT=ON
+      -DLIBCXXABI_USE_LLVM_UNWINDER=ON
+      -DLIBUNWIND_USE_COMPILER_RT=ON
+    )
+  else
+    _extra_config+=(
+      -DLIBCXX_USE_COMPILER_RT=OFF
+      -DLIBCXXABI_USE_COMPILER_RT=OFF
+      -DLIBCXXABI_USE_LLVM_UNWINDER=OFF
+      -DLIBUNWIND_USE_COMPILER_RT=OFF
+    )
+  fi
+
+  # Targeting Win 7 will just lead to libc++ looking
+  # up new APIs at runtime, so there is no downside really
+  local _win32_winnt
+  if [[ ${MSYSTEM} == CLANG* ]]; then
+      _win32_winnt=0xA00 # Windows 10
+  else
+      _win32_winnt=0x601 # Windows 7
+  fi
+
+  CXXFLAGS+=" -D_WIN32_WINNT=${_win32_winnt} $CPPFLAGS" \
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  cmake -Wno-dev \
+    -GNinja \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX}/bootstrap \
+    -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib \
+    -DCMAKE_C_COMPILER=clang \
+    -DCMAKE_CXX_COMPILER=clang++ \
+    -DCMAKE_AR="${MINGW_PREFIX}/bin/llvm-ar.exe" \
+    -DCMAKE_ASM_COMPILER="${MINGW_PREFIX}/bin/clang.exe" \
+    -DCMAKE_RANLIB="${MINGW_PREFIX}/bin/llvm-ranlib.exe" \
+    -DLLVM_HOST_TRIPLE="${CARCH}-w64-windows-gnu" \
+    -DLLVM_ENABLE_LLD=ON \
+    -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
+    -DLIBCXX_ENABLE_SHARED=OFF \
+    -DLIBCXX_ENABLE_STATIC=ON \
+    -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON \
+    -DLIBCXX_INSTALL_MODULES=ON \
+    -DLIBCXX_INCLUDE_BENCHMARKS=OFF \
+    -DLIBCXXABI_ENABLE_SHARED=OFF \
+    -DLIBCXXABI_ENABLE_STATIC=ON \
+    -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON \
+    -DLIBCXXABI_HAS_WIN32_THREAD_API=ON \
+    -DLIBUNWIND_ENABLE_FRAME_APIS=ON \
+    -DLIBUNWIND_ENABLE_SHARED=OFF \
+    -DLIBUNWIND_ENABLE_STATIC=ON \
+    "${_extra_config[@]}" \
+    -DPython3_EXECUTABLE=${MINGW_PREFIX}/bin/python.exe \
+    -S runtimes \
+    -B build-${MSYSTEM}
+
+  cmake --build build-${MSYSTEM} -- unwind cxxabi cxx cxx_experimental
+}
+
+package_libc++-bootstrap() {
+  pkgdesc="C++ Standard Library (static) (mingw-w64)"
+  url="https://libcxx.llvm.org/"
+  depends=("${MINGW_PACKAGE_PREFIX}-libunwind-bootstrap")
+
+  DESTDIR="${pkgdir}" cmake --build "${srcdir}/build-${MSYSTEM}" --target install-cxx install-cxxabi
+
+  install -Dm644 "${srcdir}"/libcxx/LICENSE.TXT "${pkgdir}"${MINGW_PREFIX}/bootstrap/share/licenses/libc++/LICENSE
+}
+
+package_libunwind-bootstrap() {
+  pkgdesc='A new implementation of a stack unwinder for C++ exceptions (static) (mingw-w64)'
+  url='https://llvm.org/'
+
+  DESTDIR="${pkgdir}" cmake --build "${srcdir}/build-${MSYSTEM}" --target install-unwind
+
+  install -Dm644 "${srcdir}"/libunwind/LICENSE.TXT "${pkgdir}"${MINGW_PREFIX}/bootstrap/share/licenses/libunwind/LICENSE
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;
