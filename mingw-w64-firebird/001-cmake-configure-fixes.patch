@@ -1,0 +1,330 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6bb9033..2ad12ec 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -17,7 +17,7 @@
+ #
+ ################################################################################
+ 
+-cmake_minimum_required(VERSION 2.8.12)
++cmake_minimum_required(VERSION 3.15)
+ 
+ # In-source builds are not possible and so disabled.
+ if (${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
+@@ -84,6 +84,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${output_dir})
+ if (MSVC OR XCODE)
+     set(output_dir ${output_dir}/$<CONFIG>)
+     set(boot_dir ${boot_dir}/$<CONFIG>)
++elseif (MINGW)
++    set(output_dir ${CMAKE_BINARY_DIR})
+ endif()
+ 
+ if (MSVC AND DEFAULT_CONFIGURATION)
+@@ -98,7 +100,7 @@ if (XCODE)
+         string(TOUPPER ${conf} conf2)
+         set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${conf2} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${conf}/bin)
+     endforeach()
+-elseif (UNIX)
++elseif (UNIX OR MINGW)
+     set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${output_dir}/bin)
+     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${output_dir}/bin)
+ endif()
+@@ -147,8 +149,8 @@ endif()
+ 
+ include(Configure)
+ 
+-if (FREEBSD)
+-    # temporary
++if (FREEBSD OR MINGW)
++    # Build-time temporary installation path
+     set(CMAKE_INSTALL_PREFIX ${CMAKE_BINARY_DIR})
+ endif()
+ 
+@@ -159,21 +161,55 @@ set(FB_SERVICE_NAME "gds_db")
+ set(FB_SERVICE_PORT 3050)
+ 
+ if (WIN32)
+-    set(FB_PREFIX "c:\\\\Program Files\\\\Firebird\\\\")
++    if (MSVC)
++        set(FB_PREFIX "c:\\\\Program Files\\\\Firebird\\\\")
++    else()
++        set(FB_PREFIX ${CMAKE_INSTALL_PREFIX})
++    endif()
+     set(FB_IPC_NAME "FIREBIRD")
+ endif()
+ 
++if (MINGW)
++    set(FB_BINDIR "${FB_PREFIX}/bin")
++    set(FB_SBINDIR "${FB_PREFIX}/bin")
++    set(FB_INCDIR "${FB_PREFIX}/include")
++    set(FB_LIBDIR "${FB_PREFIX}/lib")
++    set(FB_CONFDIR "${FB_PREFIX}/etc/firebird")
++    set(FB_GUARDDIR "${FB_PREFIX}/etc/firebird")
++    set(FB_LOGDIR "${FB_PREFIX}/etc/firebird")
++    set(FB_MSGDIR "${FB_PREFIX}/etc/firebird")
++    set(FB_SECDBDIR "${FB_PREFIX}/etc/firebird")
++    set(FB_DOCDIR "${FB_PREFIX}/share/firebird/doc")
++    set(FB_INTLDIR "${FB_PREFIX}/share/firebird/intl")
++    set(FB_MISCDIR "${FB_PREFIX}/share/firebird/misc")
++    set(FB_PLUGDIR "${FB_PREFIX}/share/firebird/plugins")
++    set(FB_SAMPLEDBDIR "${FB_PREFIX}/share/firebird/examples/empbuild")
++    set(FB_SAMPLEDIR "${FB_PREFIX}/share/firebird/examples")
++    set(FB_TZDATADIR "${FB_PREFIX}/share/firebird/tzdata")
++endif()
++
+ set(AUTOCONFIG_SRC ${CMAKE_SOURCE_DIR}/src/include/gen/autoconfig.h.in)
+ set(AUTOCONFIG ${CMAKE_BINARY_DIR}/src/include/gen/autoconfig.h)
+ configure_file(${AUTOCONFIG_SRC} ${AUTOCONFIG} @ONLY)
+ 
++if (MINGW)
++    # Set the final installation path
++    set(FB_PREFIX ${FB_INSTALL_PREFIX})
++
++    set(FBCONFIG_SRC ${CMAKE_SOURCE_DIR}/builds/install/arch-specific/mingw/fb_config.in)
++    set(FBCONFIG ${CMAKE_BINARY_DIR}/fb_config)
++    configure_file(${FBCONFIG_SRC} ${FBCONFIG} @ONLY)
++endif()
++
+ ################################################################################
+ #
+ # compiler & linker settings
+ #
+ ################################################################################
+ 
+-add_definitions(-DDEV_BUILD)
++if ("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
++    add_definitions(-DDEV_BUILD)
++endif()
+ 
+ if (WIN32)
+     set(OS_DIR win32)
+@@ -192,20 +228,71 @@ if (WIN32)
+         endif()
+     endif(MSVC)
+ 
+-    set(LIB_Ws2_32 Ws2_32)
++    set(LIB_ws2_32 ws2_32)
+     set(LIB_comctl32 comctl32)
+     set(LIB_mpr mpr)
+     set(LIB_version version)
+ endif(WIN32)
+ 
+ if (MINGW)
+-    # clear unix-style prefixes
++    # Clear unix-style prefixes
+     set(CMAKE_SHARED_LIBRARY_PREFIX)
+     set(CMAKE_SHARED_MODULE_PREFIX)
+     set(CMAKE_STATIC_LIBRARY_PREFIX)
+ 
+-    add_definitions(-D_WIN32_WINNT=0x0600)
++    if ("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
++        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ggdb")
++        set(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} -DDEBUG")
++    else()
++        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
++        set(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} -DNDEBUG")
++    endif()
++
++    add_definitions(-DWIN_NT -DMINGW -DMINGW_HAS_SECURE_API -DTTMATH_NOASM)
++
++    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-shift-count-overflow")
+     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4 -std=c++17")
++
++    # Suppress myriad of warnings    
++    set(cxx_flags "")
++    list(APPEND cxx_flags
++        -Wundef
++        -Wno-format
++        -Wno-deprecated-declarations
++        -Wno-ignored-attributes
++        -Wno-invalid-offsetof
++        -Wno-long-long
++        -Wno-non-virtual-dtor
++        -Wno-parentheses
++        -Wno-shift-count-overflow
++        -Wno-sign-compare
++        -Wno-switch
++        -Wno-unused-variable
++        -Wno-write-strings
++    )
++    if (CLANG)
++        list(APPEND cxx_flags
++            -Wno-varargs
++            -Wno-constant-conversion
++            -Wno-inconsistent-missing-override
++            -Wno-tautological-constant-out-of-range-compare
++            -Wno-c++11-narrowing
++        )
++    else()
++        list(APPEND cxx_flags
++            -Wno-class-memaccess
++            -Wno-overflow
++            -Wno-return-local-addr
++            -Wno-stringop-overflow
++            -Wno-stringop-overread
++            -Wno-narrowing
++        )
++    endif()
++    string(REPLACE ";" " " cxx_flags "${cxx_flags}")
++    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${cxx_flags}")
++
++    set(LIB_iconv iconv)
++    set(LIB_re2 re2)
+ endif()
+ 
+ if (UNIX)
+@@ -214,8 +301,12 @@ if (UNIX)
+     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
+     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -msse4 -std=c++17")
+ 
++    set(FB_INTERNAL_TOMMATH ON)
++    set(FB_INTERNAL_EDITLINE ON)
++
++    set(LIB_re2 re2)
+     if (NOT CMAKE_CROSSCOMPILING)
+-        set(LIB_readline readline)
++        set(LIB_editline editline)
+     endif()
+     if (NOT FREEBSD)
+         set(LIB_dl dl)
+@@ -251,7 +342,7 @@ endif()
+ #
+ ################################################################################
+ 
+-if (WIN32)
++if (MSVC)
+     # icu
+     if (NOT ICU_EXTRACT)
+         message(STATUS "Extracting pre-built ICU")
+@@ -324,29 +415,50 @@ if (NOT CMAKE_CROSSCOMPILING)
+ create_boot_commands()
+ create_master_commands()
+ 
+-endif() # if (NOT CMAKE_CROSSCOMPILING)
++endif() # (NOT CMAKE_CROSSCOMPILING)
+ 
+ crosscompile_prebuild_steps()
+ 
+-include_directories("extern/libtommath")
+-include_directories("extern/libtomcrypt/src/headers")
++if (FB_INTERNAL_TOMMATH)
++    include_directories("extern/libtommath")
++    include_directories("extern/libtomcrypt/src/headers")
++    set(LIB_tommath libtommath)
++    set(LIB_tomcrypt libtomcrypt)
++else()
++    set(LIB_tommath tommath)
++    set(LIB_tomcrypt tomcrypt)
++endif()
++
++if (UNIX)
++    if (FB_INTERNAL_EDITLINE)
++        include_directories("extern/editline")
++    endif()
++endif()
++
+ include_directories("extern/decNumber")
+-include_directories("extern/icu/include")
+-include_directories("extern/zlib")
++include_directories("extern/libcds")
++include_directories("extern/re2")
++
++if (MSVC OR ANDROID)
++    include_directories("extern/icu/include")
++    include_directories("extern/zlib")
++endif()
+ 
+ include_directories("src/include")
+ include_directories("src/include/gen")
+ include_directories("${CMAKE_CURRENT_BINARY_DIR}/src/include")
+ include_directories("${CMAKE_CURRENT_BINARY_DIR}/src/include/gen")
+ 
++
++if (FB_INTERNAL_TOMMATH)
+ ########################################
+ # LIBRARY libtommath
+ ########################################
+ 
+ file(GLOB libtommath_src "extern/libtommath/*.c" "extern/libtommath/*.h")
+ 
+-add_library             (libtommath ${libtommath_src})
+-project_group           (libtommath Extern)
++add_library                 (libtommath ${libtommath_src})
++project_group               (libtommath Extern)
+ 
+ 
+ ########################################
+@@ -362,6 +474,8 @@ add_library                 (libtomcrypt ${libtomcrypt_src})
+ target_compile_definitions  (libtomcrypt PRIVATE LTC_NO_ROLC LTC_SOURCE)
+ project_group               (libtomcrypt Extern)
+ 
++endif() # (FB_INTERNAL_TOMMATH)
++
+ 
+ ########################################
+ # LIBRARY decNumber
+@@ -375,6 +489,30 @@ add_library                 (decNumber ${decNumber_src})
+ project_group               (decNumber Extern)
+ 
+ 
++if (FB_INTERNAL_EDITLINE)
++########################################
++# LIBRARY editline
++########################################
++
++file(GLOB editline_src "extern/editline/src/*.c" "extern/editline/src/*.h")
++
++add_library                 (editline ${editline_src})
++project_group               (editline Extern)
++
++endif() # (FB_INTERNAL_EDITLINE)
++
++
++########################################
++# LIBRARY libcds
++########################################
++
++file(GLOB_RECURSE libcds_src "extern/libcds/src/*.cpp")
++
++add_library                 (libcds ${libcds_src})
++target_compile_definitions  (libcds PUBLIC CDS_BUILD_STATIC_LIB)
++project_group               (libcds Extern)
++
++
+ ########################################
+ # EXECUTABLE btyacc
+ ########################################
+@@ -383,11 +521,11 @@ file(GLOB btyacc_src "extern/btyacc/*.c" "extern/btyacc/*.h")
+ 
+ if (NOT CMAKE_CROSSCOMPILING)
+ 
+-add_executable          (btyacc ${btyacc_src})
+-project_group           (btyacc Extern)
+-set_output_directory    (btyacc . CURRENT_DIR)
++add_executable              (btyacc ${btyacc_src})
++set_output_directory        (btyacc src CURRENT_DIR)
++project_group               (btyacc Extern)
+ 
+-endif() # if (NOT CMAKE_CROSSCOMPILING)
++endif() # (NOT CMAKE_CROSSCOMPILING)
+ 
+ ########################################
+ # EXECUTABLE cloop
+@@ -395,13 +533,15 @@ endif() # if (NOT CMAKE_CROSSCOMPILING)
+ 
+ file(GLOB cloop_src "extern/cloop/src/cloop/*.cpp" "extern/cloop/src/cloop/*.h")
+ 
+-add_executable          (cloop ${cloop_src})
+-project_group           (cloop Extern)
++add_executable              (cloop ${cloop_src})
++set_output_directory        (cloop src CURRENT_DIR)
++project_group               (cloop Extern)
+ 
+ ########################################
+ # subdirectories
+ ########################################
+ 
++add_subdirectory("extern/re2")
+ add_subdirectory("examples")
+ add_subdirectory("src")
+ 
