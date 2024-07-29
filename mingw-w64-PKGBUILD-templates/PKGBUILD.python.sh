@@ -37,7 +37,7 @@ build() {
   cd "${srcdir}"
   cp -r "${_realname}-${pkgver}" "python-build-${MSYSTEM}" && cd "python-build-${MSYSTEM}"
 
-  ${MINGW_PREFIX}/bin/python -m build --wheel --skip-dependency-check --no-isolation
+  python -m build --wheel --skip-dependency-check --no-isolation
 }
 
 check() {
@@ -46,7 +46,7 @@ check() {
 
 # The test command will usually depend upon what is contained in the tox.ini file
 # or in the [testenv:py] section of the pyproject.toml file.
-  ${MINGW_PREFIX}/bin/python -m pytest
+  python -m pytest
 }
 
 package() {
@@ -54,7 +54,7 @@ package() {
   cd "${srcdir}/python-build-${MSYSTEM}"
 
   MSYS2_ARG_CONV_EXCL="--prefix=" \
-    ${MINGW_PREFIX}/bin/python -m installer --prefix=${MINGW_PREFIX} \
+    python -m installer --prefix=${MINGW_PREFIX} \
     --destdir="${pkgdir}" dist/*.whl
 
   install -Dm644 LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/python-${_realname}/LICENSE"
