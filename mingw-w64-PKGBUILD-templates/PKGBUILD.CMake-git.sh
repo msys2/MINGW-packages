@@ -44,7 +44,7 @@ build() {
   fi
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
-    "${MINGW_PREFIX}"/bin/cmake.exe \
+    cmake \
       -GNinja \
       -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
       "${extra_config[@]}" \
@@ -52,15 +52,15 @@ build() {
       -S "${_realname}" \
       -B "build-${MSYSTEM}"
 
-  "${MINGW_PREFIX}"/bin/cmake.exe --build "build-${MSYSTEM}"
+  cmake --build "build-${MSYSTEM}"
 }
 
 check() {
-  "${MINGW_PREFIX}"/bin/cmake.exe --build "build-${MSYSTEM}" --target test
+  cmake --build "build-${MSYSTEM}" --target test
 }
 
 package() {
-  DESTDIR="${pkgdir}" "${MINGW_PREFIX}"/bin/cmake.exe --install "build-${MSYSTEM}"
+  DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}"
 
   install -Dm644 "${srcdir}/${_realname}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }
