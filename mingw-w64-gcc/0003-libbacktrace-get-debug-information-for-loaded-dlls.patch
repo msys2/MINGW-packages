@@ -1,0 +1,872 @@
+From 5dbde0d724792aa7b49f1fb9e82d68fa001a6a0c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bj=C3=B6rn=20Sch=C3=A4pers?= <bjoern@hazardy.de>
+Date: Sun, 30 Apr 2023 23:54:32 +0200
+Subject: [PATCH 1/2] libbacktrace: get debug information for loaded dlls
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Fixes https://github.com/ianlancetaylor/libbacktrace/issues/53, except
+that libraries loaded after the backtrace_initialize are not handled.
+But as far as I can see that's the same for elf.
+
+Tested on x86_64-linux and i686-w64-mingw32.
+
+-- >8 --
+
+libbacktrace/Changelog:
+
+	* configure.ac: Checked for tlhelp32.h
+	* configure: Regenerate.
+	* config.h.in: Regenerate.
+	* pecoff.c: Include <tlhelp32.h> if available.
+	 (backtrace_initialize): Use tlhelp32 api for a snapshot to
+	                         detect loaded modules.
+	 (coff_add): New argument for the module handle of the file,
+	             to get the base address.
+
+Signed-off-by: Björn Schäpers <bjoern@hazardy.de>
+---
+ libbacktrace/config.h.in  |   3 +
+ libbacktrace/configure    | 185 ++++++++++++++++++++------------------
+ libbacktrace/configure.ac |   4 +
+ libbacktrace/pecoff.c     |  74 +++++++++++++--
+ 4 files changed, 171 insertions(+), 95 deletions(-)
+
+diff --git a/libbacktrace/config.h.in b/libbacktrace/config.h.in
+index ee2616335c7..9b8ab88ab63 100644
+--- a/libbacktrace/config.h.in
++++ b/libbacktrace/config.h.in
+@@ -101,6 +101,9 @@
+ /* Define to 1 if you have the <sys/types.h> header file. */
+ #undef HAVE_SYS_TYPES_H
+ 
++/* Define to 1 if you have the <tlhelp32.h> header file. */
++#undef HAVE_TLHELP32_H
++
+ /* Define to 1 if you have the <unistd.h> header file. */
+ #undef HAVE_UNISTD_H
+ 
+diff --git a/libbacktrace/configure b/libbacktrace/configure
+index 7ade966b54d..ca52ee3bafb 100755
+--- a/libbacktrace/configure
++++ b/libbacktrace/configure
+@@ -1866,7 +1866,7 @@ else
+ #define $2 innocuous_$2
+ 
+ /* System header to define __stub macros and hopefully few prototypes,
+-    which can conflict with char $2 (); below.
++    which can conflict with char $2 (void); below.
+     Prefer <limits.h> to <assert.h> if __STDC__ is defined, since
+     <limits.h> exists even on freestanding compilers.  */
+ 
+@@ -1884,7 +1884,7 @@ else
+ #ifdef __cplusplus
+ extern "C"
+ #endif
+-char $2 ();
++char $2 (void);
+ /* The GNU C library defines this for functions which it implements
+     to always fail with ENOSYS.  Some functions are actually named
+     something starting with __ and the normal name is an alias.  */
+@@ -1893,7 +1893,7 @@ choke me
+ #endif
+ 
+ int
+-main ()
++main (void)
+ {
+ return $2 ();
+   ;
+@@ -1932,7 +1932,7 @@ else
+ /* end confdefs.h.  */
+ $4
+ int
+-main ()
++main (void)
+ {
+ if (sizeof ($2))
+ 	 return 0;
+@@ -1945,7 +1945,7 @@ if ac_fn_c_try_compile "$LINENO"; then :
+ /* end confdefs.h.  */
+ $4
+ int
+-main ()
++main (void)
+ {
+ if (sizeof (($2)))
+ 	    return 0;
+@@ -1983,7 +1983,7 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ /* end confdefs.h.  */
+ $4
+ int
+-main ()
++main (void)
+ {
+ static int test_array [1 - 2 * !(($2) >= 0)];
+ test_array [0] = 0;
+@@ -2000,7 +2000,7 @@ if ac_fn_c_try_compile "$LINENO"; then :
+ /* end confdefs.h.  */
+ $4
+ int
+-main ()
++main (void)
+ {
+ static int test_array [1 - 2 * !(($2) <= $ac_mid)];
+ test_array [0] = 0;
+@@ -2027,7 +2027,7 @@ else
+ /* end confdefs.h.  */
+ $4
+ int
+-main ()
++main (void)
+ {
+ static int test_array [1 - 2 * !(($2) < 0)];
+ test_array [0] = 0;
+@@ -2044,7 +2044,7 @@ if ac_fn_c_try_compile "$LINENO"; then :
+ /* end confdefs.h.  */
+ $4
+ int
+-main ()
++main (void)
+ {
+ static int test_array [1 - 2 * !(($2) >= $ac_mid)];
+ test_array [0] = 0;
+@@ -2079,7 +2079,7 @@ while test "x$ac_lo" != "x$ac_hi"; do
+ /* end confdefs.h.  */
+ $4
+ int
+-main ()
++main (void)
+ {
+ static int test_array [1 - 2 * !(($2) <= $ac_mid)];
+ test_array [0] = 0;
+@@ -2104,12 +2104,12 @@ esac
+     cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ /* end confdefs.h.  */
+ $4
+-static long int longval () { return $2; }
+-static unsigned long int ulongval () { return $2; }
++static long int longval (void) { return $2; }
++static unsigned long int ulongval (void) { return $2; }
+ #include <stdio.h>
+ #include <stdlib.h>
+ int
+-main ()
++main (void)
+ {
+ 
+   FILE *f = fopen ("conftest.val", "w");
+@@ -2170,7 +2170,7 @@ else
+ /* end confdefs.h.  */
+ $4
+ int
+-main ()
++main (void)
+ {
+ #ifndef $as_decl_name
+ #ifdef __cplusplus
+@@ -3073,7 +3073,7 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -3213,7 +3213,7 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ /* end confdefs.h.  */
+ #include <stdio.h>
+ int
+-main ()
++main (void)
+ {
+ FILE *f = fopen ("conftest.out", "w");
+  return ferror (f) || fclose (f) != 0;
+@@ -3277,7 +3277,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -3328,7 +3328,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ #ifndef __GNUC__
+        choke me
+@@ -3369,7 +3369,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -3384,7 +3384,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -3400,7 +3400,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -3449,9 +3449,7 @@ struct stat;
+ /* Most of the following tests are stolen from RCS 5.7's src/conf.sh.  */
+ struct buf { int x; };
+ FILE * (*rcsopen) (struct buf *, struct stat *, int);
+-static char *e (p, i)
+-     char **p;
+-     int i;
++static char *e (char **p, int i)
+ {
+   return p[i];
+ }
+@@ -3486,7 +3484,7 @@ int pairnames (int, char **, FILE *(*)(struct buf *, struct stat *, int), int, i
+ int argc;
+ char **argv;
+ int
+-main ()
++main (void)
+ {
+ return f (e, argv, 0) != argv[0]  ||  f (e, argv, 1) != argv[1];
+   ;
+@@ -3544,7 +3542,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -3871,7 +3869,7 @@ else
+ #include <float.h>
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -3941,7 +3939,7 @@ else
+ 
+ #define XOR(e, f) (((e) && !(f)) || (!(e) && (f)))
+ int
+-main ()
++main (void)
+ {
+   int i;
+   for (i = 0; i < 256; i++)
+@@ -4020,7 +4018,7 @@ else
+ #         define __EXTENSIONS__ 1
+           $ac_includes_default
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -5002,7 +5000,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ #ifndef __GNUC__
+        choke me
+@@ -5043,7 +5041,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -5058,7 +5056,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -5074,7 +5072,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -5123,9 +5121,7 @@ struct stat;
+ /* Most of the following tests are stolen from RCS 5.7's src/conf.sh.  */
+ struct buf { int x; };
+ FILE * (*rcsopen) (struct buf *, struct stat *, int);
+-static char *e (p, i)
+-     char **p;
+-     int i;
++static char *e (char **p, int i)
+ {
+   return p[i];
+ }
+@@ -5160,7 +5156,7 @@ int pairnames (int, char **, FILE *(*)(struct buf *, struct stat *, int), int, i
+ int argc;
+ char **argv;
+ int
+-main ()
++main (void)
+ {
+ return f (e, argv, 0) != argv[0]  ||  f (e, argv, 1) != argv[1];
+   ;
+@@ -5218,7 +5214,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -7408,7 +7404,7 @@ ac_compiler_gnu=$ac_cv_c_compiler_gnu
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -7994,7 +7990,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -9632,7 +9628,7 @@ _LT_EOF
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -9672,7 +9668,7 @@ if test -z "$aix_libpath"; then aix_libpath="/usr/lib:/lib"; fi
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -10947,7 +10943,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -11388,9 +11384,9 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ #ifdef __cplusplus
+ extern "C"
+ #endif
+-char dlopen ();
++char dlopen (void);
+ int
+-main ()
++main (void)
+ {
+ return dlopen ();
+   ;
+@@ -11441,9 +11437,9 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ #ifdef __cplusplus
+ extern "C"
+ #endif
+-char shl_load ();
++char shl_load (void);
+ int
+-main ()
++main (void)
+ {
+ return shl_load ();
+   ;
+@@ -11484,9 +11480,9 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ #ifdef __cplusplus
+ extern "C"
+ #endif
+-char dlopen ();
++char dlopen (void);
+ int
+-main ()
++main (void)
+ {
+ return dlopen ();
+   ;
+@@ -11523,9 +11519,9 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ #ifdef __cplusplus
+ extern "C"
+ #endif
+-char dlopen ();
++char dlopen (void);
+ int
+-main ()
++main (void)
+ {
+ return dlopen ();
+   ;
+@@ -11562,9 +11558,9 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ #ifdef __cplusplus
+ extern "C"
+ #endif
+-char dld_link ();
++char dld_link (void);
+ int
+-main ()
++main (void)
+ {
+ return dld_link ();
+   ;
+@@ -12016,7 +12012,7 @@ else
+ 		       && LARGE_OFF_T % 2147483647 == 1)
+ 		      ? 1 : -1];
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -12062,7 +12058,7 @@ else
+ 		       && LARGE_OFF_T % 2147483647 == 1)
+ 		      ? 1 : -1];
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -12086,7 +12082,7 @@ rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+ 		       && LARGE_OFF_T % 2147483647 == 1)
+ 		      ? 1 : -1];
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -12131,7 +12127,7 @@ else
+ 		       && LARGE_OFF_T % 2147483647 == 1)
+ 		      ? 1 : -1];
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -12155,7 +12151,7 @@ rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+ 		       && LARGE_OFF_T % 2147483647 == 1)
+ 		      ? 1 : -1];
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -12228,7 +12224,7 @@ else
+ /* end confdefs.h.  */
+ static int f() { return 0; }
+ int
+-main ()
++main (void)
+ {
+ return f();
+   ;
+@@ -12259,7 +12255,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ return 0;
+   ;
+@@ -12312,7 +12308,7 @@ case "$host" in
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+ #if !defined(__SSE2__)
+@@ -12339,7 +12335,7 @@ rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ asm ("setssbsy");
+   ;
+@@ -12401,7 +12397,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -12490,7 +12486,7 @@ $as_echo_n "checking for _Unwind_GetIPInfo... " >&6; }
+ 	struct _Unwind_Context *context;
+ 	int ip_before_insn = 0;
+ int
+-main ()
++main (void)
+ {
+ return _Unwind_GetIPInfo (context, &ip_before_insn);
+   ;
+@@ -12554,7 +12550,7 @@ case "$host" in
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+ #if !defined(__SSE2__)
+@@ -12580,7 +12576,7 @@ rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ asm ("setssbsy");
+   ;
+@@ -12626,7 +12622,7 @@ if test x$may_have_cet = xyes; then
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ return 0;
+   ;
+@@ -12763,7 +12759,7 @@ else
+ /* end confdefs.h.  */
+ int i;
+ int
+-main ()
++main (void)
+ {
+ __sync_bool_compare_and_swap (&i, i, i);
+                        __sync_lock_test_and_set (&i, 1);
+@@ -12805,7 +12801,7 @@ else
+ /* end confdefs.h.  */
+ int i;
+ int
+-main ()
++main (void)
+ {
+ __atomic_load_n (&i, __ATOMIC_ACQUIRE);
+ 		       __atomic_store_n (&i, 1, __ATOMIC_RELEASE);
+@@ -12843,7 +12839,7 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ /* end confdefs.h.  */
+ int i;
+ int
+-main ()
++main (void)
+ {
+ int j;
+   ;
+@@ -13521,6 +13517,21 @@ fi
+ 
+ done
+ 
++for ac_header in tlhelp32.h
++do :
++  ac_fn_c_check_header_compile "$LINENO" "tlhelp32.h" "ac_cv_header_tlhelp32_h" "#ifdef HAVE_WINDOWS_H
++#  include <windows.h>
++#endif
++"
++if test "x$ac_cv_header_tlhelp32_h" = xyes; then :
++  cat >>confdefs.h <<_ACEOF
++#define HAVE_TLHELP32_H 1
++_ACEOF
++
++fi
++
++done
++
+ 
+ # Check for the fcntl function.
+ if test -n "${with_target_subdir}"; then
+@@ -13625,7 +13636,7 @@ else
+ #include <sys/sysctl.h>
+ 
+ int
+-main ()
++main (void)
+ {
+ int mib0 = CTL_KERN; int mib1 = KERN_PROC; int mib2 = KERN_PROC_PATHNAME;
+   ;
+@@ -13659,7 +13670,7 @@ else
+ #include <sys/sysctl.h>
+ 
+ int
+-main ()
++main (void)
+ {
+ int mib0 = CTL_KERN; int mib1 = KERN_PROC_ARGS; int mib2 = KERN_PROC_PATHNAME;
+   ;
+@@ -13715,9 +13726,9 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ #ifdef __cplusplus
+ extern "C"
+ #endif
+-char clock_gettime ();
++char clock_gettime (void);
+ int
+-main ()
++main (void)
+ {
+ return clock_gettime ();
+   ;
+@@ -13792,7 +13803,7 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ /* end confdefs.h.  */
+ int i;
+ int
+-main ()
++main (void)
+ {
+ return 0;
+   ;
+@@ -13835,9 +13846,9 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ #ifdef __cplusplus
+ extern "C"
+ #endif
+-char compress ();
++char compress (void);
+ int
+-main ()
++main (void)
+ {
+ return compress ();
+   ;
+@@ -13881,7 +13892,7 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -13919,7 +13930,7 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -13962,9 +13973,9 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ #ifdef __cplusplus
+ extern "C"
+ #endif
+-char ZSTD_compress ();
++char ZSTD_compress (void);
+ int
+-main ()
++main (void)
+ {
+ return ZSTD_compress ();
+   ;
+@@ -14008,7 +14019,7 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ 
+   ;
+@@ -14338,9 +14349,9 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ #ifdef __cplusplus
+ extern "C"
+ #endif
+-char lzma_auto_decoder ();
++char lzma_auto_decoder (void);
+ int
+-main ()
++main (void)
+ {
+ return lzma_auto_decoder ();
+   ;
+@@ -14385,7 +14396,7 @@ else
+ /* end confdefs.h.  */
+ 
+ int
+-main ()
++main (void)
+ {
+ return 0;
+   ;
+diff --git a/libbacktrace/configure.ac b/libbacktrace/configure.ac
+index 0f61f2b28ab..b9a695ab402 100644
+--- a/libbacktrace/configure.ac
++++ b/libbacktrace/configure.ac
+@@ -380,6 +380,10 @@ if test "$have_loadquery" = "yes"; then
+ fi
+ 
+ AC_CHECK_HEADERS(windows.h)
++AC_CHECK_HEADERS(tlhelp32.h, [], [],
++[#ifdef HAVE_WINDOWS_H
++#  include <windows.h>
++#endif])
+ 
+ # Check for the fcntl function.
+ if test -n "${with_target_subdir}"; then
+diff --git a/libbacktrace/pecoff.c b/libbacktrace/pecoff.c
+index 9e437d810c7..faa0be0b700 100644
+--- a/libbacktrace/pecoff.c
++++ b/libbacktrace/pecoff.c
+@@ -49,6 +49,18 @@ POSSIBILITY OF SUCH DAMAGE.  */
+ #endif
+ 
+ #include <windows.h>
++
++#ifdef HAVE_TLHELP32_H
++#include <tlhelp32.h>
++
++#ifdef UNICODE
++/* If UNICODE is defined, all the symbols are replaced by a macro to use the
++   wide variant. But we need the ansi variant, so undef the macros. */
++#undef MODULEENTRY32
++#undef Module32First
++#undef Module32Next
++#endif
++#endif
+ #endif
+ 
+ /* Coff file header.  */
+@@ -592,7 +604,8 @@ coff_syminfo (struct backtrace_state *state, uintptr_t addr,
+ static int
+ coff_add (struct backtrace_state *state, int descriptor,
+ 	  backtrace_error_callback error_callback, void *data,
+-	  fileline *fileline_fn, int *found_sym, int *found_dwarf)
++	  fileline *fileline_fn, int *found_sym, int *found_dwarf,
++	  uintptr_t module_handle ATTRIBUTE_UNUSED)
+ {
+   struct backtrace_view fhdr_view;
+   off_t fhdr_off;
+@@ -870,12 +883,7 @@ coff_add (struct backtrace_state *state, int descriptor,
+     }
+ 
+ #ifdef HAVE_WINDOWS_H
+-  {
+-    uintptr_t module_handle;
+-
+-    module_handle = (uintptr_t) GetModuleHandle (NULL);
+-    base_address = module_handle - image_base;
+-  }
++  base_address = module_handle - image_base;
+ #endif
+ 
+   if (!backtrace_dwarf_add (state, base_address, &dwarf_sections,
+@@ -917,12 +925,62 @@ backtrace_initialize (struct backtrace_state *state,
+   int found_sym;
+   int found_dwarf;
+   fileline coff_fileline_fn;
++  uintptr_t module_handle = 0;
++
++#ifdef HAVE_TLHELP32_H
++  fileline module_fileline_fn;
++  int module_found_sym;
++
++  HANDLE snapshot;
++#endif
++
++#ifdef HAVE_WINDOWS_H
++  module_handle = (uintptr_t) GetModuleHandle (NULL);
++#endif
+ 
+   ret = coff_add (state, descriptor, error_callback, data,
+-		  &coff_fileline_fn, &found_sym, &found_dwarf);
++		  &coff_fileline_fn, &found_sym, &found_dwarf, module_handle);
+   if (!ret)
+     return 0;
+ 
++#ifdef HAVE_TLHELP32_H
++  do
++    {
++      snapshot = CreateToolhelp32Snapshot (TH32CS_SNAPMODULE, 0);
++    }
++  while (snapshot == INVALID_HANDLE_VALUE
++	 && GetLastError () == ERROR_BAD_LENGTH);
++
++  if (snapshot != INVALID_HANDLE_VALUE)
++    {
++      MODULEENTRY32 entry;
++      BOOL ok;
++      entry.dwSize = sizeof(MODULEENTRY32);
++
++      for (ok = Module32First (snapshot, &entry); ok; ok =Module32Next (snapshot, &entry))
++	{
++	  if (strcmp (filename, entry.szExePath) == 0)
++	    continue;
++
++	  module_handle = (uintptr_t) entry.hModule;
++	  if (module_handle == 0)
++	    continue;
++
++	  descriptor = backtrace_open (entry.szExePath, error_callback, data, NULL);
++	  if (descriptor < 0)
++	    continue;
++
++	  coff_add (state, descriptor, error_callback, data,
++		    &module_fileline_fn, &module_found_sym, &found_dwarf,
++		    module_handle);
++	  if (module_found_sym)
++	    found_sym = 1;
++	}
++
++      CloseHandle (snapshot);
++    }
++#endif
++
+   if (!state->threaded)
+     {
+       if (found_sym)
+-- 
+2.43.0
+
