@@ -1,0 +1,93 @@
+declare -g -A _cross_arches=(
+  ["/clang64"]="x86_64-w64-mingw32"
+  ["/clang32"]="i686-w64-mingw32"
+  ["/clangarm64"]="aarch64-w64-mingw32"
+)
+_realname=compiler-rt
+pkgbase=mingw-w64-cross-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-cross-${_realname}")
+pkgver=18.1.8
+pkgrel=1
+arch=("any")
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
+url="https://llvm.org/"
+license=("spdx:Apache-2.0 WITH LLVM-exception")
+makedepends=("${MINGW_PACKAGE_PREFIX}-clang"
+             "${MINGW_PACKAGE_PREFIX}-cmake>=3.4.3"
+             "${MINGW_PACKAGE_PREFIX}-ninja")
+
+for _pfx in "${!_cross_arches[@]}"; do
+  if [[ "${_cross_arches[$_pfx]%%-*}" != "${CARCH}" ]]; then
+    makedepends+=(mingw-w64-clang-${_cross_arches[$_pfx]%%-*}-headers-git)
+  fi
+done
+
+options=('!debug' '!strip' 'staticlibs' '!buildflags')
+_url=https://github.com/llvm/llvm-project/releases/download/llvmorg-${pkgver}
+source=("${_url}/${_realname}-${pkgver}.src.tar.xz"{,.sig}
+        "${_url}/cmake-${pkgver}.src.tar.xz"{,.sig})
+
+sha256sums=('e054e99a9c9240720616e927cb52363abbc8b4f1ef0286bad3df79ec8fdf892f'
+            'SKIP'
+            '59badef592dd34893cd319d42b323aaa990b452d05c7180ff20f23ab1b41e837'
+            'SKIP')
+validpgpkeys=('B6C8F98282B944E3B0D5C2530FC3042E345AD05D'  # Hans Wennborg, Google.
+              '474E22316ABF4785A88C6E8EA2C794A986419D8A'  # Tom Stellard
+              'D574BD5D1D0E98895E3BF90044F2485E45D59042') # Tobias Hieta
+
+prepare() {
+  cd "${srcdir}"
+  rm -rf cmake
+  mv cmake-$pkgver.src cmake
+}
+
+build() {
+  local _build_type _arch _pfx
+  if check_option "debug" "y"; then
+    _build_type="Debug"
+  else
+    _build_type="Release"
+  fi
+
+  for _pfx in "${!_cross_arches[@]}"; do
+    _arch="${_cross_arches[$_pfx]%%-*}"
+    if [[ "${_arch}" != "${CARCH}" ]]; then
+      cd "${srcdir}"
+      [[ -d "build-${_arch}" ]] && rm -rf "build-${_arch}"
+      mkdir "build-${_arch}" && cd "build-${_arch}"
+      MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+      ${MINGW_PREFIX}/bin/cmake.exe \
+        -GNinja \
+        -DCMAKE_BUILD_TYPE=${_build_type} \
+        -DCMAKE_{ASM,C,CXX}_COMPILER_TARGET="${_cross_arches[$_pfx]}" \
+        -DCMAKE_{ASM,C,CXX}_COMPILER_WORKS=ON \
+        -DCMAKE_SIZEOF_VOID_P=$( [[ "$_pfx" == *32 ]] && echo 4 || echo 8 ) \
+        -DCMAKE_SYSROOT="${_pfx}" \
+        -DCMAKE_INSTALL_PREFIX="$(clang -print-resource-dir | cygpath -uf -)" \
+        -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+        -DCMAKE_FIND_ROOT_PATH_MODE_{LIBRARY,INCLUDE,PACKAGE}=ONLY \
+        -DCMAKE_AR="${MINGW_PREFIX}/bin/llvm-ar.exe" \
+        -DCMAKE_ASM_COMPILER="${MINGW_PREFIX}/bin/clang.exe" \
+        -DCMAKE_C_COMPILER="${MINGW_PREFIX}/bin/clang.exe" \
+        -DCMAKE_CXX_COMPILER="${MINGW_PREFIX}/bin/clang++.exe" \
+        -DCMAKE_RANLIB="${MINGW_PREFIX}/bin/llvm-ranlib.exe" \
+        -DCOMPILER_RT_BUILD_{LIBFUZZER,MEMPROF,ORC,PROFILE,SANITIZERS,XRAY}=OFF \
+        -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON \
+        -DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON \
+	-DLLVM_DIR="${MINGW_PREFIX}/lib/cmake/llvm" \
+        ../${_realname}-$pkgver.src
+      cmake --build .
+    fi
+  done
+}
+
+package() {
+  local _arch _pfx
+  for _pfx in "${!_cross_arches[@]}"; do
+    _arch="${_cross_arches[$_pfx]%%-*}"
+    if [[ "${_arch}" != "${CARCH}" ]]; then
+      DESTDIR="${pkgdir}" cmake --install "${srcdir}/build-${_arch}"
+    fi
+  done
+  rm -rf "${pkgdir}$(clang -print-resource-dir | cygpath -uf -)/include"
+}
