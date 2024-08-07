@@ -17,10 +17,10 @@ embed_manifest_url=https://gitlab.com/careyevans/embed-manifest/-/archive/v${emb
 _realname=rust
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
-         $([[ ${CARCH} == i686 ]] || echo "${MINGW_PACKAGE_PREFIX}-rust-docs")
+         $([[ ${CARCH} == i686 ]] || echo "${MINGW_PACKAGE_PREFIX}-rust-wasm")
          "${MINGW_PACKAGE_PREFIX}-rust-src")
 pkgver=1.80.0
-pkgrel=3
+pkgrel=4
 pkgdesc="Systems programming language focused on safety, speed and concurrency (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64' 'clang32')
@@ -43,11 +43,13 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-python"
              "${MINGW_PACKAGE_PREFIX}-autotools"
              $([[ "$_bootstrapping" == "no" ]] && echo "${MINGW_PACKAGE_PREFIX}-rust")
+             $([[ ${CARCH} == i686 ]] || echo "${MINGW_PACKAGE_PREFIX}-wasi-libc ${MINGW_PACKAGE_PREFIX}-wasm-component-ld")
              "${MINGW_PACKAGE_PREFIX}-zlib")
 source=("${rust_dist_server}/${_realname}c-${pkgver}-src.tar.gz"{,.asc}
         "${embed_manifest_url}"
         "config.toml"
         "0001-rustc-llvm-fix-libs.patch"
+        "0004-compiler-Use-wasm-ld-for-wasm-targets.patch"
         "0005-win32-config.patch"
         "0007-clang-subsystem.patch"
         "0008-disable-self-contained.patch"
@@ -57,8 +59,9 @@ noextract=(${_realname}c-${pkgver}-src.tar.gz)
 sha256sums=('6f606c193f230f6b2cae4576f7b24d50f5f9b25dff11dbf9b22f787d3521d672'
             'SKIP'
             '24ef6d949c0b5b1940c1d6a7aad78d86012152fb8845a1644bc939350d7b75e2'
-            '920b227cff09b772d88e5d4a8b90f6bad6a0adf93dfb767e078738ae23b15742'
+            '829d72862663cb2002f57aee3471b496137f9093e3330ed8f5db80f37663eaf7'
             '7cb1773c288ffb1c1e751edc49b1890c84bf9c362742bc5225d19d474edb73a0'
+            '56882f1a0f1404c10c7726d6cc37444f2b343e72b969badfcb43760f80db0f32'
             '7d1c4e49524b835a8eadc961b39f5594b12a522a1e24368999be2c7e85399e4e'
             '87955818066f02e4a39c36a789caf45c524cf4a41f04ee1b0cc685bd5205e63e'
             '7a3b5722ff576b0661f36796f088dee4ce318b5dbc3fdcd65b48972de68a0edf'
@@ -115,6 +118,11 @@ prepare() {
   fi
   apply_patch_with_msg \
     0012-vendor-embed-manifest.patch
+
+  if [[ ${CARCH} != i686 ]]; then
+    apply_patch_with_msg \
+      0004-compiler-Use-wasm-ld-for-wasm-targets.patch
+  fi
 }
 
 build() {
@@ -153,10 +161,16 @@ build() {
     export CARGO_TARGET_${CARCH^^}_PC_WINDOWS_GNU_LINKER="${CC}"
   fi
 
-  local _build_docs=true
+  # avoid OOMing in some cases
   if [[ ${CARCH} == i686 ]]; then
-    _build_docs=false
     LDFLAGS+=" -Wl,--large-address-aware"
+  elif [[ $MINGW_PACKAGE_PREFIX != *-clang-aarch64 ]]; then
+    local _unsupported_options="-march=nocona -msahf"
+    # Remove unsupported options for target wasm32-*
+    export CFLAGS="${CFLAGS#$_unsupported_options}"
+
+    # Add options back for target $OSTYPE
+    export CFLAGS_${OSTYPE//-/_}="$_unsupported_options"
   fi
 
   # The rust build uses git if it's available but can't handle cygwin git paths
@@ -171,18 +185,23 @@ build() {
 
   export RUST_BACKTRACE=1
 
-  local _bindir="$(cygpath -m ${MINGW_PREFIX}/bin)"
+  local _prefix="$(cygpath -m ${MINGW_PREFIX})"
   cp -f "${srcdir}/config.toml" "${srcdir}/${_realname}c-${pkgver}-src"
-  sed -i "s|%PREFIX%|${MINGW_PREFIX}|g" "${srcdir}/${_realname}c-${pkgver}-src/config.toml"
+  sed -i "s|%PREFIX%|${_prefix}|g" "${srcdir}/${_realname}c-${pkgver}-src/config.toml"
+  sed -i "s|%INSTALL_PREFIX%|${MINGW_PREFIX}|g" "${srcdir}/${_realname}c-${pkgver}-src/config.toml"
   sed -i "s|%OSTYPE%|${OSTYPE}|g" "${srcdir}/${_realname}c-${pkgver}-src/config.toml"
   sed -i "s|%PKGREL%|${pkgrel}|g" "${srcdir}/${_realname}c-${pkgver}-src/config.toml"
-  sed -i "s|%BUILD_DOCS%|${_build_docs}|g" "${srcdir}/${_realname}c-${pkgver}-src/config.toml"
-  sed -i "s|%BINDIR%|${_bindir}|g" "${srcdir}/${_realname}c-${pkgver}-src/config.toml"
   if [ "${_bootstrapping}" = "no" ]; then
-    sed -i "/^\[build\]/a rustc = \"${_bindir}/rustc.exe\"\ncargo = \"${_bindir}/cargo.exe\"" "${srcdir}/${_realname}c-${pkgver}-src/config.toml"
+    sed -i "/^\[build\]/a rustc = \"${_prefix}/bin/rustc.exe\"\ncargo = \"${_prefix}/bin/cargo.exe\"" "${srcdir}/${_realname}c-${pkgver}-src/config.toml"
   fi
+  # generating debug info causes OOMing on i686
   if [ "${CARCH}" != i686 ]; then
     sed -i '/^\[rust\]/a debuginfo-level = 1\ndebuginfo-level-std = 2' "${srcdir}/${_realname}c-${pkgver}-src/config.toml"
+  fi
+
+  # Add target wasm32-*
+  if [[ ${CARCH} != i686 ]]; then
+    sed -i '/target = \[/a\  "wasm32-wasip1", "wasm32-wasip1-threads", "wasm32-wasip2",' "${srcdir}/${_realname}c-${pkgver}-src/config.toml"
   fi
 
   # Building out of tree is not officially supported so we have to workaround some things like vendored deps
@@ -200,8 +219,9 @@ build() {
   DESTDIR="$PWD"/dest-rust ${MINGW_PREFIX}/bin/python ../${_realname}c-${pkgver}-src/x.py install "${_rust_build[@]}"
 
   if [[ ${CARCH} != i686 ]]; then
-    # move docs out of the way for splitting
-    mv dest-rust/${MINGW_PREFIX}/share/doc dest-doc
+    # move wasm32-* targets out of the way for splitting
+    mkdir -p dest-wasm/${MINGW_PREFIX}/lib/rustlib
+    mv dest-rust/${MINGW_PREFIX}/lib/rustlib/wasm32-* dest-wasm/${MINGW_PREFIX}/lib/rustlib
   fi
 
   # move src out of the way for splitting
@@ -223,6 +243,8 @@ package_rust() {
            "${MINGW_PACKAGE_PREFIX}-curl"
            "${MINGW_PACKAGE_PREFIX}-libxml2"
            "${MINGW_PACKAGE_PREFIX}-libssh2")
+  conflicts=("${MINGW_PACKAGE_PREFIX}-rust-docs")
+  replaces=("${MINGW_PACKAGE_PREFIX}-rust-docs")
 
   cd "${srcdir}/${MSYSTEM}"
 
@@ -239,16 +261,17 @@ package_rust() {
      "${pkgdir}${MINGW_PREFIX}/share/bash-completion/completions/cargo"
 }
 
-package_rust-docs() {
-  pkgdesc='Documentation for the Rust programming language'
-  conflicts=("${MINGW_PACKAGE_PREFIX}-${_realname}<1.52.0")
+package_rust-wasm() {
+  pkgdesc="WebAssembly targets for Rust"
+  depends=("${MINGW_PACKAGE_PREFIX}-lld"
+           "${MINGW_PACKAGE_PREFIX}-rust"
+           "${MINGW_PACKAGE_PREFIX}-wasm-component-ld")
 
   cd "${srcdir}/${MSYSTEM}"
-  install -Dm644 ${srcdir}/${_realname}c-${pkgver}-src/LICENSE-APACHE "${pkgdir}${MINGW_PREFIX}/share/licenses/$pkgname/LICENSE-APACHE"
-  install -Dm644 ${srcdir}/${_realname}c-${pkgver}-src/LICENSE-MIT "${pkgdir}${MINGW_PREFIX}/share/licenses/$pkgname/LICENSE-MIT"
 
-  install -d "$pkgdir"/${MINGW_PREFIX}/share/
-  cp -a dest-doc "$pkgdir"/${MINGW_PREFIX}/share/doc
+  cp -a dest-wasm/* "$pkgdir"
+  install -Dm644 "${srcdir}"/${_realname}c-${pkgver}-src/LICENSE-APACHE "${pkgdir}${MINGW_PREFIX}/share/licenses/$pkgname/LICENSE-APACHE"
+  install -Dm644 "${srcdir}"/${_realname}c-${pkgver}-src/LICENSE-MIT "${pkgdir}${MINGW_PREFIX}/share/licenses/$pkgname/LICENSE-MIT"
 }
 
 package_rust-src() {
