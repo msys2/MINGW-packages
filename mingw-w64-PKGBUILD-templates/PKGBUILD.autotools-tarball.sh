@@ -24,7 +24,6 @@ prepare() {
 }
 
 build() {
-  cd "${srcdir}/${_realname}-${pkgver}"
   mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
 
   ../"${_realname}-${pkgver}"/configure \
