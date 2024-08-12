@@ -8,83 +8,30 @@
  authors = ["Michal 'vorner' Vaner <vorner@vorner.cz>"]
  description = "TUN/TAP interface wrapper"
  documentation = "https://docs.rs/tun-tap"
-diff --git a/src/lib.rs b/src/lib.rs
-index c2a7f5e..4bbfaac 100644
---- a/src/lib.rs
-+++ b/src/lib.rs
-@@ -34,7 +34,7 @@ use std::os::raw::{c_char, c_int};
- use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
-
- #[cfg(feature = "tokio")]
--pub mod async;
-+pub mod r#async;
-
- extern "C" {
-     fn tuntap_setup(fd: c_int, name: *mut u8, mode: c_int, packet_info: c_int) -> c_int;
-@@ -140,7 +140,14 @@ impl Iface {
-         name_buffer.extend_from_slice(ifname.as_bytes());
-         name_buffer.extend_from_slice(&[0; 33]);
-         let name_ptr: *mut u8 = name_buffer.as_mut_ptr();
--        let result = unsafe { tuntap_setup(fd.as_raw_fd(), name_ptr, mode as c_int, if packet_info { 1 } else { 0 }) };
-+        let result = unsafe {
-+            tuntap_setup(
-+                fd.as_raw_fd(),
-+                name_ptr,
-+                mode as c_int,
-+                if packet_info { 1 } else { 0 },
-+            )
-+        };
-         if result < 0 {
-             return Err(Error::last_os_error());
-         }
-@@ -149,11 +156,7 @@ impl Iface {
-                 .to_string_lossy()
-                 .into_owned()
-         };
--        Ok(Iface {
--            fd,
--            mode,
--            name,
--        })
-+        Ok(Iface { fd, mode, name })
-     }
-
-     /// Returns the mode of the adapter.
---- a/Cargo.toml
-+++ b/Cargo.toml
-@@ -31,5 +31,5 @@ tokio-core = { version = "~0.1", optional = true }
-
- [dev-dependencies]
- version-sync = "~0.9"
--etherparse = "~0.9"
--serial_test = "~0.4"
-+etherparse = "~0.13"
-+serial_test = "2"
---- a/Cargo.toml
-+++ b/Cargo.toml
-@@ -18,18 +18,22 @@ maintenance = { status = "passively-maintained" }
+@@ -17,18 +18,21 @@ maintenance = { status = "passively-maintained" }
 
  [features]
  default = ["tokio"]
 -tokio = ["futures", "libc", "mio", "tokio-core"]
-+tokio = ["futures", "libc", "tokio-util", "dep:tokio"]
++tokio = ["futures", "libc", "dep:tokio"]
 
  [build-dependencies]
  cc = "~1"
 
  [dependencies]
 -futures = { version = "~0.1", optional = true }
-+futures = { version = "~0.3", default-features = false, optional = true }
++futures = { version = "~0.3", optional = true }
  libc = { version = "~0.2", optional = true }
 -mio = { version = "~0.6", optional = true }
 -tokio-core = { version = "~0.1", optional = true }
-+tokio = { package = "tokio", version = "~1.37", features = ["io-util", "net"], optional = true }
-+tokio-util = {version = "~0.7", features = ["codec"], optional = true }
++tokio = { version = "~1.37", features = ["io-util", "net"], optional = true }
 
  [dev-dependencies]
  version-sync = "~0.9"
- etherparse = "~0.13"
- serial_test = "2"
+-etherparse = "~0.9"
+-serial_test = "~0.4"
++etherparse = "~0.15"
++serial_test = "2"
 +tokio = { package = "tokio", version = "~1.37", features = ["full"] }
 +futures-util = "0.3.29"
 +bytes = "1.5.0"
@@ -149,8 +96,7 @@ index c2a7f5e..4bbfaac 100644
 -
  /// A wrapper around [`Iface`](../struct.Iface.html) for use in connection with tokio.
  ///
--/// This turns the synchronous `Iface` into an asynchronous `Sink + Stream` of packets.
-+/// It implements AsyncWrite and AsyncRead
+ /// This turns the synchronous `Iface` into an asynchronous `Sink + Stream` of packets.
  pub struct Async {
 -    mio: PollEvented<MioWrapper>,
 -    recv_bufsize: usize,
@@ -158,61 +104,8 @@ index c2a7f5e..4bbfaac 100644
  }
 
  impl Async {
-@@ -61,7 +24,6 @@ impl Async {
-     /// # Parameters
-     ///
-     /// * `iface`: The created interface to wrap. It gets consumed.
--    /// * `handle`: The handle to tokio's `Core` to run on.
-     ///
-     /// # Errors
-     ///
-@@ -70,70 +32,120 @@ impl Async {
-     /// # Examples
-     ///
-     /// ```rust,no_run
--    /// # extern crate futures;
--    /// # extern crate tokio_core;
--    /// # extern crate tun_tap;
--    /// # use futures::Stream;
--    /// # use tun_tap::*;
--    /// # use tun_tap::async::*;
--    /// # use tokio_core::reactor::Core;
-+    /// use tun_tap::r#async::Async;
-+    /// use tun_tap::{Iface, Mode};
-+    ///
-+    /// use tokio_util::codec::{Decoder, Encoder};
-+    /// use futures_util::stream::StreamExt;
-+    /// use bytes::BytesMut;
-+    ///
-+    /// struct Frame {
-+    ///   data: Vec<u8>
-+    /// }
-+    ///
-+    /// struct Codec;
-+    /// impl Decoder for Codec {
-+    ///     type Item = Frame;
-+    ///     type Error = std::io::Error;
-+    ///     // decoding data from buffer into frames
-+    ///     fn decode(&mut self, _: &mut BytesMut) -> Result<Option<Frame>, std::io::Error>
-+    ///         { todo!() }
-+    /// }
-+    ///
-+    /// impl Encoder<Frame> for Codec {
-+    ///     type Error = std::io::Error;
-+    ///     // encoding frame into buffer
-+    ///     fn encode(&mut self, _: Frame, _: &mut BytesMut) -> Result<(), std::io::Error>
-+    ///        { todo!() }
-+    /// }
-+    /// #
-     /// # fn main() {
-     /// let iface = Iface::new("mytun%d", Mode::Tun).unwrap();
--    /// let name = iface.name().to_owned();
--    /// // Bring the interface up by `ip addr add IP dev $name; ip link set up dev $name`
--    /// let core = Core::new().unwrap();
--    /// let async = Async::new(iface, &core.handle()).unwrap();
--    /// let (sink, stream) = async.split();
-+    /// let iface = Async::new(iface).unwrap();
-+    /// let (sink, stream) = Codec.framed(iface).split();
+@@ -86,11 +49,10 @@ impl Async {
+     /// let (sink, stream) = async.split();
      /// # }
      /// ```
 -    pub fn new(iface: Iface, handle: &Handle) -> Result<Self> {
@@ -224,17 +117,13 @@ index c2a7f5e..4bbfaac 100644
 +            inner: AsyncFd::new(iface)?,
          })
      }
--    /// Sets the receive buffer size.
--    ///
--    /// When receiving a packet, a buffer of this size is allocated and the packet read into it.
--    /// This configures the size of the buffer.
--    ///
--    /// This needs to be called when the interface's MTU is changed from the default 1500. The
--    /// default should be enough otherwise.
+     /// Sets the receive buffer size.
+@@ -100,40 +62,77 @@ impl Async {
+     ///
+     /// This needs to be called when the interface's MTU is changed from the default 1500. The
+     /// default should be enough otherwise.
 -    pub fn set_recv_bufsize(&mut self, bufsize: usize) {
 -        self.recv_bufsize = bufsize;
-+
-+    /// Receives a packet from the interface.
 +    pub async fn recv(&self, out: &mut [u8]) -> io::Result<usize> {
 +        loop {
 +            let mut guard = self.inner.readable().await?;
@@ -245,7 +134,6 @@ index c2a7f5e..4bbfaac 100644
 +            }
 +        }
 +    }
-+    /// Sends a packet into the interface.
 +    pub async fn send(&mut self, buf: &[u8]) -> Result<usize> {
 +        loop {
 +            let mut guard = self.inner.writable().await?;
@@ -319,7 +207,6 @@ index c2a7f5e..4bbfaac 100644
      }
 -    fn poll_complete(&mut self) -> FPoll<(), Self::SinkError> {
 -        Ok(FAsync::Ready(()))
-+
 +    fn poll_flush(
 +        self: Pin<&mut Self>,
 +        _cx: &mut Context<'_>,
@@ -335,31 +222,14 @@ index c2a7f5e..4bbfaac 100644
 +        Poll::Ready(Ok(()))
      }
  }
---- a/Cargo.toml
-+++ b/Cargo.toml
-@@ -18,7 +18,7 @@ maintenance = { status = "passively-maintained" }
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -34,7 +34,7 @@ use std::os::raw::{c_char, c_int};
+ use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
 
- [features]
- default = ["tokio"]
--tokio = ["futures", "libc", "tokio-util", "dep:tokio"]
-+tokio = ["futures", "libc", "dep:tokio"]
+ #[cfg(feature = "tokio")]
+-pub mod async;
++pub mod r#async;
 
- [build-dependencies]
- cc = "~1"
-@@ -26,14 +26,13 @@ cc = "~1"
- [dependencies]
- futures = { version = "~0.3", default-features = false, optional = true }
- libc = { version = "~0.2", optional = true }
--tokio = { package = "tokio", version = "~1.37", features = ["io-util", "net"], optional = true }
--tokio-util = {version = "~0.7", features = ["codec"], optional = true }
-+tokio = {version = "~1.37", features = ["io-util", "net"], optional = true }
-
- [dev-dependencies]
- version-sync = "~0.9"
- etherparse = "~0.13"
- serial_test = "2"
--tokio = { package = "tokio", version = "~1.37", features = ["full"] }
-+tokio = { version = "~1.37", features = ["full"] }
- futures-util = "0.3.29"
- bytes = "1.5.0"
- tokio-util = {version = "~0.7", features = ["codec", "net"]}
+ extern "C" {
+     fn tuntap_setup(fd: c_int, name: *mut u8, mode: c_int, packet_info: c_int) -> c_int;
