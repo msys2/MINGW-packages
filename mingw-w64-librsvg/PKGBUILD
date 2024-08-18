@@ -4,7 +4,7 @@ _realname=librsvg
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
          "${MINGW_PACKAGE_PREFIX}-${_realname}-docs")
-pkgver=2.58.0
+pkgver=2.58.93
 pkgrel=1
 pkgdesc="SVG rendering library (mingw-w64)"
 arch=('any')
@@ -14,10 +14,12 @@ msys2_references=(
   "cpe: cpe:/a:gnome:librsvg"
 )
 license=("spdx:LGPL-2.1-or-later")
-makedepends=("${MINGW_PACKAGE_PREFIX}-autotools"
+makedepends=("${MINGW_PACKAGE_PREFIX}-meson"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
              "${MINGW_PACKAGE_PREFIX}-gobject-introspection"
              "${MINGW_PACKAGE_PREFIX}-vala"
              "${MINGW_PACKAGE_PREFIX}-rust"
+             "${MINGW_PACKAGE_PREFIX}-cargo-c"
              "${MINGW_PACKAGE_PREFIX}-gi-docgen"
              "${MINGW_PACKAGE_PREFIX}-python-docutils"
              "${MINGW_PACKAGE_PREFIX}-cc")
@@ -28,66 +30,91 @@ depends=("${MINGW_PACKAGE_PREFIX}-gdk-pixbuf2"
 optdepends=("${MINGW_PACKAGE_PREFIX}-gtk3: for rsvg-view-3")
 options=('staticlibs' 'strip')
 source=("https://download.gnome.org/sources/librsvg/${pkgver%.*}/${_realname}-${pkgver}.tar.xz"
-        "0001-configure-set-pass-prefix-to-pkg-config-when-retriev.patch"
-        "glib-0.19.3.tar.gz::https://crates.io/api/v1/crates/glib/0.19.3/download"
-        "glib-rs.patch")
-sha256sums=('d7c444a926406b59790be0deae196e18ed26059da573fa1aa9ec9ca7658a559c'
-            '189eec6486c9ef6cf1071af9750405bc41e16ae3a55ad663435e574369fec915'
-            '01e191cc1af1f35b9699213107068cd3fe05d9816275ac118dc785a0dd8faebf'
-            'e0f5accba0ff47d9cdf79f506ea76ea0b373edaf6845a23180a00c15e0a8691d')
+        "glib-0.20.0.tar.gz::https://crates.io/api/v1/crates/glib/0.20.0/download"
+        "glib-rs.patch"
+        "0002-avoid-link-whole.patch"
+        "0003-pixbuf-loader-fix-install-prefix-and-dll-name.patch"
+        "0004-add-option-for-disabling-convert.patch")
+sha256sums=('f116eaf8196fc8261b0bbbdf996a4fe1bc97dc25664f953b328194d049a0dada'
+            'fee90a615ce05be7a32932cfb8adf2c4bbb4700e80d37713c981fb24c0c56238'
+            'e0f5accba0ff47d9cdf79f506ea76ea0b373edaf6845a23180a00c15e0a8691d'
+            '4cb597eef01a636ad7007b3a47b76e395f30b2347183b5acb1af94d39577a239'
+            '7720b53a4eba7663677a799c5edfd7c395ac6416a089e2946d61ac10c819f8ee'
+            '0e042886d313b37f5db5e0405a5e37b3d3e4a6c66f94186677406136fa0e7a17')
 msys2_repository_url="https://gitlab.gnome.org/GNOME/librsvg"
+noextract=("${_realname}-${pkgver}.tar.xz")
 
 prepare() {
+  bsdtar -xf "${_realname}-${pkgver}.tar.xz" 2>/dev/null || true
+
   # Patch bug in glib rust bindings
   # See: https://github.com/gtk-rs/gtk-rs-core/pull/1199
   # Version of glib-rs should match what is in librsvg Cargo.lock
-  cd "${srcdir}/glib-0.19.3"
+  cd "${srcdir}/glib-0.20.0"
   patch -p1 -i "${srcdir}/glib-rs.patch"
 
   cd "${srcdir}/${_realname}-${pkgver}"
-  patch -p1 -i "${srcdir}/0001-configure-set-pass-prefix-to-pkg-config-when-retriev.patch"
+
+  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+    # https://github.com/msys2/MINGW-packages/issues/21017
+    patch -p1 -i "${srcdir}/0002-avoid-link-whole.patch"
+  fi
+
+  # it's not taking the install prefix into account
+  patch -p1 -i "${srcdir}/0003-pixbuf-loader-fix-install-prefix-and-dll-name.patch"
+
+  # cargo-c is using the C linker instead of the C++ one, so skip for now
+  patch -p1 -i "${srcdir}/0004-add-option-for-disabling-convert.patch"
 
   echo "" >> Cargo.toml
   echo "[patch.crates-io]" >> Cargo.toml
-  echo "glib = { path = '../glib-0.19.3' }" >> Cargo.toml
+  echo "glib = { path = '../glib-0.20.0' }" >> Cargo.toml
   cargo update --package glib
   cargo fetch --locked
-
-  autoreconf -fiv
 }
 
 build() {
-  [[ -d "${srcdir}/build-${MSYSTEM}" ]] && rm -rf "${srcdir}/build-${MSYSTEM}"
-  mkdir "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
-
-  # html documentation doesn't install from out of tree
-  cp -rf "${srcdir}/${_realname}-${pkgver}/doc" "${srcdir}/build-${MSYSTEM}/doc"
-
   # https://github.com/msys2/MINGW-packages/pull/13622#issuecomment-1285820970
   export WINAPI_NO_BUNDLED_LIBRARIES=1
 
-  export lt_cv_deplibs_check_method='pass_all'
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+    meson setup \
+      --prefix="${MINGW_PREFIX}" \
+      --wrap-mode=nodownload \
+      --auto-features=enabled \
+      --default-library=static \
+      --buildtype=plain \
+      -Dintrospection=disabled \
+      -Davif=disabled \
+      -Dtests=false \
+      -Ddocs=disabled \
+      -Dpixbuf-loader=disabled \
+      -Drsvg-convert=disabled \
+      "build-${MSYSTEM}-static" \
+      "${_realname}-${pkgver}"
 
-  # an argument passed to glib-mkenums starts with a c++ comment
-  export MSYS2_ARG_CONV_EXCL="/*"
-  # so the unix path gets preserved when passed through pkg-config
-  MSYS2_ARG_CONV_EXCL="$MSYS2_ARG_CONV_EXCL;--define-variable=prefix"
+  meson compile -C "build-${MSYSTEM}-static"
 
-  ../${_realname}-${pkgver}/configure \
-    --prefix=${MINGW_PREFIX} \
-    --build=${MINGW_CHOST} \
-    --host=${MINGW_CHOST} \
-    --enable-introspection \
-    --enable-vala \
-    --enable-silent-rules
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+    meson setup \
+      --prefix="${MINGW_PREFIX}" \
+      --wrap-mode=nodownload \
+      --auto-features=enabled \
+      --buildtype=plain \
+      -Davif=disabled \
+      "build-${MSYSTEM}" \
+      "${_realname}-${pkgver}"
 
-  make
+  meson compile -C "build-${MSYSTEM}"
 }
 
 package_librsvg() {
   conflicts=("${MINGW_PACKAGE_PREFIX}-${_realname}-2.40")
   replaces=("${MINGW_PACKAGE_PREFIX}-${_realname}-2.40")
-  make -C "${srcdir}/build-${MSYSTEM}" DESTDIR="${pkgdir}" install
+
+  meson install -C "build-${MSYSTEM}-static" --destdir "${pkgdir}"
+  meson install -C "build-${MSYSTEM}" --destdir "${pkgdir}"
+
   install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING.LIB"
 
   mkdir -p dest${MINGW_PREFIX}/share
