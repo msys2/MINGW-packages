@@ -28,9 +28,6 @@ prepare() {
 }
 
 build() {
-  cd "${srcdir}/${_realname}-${pkgver}"
-  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
-
   declare -a extra_config
   if check_option "debug" "n"; then
     extra_config+=("-DCMAKE_BUILD_TYPE=Release")
@@ -39,26 +36,23 @@ build() {
   fi
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
-    "${MINGW_PREFIX}"/bin/cmake.exe \
+    cmake \
       -GNinja \
       -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
       "${extra_config[@]}" \
       -DBUILD_{SHARED,STATIC}_LIBS=ON \
-      ../${_realname}-${pkgver}
+      -S "${_realname}-${pkgver}" \
+      -B "build-${MSYSTEM}"
 
-  "${MINGW_PREFIX}"/bin/cmake.exe --build .
+  cmake --build "build-${MSYSTEM}"
 }
 
 check() {
-  cd "${srcdir}/build-${MSYSTEM}"
-
-  "${MINGW_PREFIX}"/bin/cmake.exe --build . --target test
+  cmake --build "build-${MSYSTEM}" --target test
 }
 
 package() {
-  cd "${srcdir}/build-${MSYSTEM}"
-
-  DESTDIR="${pkgdir}" "${MINGW_PREFIX}"/bin/cmake.exe --install .
+  DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}"
 
   install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }

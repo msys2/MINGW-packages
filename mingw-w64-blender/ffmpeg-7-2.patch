@@ -1,0 +1,184 @@
+From fc8955ebbbb5d0afde2722b836dec8b4e07f2232 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Robert-Andr=C3=A9=20Mauchin?= <zebob.m@gmail.com>
+Date: Sat, 18 May 2024 22:08:34 +0200
+Subject: [PATCH] Add compatibility with FFmpeg 7.0 within audaspace plugin
+
+We backport changes specific to FFmpeg 7.0 in audaspace, behind
+HAVE_CH_LAYOUT, ensuring compatibility with previous versions.
+---
+ .../audaspace/plugins/ffmpeg/FFMPEGReader.cpp | 27 +++++++++--
+ .../audaspace/plugins/ffmpeg/FFMPEGWriter.cpp | 46 +++++++++++++++++++
+ 2 files changed, 69 insertions(+), 4 deletions(-)
+
+diff --git a/extern/audaspace/plugins/ffmpeg/FFMPEGReader.cpp b/extern/audaspace/plugins/ffmpeg/FFMPEGReader.cpp
+index c0e16d6a887..3257daab442 100644
+--- a/extern/audaspace/plugins/ffmpeg/FFMPEGReader.cpp
++++ b/extern/audaspace/plugins/ffmpeg/FFMPEGReader.cpp
+@@ -31,6 +31,10 @@ AUD_NAMESPACE_BEGIN
+ #define FFMPEG_OLD_CODE
+ #endif
+ 
++#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 100)
++#define HAVE_CH_LAYOUT
++#endif
++
+ SampleFormat FFMPEGReader::convertSampleFormat(AVSampleFormat format)
+ {
+ 	switch(av_get_packed_sample_fmt(format))
+@@ -104,15 +108,22 @@ int FFMPEGReader::decode(AVPacket& packet, Buffer& buffer)
+ 	packet.size = orig_size;
+ #else
+ 	avcodec_send_packet(m_codecCtx, &packet);
++	
+ 
+ 	while(true)
+ 	{
+ 		auto ret = avcodec_receive_frame(m_codecCtx, m_frame);
+ 
++#ifdef HAVE_CH_LAYOUT
++		int nb_channels = m_codecCtx->ch_layout.nb_channels;
++#else
++		int nb_channels = m_codecCtx->channels;
++#endif
++
+ 		if(ret != 0)
+ 			break;
+ 
+-		int data_size = av_samples_get_buffer_size(nullptr, m_codecCtx->channels, m_frame->nb_samples, m_codecCtx->sample_fmt, 1);
++		int data_size = av_samples_get_buffer_size(nullptr, nb_channels, m_frame->nb_samples, m_codecCtx->sample_fmt, 1);
+ 
+ 		if(buf_size - buf_pos < data_size)
+ 		{
+@@ -122,12 +133,12 @@ int FFMPEGReader::decode(AVPacket& packet, Buffer& buffer)
+ 
+ 		if(m_tointerleave)
+ 		{
+-			int single_size = data_size / m_codecCtx->channels / m_frame->nb_samples;
+-			for(int channel = 0; channel < m_codecCtx->channels; channel++)
++			int single_size = data_size / nb_channels / m_frame->nb_samples;
++			for(int channel = 0; channel < nb_channels; channel++)
+ 			{
+ 				for(int i = 0; i < m_frame->nb_samples; i++)
+ 				{
+-					std::memcpy(((data_t*)buffer.getBuffer()) + buf_pos + ((m_codecCtx->channels * i) + channel) * single_size,
++					std::memcpy(((data_t*)buffer.getBuffer()) + buf_pos + ((nb_channels * i) + channel) * single_size,
+ 						   m_frame->data[channel] + i * single_size, single_size);
+ 				}
+ 			}
+@@ -207,7 +218,11 @@ void FFMPEGReader::init(int stream)
+ 	if(avcodec_open2(m_codecCtx, aCodec, nullptr) < 0)
+ 		AUD_THROW(FileException, "File couldn't be read, ffmpeg codec couldn't be opened.");
+ 
++#ifdef HAVE_CH_LAYOUT
++	m_specs.channels = (Channels) m_codecCtx->ch_layout.nb_channels;
++#else
+ 	m_specs.channels = (Channels) m_codecCtx->channels;
++#endif
+ 	m_tointerleave = av_sample_fmt_is_planar(m_codecCtx->sample_fmt);
+ 
+ 	switch(av_get_packed_sample_fmt(m_codecCtx->sample_fmt))
+@@ -344,8 +359,12 @@ std::vector<StreamInfo> FFMPEGReader::queryStreams()
+ 			info.specs.channels = Channels(m_formatCtx->streams[i]->codec->channels);
+ 			info.specs.rate = m_formatCtx->streams[i]->codec->sample_rate;
+ 			info.specs.format = convertSampleFormat(m_formatCtx->streams[i]->codec->sample_fmt);
++#else
++#ifdef HAVE_CH_LAYOUT
++			info.specs.channels = Channels(m_formatCtx->streams[i]->codecpar->ch_layout.nb_channels);
+ #else
+ 			info.specs.channels = Channels(m_formatCtx->streams[i]->codecpar->channels);
++#endif
+ 			info.specs.rate = m_formatCtx->streams[i]->codecpar->sample_rate;
+ 			info.specs.format = convertSampleFormat(AVSampleFormat(m_formatCtx->streams[i]->codecpar->format));
+ #endif
+diff --git a/extern/audaspace/plugins/ffmpeg/FFMPEGWriter.cpp b/extern/audaspace/plugins/ffmpeg/FFMPEGWriter.cpp
+index 9cadfe9c092..2f435c14b56 100644
+--- a/extern/audaspace/plugins/ffmpeg/FFMPEGWriter.cpp
++++ b/extern/audaspace/plugins/ffmpeg/FFMPEGWriter.cpp
+@@ -34,6 +34,10 @@ AUD_NAMESPACE_BEGIN
+ #define FFMPEG_OLD_CODE
+ #endif
+ 
++#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 100)
++#define HAVE_CH_LAYOUT
++#endif
++
+ void FFMPEGWriter::encode()
+ {
+ 	sample_t* data = m_input_buffer.getBuffer();
+@@ -77,8 +81,12 @@ void FFMPEGWriter::encode()
+ 
+ 	m_frame->nb_samples = m_input_samples;
+ 	m_frame->format = m_codecCtx->sample_fmt;
++#ifdef HAVE_CH_LAYOUT
++	av_channel_layout_copy(&m_frame->ch_layout, &m_codecCtx->ch_layout);
++#else
+ 	m_frame->channel_layout = m_codecCtx->channel_layout;
+ 	m_frame->channels = m_specs.channels;
++#endif
+ 
+ 	if(avcodec_fill_audio_frame(m_frame, m_specs.channels, m_codecCtx->sample_fmt, reinterpret_cast<data_t*>(data), m_input_buffer.getSize(), 0) < 0)
+ 		AUD_THROW(FileException, "File couldn't be written, filling the audio frame failed with ffmpeg.");
+@@ -237,6 +245,39 @@ FFMPEGWriter::FFMPEGWriter(const std::string &filename, DeviceSpecs specs, Conta
+ 		break;
+ 	}
+ 
++#ifdef HAVE_CH_LAYOUT
++	AVChannelLayout channel_layout{};
++
++	switch(m_specs.channels)
++	{
++	case CHANNELS_MONO:
++		channel_layout = AV_CHANNEL_LAYOUT_MONO;
++		break;
++	case CHANNELS_STEREO:
++		channel_layout = AV_CHANNEL_LAYOUT_STEREO;
++		break;
++	case CHANNELS_STEREO_LFE:
++		channel_layout = AV_CHANNEL_LAYOUT_2POINT1;
++		break;
++	case CHANNELS_SURROUND4:
++		channel_layout = AV_CHANNEL_LAYOUT_QUAD;
++		break;
++	case CHANNELS_SURROUND5:
++		channel_layout = AV_CHANNEL_LAYOUT_5POINT0_BACK;
++		break;
++	case CHANNELS_SURROUND51:
++		channel_layout = AV_CHANNEL_LAYOUT_5POINT1_BACK;
++		break;
++	case CHANNELS_SURROUND61:
++		channel_layout = AV_CHANNEL_LAYOUT_6POINT1_BACK;
++		break;
++	case CHANNELS_SURROUND71:
++		channel_layout = AV_CHANNEL_LAYOUT_7POINT1;
++		break;
++	default:
++		AUD_THROW(FileException, "File couldn't be written, channel layout not supported.");
++	}
++#else
+ 	uint64_t channel_layout = 0;
+ 
+ 	switch(m_specs.channels)
+@@ -268,6 +309,7 @@ FFMPEGWriter::FFMPEGWriter(const std::string &filename, DeviceSpecs specs, Conta
+ 	default:
+ 		AUD_THROW(FileException, "File couldn't be written, channel layout not supported.");
+ 	}
++#endif
+ 
+ 	try
+ 	{
+@@ -405,8 +447,12 @@ FFMPEGWriter::FFMPEGWriter(const std::string &filename, DeviceSpecs specs, Conta
+ 
+ 		m_codecCtx->codec_type = AVMEDIA_TYPE_AUDIO;
+ 		m_codecCtx->bit_rate = bitrate;
++#ifdef HAVE_CH_LAYOUT
++		av_channel_layout_copy(&m_codecCtx->ch_layout, &channel_layout);
++#else
+ 		m_codecCtx->channel_layout = channel_layout;
+ 		m_codecCtx->channels = m_specs.channels;
++#endif
+ 		m_stream->time_base.num = m_codecCtx->time_base.num = 1;
+ 		m_stream->time_base.den = m_codecCtx->time_base.den = m_codecCtx->sample_rate;
+ 
+-- 
+2.30.2
+

@@ -3,34 +3,47 @@
 _realname=podman
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-pkgver=4.8.3
+pkgver=5.2.1
 pkgrel=1
 pkgdesc='Tool for running OCI-based containers in pods (mingw-w64)'
 arch=('any')
 mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url="https://github.com/containers/podman"
+msys2_references=(
+  "cpe: cpe:/a:podman_project:podman"
+)
 license=('spdx:Apache-2.0')
-options=('!strip')
 makedepends=(
     "${MINGW_PACKAGE_PREFIX}-go"
     "${MINGW_PACKAGE_PREFIX}-cc"
     "${MINGW_PACKAGE_PREFIX}-python"
     "git"
 )
-source=("https://github.com/containers/podman/archive/v$pkgver/${_realname}-${pkgver}.tar.gz")
-sha256sums=('3a99b6c82644fa52929cf4143943c63d6784c84094892bc0e14197fa38a1c7fa')
+options=('!strip')
+_GV_VERSION="0.7.4"  # See GV_VERSION in Makefile
+source=("https://github.com/containers/podman/archive/v$pkgver/${_realname}-${pkgver}.tar.gz"
+        "https://github.com/containers/gvisor-tap-vsock/archive/v${_GV_VERSION}/gvisor-tap-vsock-${_GV_VERSION}.tar.gz"
+        "0001-etc-prefix.patch")
+sha256sums=('650b951b8920d01cbaed18dfc3a12af2db621a840d664d36983b521aff4af7cf'
+            '22a68a0b0f8120c8d4dde29856e2cc38b292ced1b1d4cd8bf3b709acadbddc88'
+            '2a1a5c9d126634e871853cfa0e17af8f1597a6ed9c709f59c4a19e1bbb76c68d')
 noextract=("${_realname}-${pkgver}.tar.gz")
 
 prepare() {
     echo "Extracting ${_realname}-${pkgver}.tar.gz ..."
     tar -xzf ${_realname}-${pkgver}.tar.gz | true
     rm -rf build-${MSYSTEM}
+
+    cd "${_realname}-${pkgver}"
+    patch -Np1 -i "${srcdir}/0001-etc-prefix.patch"
+    cd "${srcdir}"
+
     cp -r ${_realname}-${pkgver} build-${MSYSTEM}
+
+    cp -r "gvisor-tap-vsock-${_GV_VERSION}" "build-proxy-${MSYSTEM}"
 }
 
 build() {
-    cd "build-${MSYSTEM}"
-
     export GOOS=windows
     export GOROOT=${MINGW_PREFIX}/lib/go
     export CGO_CPPFLAGS="${CPPFLAGS}"
@@ -45,18 +58,22 @@ build() {
         ;;
     esac
 
+    cd  "${srcdir}/build-proxy-${MSYSTEM}"
+    make win-gvproxy win-sshproxy
+
+    cd "${srcdir}/build-${MSYSTEM}"
     # parallel make breaks markdown processing
-    make -j1 podman-remote
-    make -j1 docker-docs
-    make -j1 win-gvproxy
+    make -j1 podman-remote CGO_ENABLED=1
+    make -j1 docker-docs CGO_ENABLED=1
 }
 
 package() {
     cd "build-${MSYSTEM}"
 
+    # copy the proxy binaries where install.remote expects them
+    cp "${srcdir}/build-proxy-${MSYSTEM}/bin/"* "./bin/windows"
+
     make install.remote install.docker-full install.man install.completions DESTDIR="$pkgdir" PREFIX=${MINGW_PREFIX}
     rm -Rf "${pkgdir}${MINGW_PREFIX}/lib"
     sed -i "s|/usr/bin/||g" "${pkgdir}${MINGW_PREFIX}/bin/docker"
-
-    cp bin/windows/win-sshproxy.exe "${pkgdir}${MINGW_PREFIX}/bin"
 }
