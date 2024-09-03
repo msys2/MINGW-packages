@@ -1690,13 +1690,16 @@
           INTEGER :: ierror
         END SUBROUTINE MPI_Win_set_attr
 
+#ifdef __GNUC__
         SUBROUTINE MPI_Allgather(sendbuf, sendcount, sendtype, recvbuf, &
                 recvcount, recvtype, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
           INTEGER, INTENT(in) :: sendcount
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: recvcount
           INTEGER, INTENT(in) :: recvtype
           INTEGER, INTENT(in) :: comm
@@ -1706,10 +1709,12 @@
         SUBROUTINE MPI_Allgatherv(sendbuf, sendcount, sendtype, recvbuf, &
                 recvcounts, displs, recvtype, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
           INTEGER, INTENT(in) :: sendcount
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: recvcounts(*)
           INTEGER, INTENT(in) :: displs(*)
           INTEGER, INTENT(in) :: recvtype
@@ -1719,8 +1724,10 @@
 
         SUBROUTINE MPI_Allreduce(sendbuf, recvbuf, count, datatype, op, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: op
@@ -1731,10 +1738,12 @@
         SUBROUTINE MPI_Alltoall(sendbuf, sendcount, sendtype, recvbuf, &
                 recvcount, recvtype, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
           INTEGER, INTENT(in) :: sendcount
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: recvcount
           INTEGER, INTENT(in) :: recvtype
           INTEGER, INTENT(in) :: comm
@@ -1744,11 +1753,13 @@
         SUBROUTINE MPI_Alltoallv(sendbuf, sendcounts, sdispls, sendtype, &
                 recvbuf, recvcounts, rdispls, recvtype, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
           INTEGER, INTENT(in) :: sendcounts(*)
           INTEGER, INTENT(in) :: sdispls(*)
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: recvcounts(*)
           INTEGER, INTENT(in) :: rdispls(*)
           INTEGER, INTENT(in) :: recvtype
@@ -1759,11 +1770,13 @@
         SUBROUTINE MPI_Alltoallw(sendbuf, sendcounts, sdispls, sendtypes, &
                recvbuf, recvcounts, rdispls, recvtypes, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
           INTEGER, INTENT(in) :: sendcounts(*)
           INTEGER, INTENT(in) :: sdispls(*)
           INTEGER, INTENT(in) :: sendtypes(*)
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: recvcounts(*)
           INTEGER, INTENT(in) :: rdispls(*)
           INTEGER, INTENT(in) :: recvtypes(*)
@@ -1773,7 +1786,8 @@
 
         SUBROUTINE MPI_Bcast(buffer, count, datatype, root, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(inout) :: buffer
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buffer
+          TYPE(*), DIMENSION(*), INTENT(inout) :: buffer
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: root
@@ -1783,8 +1797,10 @@
 
         SUBROUTINE MPI_Exscan(sendbuf, recvbuf, count, datatype, op, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: op
@@ -1795,10 +1811,12 @@
         SUBROUTINE MPI_Gather(sendbuf, sendcount, sendtype, recvbuf, recvcount, &
                 recvtype, root, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
           INTEGER, INTENT(in) :: sendcount
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: recvcount
           INTEGER, INTENT(in) :: recvtype
           INTEGER, INTENT(in) :: root
@@ -1809,10 +1827,12 @@
         SUBROUTINE MPI_Gatherv(sendbuf, sendcount, sendtype, recvbuf, recvcounts, &
                 displs, recvtype, root, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
           INTEGER, INTENT(in) :: sendcount
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: recvcounts(*)
           INTEGER, INTENT(in) :: displs(*)
           INTEGER, INTENT(in) :: recvtype
@@ -1824,10 +1844,12 @@
         SUBROUTINE MPI_Iallgather(sendbuf, sendcount, sendtype, recvbuf, recvcount, &
                 recvtype, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
           INTEGER, INTENT(in) :: sendcount
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
           INTEGER, INTENT(in) :: recvcount
           INTEGER, INTENT(in) :: recvtype
           INTEGER, INTENT(in) :: comm
@@ -1838,10 +1860,12 @@
         SUBROUTINE MPI_Iallgatherv(sendbuf, sendcount, sendtype, recvbuf, recvcounts, &
                 displs, recvtype, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
           INTEGER, INTENT(in) :: sendcount
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
           INTEGER, INTENT(in), ASYNCHRONOUS :: recvcounts(*)
           INTEGER, INTENT(in), ASYNCHRONOUS :: displs(*)
           INTEGER, INTENT(in) :: recvtype
@@ -1853,8 +1877,10 @@
         SUBROUTINE MPI_Iallreduce(sendbuf, recvbuf, count, datatype, op, comm, &
                 request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: sendbuf
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: op
@@ -1866,10 +1892,12 @@
         SUBROUTINE MPI_Ialltoall(sendbuf, sendcount, sendtype, recvbuf, recvcount, &
                 recvtype, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
           INTEGER, INTENT(in) :: sendcount
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
           INTEGER, INTENT(in) :: recvcount
           INTEGER, INTENT(in) :: recvtype
           INTEGER, INTENT(in) :: comm
@@ -1880,11 +1908,13 @@
         SUBROUTINE MPI_Ialltoallv(sendbuf, sendcounts, sdispls, sendtype, &
                 recvbuf, recvcounts, rdispls, recvtype, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
           INTEGER, INTENT(in), ASYNCHRONOUS :: sendcounts(*)
           INTEGER, INTENT(in), ASYNCHRONOUS :: sdispls(*)
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
           INTEGER, INTENT(in), ASYNCHRONOUS :: recvcounts(*)
           INTEGER, INTENT(in), ASYNCHRONOUS :: rdispls(*)
           INTEGER, INTENT(in) :: recvtype
@@ -1896,11 +1926,13 @@
         SUBROUTINE MPI_Ialltoallw(sendbuf, sendcounts, sdispls, sendtypes, &
                 recvbuf, recvcounts,  rdispls, recvtypes, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
           INTEGER, INTENT(in), ASYNCHRONOUS :: sendcounts(*)
           INTEGER, INTENT(in), ASYNCHRONOUS :: sdispls(*)
           INTEGER, INTENT(in), ASYNCHRONOUS :: sendtypes(*)
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
           INTEGER, INTENT(in), ASYNCHRONOUS :: recvcounts(*)
           INTEGER, INTENT(in), ASYNCHRONOUS :: rdispls(*)
           INTEGER, INTENT(in), ASYNCHRONOUS :: recvtypes(*)
@@ -1908,6 +1940,7 @@
           INTEGER, INTENT(out) :: request
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_Ialltoallw
+#endif
 
         SUBROUTINE MPI_Ibarrier(comm, request, ierror)
           IMPLICIT NONE
@@ -1916,9 +1949,11 @@
           INTEGER :: ierror
         END SUBROUTINE MPI_Ibarrier
 
+#ifdef __GNUC__
         SUBROUTINE MPI_Ibcast(buffer, count, datatype, root, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(inout), ASYNCHRONOUS :: buffer
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buffer
+          TYPE(*), DIMENSION(*), INTENT(inout), ASYNCHRONOUS :: buffer
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: root
@@ -1930,8 +1965,10 @@
         SUBROUTINE MPI_Iexscan(sendbuf, recvbuf, count, datatype, op,  comm,&
                 request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: sendbuf
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: op
@@ -1943,10 +1980,12 @@
         SUBROUTINE MPI_Igather(sendbuf, sendcount, sendtype, recvbuf, recvcount, &
                 recvtype, root, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
           INTEGER, INTENT(in) :: sendcount
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
           INTEGER, INTENT(in) :: recvcount
           INTEGER, INTENT(in) :: recvtype
           INTEGER, INTENT(in) :: root
@@ -1958,10 +1997,12 @@
         SUBROUTINE MPI_Igatherv(sendbuf, sendcount, sendtype, recvbuf, recvcounts, &
                 displs, recvtype,  root, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
           INTEGER, INTENT(in) :: sendcount
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
           INTEGER, INTENT(in), ASYNCHRONOUS :: recvcounts(*)
           INTEGER, INTENT(in), ASYNCHRONOUS :: displs(*)
           INTEGER, INTENT(in) :: recvtype
@@ -1974,8 +2015,10 @@
         SUBROUTINE MPI_Ireduce(sendbuf, recvbuf, count, datatype, op, root, &
                 comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: sendbuf
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: op
@@ -1988,8 +2031,10 @@
         SUBROUTINE MPI_Ireduce_scatter(sendbuf, recvbuf, recvcounts, datatype, &
                 op, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: sendbuf
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
           INTEGER, INTENT(in), ASYNCHRONOUS :: recvcounts(*)
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: op
@@ -2001,8 +2046,10 @@
         SUBROUTINE MPI_Ireduce_scatter_block(sendbuf, recvbuf, recvcount, datatype, &
                 op, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: sendbuf
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
           INTEGER, INTENT(in) :: recvcount
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: op
@@ -2013,8 +2060,10 @@
 
         SUBROUTINE MPI_Iscan(sendbuf, recvbuf, count, datatype, op, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: sendbuf
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: op
@@ -2026,10 +2075,12 @@
         SUBROUTINE MPI_Iscatter(sendbuf, sendcount, sendtype, recvbuf, recvcount, &
                 recvtype, root, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
           INTEGER, INTENT(in) :: sendcount
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
           INTEGER, INTENT(in) :: recvcount
           INTEGER, INTENT(in) :: recvtype
           INTEGER, INTENT(in) :: root
@@ -2041,11 +2092,13 @@
         SUBROUTINE MPI_Iscatterv(sendbuf, sendcounts, displs, sendtype, recvbuf, &
                 recvcount, recvtype, root, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
           INTEGER, INTENT(in), ASYNCHRONOUS :: sendcounts(*)
           INTEGER, INTENT(in), ASYNCHRONOUS :: displs(*)
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
           INTEGER, INTENT(in) :: recvcount
           INTEGER, INTENT(in) :: recvtype
           INTEGER, INTENT(in) :: root
@@ -2056,8 +2109,10 @@
 
         SUBROUTINE MPI_Reduce(sendbuf, recvbuf, count, datatype, op, root, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: op
@@ -2068,8 +2123,10 @@
 
         SUBROUTINE MPI_Reduce_local(inbuf, inoutbuf, count, datatype, op, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: inbuf
-          TYPE(*), DIMENSION(..), INTENT(inout) :: inoutbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: inbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: inbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: inoutbuf
+          TYPE(*), DIMENSION(*), INTENT(inout) :: inoutbuf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: op
@@ -2079,8 +2136,10 @@
         SUBROUTINE MPI_Reduce_scatter(sendbuf, recvbuf, recvcounts, datatype, &
                 op, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: recvcounts(*)
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: op
@@ -2091,8 +2150,10 @@
         SUBROUTINE MPI_Reduce_scatter_block(sendbuf, recvbuf, recvcount, datatype, &
                 op, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: recvcount
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: op
@@ -2102,8 +2163,10 @@
 
         SUBROUTINE MPI_Scan(sendbuf, recvbuf, count, datatype, op, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: op
@@ -2114,10 +2177,12 @@
         SUBROUTINE MPI_Scatter(sendbuf, sendcount, sendtype, recvbuf, recvcount, &
                 recvtype, root, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
           INTEGER, INTENT(in) :: sendcount
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: recvcount
           INTEGER, INTENT(in) :: recvtype
           INTEGER, INTENT(in) :: root
@@ -2128,11 +2193,13 @@
         SUBROUTINE MPI_Scatterv(sendbuf, sendcounts, displs, sendtype, recvbuf, &
                 recvcount, recvtype, root, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
           INTEGER, INTENT(in) :: sendcounts(*)
           INTEGER, INTENT(in) :: displs(*)
           INTEGER, INTENT(in) :: sendtype
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: recvcount
           INTEGER, INTENT(in) :: recvtype
           INTEGER, INTENT(in) :: root
@@ -2143,7 +2210,8 @@
         SUBROUTINE MPI_Get_address(location, address, ierror)
           USE :: MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: location
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: location
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: location
           INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(out) :: address
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_Get_address
@@ -2151,10 +2219,12 @@
         SUBROUTINE MPI_Pack(inbuf, incount, datatype, outbuf, outsize, position, &
                 comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: inbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: inbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: inbuf
           INTEGER, INTENT(in) :: incount
           INTEGER, INTENT(in) :: datatype
-          TYPE(*), DIMENSION(..) :: outbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: outbuf
+          TYPE(*), DIMENSION(*) :: outbuf
           INTEGER, INTENT(in) :: outsize
           INTEGER, INTENT(inout) :: position
           INTEGER, INTENT(in) :: comm
@@ -2166,10 +2236,12 @@
           USE :: MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
           IMPLICIT NONE
           CHARACTER(len=*), INTENT(in) :: datarep
-          TYPE(*), DIMENSION(..), INTENT(in) :: inbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: inbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: inbuf
           INTEGER, INTENT(in) :: incount
           INTEGER, INTENT(in) :: datatype
-          TYPE(*), DIMENSION(..) :: outbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: outbuf
+          TYPE(*), DIMENSION(*) :: outbuf
           INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: outsize
           INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(inout) :: position
           INTEGER, INTENT(out) :: ierror
@@ -2178,10 +2250,12 @@
         SUBROUTINE MPI_Unpack(inbuf, insize, position, outbuf, outcount, &
                 datatype, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: inbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: inbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: inbuf
           INTEGER, INTENT(in) :: insize
           INTEGER, INTENT(inout) :: position
-          TYPE(*), DIMENSION(..) :: outbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: outbuf
+          TYPE(*), DIMENSION(*) :: outbuf
           INTEGER, INTENT(in) :: outcount
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: comm
@@ -2193,14 +2267,17 @@
           USE :: MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
           IMPLICIT NONE
           CHARACTER(len=*), INTENT(in) :: datarep
-          TYPE(*), DIMENSION(..), INTENT(in) :: inbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: inbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: inbuf
           INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: insize
           INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(inout) :: position
-          TYPE(*), DIMENSION(..) :: outbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: outbuf
+          TYPE(*), DIMENSION(*) :: outbuf
           INTEGER, INTENT(in) :: outcount
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_Unpack_external
+#endif
 
         SUBROUTINE MPI_Group_translate_ranks(group1, n, ranks1, group2, ranks2, ierror)
           IMPLICIT NONE
@@ -2217,9 +2294,11 @@
           INTEGER :: ierror
         END SUBROUTINE MPI_Finalize
 
+#ifdef __GNUC__
         SUBROUTINE MPI_Bsend(buf, count, datatype, dest, tag, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: dest
@@ -2231,7 +2310,8 @@
         SUBROUTINE MPI_Bsend_init(buf, count, datatype, dest, tag, comm, &
                 request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: dest
@@ -2243,10 +2323,12 @@
 
         SUBROUTINE MPI_Buffer_attach(buffer, size, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: buffer
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buffer
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buffer
           INTEGER, INTENT(in) :: size
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_Buffer_attach
+#endif
 
         SUBROUTINE MPI_Buffer_detach(buffer_addr, size, ierror)
           USE, intrinsic :: iso_c_binding, ONLY : C_PTR
@@ -2256,9 +2338,11 @@
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_Buffer_detach
 
+#ifdef __GNUC__
         SUBROUTINE MPI_Ibsend(buf, count, datatype, dest, tag, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: dest
@@ -2270,7 +2354,8 @@
 
         SUBROUTINE MPI_Imrecv(buf, count, datatype, message, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(inout) :: message
@@ -2280,7 +2365,8 @@
 
         SUBROUTINE MPI_Irecv(buf, count, datatype, source, tag, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: source
@@ -2292,7 +2378,8 @@
 
         SUBROUTINE MPI_Irsend(buf, count, datatype, dest, tag, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: dest
@@ -2304,7 +2391,8 @@
 
         SUBROUTINE MPI_Isend(buf, count, datatype, dest, tag, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: dest
@@ -2316,7 +2404,8 @@
 
         SUBROUTINE MPI_Issend(buf, count, datatype, dest, tag, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: dest
@@ -2329,7 +2418,8 @@
         SUBROUTINE MPI_Mrecv(buf, count, datatype, message, status, ierror)
           USE MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(inout) :: message
@@ -2340,7 +2430,8 @@
         SUBROUTINE MPI_Recv(buf, count, datatype, source, tag, comm, status, ierror)
           USE MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: source
@@ -2352,7 +2443,8 @@
 
         SUBROUTINE MPI_Recv_init(buf, count, datatype, source, tag, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: source
@@ -2364,7 +2456,8 @@
 
         SUBROUTINE MPI_Rsend(buf, count, datatype, dest, tag, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: dest
@@ -2375,7 +2468,8 @@
 
         SUBROUTINE MPI_Rsend_init(buf, count, datatype, dest, tag, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: dest
@@ -2387,7 +2481,8 @@
 
         SUBROUTINE MPI_Send(buf, count, datatype, dest, tag, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: dest
@@ -2398,7 +2493,8 @@
 
         SUBROUTINE MPI_Send_init(buf, count, datatype, dest, tag, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: dest
@@ -2412,12 +2508,14 @@
                 recvbuf, recvcount, recvtype, source, recvtag, comm, status, ierror)
           USE MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
           INTEGER, INTENT(in) :: sendcount
           INTEGER, INTENT(in) :: sendtype
           INTEGER, INTENT(in) :: dest
           INTEGER, INTENT(in) :: sendtag
-          TYPE(*), DIMENSION(..) :: recvbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
           INTEGER, INTENT(in) :: recvcount
           INTEGER, INTENT(in) :: recvtype
           INTEGER, INTENT(in) :: source
@@ -2431,7 +2529,8 @@
                 source, recvtag, comm, status, ierror)
           USE MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(inout) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(inout) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: dest
@@ -2445,7 +2544,8 @@
 
         SUBROUTINE MPI_Ssend(buf, count, datatype, dest, tag, comm, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: dest
@@ -2456,7 +2556,8 @@
 
         SUBROUTINE MPI_Ssend_init(buf, count, datatype, dest, tag, comm, request, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: dest
@@ -2465,6 +2566,7 @@
           INTEGER, INTENT(out) :: request
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_Ssend_init
+#endif
 
         SUBROUTINE MPI_Grequest_start(query_fn, free_fn, cancel_fn, extra_state, &
                 request, ierror)
@@ -2549,11 +2651,13 @@
           INTEGER :: ierror
         END SUBROUTINE MPI_Waitsome
 
+#ifdef __GNUC__
         SUBROUTINE MPI_Accumulate(origin_addr, origin_count, origin_datatype, target_rank, &
                 target_disp, target_count, target_datatype, op, win, ierror)
           USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: origin_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
           INTEGER, INTENT(in) :: origin_count
           INTEGER, INTENT(in) :: origin_datatype
           INTEGER, INTENT(in) :: target_rank
@@ -2569,9 +2673,12 @@
                 datatype, target_rank, target_disp, win, ierror)
           USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: origin_addr
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: compare_addr
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: result_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: compare_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: compare_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: result_addr
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: result_addr
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: target_rank
           INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: target_disp
@@ -2583,8 +2690,10 @@
                 target_rank, target_disp, op, win, ierror)
           USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: origin_addr
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: result_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: result_addr
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: result_addr
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(in) :: target_rank
           INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: target_disp
@@ -2595,7 +2704,8 @@
 
         SUBROUTINE MPI_Free_mem(base, ierror)
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: base
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: base
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: base
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_Free_mem
 
@@ -2603,7 +2713,8 @@
                 target_disp, target_count, target_datatype, win, ierror)
           USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: origin_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: origin_addr
           INTEGER, INTENT(in) :: origin_count
           INTEGER, INTENT(in) :: origin_datatype
           INTEGER, INTENT(in) :: target_rank
@@ -2619,10 +2730,12 @@
                 target_count, target_datatype, op, win, ierror)
           USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: origin_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
           INTEGER, INTENT(in) :: origin_count
           INTEGER, INTENT(in) :: origin_datatype
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: result_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: result_addr
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: result_addr
           INTEGER, INTENT(in) :: result_count
           INTEGER, INTENT(in) :: result_datatype
           INTEGER, INTENT(in) :: target_rank
@@ -2638,7 +2751,8 @@
                 target_rank, target_disp, target_count, target_datatype, win, ierror)
           USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: origin_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
           INTEGER, INTENT(in) :: origin_count
           INTEGER, INTENT(in) :: origin_datatype
           INTEGER, INTENT(in) :: target_rank
@@ -2654,7 +2768,8 @@
                 ierror)
           USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: origin_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
           INTEGER, INTENT(in) :: origin_count
           INTEGER, INTENT(in) :: origin_datatype
           INTEGER, INTENT(in) :: target_rank
@@ -2671,7 +2786,8 @@
                 target_disp, target_count, target_datatype, win, request, ierror)
           USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: origin_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: origin_addr
           INTEGER, INTENT(in) :: origin_count
           INTEGER, INTENT(in) :: origin_datatype
           INTEGER, INTENT(in) :: target_rank
@@ -2688,10 +2804,12 @@
                 target_count, target_datatype, op, win, request, ierror)
           USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: origin_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
           INTEGER, INTENT(in) :: origin_count
           INTEGER, INTENT(in) :: origin_datatype
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: result_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: result_addr
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: result_addr
           INTEGER, INTENT(in) :: result_count
           INTEGER, INTENT(in) :: result_datatype
           INTEGER, INTENT(in) :: target_rank
@@ -2708,7 +2826,8 @@
                 target_disp, target_count, target_datatype, win, request, ierror)
           USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: origin_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
           INTEGER, INTENT(in) :: origin_count
           INTEGER, INTENT(in) :: origin_datatype
           INTEGER, INTENT(in) :: target_rank
@@ -2724,7 +2843,8 @@
           USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
           IMPLICIT NONE
           INTEGER, INTENT(in) :: win
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: base
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: base
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: base
           INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: size
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_Win_attach
@@ -2732,7 +2852,8 @@
         SUBROUTINE MPI_Win_create(base, size, disp_unit, info, comm, win, ierror)
           USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
           IMPLICIT NONE
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: base
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: base
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: base
           INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: size
           INTEGER, INTENT(in) :: disp_unit
           INTEGER, INTENT(in) :: info
@@ -2740,6 +2861,7 @@
           INTEGER, INTENT(out) :: win
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_Win_create
+#endif
 
         SUBROUTINE MPI_Win_create_dynamic(info, comm, win, ierror)
           IMPLICIT NONE
@@ -2749,12 +2871,15 @@
           INTEGER :: ierror
         END SUBROUTINE MPI_Win_create_dynamic
 
+#ifdef __GNUC__
         SUBROUTINE MPI_Win_detach(win, base, ierror)
           IMPLICIT NONE
           INTEGER, INTENT(in) :: win
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: base
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: base
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: base
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_Win_detach
+#endif
 
         SUBROUTINE MPI_Win_flush_all(win, ierror)
           IMPLICIT NONE
@@ -3011,10 +3136,12 @@
           INTEGER :: ierror
         END SUBROUTINE MPI_File_get_view
 
+#ifdef __GNUC__
        SUBROUTINE MPI_File_iread(fh, buf, count, datatype, request, ierror)
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out) :: request
@@ -3026,7 +3153,8 @@
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
           INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out) :: request
@@ -3036,7 +3164,8 @@
         SUBROUTINE MPI_File_iread_shared(fh, buf, count, datatype, request, ierror)
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out) :: request
@@ -3046,7 +3175,8 @@
         SUBROUTINE MPI_File_iwrite(fh, buf, count, datatype, request, ierror)
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out) :: request
@@ -3058,7 +3188,8 @@
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
           INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out) :: request
@@ -3068,12 +3199,14 @@
         SUBROUTINE MPI_File_iwrite_shared(fh, buf, count, datatype, request, ierror)
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out) :: request
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_File_iwrite_shared
+#endif
 
         SUBROUTINE MPI_File_open(comm, filename, amode, info, fh, ierror)
           IMPLICIT NONE
@@ -3093,11 +3226,13 @@
           INTEGER :: ierror
         END SUBROUTINE MPI_File_preallocate
 
+#ifdef __GNUC__
         SUBROUTINE MPI_File_read(fh, buf, count, datatype, status, ierror)
           USE :: MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
@@ -3108,7 +3243,8 @@
           USE :: MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
@@ -3118,7 +3254,8 @@
         SUBROUTINE MPI_File_read_all_begin(fh, buf, count, datatype, ierror)
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out) :: ierror
@@ -3128,7 +3265,8 @@
           USE :: MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_File_read_all_end
@@ -3138,7 +3276,8 @@
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
           INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
-          TYPE(*), DIMENSION(..) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
@@ -3150,7 +3289,8 @@
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
           INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
-          TYPE(*), DIMENSION(..) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
@@ -3162,7 +3302,8 @@
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
           INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out) :: ierror
@@ -3172,7 +3313,8 @@
           USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_File_read_at_all_end
@@ -3181,7 +3323,8 @@
           USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
@@ -3191,7 +3334,8 @@
         SUBROUTINE MPI_File_read_ordered_begin(fh, buf, count, datatype, ierror)
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out) :: ierror
@@ -3201,7 +3345,8 @@
           USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_File_read_ordered_end
@@ -3210,12 +3355,14 @@
           USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_File_read_shared
+#endif
 
         SUBROUTINE MPI_File_seek(fh, offset, whence, ierror)
           USE MPI_CONSTANTS, ONLY: MPI_OFFSET_KIND
@@ -3275,11 +3422,13 @@
           INTEGER :: ierror
         END SUBROUTINE MPI_File_sync
 
+#ifdef __GNUC__
         SUBROUTINE MPI_File_write(fh, buf, count, datatype, status, ierror)
           USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), INTENT(in) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
@@ -3290,7 +3439,8 @@
           USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), INTENT(in) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
@@ -3300,7 +3450,8 @@
         SUBROUTINE MPI_File_write_all_begin(fh, buf, count, datatype, ierror)
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out) :: ierror
@@ -3310,7 +3461,8 @@
           USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_File_write_all_end
@@ -3320,7 +3472,8 @@
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
           INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
-          TYPE(*), DIMENSION(..), INTENT(in) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
@@ -3333,7 +3486,8 @@
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
           INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
-          TYPE(*), DIMENSION(..), INTENT(in) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
@@ -3345,7 +3499,8 @@
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
           INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out) :: ierror
@@ -3355,7 +3510,8 @@
           USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_File_write_at_all_end
@@ -3364,7 +3520,8 @@
           USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), INTENT(in) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
@@ -3374,7 +3531,8 @@
         SUBROUTINE MPI_File_write_ordered_begin(fh, buf, count, datatype, ierror)
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out) :: ierror
@@ -3384,7 +3542,8 @@
           USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), INTENT(in), ASYNCHRONOUS :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_File_write_ordered_end
@@ -3393,12 +3552,14 @@
           USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
           IMPLICIT NONE
           INTEGER, INTENT(in) :: fh
-          TYPE(*), DIMENSION(..), INTENT(in) :: buf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
           INTEGER, INTENT(in) :: count
           INTEGER, INTENT(in) :: datatype
           INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
           INTEGER, INTENT(out) :: ierror
         END SUBROUTINE MPI_File_write_shared
+#endif
 
         SUBROUTINE MPI_Register_datarep(datarep, read_conversion_fn, &
                 write_conversion_fn, dtype_file_extent_fn, extra_state, ierror)
