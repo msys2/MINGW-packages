@@ -876,6 +876,7 @@ function qemuPlugins {
 	local -A PLUGIN_OPTS
 	PLUGIN_OPTS["libmem.dll"]=",inline=true"
 	PLUGIN_OPTS["libbb.dll"]=",inline=true,idle=true"
+	PLUGIN_OPTS["libstoptrigger.dll"]=",addr=0xd4"
 	PLUGIN_OPTS["libinsn.dll"]=",inline=false,sizes=true"
 	PLUGIN_OPTS["libhotpages.dll"]=",sortby=reads,io=on"
 	PLUGIN_OPTS["libexeclog.dll"]=",ifilter=msr"
@@ -2201,7 +2202,7 @@ case $BLOCK in
 		perform qemu2018day11
 		# SKIP qemu2018day12 - contains qemu-3.1.0.tar.xz
 		perform qemu2018day13
-		perform qemu2018day14
+		isQemuSystem nios2 && perform qemu2018day14
 		perform qemu2018day15
 		perform qemu2018day16
 		perform qemu2018day17
