@@ -33,14 +33,12 @@ prepare() {
 }
 
 build() {
-  msg "Python build for ${MSYSTEM}"
   cp -r "${_realname}-${pkgver}" "python-build-${MSYSTEM}" && cd "python-build-${MSYSTEM}"
 
   python -m build --wheel --skip-dependency-check --no-isolation
 }
 
 check() {
-  msg "Python test for ${MSYSTEM}"
   cd "python-build-${MSYSTEM}"
 
 # The test command will usually depend upon what is contained in the tox.ini file
@@ -49,7 +47,6 @@ check() {
 }
 
 package() {
-  msg "Python install for ${MSYSTEM}"
   cd "python-build-${MSYSTEM}"
 
   MSYS2_ARG_CONV_EXCL="--prefix=" \
