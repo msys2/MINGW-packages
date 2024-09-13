@@ -18,13 +18,13 @@ sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
 
 prepare() {
-  cd "${srcdir}/${_realname}-${pkgver}"
+  cd "${_realname}-${pkgver}"
 
   patch -p1 -i "${srcdir}/0001-A-fix.patch"
 }
 
 build() {
-  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
+  mkdir -p "build-${MSYSTEM}" && cd "build-${MSYSTEM}"
 
   ../"${_realname}-${pkgver}"/configure \
     --prefix="${MINGW_PREFIX}" \
@@ -38,13 +38,13 @@ build() {
 }
 
 check() {
-  cd "${srcdir}/build-${MSYSTEM}"
+  cd "build-${MSYSTEM}"
 
   make check
 }
 
 package() {
-  cd "${srcdir}/build-${MSYSTEM}"
+  cd "build-${MSYSTEM}"
 
   make install DESTDIR="${pkgdir}"
 
