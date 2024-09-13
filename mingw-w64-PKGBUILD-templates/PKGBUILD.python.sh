@@ -22,7 +22,7 @@ sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc')
 
 prepare() {
-  cd "${srcdir}/${_realname}-${pkgver}"
+  cd "${_realname}-${pkgver}"
 
   patch -Np1 -i "${srcdir}/0001-A-really-important-fix.patch"
   patch -Np1 -i "${srcdir}/0002-A-less-important-fix.patch"
@@ -34,7 +34,6 @@ prepare() {
 
 build() {
   msg "Python build for ${MSYSTEM}"
-  cd "${srcdir}"
   cp -r "${_realname}-${pkgver}" "python-build-${MSYSTEM}" && cd "python-build-${MSYSTEM}"
 
   python -m build --wheel --skip-dependency-check --no-isolation
@@ -42,7 +41,7 @@ build() {
 
 check() {
   msg "Python test for ${MSYSTEM}"
-  cd "${srcdir}/python-build-${MSYSTEM}"
+  cd "python-build-${MSYSTEM}"
 
 # The test command will usually depend upon what is contained in the tox.ini file
 # or in the [testenv:py] section of the pyproject.toml file.
@@ -51,7 +50,7 @@ check() {
 
 package() {
   msg "Python install for ${MSYSTEM}"
-  cd "${srcdir}/python-build-${MSYSTEM}"
+  cd "python-build-${MSYSTEM}"
 
   MSYS2_ARG_CONV_EXCL="--prefix=" \
     python -m installer --prefix=${MINGW_PREFIX} \

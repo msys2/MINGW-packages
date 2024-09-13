@@ -23,13 +23,13 @@ sha256sums=('SKIP'
             'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
 
 pkgver() {
-  cd "${srcdir}/${_realname}"
+  cd "${_realname}"
 
   git describe --long "${_commit}" | sed 's/\([^-]*-g\)/r\1/;s/-/./g;s/^v//g'
 }
 
 prepare() {
-  cd "${srcdir}/${_realname}"
+  cd "${_realname}"
 
   patch -Np1 -i "${srcdir}/0001-A-really-important-fix.patch"
   patch -Np1 -i "${srcdir}/0002-A-less-important-fix.patch"
