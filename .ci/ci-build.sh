@@ -123,6 +123,9 @@ pacman -Sy
 # Remove git and python
 pacman -R --recursive --unneeded --noconfirm --noprogressbar git python
 
+# Install ntldd
+pacman -S --needed --noconfirm ${MINGW_PACKAGE_PREFIX}-ntldd
+
 # Enable linting
 export MAKEPKG_LINT_PKGBUILD=1
 
