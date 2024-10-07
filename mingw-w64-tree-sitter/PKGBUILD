@@ -3,7 +3,7 @@
 _realname=tree-sitter
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=0.23.2
+pkgver=0.24.2
 pkgrel=1
 pkgdesc="An incremental parsing system for programming tools (mingw-w64)"
 arch=('any')
@@ -15,17 +15,18 @@ msys2_references=(
   'purl: pkg:cargo/tree-sitter'
 )
 license=('spdx:MIT')
+depends=("${MINGW_PACKAGE_PREFIX}-libwasmtime")
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-rust"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
              "${MINGW_PACKAGE_PREFIX}-pkgconf"
              "${MINGW_PACKAGE_PREFIX}-openssl"
              "${MINGW_PACKAGE_PREFIX}-libgit2"
              "${MINGW_PACKAGE_PREFIX}-libssh2")
 checkdepends=('git')
-source=("https://github.com/tree-sitter/tree-sitter/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz"
-        "001-mingw-build.patch")
-sha256sums=('ad81a585e399093bcba2fab179bf8971fdebaf701758af20d84d21f24fdf1b50'
-            '6589c748f083f2113a9c6ad43b91aac00623f061b9ba94c1d29d1295262cf33d')
+source=("https://github.com/tree-sitter/tree-sitter/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz")
+sha256sums=('199da041ac7ef62bccdda9b7bec28aafa073f7eea2677680aa7992d503c9cc64')
 noextract=("${_realname}-${pkgver}.tar.gz")
 
 _env() {
@@ -33,36 +34,62 @@ _env() {
   export OPENSSL_NO_VENDOR=1
   export PKG_CONFIG_ALL_DYNAMIC=1
   export LIBSSH2_SYS_USE_PKG_CONFIG=1
+  export MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX="
 }
 
 prepare() {
   tar -xzf "${_realname}-${pkgver}.tar.gz" || true
   cd "${_realname}-${pkgver}"
-  patch -p1 -i "${srcdir}/001-mingw-build.patch"
 
   cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
-  cd "${_realname}-${pkgver}"
+  declare -a extra_config
+  if check_option "debug" "n"; then
+    extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
 
   _env
-  make PREFIX=${MINGW_PREFIX}
-  cargo build --frozen --profile optimize
-}
+  cmake \
+    -GNinja \
+    -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+    "${extra_config[@]}" \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DTREE_SITTER_FEATURE_WASM=ON \
+    -DWASMTIME_INCLUDE_DIR="${MINGW_PREFIX}/include/wasmtime" \
+    -DWASMTIME_LIBRARY="${MINGW_PREFIX}/lib/libwasmtime.a" \
+    -S "${_realname}-${pkgver}/lib" \
+    -B "build-${MSYSTEM}-static"
 
-check() {
-  cd "${_realname}-${pkgver}"
+  cmake --build "build-${MSYSTEM}-static"
 
-  _env
-  make test
+  cmake \
+    -GNinja \
+    -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+    "${extra_config[@]}" \
+    -DBUILD_SHARED_LIBS=ON \
+    -DTREE_SITTER_FEATURE_WASM=ON \
+    -DWASMTIME_INCLUDE_DIR="${MINGW_PREFIX}/include/wasmtime" \
+    -DWASMTIME_LIBRARY="${MINGW_PREFIX}/bin/wasmtime.dll" \
+    -S "${_realname}-${pkgver}/lib" \
+    -B "build-${MSYSTEM}-shared"
+
+  cmake --build "build-${MSYSTEM}-shared"
+
+  cargo build \
+    --frozen \
+    --profile optimize \
+    --manifest-path "${_realname}-${pkgver}/Cargo.toml"
 }
 
 package() {
-  cd "${_realname}-${pkgver}"
-  make PREFIX="${MINGW_PREFIX}" DESTDIR="${pkgdir}" install
+  DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}-static"
+  DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}-shared"
 
-  install -m755 target/optimize/tree-sitter.exe "${pkgdir}${MINGW_PREFIX}/bin/tree-sitter.exe"
+  install -m755 "${_realname}-${pkgver}/target/optimize/tree-sitter.exe" "${pkgdir}${MINGW_PREFIX}/bin/tree-sitter.exe"
 
-  install -Dm644 LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+  install -Dm644 "${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }
