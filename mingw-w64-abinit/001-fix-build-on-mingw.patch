@@ -1,0 +1,173 @@
+--- a/cmake/FindWANNIER.cmake
++++ b/cmake/FindWANNIER.cmake
+@@ -60,7 +60,7 @@
+ endif (WANNIER_FOUND)
+ 
+ if(WANNIER_FOUND AND NOT TARGET abinit::wannier)
+-  add_library(abinit::wannier SHARED IMPORTED)
++  add_library(abinit::wannier UNKNOWN IMPORTED)
+ 
+   set_target_properties(abinit::wannier PROPERTIES
+     INTERFACE_INCLUDE_DIRECTORIES "${WANNIER_INCLUDE_DIR}"
+--- a/shared/common/src/CMakeLists.txt
++++ b/shared/common/src/CMakeLists.txt
+@@ -25,6 +25,6 @@
+ IF(NOT EXISTS "${CMAKE_SOURCE_DIR}/shared/common/src/39_libpaw")
+   message("-- Create 39_libpaw symbolic link")
+   execute_process(WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/shared/common/src
+-                  COMMAND ${CMAKE_COMMAND} -E create_symlink ../../libpaw/src 39_libpaw)
++                  COMMAND ${CMAKE_COMMAND} -E copy_directory ../../libpaw/src 39_libpaw)
+ endif()
+ add_subdirectory(39_libpaw)
+--- a/shared/common/src/02_clib/CMakeLists.txt
++++ b/shared/common/src/02_clib/CMakeLists.txt
+@@ -11,12 +11,14 @@
+   mallinfo.c
+   md5.c
+   md5.h
+-  rlimit.c
+   xexit.c
+   xmalloc.c
+   xmalloc.h
+   m_fsockets.F90
+   m_clib.F90)
++if(NOT WIN32)
++  target_sources(02_lib rlimit.c)
++endif()
+ 
+ set_target_properties(02_clib
+   PROPERTIES
+@@ -43,5 +45,13 @@
+     PUBLIC
+     abinit::levmar)
+ endif()
++if(WIN32)
++  target_compile_definitions(02_clib
++    PRIVATE
++    _WIN32)
++  target_link_libraries(02_clib
++    PUBLIC
++    ws2_32)
++endif()
+ 
+ add_library(abinit::02_clib ALIAS 02_clib)
+--- a/shared/common/src/02_clib/fsi_posix.c
++++ b/shared/common/src/02_clib/fsi_posix.c
+@@ -21,6 +21,10 @@
+ #include <sys/stat.h>
+ #include "abi_clib.h"
+ #include "xmalloc.h"
++#ifdef _WIN32
++#include <direct.h>
++#define mkdir(a,b) mkdir (a)
++#endif
+ 
+ 
+ void c_mkdir(char *path, int *ierr)
+--- a/shared/common/src/02_clib/m_clib.F90
++++ b/shared/common/src/02_clib/m_clib.F90
+@@ -31,7 +31,9 @@
+  public :: clib_etime
+  public :: clib_mtrace
+  public :: clib_print_mallinfo
++#ifndef _WIN32
+  public :: clib_ulimit_stack    ! Set stack size limit to maximum allowed value.
++#endif
+  public :: clib_getpid
+  !public :: clib_usleep         ! Suspend calling thread for microseconds of clock time
+ 
+@@ -116,7 +118,7 @@
+      integer(c_int),intent(out) :: ierr
+    end subroutine
+  end interface
+-
++#ifndef _WIN32
+  interface
+    ! Set stack size limit to maximum allowed value. Return soft and hard limit and exit status.
+    subroutine clib_ulimit_stack(rlim_cur, rlim_max, ierr) bind(C, name="ulimit_stack")
+@@ -125,7 +127,7 @@
+      integer(c_int),intent(out) :: ierr
+    end subroutine
+  end interface
+-
++#endif
+   !interface
+   !  ! suspend calling thread for microseconds of clock time
+   !  ! uses unistd.h for Fortran standard compliant sleep.
+--- a/shared/common/src/02_clib/sockets.c
++++ b/shared/common/src/02_clib/sockets.c
+@@ -53,10 +53,16 @@
+ #include <unistd.h>
+ #include <string.h>
+ #include <sys/types.h>
++#ifndef _WIN32
+ #include <sys/socket.h>
+ #include <netinet/in.h>
+ #include <sys/un.h>
+ #include <netdb.h>
++#else
++#include <ws2tcpip.h>
++#include <winsock.h>
++#include <afunix.h>
++#endif
+ 
+ void open_socket(int *psockfd, int* inet, int* port, const char* host)
+ /* Opens a socket.
+--- a/shared/common/src/12_hide_mpi/CMakeLists.txt
++++ b/shared/common/src/12_hide_mpi/CMakeLists.txt
+@@ -51,6 +51,12 @@
+   PRIVATE
+   HAVE_CONFIG_H)
+ 
++if(WIN32)
++  target_compile_definitions(12_hide_mpi
++    PRIVATE
++    _WIN32)
++endif()
++
+ target_link_libraries(12_hide_mpi
+   PUBLIC
+   abinit::02_clib
+--- a/shared/common/src/12_hide_mpi/m_xmpi.F90
++++ b/shared/common/src/12_hide_mpi/m_xmpi.F90
+@@ -38,7 +38,9 @@
+ #ifdef FC_NAG
+  use f90_unix_proc
+ #endif
++#ifndef _WIN32
+  use m_clib, only : clib_ulimit_stack !, clib_getpid !, clib_usleep
++#endif
+ 
+  implicit none
+ 
+@@ -815,8 +817,10 @@
+  end if
+ #endif
+ 
++#ifndef _WIN32
+  ! Try to increase stack size.
+  call clib_ulimit_stack(rlim_cur, rlim_max, ierr)
++#endif
+ 
+  if (xmpi_comm_rank(xmpi_world) == 0) then
+ 
+--- a/src/57_iopsp_parser/CMakeLists.txt
++++ b/src/57_iopsp_parser/CMakeLists.txt
+@@ -37,6 +37,7 @@
+   PUBLIC
+   abinit::21_hashfuncs
+   abinit::44_abitypes_defs
++  abinit::libpsml
+   )
+ 
+ add_library(abinit::57_iopsp_parser ALIAS 57_iopsp_parser)
+--- a/src/64_psp/CMakeLists.txt
++++ b/src/64_psp/CMakeLists.txt
+@@ -39,6 +39,7 @@
+   abinit::53_ffts
+   abinit::57_iovars
+   abinit::57_iopsp_parser
++  abinit::libpsml
+   )
+ 
+ add_library(abinit::64_psp ALIAS 64_psp)

@@ -19,7 +19,7 @@ sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc')
 
 prepare() {
-  cd "${srcdir}/${_realname}-${pkgver}"
+  cd "${_realname}-${pkgver}"
 
   patch -Np1 -i "${srcdir}"/0001-A-really-important-fix.patch
   patch -Np1 -i "${srcdir}"/0002-A-less-important-fix.patch
@@ -29,19 +29,19 @@ prepare() {
 }
 
 build() {
-  cd "${srcdir}/${_realname}-${pkgver}"
+  cd "${_realname}-${pkgver}"
 
   cargo build --release --frozen
 }
 
 check() {
-  cd "${srcdir}/${_realname}-${pkgver}"
+  cd "${_realname}-${pkgver}"
 
   cargo test --release --frozen
 }
 
 package() {
-  cd "${srcdir}/${_realname}-${pkgver}"
+  cd "${_realname}-${pkgver}"
 
   cargo install \
     --offline \

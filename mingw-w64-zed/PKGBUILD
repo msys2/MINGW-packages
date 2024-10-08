@@ -1,0 +1,105 @@
+# Maintainer: Maksim Bondarenkov <maksapple2306@gmail.com>
+
+_realname=zed
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=0.155.2
+pkgrel=1
+pkgdesc="A high-performance, multiplayer code editor (mingw-w64)"
+arch=('any')
+# ucrt64 is disabled due to https://github.com/msys2/MINGW-packages/issues/22071
+mingw_arch=('clang64')
+url='https://zed.dev'
+msys2_repository_url='https://github.com/zed-industries/zed'
+msys2_documentation_url='https://zed.dev/docs'
+license=('spdx:AGPL-3.0-or-later AND Apache-2.0 AND GPL-3.0-or-later')
+msys2_references=(
+  'anitya: 373275'
+  'archlinux: zed'
+  'aur'
+  'gentoo: app-editors/zed'
+)
+depends=(#"${MINGW_PACKAGE_PREFIX}-libgit2"
+         "${MINGW_PACKAGE_PREFIX}-curl"
+         "${MINGW_PACKAGE_PREFIX}-zstd"
+         'unzip')
+makedepends=("${MINGW_PACKAGE_PREFIX}-rust"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-fontconfig"
+             "${MINGW_PACKAGE_PREFIX}-openssl"
+             #"${MINGW_PACKAGE_PREFIX}-sqlite3"
+             "${MINGW_PACKAGE_PREFIX}-cargo-about"
+             'git')
+options=('!lto')
+optdepends=("${MINGW_PACKAGE_PREFIX}-ollama: provides LLMs for assistance panel"
+            "${MINGW_PACKAGE_PREFIX}-clang: for a better C/C++ language support"
+            "${MINGW_PACKAGE_PREFIX}-rust-analyzer: for a better Rust language support")
+source=("git+${msys2_repository_url}.git#tag=v${pkgver}"
+        "zstd-sys.tar.gz::https://crates.io/api/v1/crates/zstd-sys/2.0.13+zstd.1.5.6/download"
+        "curl-sys.tar.gz::https://crates.io/api/v1/crates/curl-sys/0.4.74+curl-8.9.0/download"
+        "zed-download-pc-windows-gnu-assets.patch"
+        "zed-dont-vendor-cargo-about.patch"
+        "curl-sys-use-pkgconfig.patch"
+        "zstd-sys-remove-statik.patch")
+sha256sums=('11a77682d66466ba9abee963255d76903796095a7c1e48a365d3182073ac559e'
+            '38ff0f21cfee8f97d94cef41359e0c89aa6113028ab0291aa8ca0038995a95aa'
+            '8af10b986114528fcdc4b63b6f5f021b7057618411046a4de2ba0f0149a097bf'
+            '94ca0bc7ae6f73bc4cdb9dd02af2946541b2bee7c71f279a4eeef1f987e76fe4'
+            'b126b7a9e3cc8d3d68c49dbfc184d54691b10172dbfd3272d4c2f43424cfca5b'
+            '0e008fc69c67a5e79b05815625ffcef2d008e6b5a4bb0350c90772c49d2ca748'
+            '48f4900ceb02d3aaf9a1020f33d56629156e96759f456c0e7ca18bfcf910767b')
+
+prepare() {
+  cd "${_realname}"
+
+  rm rust-toolchain.toml
+
+  # download assets for x86_64-pc-windows-gnu target for some extensions
+  patch -Np1 -i "../zed-download-pc-windows-gnu-assets.patch"
+  # use system cargo about to generate license file
+  patch -Np1 -i "../zed-dont-vendor-cargo-about.patch"
+  # link system deps dynamically
+  patch -d "../curl-sys-0.4.74+curl-8.9.0" -i "../curl-sys-use-pkgconfig.patch"
+  patch -d "../zstd-sys-2.0.13+zstd.1.5.6" -i "../zstd-sys-remove-statik.patch"
+  # use patched *-sys crates
+  cat >> Cargo.toml <<END
+
+[patch.crates-io]
+curl-sys = { path = "../curl-sys-0.4.74+curl-8.9.0" }
+zstd-sys = { path = "../zstd-sys-2.0.13+zstd.1.5.6" }
+END
+
+  cargo update -p curl-sys -p zstd-sys
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+  # generate license for whole Zed contents
+  sh script/generate-licenses
+}
+
+build() {
+  cd "${_realname}"
+
+  export OPENSSL_NO_VENDOR=1
+  #export LIBGIT2_NO_VENDOR=1
+  export PKG_CONFIG_ALL_DYNAMIC=1
+  export ZSTD_SYS_USE_PKG_CONFIG=1
+  export WINAPI_NO_BUNDLED_LIBRARIES=1
+  # see https://github.com/zed-industries/zed/issues/17695
+  #export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+  export ZED_UPDATE_EXPLANATION='Updates are handled by pacman'
+  export CARGO_PROFILE_RELEASE_DEBUG=0
+  export RELEASE_VERSION="${pkgver} (Rev${pkgrel}, Built by MSYS2 project)"
+
+  cargo build --release --frozen -p zed
+}
+
+check() {
+  cd "${_realname}"
+
+  cargo test --release --frozen -p zed
+}
+
+package() {
+  install -Dm755 "${_realname}/target/release/zed" "${pkgdir}${MINGW_PREFIX}/bin/zed"
+  install -Dm644 "${_realname}/assets/licenses.md" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE.md"
+}

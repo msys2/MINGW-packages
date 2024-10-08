@@ -3,83 +3,88 @@
 _realname=benchmark
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=1.8.3
+pkgver=1.9.0
 pkgrel=1
 pkgdesc="A microbenchmark support library, by Google (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url="https://github.com/google/benchmark"
 license=('spdx:Apache-2.0')
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs")
-makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
-             "${MINGW_PACKAGE_PREFIX}-ninja"
-             "${MINGW_PACKAGE_PREFIX}-cc"
-             "${MINGW_PACKAGE_PREFIX}-gtest")
-source=("${_realname}-${pkgver}.tar.gz::https://github.com/google/benchmark/archive/v${pkgver}.tar.gz")
-sha256sums=('6bc180a57d23d4d9515519f92b0c83d61b05b5bab188961f36ac7b06b0d9e9ce')
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja")
+# checkdepends=("${MINGW_PACKAGE_PREFIX}-gtest")
+source=("https://github.com/google/benchmark/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz"
+        "0001-fix-pkgconfig-files.patch")
+sha256sums=('35a77f46cc782b16fac8d3b107fbfbb37dcd645f7c28eee19f3b8e0758b48994'
+            '0f761dbc24ecc0f7dc902fd14cc16fdd448fb1b4204e08adbaee056fed8db1ef')
+
+# Helper macros to help make tasks easier #
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+# =========================================== #
 
 prepare() {
-  cd "${srcdir}/${_realname}-${pkgver}"
-  sed -i "s|v0.0.0|v${pkgver}|g" "cmake/GetGitVersion.cmake"
+  cd "${_realname}-${pkgver}"
+
+  apply_patch_with_msg 0001-fix-pkgconfig-files.patch
 }
 
 build() {
-  # Shared Build
-  mkdir -p "${srcdir}"/build-${MSYSTEM}-shared && cd "${srcdir}"/build-${MSYSTEM}-shared
+  declare -a extra_config
+  if check_option "debug" "n"; then
+    extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
 
+  # Shared Build
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
-  ${MINGW_PREFIX}/bin/cmake.exe \
-      -G"Ninja" \
+    cmake -B "build-${MSYSTEM}-shared" -S "${_realname}-${pkgver}" -GNinja \
       -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
-      -DCMAKE_BUILD_TYPE="Release" \
-      -DBUILD_SHARED_LIBS="ON" \
+      -DBUILD_SHARED_LIBS=ON \
+      -DBENCHMARK_ENABLE_GTEST_TESTS=OFF \
+      -DBENCHMARK_ENABLE_LTO=ON \
       -DBENCHMARK_ENABLE_WERROR=OFF \
       -DBENCHMARK_USE_BUNDLED_GTEST=OFF \
-      ../${_realname}-${pkgver}
+      "${extra_config[@]}"
 
-  ${MINGW_PREFIX}/bin/cmake.exe --build ./
+  cmake --build "build-${MSYSTEM}-shared"
 
   # Static Build
-  mkdir -p "${srcdir}"/build-${MSYSTEM}-static && cd "${srcdir}"/build-${MSYSTEM}-static
-
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
-  ${MINGW_PREFIX}/bin/cmake.exe \
-      -G"Ninja" \
+    cmake -B "build-${MSYSTEM}-static" -S "${_realname}-${pkgver}" -GNinja \
       -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
-      -DCMAKE_BUILD_TYPE="Release" \
-      -DBUILD_SHARED_LIBS="OFF" \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DBENCHMARK_ENABLE_GTEST_TESTS=OFF \
       -DBENCHMARK_ENABLE_WERROR=OFF \
       -DBENCHMARK_USE_BUNDLED_GTEST=OFF \
-      -DBENCHMARK_ENABLE_TESTING=OFF \
-      ../${_realname}-${pkgver}
+      "${extra_config[@]}"
 
-  ${MINGW_PREFIX}/bin/cmake.exe --build ./
+  cmake --build "build-${MSYSTEM}-static"
 }
 
 check() {
   # Shared Check
-  cd "${srcdir}/build-${MSYSTEM}-shared"
-  PATH=$PWD/src:$PATH ${MINGW_PREFIX}/bin/ctest.exe ./ || warning "Tests failed"
+  PATH=$PWD/src:$PATH cmake --build "build-${MSYSTEM}-shared" --target test || true
 
   # Static Check
-  cd "${srcdir}/build-${MSYSTEM}-static"
-  ${MINGW_PREFIX}/bin/ctest.exe ./ || warning "Tests failed"
+  cmake --build "build-${MSYSTEM}-static" --target test || true
 }
 
 package() {
   # Static Install
-  cd "${srcdir}/build-${MSYSTEM}-static"
-  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install .
+  DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}-static"
 
   # Shared Install
-  cd "${srcdir}/build-${MSYSTEM}-shared"
-  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install .
-
-  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
-  for pcfile in "${pkgdir}${MINGW_PREFIX}"/lib/pkgconfig/*.pc; do
-    sed -s "s|${PREFIX_WIN}|${MINGW_PREFIX}|g" -i "${pcfile}"
-  done
+  DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}-shared"
 
   # License
-  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}"
 }

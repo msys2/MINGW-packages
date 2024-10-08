@@ -226,7 +226,7 @@
        INTEGER MPI_OP_NULL
        PARAMETER (MPI_OP_NULL=402653184)
        INTEGER MPI_DATATYPE_NULL
-       PARAMETER (MPI_DATATYPE_NULL=z'0c000000')
+       PARAMETER (MPI_DATATYPE_NULL=0)  ! MPI_DATATYPE_NULL=z'0c000000'
        INTEGER MPI_REQUEST_NULL
        PARAMETER (MPI_REQUEST_NULL=738197504)
        INTEGER MPI_ERRHANDLER_NULL
@@ -302,114 +302,114 @@
        INTEGER MPI_LOCK_SHARED
        PARAMETER (MPI_LOCK_SHARED=235)
        INTEGER MPI_CHAR
-       PARAMETER (MPI_CHAR=z'4c000101')
+       PARAMETER (MPI_CHAR=1275068673)  ! MPI_CHAR=z'4c000101'
        INTEGER MPI_UNSIGNED_CHAR
-       PARAMETER (MPI_UNSIGNED_CHAR=z'4c000102')
+       PARAMETER (MPI_UNSIGNED_CHAR=1275068674)  ! MPI_UNSIGNED_CHAR=z'4c000102'
        INTEGER MPI_SHORT
-       PARAMETER (MPI_SHORT=z'4c000203')
+       PARAMETER (MPI_SHORT=1275068931)  ! MPI_SHORT=z'4c000203'
        INTEGER MPI_UNSIGNED_SHORT
-       PARAMETER (MPI_UNSIGNED_SHORT=z'4c000204')
+       PARAMETER (MPI_UNSIGNED_SHORT=1275068932)  ! MPI_UNSIGNED_SHORT=z'4c000204'
        INTEGER MPI_INT
-       PARAMETER (MPI_INT=z'4c000405')
+       PARAMETER (MPI_INT=1275069445)  ! MPI_INT=z'4c000405'
        INTEGER MPI_UNSIGNED
-       PARAMETER (MPI_UNSIGNED=z'4c000406')
+       PARAMETER (MPI_UNSIGNED=1275069446)  ! MPI_UNSIGNED=z'4c000406'
        INTEGER MPI_LONG
-       PARAMETER (MPI_LONG=z'4c000407')
+       PARAMETER (MPI_LONG=1275069447)  ! MPI_LONG=z'4c000407'
        INTEGER MPI_UNSIGNED_LONG
-       PARAMETER (MPI_UNSIGNED_LONG=z'4c000408')
+       PARAMETER (MPI_UNSIGNED_LONG=1275069448)  ! MPI_UNSIGNED_LONG=z'4c000408'
        INTEGER MPI_LONG_LONG
-       PARAMETER (MPI_LONG_LONG=z'4c000809')
+       PARAMETER (MPI_LONG_LONG=1275070473)  ! MPI_LONG_LONG=z'4c000809'
        INTEGER MPI_LONG_LONG_INT
-       PARAMETER (MPI_LONG_LONG_INT=z'4c000809')
+       PARAMETER (MPI_LONG_LONG_INT=1275070473)  ! MPI_LONG_LONG_INT=z'4c000809'
        INTEGER MPI_FLOAT
-       PARAMETER (MPI_FLOAT=z'4c00040a')
+       PARAMETER (MPI_FLOAT=1275069450)  ! MPI_FLOAT=z'4c00040a'
        INTEGER MPI_DOUBLE
-       PARAMETER (MPI_DOUBLE=z'4c00080b')
+       PARAMETER (MPI_DOUBLE=1275070475)  ! MPI_DOUBLE=z'4c00080b'
        INTEGER MPI_LONG_DOUBLE
-       PARAMETER (MPI_LONG_DOUBLE=z'4c00080c')
+       PARAMETER (MPI_LONG_DOUBLE=1275070476)  ! MPI_LONG_DOUBLE=z'4c00080c'
        INTEGER MPI_BYTE
-       PARAMETER (MPI_BYTE=z'4c00010d')
+       PARAMETER (MPI_BYTE=1275068685)  ! MPI_BYTE=z'4c00010d'
        INTEGER MPI_WCHAR
-       PARAMETER (MPI_WCHAR=z'4c00020e')
+       PARAMETER (MPI_WCHAR=1275068942)  ! MPI_WCHAR=z'4c00020e'
        INTEGER MPI_PACKED
-       PARAMETER (MPI_PACKED=z'4c00010f')
+       PARAMETER (MPI_PACKED=1275068687)  ! MPI_PACKED=z'4c00010f'
        INTEGER MPI_LB
-       PARAMETER (MPI_LB=z'4c000010')
+       PARAMETER (MPI_LB=1275068432)  ! MPI_LB=z'4c000010'
        INTEGER MPI_UB
-       PARAMETER (MPI_UB=z'4c000011')
+       PARAMETER (MPI_UB=1275068433)  ! MPI_UB=z'4c000011'
        INTEGER MPI_2INT
-       PARAMETER (MPI_2INT=z'4c000816')
+       PARAMETER (MPI_2INT=1275070486)  ! MPI_2INT=z'4c000816'
        INTEGER MPI_SIGNED_CHAR
-       PARAMETER (MPI_SIGNED_CHAR=z'4c000118')
+       PARAMETER (MPI_SIGNED_CHAR=1275068696)  ! MPI_SIGNED_CHAR=z'4c000118'
        INTEGER MPI_UNSIGNED_LONG_LONG
-       PARAMETER (MPI_UNSIGNED_LONG_LONG=z'4c000819')
+       PARAMETER (MPI_UNSIGNED_LONG_LONG=1275070489)  ! MPI_UNSIGNED_LONG_LONG=z'4c000819'
        INTEGER MPI_CHARACTER
-       PARAMETER (MPI_CHARACTER=z'4c00011a')
+       PARAMETER (MPI_CHARACTER=1275068698)  ! MPI_CHARACTER=z'4c00011a'
        INTEGER MPI_INTEGER
-       PARAMETER (MPI_INTEGER=z'4c00041b')
+       PARAMETER (MPI_INTEGER=1275069467)  ! MPI_INTEGER=z'4c00041b'
        INTEGER MPI_REAL
-       PARAMETER (MPI_REAL=z'4c00041c')
+       PARAMETER (MPI_REAL=1275069468)  ! MPI_REAL=z'4c00041c'
        INTEGER MPI_LOGICAL
-       PARAMETER (MPI_LOGICAL=z'4c00041d')
+       PARAMETER (MPI_LOGICAL=1275069469)  ! MPI_LOGICAL=z'4c00041d'
        INTEGER MPI_COMPLEX
-       PARAMETER (MPI_COMPLEX=z'4c00081e')
+       PARAMETER (MPI_COMPLEX=1275070494)  ! MPI_COMPLEX=z'4c00081e'
        INTEGER MPI_DOUBLE_PRECISION
-       PARAMETER (MPI_DOUBLE_PRECISION=z'4c00081f')
+       PARAMETER (MPI_DOUBLE_PRECISION=1275070495)  ! MPI_DOUBLE_PRECISION=z'4c00081f'
        INTEGER MPI_2INTEGER
-       PARAMETER (MPI_2INTEGER=z'4c000820')
+       PARAMETER (MPI_2INTEGER=1275070496)  ! MPI_2INTEGER=z'4c000820'
        INTEGER MPI_2REAL
-       PARAMETER (MPI_2REAL=z'4c000821')
+       PARAMETER (MPI_2REAL=1275070497)  ! MPI_2REAL=z'4c000821'
        INTEGER MPI_DOUBLE_COMPLEX
-       PARAMETER (MPI_DOUBLE_COMPLEX=z'4c001022')
+       PARAMETER (MPI_DOUBLE_COMPLEX=1275072546)  ! MPI_DOUBLE_COMPLEX=z'4c001022'
        INTEGER MPI_2DOUBLE_PRECISION
-       PARAMETER (MPI_2DOUBLE_PRECISION=z'4c001023')
+       PARAMETER (MPI_2DOUBLE_PRECISION=1275072547)  ! MPI_2DOUBLE_PRECISION=z'4c001023'
        INTEGER MPI_2COMPLEX
-       PARAMETER (MPI_2COMPLEX=z'4c001024')
+       PARAMETER (MPI_2COMPLEX=1275072548)  ! MPI_2COMPLEX=z'4c001024'
        INTEGER MPI_2DOUBLE_COMPLEX
-       PARAMETER (MPI_2DOUBLE_COMPLEX=z'4c002025')
+       PARAMETER (MPI_2DOUBLE_COMPLEX=1275072549)  ! MPI_2DOUBLE_COMPLEX=z'4c002025'
        INTEGER MPI_REAL2
-       PARAMETER (MPI_REAL2=z'0c000000')
+       PARAMETER (MPI_REAL2=201326592)  ! MPI_REAL2=z'0c000000'
        INTEGER MPI_REAL4
-       PARAMETER (MPI_REAL4=z'4c000427')
+       PARAMETER (MPI_REAL4=1275069479)  ! MPI_REAL4=z'4c000427'
        INTEGER MPI_COMPLEX8
-       PARAMETER (MPI_COMPLEX8=z'4c000828')
+       PARAMETER (MPI_COMPLEX8=1275070504)  ! MPI_COMPLEX8=z'4c000828'
        INTEGER MPI_REAL8
-       PARAMETER (MPI_REAL8=z'4c000829')
+       PARAMETER (MPI_REAL8=1275070505)  ! MPI_REAL8=z'4c000829'
        INTEGER MPI_COMPLEX16
-       PARAMETER (MPI_COMPLEX16=z'4c00102a')
+       PARAMETER (MPI_COMPLEX16=1275072554)  ! MPI_COMPLEX16=z'4c00102a'
        INTEGER MPI_REAL16
-       PARAMETER (MPI_REAL16=z'0c000000')
+       PARAMETER (MPI_REAL16=201326592)  ! MPI_REAL16=z'0c000000'
        INTEGER MPI_COMPLEX32
-       PARAMETER (MPI_COMPLEX32=z'0c000000')
+       PARAMETER (MPI_COMPLEX32=201326592)  ! MPI_COMPLEX32=z'0c000000'
        INTEGER MPI_INTEGER1
-       PARAMETER (MPI_INTEGER1=z'4c00012d')
+       PARAMETER (MPI_INTEGER1=1275068717)  ! MPI_INTEGER1=z'4c00012d'
        INTEGER MPI_COMPLEX4
-       PARAMETER (MPI_COMPLEX4=z'0c000000')
+       PARAMETER (MPI_COMPLEX4=201326592)  ! MPI_COMPLEX4=z'0c000000'
        INTEGER MPI_INTEGER2
-       PARAMETER (MPI_INTEGER2=z'4c00022f')
+       PARAMETER (MPI_INTEGER2=1275068975)  ! MPI_INTEGER2=z'4c00022f'
        INTEGER MPI_INTEGER4
-       PARAMETER (MPI_INTEGER4=z'4c000430')
+       PARAMETER (MPI_INTEGER4=1275069488)  ! MPI_INTEGER4=z'4c000430'
        INTEGER MPI_INTEGER8
-       PARAMETER (MPI_INTEGER8=z'4c000831')
+       PARAMETER (MPI_INTEGER8=1275070513)  ! MPI_INTEGER8=z'4c000831'
        INTEGER MPI_INTEGER16
-       PARAMETER (MPI_INTEGER16=z'0c000000')
+       PARAMETER (MPI_INTEGER16=201326592)  ! MPI_INTEGER16=z'0c000000'
 
        INCLUDE 'mpifptr.h'
 
        INTEGER MPI_OFFSET
-       PARAMETER (MPI_OFFSET=z'4c00083c')
+       PARAMETER (MPI_OFFSET=1275070524)  ! MPI_OFFSET=z'4c00083c'
        INTEGER MPI_COUNT
-       PARAMETER (MPI_COUNT=z'4c00083d')
+       PARAMETER (MPI_COUNT=1275070525)  ! MPI_COUNT=z'4c00083d'
        INTEGER MPI_FLOAT_INT
-       PARAMETER (MPI_FLOAT_INT=z'8c000000')
+       PARAMETER (MPI_FLOAT_INT=-1946157056)  ! MPI_FLOAT_INT=z'8c000000'
        INTEGER MPI_DOUBLE_INT
-       PARAMETER (MPI_DOUBLE_INT=z'8c000001')
+       PARAMETER (MPI_DOUBLE_INT=-1946157055)  ! MPI_DOUBLE_INT=z'8c000001'
        INTEGER MPI_LONG_INT
-       PARAMETER (MPI_LONG_INT=z'8c000002')
+       PARAMETER (MPI_LONG_INT=-1946157054)  ! MPI_LONG_INT=z'8c000002'
        INTEGER MPI_SHORT_INT
-       PARAMETER (MPI_SHORT_INT=z'8c000003')
+       PARAMETER (MPI_SHORT_INT=-1946157053)  ! MPI_SHORT_INT=z'8c000003'
        INTEGER MPI_LONG_DOUBLE_INT
-       PARAMETER (MPI_LONG_DOUBLE_INT=z'8c000004')
+       PARAMETER (MPI_LONG_DOUBLE_INT=-1946157052)  ! MPI_LONG_DOUBLE_INT=z'8c000004'
        INTEGER MPI_INTEGER_KIND
        PARAMETER (MPI_INTEGER_KIND=4)
        INTEGER MPI_OFFSET_KIND
@@ -1591,7 +1591,2088 @@
           LOGICAL f
         END SUBROUTINE MPI_WIN_NULL_COPY_FN
 
+        SUBROUTINE MPI_Comm_create_keyval(comm_copy_attr_fn, &
+                comm_delete_attr_fn, comm_keyval, extra_state, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          EXTERNAL :: comm_copy_attr_fn
+          EXTERNAL :: comm_delete_attr_fn
+          INTEGER :: comm_keyval
+          INTEGER(KIND=MPI_ADDRESS_KIND) :: extra_state
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Comm_create_keyval
+
+        SUBROUTINE MPI_Comm_get_attr(comm, comm_keyval, attribute_val, flag, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          INTEGER :: comm
+          INTEGER :: comm_keyval
+          INTEGER(KIND=MPI_ADDRESS_KIND) :: attribute_val
+          LOGICAL :: flag
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Comm_get_attr
+
+        SUBROUTINE MPI_Comm_set_attr(comm, comm_keyval, attribute_val, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          INTEGER :: comm
+          INTEGER :: comm_keyval
+          INTEGER(KIND=MPI_ADDRESS_KIND) :: attribute_val
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Comm_set_attr
+
+        SUBROUTINE MPI_Keyval_create(copy_fn, delete_fn, keyval, extra_state, ierror)
+          IMPLICIT NONE
+          EXTERNAL :: copy_fn
+          EXTERNAL :: delete_fn
+          INTEGER :: keyval
+          INTEGER :: extra_state
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Keyval_create
+
+        SUBROUTINE MPI_Type_create_keyval(type_copy_attr_fn, type_delete_attr_fn, &
+                type_keyval, extra_state, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          EXTERNAL :: type_copy_attr_fn
+          EXTERNAL :: type_delete_attr_fn
+          INTEGER :: type_keyval
+          INTEGER(KIND=MPI_ADDRESS_KIND) :: extra_state
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Type_create_keyval
+
+        SUBROUTINE MPI_Type_get_attr(datatype, type_keyval, attribute_val, flag, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          INTEGER :: datatype
+          INTEGER :: type_keyval
+          INTEGER(KIND=MPI_ADDRESS_KIND) :: attribute_val
+          LOGICAL :: flag
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Type_get_attr
+
+        SUBROUTINE MPI_Type_set_attr(datatype, type_keyval, attribute_val, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          INTEGER :: datatype
+          INTEGER :: type_keyval
+          INTEGER(KIND=MPI_ADDRESS_KIND) :: attribute_val
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Type_set_attr
+
+        SUBROUTINE MPI_Win_create_keyval(win_copy_attr_fn, win_delete_attr_fn, &
+                win_keyval, extra_state, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          EXTERNAL :: win_copy_attr_fn
+          EXTERNAL :: win_delete_attr_fn
+          INTEGER :: win_keyval
+          INTEGER(KIND=MPI_ADDRESS_KIND) :: extra_state
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Win_create_keyval
+
+        SUBROUTINE MPI_Win_get_attr(win, win_keyval, attribute_val, flag, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          INTEGER :: win
+          INTEGER :: win_keyval
+          INTEGER(KIND=MPI_ADDRESS_KIND) :: attribute_val
+          LOGICAL :: flag
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Win_get_attr
+
+        SUBROUTINE MPI_Win_set_attr(win, win_keyval, attribute_val, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          INTEGER :: win
+          INTEGER :: win_keyval
+          INTEGER(KIND=MPI_ADDRESS_KIND) :: attribute_val
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Win_set_attr
+
+#ifdef __GNUC__
+        SUBROUTINE MPI_Allgather(sendbuf, sendcount, sendtype, recvbuf, &
+                recvcount, recvtype, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          INTEGER, INTENT(in) :: sendcount
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: recvcount
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Allgather
+
+        SUBROUTINE MPI_Allgatherv(sendbuf, sendcount, sendtype, recvbuf, &
+                recvcounts, displs, recvtype, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          INTEGER, INTENT(in) :: sendcount
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: recvcounts(*)
+          INTEGER, INTENT(in) :: displs(*)
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Allgatherv
+
+        SUBROUTINE MPI_Allreduce(sendbuf, recvbuf, count, datatype, op, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Allreduce
+
+        SUBROUTINE MPI_Alltoall(sendbuf, sendcount, sendtype, recvbuf, &
+                recvcount, recvtype, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          INTEGER, INTENT(in) :: sendcount
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: recvcount
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Alltoall
+
+        SUBROUTINE MPI_Alltoallv(sendbuf, sendcounts, sdispls, sendtype, &
+                recvbuf, recvcounts, rdispls, recvtype, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          INTEGER, INTENT(in) :: sendcounts(*)
+          INTEGER, INTENT(in) :: sdispls(*)
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: recvcounts(*)
+          INTEGER, INTENT(in) :: rdispls(*)
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Alltoallv
+
+        SUBROUTINE MPI_Alltoallw(sendbuf, sendcounts, sdispls, sendtypes, &
+               recvbuf, recvcounts, rdispls, recvtypes, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          INTEGER, INTENT(in) :: sendcounts(*)
+          INTEGER, INTENT(in) :: sdispls(*)
+          INTEGER, INTENT(in) :: sendtypes(*)
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: recvcounts(*)
+          INTEGER, INTENT(in) :: rdispls(*)
+          INTEGER, INTENT(in) :: recvtypes(*)
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Alltoallw
+
+        SUBROUTINE MPI_Bcast(buffer, count, datatype, root, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buffer
+          TYPE(*), DIMENSION(*), INTENT(inout) :: buffer
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: root
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Bcast
+
+        SUBROUTINE MPI_Exscan(sendbuf, recvbuf, count, datatype, op, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Exscan
+
+        SUBROUTINE MPI_Gather(sendbuf, sendcount, sendtype, recvbuf, recvcount, &
+                recvtype, root, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          INTEGER, INTENT(in) :: sendcount
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: recvcount
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: root
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Gather
+
+        SUBROUTINE MPI_Gatherv(sendbuf, sendcount, sendtype, recvbuf, recvcounts, &
+                displs, recvtype, root, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          INTEGER, INTENT(in) :: sendcount
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: recvcounts(*)
+          INTEGER, INTENT(in) :: displs(*)
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: root
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Gatherv
+
+        SUBROUTINE MPI_Iallgather(sendbuf, sendcount, sendtype, recvbuf, recvcount, &
+                recvtype, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          INTEGER, INTENT(in) :: sendcount
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
+          INTEGER, INTENT(in) :: recvcount
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Iallgather
+
+        SUBROUTINE MPI_Iallgatherv(sendbuf, sendcount, sendtype, recvbuf, recvcounts, &
+                displs, recvtype, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          INTEGER, INTENT(in) :: sendcount
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
+          INTEGER, INTENT(in), ASYNCHRONOUS :: recvcounts(*)
+          INTEGER, INTENT(in), ASYNCHRONOUS :: displs(*)
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Iallgatherv
+
+        SUBROUTINE MPI_Iallreduce(sendbuf, recvbuf, count, datatype, op, comm, &
+                request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Iallreduce
+
+        SUBROUTINE MPI_Ialltoall(sendbuf, sendcount, sendtype, recvbuf, recvcount, &
+                recvtype, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          INTEGER, INTENT(in) :: sendcount
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
+          INTEGER, INTENT(in) :: recvcount
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Ialltoall
+
+        SUBROUTINE MPI_Ialltoallv(sendbuf, sendcounts, sdispls, sendtype, &
+                recvbuf, recvcounts, rdispls, recvtype, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          INTEGER, INTENT(in), ASYNCHRONOUS :: sendcounts(*)
+          INTEGER, INTENT(in), ASYNCHRONOUS :: sdispls(*)
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
+          INTEGER, INTENT(in), ASYNCHRONOUS :: recvcounts(*)
+          INTEGER, INTENT(in), ASYNCHRONOUS :: rdispls(*)
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Ialltoallv
+
+        SUBROUTINE MPI_Ialltoallw(sendbuf, sendcounts, sdispls, sendtypes, &
+                recvbuf, recvcounts,  rdispls, recvtypes, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          INTEGER, INTENT(in), ASYNCHRONOUS :: sendcounts(*)
+          INTEGER, INTENT(in), ASYNCHRONOUS :: sdispls(*)
+          INTEGER, INTENT(in), ASYNCHRONOUS :: sendtypes(*)
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
+          INTEGER, INTENT(in), ASYNCHRONOUS :: recvcounts(*)
+          INTEGER, INTENT(in), ASYNCHRONOUS :: rdispls(*)
+          INTEGER, INTENT(in), ASYNCHRONOUS :: recvtypes(*)
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Ialltoallw
+#endif
+
+        SUBROUTINE MPI_Ibarrier(comm, request, ierror)
+          IMPLICIT NONE
+          INTEGER :: comm
+          INTEGER :: request
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Ibarrier
+
+#ifdef __GNUC__
+        SUBROUTINE MPI_Ibcast(buffer, count, datatype, root, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buffer
+          TYPE(*), DIMENSION(*), INTENT(inout), ASYNCHRONOUS :: buffer
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: root
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Ibcast
+
+        SUBROUTINE MPI_Iexscan(sendbuf, recvbuf, count, datatype, op,  comm,&
+                request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Iexscan
+
+        SUBROUTINE MPI_Igather(sendbuf, sendcount, sendtype, recvbuf, recvcount, &
+                recvtype, root, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          INTEGER, INTENT(in) :: sendcount
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
+          INTEGER, INTENT(in) :: recvcount
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: root
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Igather
+
+        SUBROUTINE MPI_Igatherv(sendbuf, sendcount, sendtype, recvbuf, recvcounts, &
+                displs, recvtype,  root, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          INTEGER, INTENT(in) :: sendcount
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
+          INTEGER, INTENT(in), ASYNCHRONOUS :: recvcounts(*)
+          INTEGER, INTENT(in), ASYNCHRONOUS :: displs(*)
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: root
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Igatherv
+
+        SUBROUTINE MPI_Ireduce(sendbuf, recvbuf, count, datatype, op, root, &
+                comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: root
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Ireduce
+
+        SUBROUTINE MPI_Ireduce_scatter(sendbuf, recvbuf, recvcounts, datatype, &
+                op, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
+          INTEGER, INTENT(in), ASYNCHRONOUS :: recvcounts(*)
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Ireduce_scatter
+
+        SUBROUTINE MPI_Ireduce_scatter_block(sendbuf, recvbuf, recvcount, datatype, &
+                op, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
+          INTEGER, INTENT(in) :: recvcount
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Ireduce_scatter_block
+
+        SUBROUTINE MPI_Iscan(sendbuf, recvbuf, count, datatype, op, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Iscan
+
+        SUBROUTINE MPI_Iscatter(sendbuf, sendcount, sendtype, recvbuf, recvcount, &
+                recvtype, root, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          INTEGER, INTENT(in) :: sendcount
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
+          INTEGER, INTENT(in) :: recvcount
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: root
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Iscatter
+
+        SUBROUTINE MPI_Iscatterv(sendbuf, sendcounts, displs, sendtype, recvbuf, &
+                recvcount, recvtype, root, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: sendbuf
+          INTEGER, INTENT(in), ASYNCHRONOUS :: sendcounts(*)
+          INTEGER, INTENT(in), ASYNCHRONOUS :: displs(*)
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: recvbuf
+          INTEGER, INTENT(in) :: recvcount
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: root
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Iscatterv
+
+        SUBROUTINE MPI_Reduce(sendbuf, recvbuf, count, datatype, op, root, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: root
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Reduce
+
+        SUBROUTINE MPI_Reduce_local(inbuf, inoutbuf, count, datatype, op, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: inbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: inbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: inoutbuf
+          TYPE(*), DIMENSION(*), INTENT(inout) :: inoutbuf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Reduce_local
+
+        SUBROUTINE MPI_Reduce_scatter(sendbuf, recvbuf, recvcounts, datatype, &
+                op, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: recvcounts(*)
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Reduce_scatter
+
+        SUBROUTINE MPI_Reduce_scatter_block(sendbuf, recvbuf, recvcount, datatype, &
+                op, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: recvcount
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Reduce_scatter_block
+
+        SUBROUTINE MPI_Scan(sendbuf, recvbuf, count, datatype, op, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Scan
+
+        SUBROUTINE MPI_Scatter(sendbuf, sendcount, sendtype, recvbuf, recvcount, &
+                recvtype, root, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          INTEGER, INTENT(in) :: sendcount
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: recvcount
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: root
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Scatter
+
+        SUBROUTINE MPI_Scatterv(sendbuf, sendcounts, displs, sendtype, recvbuf, &
+                recvcount, recvtype, root, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          INTEGER, INTENT(in) :: sendcounts(*)
+          INTEGER, INTENT(in) :: displs(*)
+          INTEGER, INTENT(in) :: sendtype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: recvcount
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: root
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Scatterv
+
+        SUBROUTINE MPI_Get_address(location, address, ierror)
+          USE :: MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: location
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: location
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(out) :: address
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Get_address
+
+        SUBROUTINE MPI_Pack(inbuf, incount, datatype, outbuf, outsize, position, &
+                comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: inbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: inbuf
+          INTEGER, INTENT(in) :: incount
+          INTEGER, INTENT(in) :: datatype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: outbuf
+          TYPE(*), DIMENSION(*) :: outbuf
+          INTEGER, INTENT(in) :: outsize
+          INTEGER, INTENT(inout) :: position
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Pack
+
+        SUBROUTINE MPI_Pack_external(datarep, inbuf, incount, datatype, outbuf, &
+                outsize, position, ierror)
+          USE :: MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          CHARACTER(len=*), INTENT(in) :: datarep
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: inbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: inbuf
+          INTEGER, INTENT(in) :: incount
+          INTEGER, INTENT(in) :: datatype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: outbuf
+          TYPE(*), DIMENSION(*) :: outbuf
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: outsize
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(inout) :: position
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Pack_external
+
+        SUBROUTINE MPI_Unpack(inbuf, insize, position, outbuf, outcount, &
+                datatype, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: inbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: inbuf
+          INTEGER, INTENT(in) :: insize
+          INTEGER, INTENT(inout) :: position
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: outbuf
+          TYPE(*), DIMENSION(*) :: outbuf
+          INTEGER, INTENT(in) :: outcount
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Unpack
+
+        SUBROUTINE MPI_Unpack_external(datarep, inbuf, insize, position, &
+                outbuf, outcount, datatype, ierror)
+          USE :: MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          CHARACTER(len=*), INTENT(in) :: datarep
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: inbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: inbuf
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: insize
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(inout) :: position
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: outbuf
+          TYPE(*), DIMENSION(*) :: outbuf
+          INTEGER, INTENT(in) :: outcount
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Unpack_external
+#endif
+
+        SUBROUTINE MPI_Group_translate_ranks(group1, n, ranks1, group2, ranks2, ierror)
+          IMPLICIT NONE
+          INTEGER :: group1
+          INTEGER :: n
+          INTEGER :: ranks1(n)
+          INTEGER :: group2
+          INTEGER :: ranks2(n)
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Group_translate_ranks
+
+        SUBROUTINE MPI_Finalize(ierror)
+          IMPLICIT NONE
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Finalize
+
+#ifdef __GNUC__
+        SUBROUTINE MPI_Bsend(buf, count, datatype, dest, tag, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: dest
+          INTEGER, INTENT(in) :: tag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Bsend
+
+        SUBROUTINE MPI_Bsend_init(buf, count, datatype, dest, tag, comm, &
+                request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: dest
+          INTEGER, INTENT(in) :: tag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Bsend_init
+
+        SUBROUTINE MPI_Buffer_attach(buffer, size, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buffer
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buffer
+          INTEGER, INTENT(in) :: size
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Buffer_attach
+#endif
+
+        SUBROUTINE MPI_Buffer_detach(buffer_addr, size, ierror)
+          USE, intrinsic :: iso_c_binding, ONLY : C_PTR
+          IMPLICIT NONE
+          TYPE(C_PTR), INTENT(out) :: buffer_addr
+          INTEGER, INTENT(out) :: size
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Buffer_detach
+
+#ifdef __GNUC__
+        SUBROUTINE MPI_Ibsend(buf, count, datatype, dest, tag, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: dest
+          INTEGER, INTENT(in) :: tag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Ibsend
+
+        SUBROUTINE MPI_Imrecv(buf, count, datatype, message, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(inout) :: message
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Imrecv
+
+        SUBROUTINE MPI_Irecv(buf, count, datatype, source, tag, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: source
+          INTEGER, INTENT(in) :: tag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Irecv
+
+        SUBROUTINE MPI_Irsend(buf, count, datatype, dest, tag, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: dest
+          INTEGER, INTENT(in) :: tag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Irsend
+
+        SUBROUTINE MPI_Isend(buf, count, datatype, dest, tag, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: dest
+          INTEGER, INTENT(in) :: tag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Isend
+
+        SUBROUTINE MPI_Issend(buf, count, datatype, dest, tag, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: dest
+          INTEGER, INTENT(in) :: tag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Issend
+
+        SUBROUTINE MPI_Mrecv(buf, count, datatype, message, status, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(inout) :: message
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Mrecv
+
+        SUBROUTINE MPI_Recv(buf, count, datatype, source, tag, comm, status, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: source
+          INTEGER, INTENT(in) :: tag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Recv
+
+        SUBROUTINE MPI_Recv_init(buf, count, datatype, source, tag, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: source
+          INTEGER, INTENT(in) :: tag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Recv_init
+
+        SUBROUTINE MPI_Rsend(buf, count, datatype, dest, tag, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: dest
+          INTEGER, INTENT(in) :: tag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Rsend
+
+        SUBROUTINE MPI_Rsend_init(buf, count, datatype, dest, tag, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: dest
+          INTEGER, INTENT(in) :: tag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Rsend_init
+
+        SUBROUTINE MPI_Send(buf, count, datatype, dest, tag, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: dest
+          INTEGER, INTENT(in) :: tag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Send
+
+        SUBROUTINE MPI_Send_init(buf, count, datatype, dest, tag, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: dest
+          INTEGER, INTENT(in) :: tag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Send_init
+
+        SUBROUTINE MPI_Sendrecv(sendbuf, sendcount, sendtype, dest, sendtag, &
+                recvbuf, recvcount, recvtype, source, recvtag, comm, status, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: sendbuf
+          TYPE(*), DIMENSION(*), INTENT(in) :: sendbuf
+          INTEGER, INTENT(in) :: sendcount
+          INTEGER, INTENT(in) :: sendtype
+          INTEGER, INTENT(in) :: dest
+          INTEGER, INTENT(in) :: sendtag
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: recvbuf
+          TYPE(*), DIMENSION(*) :: recvbuf
+          INTEGER, INTENT(in) :: recvcount
+          INTEGER, INTENT(in) :: recvtype
+          INTEGER, INTENT(in) :: source
+          INTEGER, INTENT(in) :: recvtag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Sendrecv
+
+        SUBROUTINE MPI_Sendrecv_replace(buf, count, datatype, dest, sendtag, &
+                source, recvtag, comm, status, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(inout) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: dest
+          INTEGER, INTENT(in) :: sendtag
+          INTEGER, INTENT(in) :: source
+          INTEGER, INTENT(in) :: recvtag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Sendrecv_replace
+
+        SUBROUTINE MPI_Ssend(buf, count, datatype, dest, tag, comm, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: dest
+          INTEGER, INTENT(in) :: tag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Ssend
+
+        SUBROUTINE MPI_Ssend_init(buf, count, datatype, dest, tag, comm, request, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: dest
+          INTEGER, INTENT(in) :: tag
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Ssend_init
+#endif
+
+        SUBROUTINE MPI_Grequest_start(query_fn, free_fn, cancel_fn, extra_state, &
+                request, ierror)
+          USE :: MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          EXTERNAL :: query_fn
+          EXTERNAL :: free_fn
+          EXTERNAL :: cancel_fn
+          INTEGER(KIND=MPI_ADDRESS_KIND) :: extra_state
+          INTEGER :: request
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Grequest_start
+
+        SUBROUTINE MPI_Startall(count, array_of_requests, ierror)
+          IMPLICIT NONE
+          INTEGER :: count
+          INTEGER :: array_of_requests(count)
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Startall
+
+        SUBROUTINE MPI_Testall(count, array_of_requests, flag, array_of_statuses, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER :: count
+          INTEGER :: array_of_requests(count)
+          LOGICAL :: flag
+          INTEGER :: array_of_statuses(MPI_STATUS_SIZE, *)
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Testall
+
+        SUBROUTINE MPI_Testany(count, array_of_requests, indx, flag, status, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER :: count
+          INTEGER :: array_of_requests(count)
+          INTEGER :: indx
+          LOGICAL :: flag
+          INTEGER :: status(MPI_STATUS_SIZE)
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Testany
+
+        SUBROUTINE MPI_Testsome(incount, array_of_requests, outcount, &
+                array_of_indices, array_of_statuses, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER :: incount
+          INTEGER :: array_of_requests(incount)
+          INTEGER :: outcount
+          INTEGER :: array_of_indices(*)
+          INTEGER :: array_of_statuses(MPI_STATUS_SIZE, *)
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Testsome
+
+        SUBROUTINE MPI_Waitall(count, array_of_requests, array_of_statuses, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER :: count
+          INTEGER :: array_of_requests(count)
+          INTEGER :: array_of_statuses(MPI_STATUS_SIZE, *)
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Waitall
+
+        SUBROUTINE MPI_Waitany(count, array_of_requests, indx, status, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER :: count
+          INTEGER :: array_of_requests(count)
+          INTEGER :: indx
+          INTEGER :: status(MPI_STATUS_SIZE)
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Waitany
+
+        SUBROUTINE MPI_Waitsome(incount, array_of_requests, outcount, &
+                array_of_indices, array_of_statuses, ierror)
+          USE :: MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER :: incount
+          INTEGER :: array_of_requests(incount)
+          INTEGER :: outcount
+          INTEGER :: array_of_indices(*)
+          INTEGER :: array_of_statuses(MPI_STATUS_SIZE, *)
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Waitsome
+
+#ifdef __GNUC__
+        SUBROUTINE MPI_Accumulate(origin_addr, origin_count, origin_datatype, target_rank, &
+                target_disp, target_count, target_datatype, op, win, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
+          INTEGER, INTENT(in) :: origin_count
+          INTEGER, INTENT(in) :: origin_datatype
+          INTEGER, INTENT(in) :: target_rank
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: target_disp
+          INTEGER, INTENT(in) :: target_count
+          INTEGER, INTENT(in) :: target_datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: win
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Accumulate
+
+        SUBROUTINE MPI_Compare_and_swap(origin_addr, compare_addr, result_addr, &
+                datatype, target_rank, target_disp, win, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: compare_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: compare_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: result_addr
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: result_addr
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: target_rank
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: target_disp
+          INTEGER, INTENT(in) :: win
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Compare_and_swap
+
+        SUBROUTINE MPI_Fetch_and_op(origin_addr, result_addr, datatype, &
+                target_rank, target_disp, op, win, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: result_addr
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: result_addr
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(in) :: target_rank
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: target_disp
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: win
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Fetch_and_op
+
+        SUBROUTINE MPI_Free_mem(base, ierror)
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: base
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: base
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Free_mem
+
+        SUBROUTINE MPI_Get(origin_addr, origin_count, origin_datatype, target_rank, &
+                target_disp, target_count, target_datatype, win, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: origin_addr
+          INTEGER, INTENT(in) :: origin_count
+          INTEGER, INTENT(in) :: origin_datatype
+          INTEGER, INTENT(in) :: target_rank
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: target_disp
+          INTEGER, INTENT(in) :: target_count
+          INTEGER, INTENT(in) :: target_datatype
+          INTEGER, INTENT(in) :: win
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Get
+
+        SUBROUTINE MPI_Get_accumulate(origin_addr, origin_count, origin_datatype, &
+                result_addr, result_count, result_datatype, target_rank, target_disp, &
+                target_count, target_datatype, op, win, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
+          INTEGER, INTENT(in) :: origin_count
+          INTEGER, INTENT(in) :: origin_datatype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: result_addr
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: result_addr
+          INTEGER, INTENT(in) :: result_count
+          INTEGER, INTENT(in) :: result_datatype
+          INTEGER, INTENT(in) :: target_rank
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: target_disp
+          INTEGER, INTENT(in) :: target_count
+          INTEGER, INTENT(in) :: target_datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: win
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Get_accumulate
+
+        SUBROUTINE MPI_Put(origin_addr, origin_count, origin_datatype, &
+                target_rank, target_disp, target_count, target_datatype, win, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
+          INTEGER, INTENT(in) :: origin_count
+          INTEGER, INTENT(in) :: origin_datatype
+          INTEGER, INTENT(in) :: target_rank
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: target_disp
+          INTEGER, INTENT(in) :: target_count
+          INTEGER, INTENT(in) :: target_datatype
+          INTEGER, INTENT(in) :: win
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Put
+
+        SUBROUTINE MPI_Raccumulate(origin_addr, origin_count, origin_datatype, target_rank, &
+                target_disp, target_count, target_datatype, op, win, request, &
+                ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
+          INTEGER, INTENT(in) :: origin_count
+          INTEGER, INTENT(in) :: origin_datatype
+          INTEGER, INTENT(in) :: target_rank
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: target_disp
+          INTEGER, INTENT(in) :: target_count
+          INTEGER, INTENT(in) :: target_datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: win
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Raccumulate
+
+        SUBROUTINE MPI_Rget(origin_addr, origin_count, origin_datatype, target_rank, &
+                target_disp, target_count, target_datatype, win, request, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: origin_addr
+          INTEGER, INTENT(in) :: origin_count
+          INTEGER, INTENT(in) :: origin_datatype
+          INTEGER, INTENT(in) :: target_rank
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: target_disp
+          INTEGER, INTENT(in) :: target_count
+          INTEGER, INTENT(in) :: target_datatype
+          INTEGER, INTENT(in) :: win
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Rget
+
+        SUBROUTINE MPI_Rget_accumulate(origin_addr, origin_count, origin_datatype, &
+                result_addr, result_count, result_datatype, target_rank, target_disp, &
+                target_count, target_datatype, op, win, request, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
+          INTEGER, INTENT(in) :: origin_count
+          INTEGER, INTENT(in) :: origin_datatype
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: result_addr
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: result_addr
+          INTEGER, INTENT(in) :: result_count
+          INTEGER, INTENT(in) :: result_datatype
+          INTEGER, INTENT(in) :: target_rank
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: target_disp
+          INTEGER, INTENT(in) :: target_count
+          INTEGER, INTENT(in) :: target_datatype
+          INTEGER, INTENT(in) :: op
+          INTEGER, INTENT(in) :: win
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Rget_accumulate
+
+        SUBROUTINE MPI_Rput(origin_addr, origin_count, origin_datatype, target_rank, &
+                target_disp, target_count, target_datatype, win, request, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: origin_addr
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: origin_addr
+          INTEGER, INTENT(in) :: origin_count
+          INTEGER, INTENT(in) :: origin_datatype
+          INTEGER, INTENT(in) :: target_rank
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: target_disp
+          INTEGER, INTENT(in) :: target_count
+          INTEGER, INTENT(in) :: target_datatype
+          INTEGER, INTENT(in) :: win
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Rput
+
+        SUBROUTINE MPI_Win_attach(win, base, size, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: win
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: base
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: base
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: size
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Win_attach
+
+        SUBROUTINE MPI_Win_create(base, size, disp_unit, info, comm, win, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: base
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: base
+          INTEGER(KIND=MPI_ADDRESS_KIND), INTENT(in) :: size
+          INTEGER, INTENT(in) :: disp_unit
+          INTEGER, INTENT(in) :: info
+          INTEGER, INTENT(in) :: comm
+          INTEGER, INTENT(out) :: win
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Win_create
+#endif
+
+        SUBROUTINE MPI_Win_create_dynamic(info, comm, win, ierror)
+          IMPLICIT NONE
+          INTEGER :: info
+          INTEGER :: comm
+          INTEGER :: win
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Win_create_dynamic
+
+#ifdef __GNUC__
+        SUBROUTINE MPI_Win_detach(win, base, ierror)
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: win
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: base
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: base
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_Win_detach
+#endif
+
+        SUBROUTINE MPI_Win_flush_all(win, ierror)
+          IMPLICIT NONE
+          INTEGER :: win
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Win_flush_all
+
+        SUBROUTINE MPI_Win_flush_local_all(win, ierror)
+          IMPLICIT NONE
+          INTEGER :: win
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Win_flush_local_all
+
+        SUBROUTINE MPI_Win_lock_all(assert, win, ierror)
+          IMPLICIT NONE
+          INTEGER :: assert
+          INTEGER :: win
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Win_lock_all
+
+        SUBROUTINE MPI_Win_sync(win, ierror)
+          IMPLICIT NONE
+          INTEGER :: win
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Win_sync
+
+        SUBROUTINE MPI_Win_unlock_all(win, ierror)
+          IMPLICIT NONE
+          INTEGER :: win
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Win_unlock_all
+
+        SUBROUTINE MPI_Cart_coords(comm, rank, maxdims, coords, ierror)
+          IMPLICIT NONE
+          INTEGER :: comm
+          INTEGER :: rank
+          INTEGER :: maxdims
+          INTEGER :: coords(maxdims)
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Cart_coords
+
+        SUBROUTINE MPI_Cart_create(comm_old, ndims, dims, periods, reorder, comm_cart, ierror)
+          IMPLICIT NONE
+          INTEGER :: comm_old
+          INTEGER :: ndims
+          INTEGER :: dims(ndims)
+          LOGICAL :: periods(ndims)
+          LOGICAL :: reorder
+          INTEGER :: comm_cart
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Cart_create
+
+        SUBROUTINE MPI_Cart_get(comm, maxdims, dims, periods, coords, ierror)
+          IMPLICIT NONE
+          INTEGER :: comm
+          INTEGER :: maxdims
+          INTEGER :: dims(maxdims)
+          LOGICAL :: periods(maxdims)
+          INTEGER :: coords(maxdims)
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Cart_get
+
+        SUBROUTINE MPI_Cart_map(comm, ndims, dims, periods, newrank, ierror)
+          IMPLICIT NONE
+          INTEGER :: comm
+          INTEGER :: ndims
+          INTEGER :: dims(ndims)
+          LOGICAL :: periods(ndims)
+          INTEGER :: newrank
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Cart_map
+
+        SUBROUTINE MPI_Cart_rank(comm, coords, rank, ierror)
+          IMPLICIT NONE
+          INTEGER :: comm
+          INTEGER :: coords(*)
+          INTEGER :: rank
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Cart_rank
+
+        SUBROUTINE MPI_Cart_sub(comm, remain_dims, newcomm, ierror)
+          IMPLICIT NONE
+          INTEGER :: comm
+          LOGICAL :: remain_dims(*)
+          INTEGER :: newcomm
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Cart_sub
+
+        SUBROUTINE MPI_Dims_create(nnodes, ndims, dims, ierror)
+          IMPLICIT NONE
+          INTEGER :: nnodes
+          INTEGER :: ndims
+          INTEGER :: dims(ndims)
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Dims_create
+
+        SUBROUTINE MPI_Dist_graph_create(comm_old, n, sources, degrees, &
+                destinations, weights, info, reorder, comm_dist_graph, ierror)
+          IMPLICIT NONE
+          INTEGER :: comm_old
+          INTEGER :: n
+          INTEGER :: sources(n)
+          INTEGER :: degrees(n)
+          INTEGER :: destinations(*)
+          INTEGER :: weights(*)
+          INTEGER :: info
+          LOGICAL :: reorder
+          INTEGER :: comm_dist_graph
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Dist_graph_create
+
+        SUBROUTINE MPI_Dist_graph_create_adjacent(comm_old, indegree, sources, &
+                sourceweights, outdegree,  destinations, destweights, info, &
+                reorder, comm_dist_graph, ierror)
+          IMPLICIT NONE
+          INTEGER :: comm_old
+          INTEGER :: indegree
+          INTEGER :: sources(indegree)
+          INTEGER :: sourceweights(*)
+          INTEGER :: outdegree
+          INTEGER :: destinations(outdegree)
+          INTEGER :: destweights(*)
+          INTEGER :: info
+          LOGICAL :: reorder
+          INTEGER :: comm_dist_graph
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Dist_graph_create_adjacent
+
+        SUBROUTINE MPI_Dist_graph_neighbors(comm, maxindegree, sources, &
+                sourceweights, maxoutdegree, destinations, destweights, ierror)
+          IMPLICIT NONE
+          INTEGER :: comm
+          INTEGER :: maxindegree
+          INTEGER :: sources(maxindegree)
+          INTEGER :: sourceweights(*)
+          INTEGER :: maxoutdegree
+          INTEGER :: destinations(maxoutdegree)
+          INTEGER :: destweights(*)
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Dist_graph_neighbors
+
+        SUBROUTINE MPI_Graph_create(comm_old, nnodes, indx, edges, reorder, &
+                comm_graph, ierror)
+          IMPLICIT NONE
+          INTEGER :: comm_old
+          INTEGER :: nnodes
+          INTEGER :: indx(nnodes)
+          INTEGER :: edges(*)
+          LOGICAL :: reorder
+          INTEGER :: comm_graph
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Graph_create
+
+        SUBROUTINE MPI_Graph_neighbors(comm, rank, maxneighbors, neighbors, ierror)
+          IMPLICIT NONE
+          INTEGER :: comm
+          INTEGER :: rank
+          INTEGER :: maxneighbors
+          INTEGER :: neighbors(maxneighbors)
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Graph_neighbors
+
+        SUBROUTINE MPI_File_close(fh, ierror)
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_close
+
+        SUBROUTINE MPI_File_delete(filename, info, ierror)
+          IMPLICIT NONE
+          CHARACTER*(*) :: filename
+          INTEGER :: info
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_delete
+
+        SUBROUTINE MPI_File_get_amode(fh, amode, ierror)
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER :: amode
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_get_amode
+
+        SUBROUTINE MPI_File_get_atomicity(fh, flag, ierror)
+          IMPLICIT NONE
+          INTEGER :: fh
+          LOGICAL :: flag
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_get_atomicity
+
+        SUBROUTINE MPI_File_get_byte_offset(fh, offset, disp, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_OFFSET_KIND
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND) :: offset
+          INTEGER(KIND=MPI_OFFSET_KIND) :: disp
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_get_byte_offset
+
+        SUBROUTINE MPI_File_get_group(fh, group, ierror)
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER :: group
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_get_group
+
+        SUBROUTINE MPI_File_get_info(fh, info_used, ierror)
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER :: info_used
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_get_info
+
+        SUBROUTINE MPI_File_get_position(fh, offset, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_OFFSET_KIND
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND) :: offset
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_get_position
+
+        SUBROUTINE MPI_File_get_position_shared(fh, offset, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_OFFSET_KIND
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND) :: offset
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_get_position_shared
+
+        SUBROUTINE MPI_File_get_size(fh, size, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_OFFSET_KIND
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND) :: size
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_get_size
+
+        SUBROUTINE MPI_File_get_type_extent(fh, datatype, extent, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER :: datatype
+          INTEGER(KIND=MPI_ADDRESS_KIND) :: extent
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_get_type_extent
+
+        SUBROUTINE MPI_File_get_view(fh, disp, etype, filetype, datarep, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_OFFSET_KIND
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND) :: disp
+          INTEGER :: etype
+          INTEGER :: filetype
+          CHARACTER*(*) :: datarep
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_get_view
+
+#ifdef __GNUC__
+       SUBROUTINE MPI_File_iread(fh, buf, count, datatype, request, ierror)
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_iread
+
+        SUBROUTINE MPI_File_iread_at(fh, offset, buf, count, datatype, request, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_OFFSET_KIND
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_iread_at
+
+        SUBROUTINE MPI_File_iread_shared(fh, buf, count, datatype, request, ierror)
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_iread_shared
+
+        SUBROUTINE MPI_File_iwrite(fh, buf, count, datatype, request, ierror)
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_iwrite
+
+        SUBROUTINE MPI_File_iwrite_at(fh, offset, buf, count, datatype, request, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_OFFSET_KIND
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_iwrite_at
+
+        SUBROUTINE MPI_File_iwrite_shared(fh, buf, count, datatype, request, ierror)
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out) :: request
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_iwrite_shared
+#endif
+
+        SUBROUTINE MPI_File_open(comm, filename, amode, info, fh, ierror)
+          IMPLICIT NONE
+          INTEGER :: comm
+          CHARACTER*(*) :: filename
+          INTEGER :: amode
+          INTEGER :: info
+          INTEGER :: fh
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_open
+
+        SUBROUTINE MPI_File_preallocate(fh, size, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_OFFSET_KIND
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND) :: size
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_preallocate
+
+#ifdef __GNUC__
+        SUBROUTINE MPI_File_read(fh, buf, count, datatype, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_read
+
+        SUBROUTINE MPI_File_read_all(fh, buf, count, datatype, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_read_all
+
+        SUBROUTINE MPI_File_read_all_begin(fh, buf, count, datatype, ierror)
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_read_all_begin
+
+        SUBROUTINE MPI_File_read_all_end(fh, buf, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY: MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_read_all_end
+
+        SUBROUTINE MPI_File_read_at(fh, offset, buf, count, datatype, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_OFFSET_KIND, MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_read_at
+
+        SUBROUTINE MPI_File_read_at_all(fh, offset, buf, count, datatype, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_OFFSET_KIND, MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_read_at_all
+
+        SUBROUTINE MPI_File_read_at_all_begin(fh, offset, buf, count, datatype, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_OFFSET_KIND
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_read_at_all_begin
+
+        SUBROUTINE MPI_File_read_at_all_end(fh, buf, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_read_at_all_end
+
+        SUBROUTINE MPI_File_read_ordered(fh, buf, count, datatype, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_read_ordered
+
+        SUBROUTINE MPI_File_read_ordered_begin(fh, buf, count, datatype, ierror)
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_read_ordered_begin
+
+        SUBROUTINE MPI_File_read_ordered_end(fh, buf, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_read_ordered_end
+
+        SUBROUTINE MPI_File_read_shared(fh, buf, count, datatype, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_read_shared
+#endif
+
+        SUBROUTINE MPI_File_seek(fh, offset, whence, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_OFFSET_KIND
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND) :: offset
+          INTEGER :: whence
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_seek
+
+        SUBROUTINE MPI_File_seek_shared(fh, offset, whence, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_OFFSET_KIND
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND) :: offset
+          INTEGER :: whence
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_seek_shared
+
+        SUBROUTINE MPI_File_set_atomicity(fh, flag, ierror)
+          IMPLICIT NONE
+          INTEGER :: fh
+          LOGICAL :: flag
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_set_atomicity
+
+        SUBROUTINE MPI_File_set_info(fh, info, ierror)
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER :: info
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_set_info
+
+        SUBROUTINE MPI_File_set_size(fh, size, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_OFFSET_KIND
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND) :: size
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_set_size
+
+        SUBROUTINE MPI_File_set_view(fh, disp, etype, filetype, datarep, info, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_OFFSET_KIND
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND) :: disp
+          INTEGER :: etype
+          INTEGER :: filetype
+          CHARACTER*(*) :: datarep
+          INTEGER :: info
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_set_view
+
+        SUBROUTINE MPI_File_sync(fh, ierror)
+          IMPLICIT NONE
+          INTEGER :: fh
+          INTEGER :: ierror
+        END SUBROUTINE MPI_File_sync
+
+#ifdef __GNUC__
+        SUBROUTINE MPI_File_write(fh, buf, count, datatype, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_write
+
+        SUBROUTINE MPI_File_write_all(fh, buf, count, datatype, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_write_all
+
+        SUBROUTINE MPI_File_write_all_begin(fh, buf, count, datatype, ierror)
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_write_all_begin
+
+        SUBROUTINE MPI_File_write_all_end(fh, buf, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_write_all_end
+
+        SUBROUTINE MPI_File_write_at(fh, offset, buf, count, datatype, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_OFFSET_KIND, MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_write_at
+
+        SUBROUTINE MPI_File_write_at_all(fh, offset, buf, count, datatype, &
+                status, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_OFFSET_KIND, MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_write_at_all
+
+        SUBROUTINE MPI_File_write_at_all_begin(fh, offset, buf, count, datatype, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_OFFSET_KIND
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          INTEGER(KIND=MPI_OFFSET_KIND), INTENT(in) :: offset
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_write_at_all_begin
+
+        SUBROUTINE MPI_File_write_at_all_end(fh, buf, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_write_at_all_end
+
+        SUBROUTINE MPI_File_write_ordered(fh, buf, count, datatype, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_write_ordered
+
+        SUBROUTINE MPI_File_write_ordered_begin(fh, buf, count, datatype, ierror)
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_write_ordered_begin
+
+        SUBROUTINE MPI_File_write_ordered_end(fh, buf, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in), ASYNCHRONOUS :: buf
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_write_ordered_end
+
+        SUBROUTINE MPI_File_write_shared(fh, buf, count, datatype, status, ierror)
+          USE :: MPI_CONSTANTS, ONLY : MPI_STATUS_SIZE
+          IMPLICIT NONE
+          INTEGER, INTENT(in) :: fh
+          !GCC$ ATTRIBUTES NO_ARG_CHECK :: buf
+          TYPE(*), DIMENSION(*), INTENT(in) :: buf
+          INTEGER, INTENT(in) :: count
+          INTEGER, INTENT(in) :: datatype
+          INTEGER, INTENT(out), TARGET :: status(MPI_STATUS_SIZE)
+          INTEGER, INTENT(out) :: ierror
+        END SUBROUTINE MPI_File_write_shared
+#endif
+
+        SUBROUTINE MPI_Register_datarep(datarep, read_conversion_fn, &
+                write_conversion_fn, dtype_file_extent_fn, extra_state, ierror)
+          USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+          IMPLICIT NONE
+          CHARACTER*(*) :: datarep
+          EXTERNAL :: read_conversion_fn
+          EXTERNAL :: write_conversion_fn
+          EXTERNAL :: dtype_file_extent_fn
+          INTEGER(KIND=MPI_ADDRESS_KIND) :: extra_state
+          INTEGER :: ierror
+        END SUBROUTINE MPI_Register_datarep
+
        END INTERFACE
+
+        INTERFACE MPI_Alloc_mem
+          SUBROUTINE MPI_Alloc_mem(size, info, baseptr, ierror)
+            USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+            IMPLICIT NONE
+            INTEGER(KIND=MPI_ADDRESS_KIND) :: size
+            INTEGER :: info
+            INTEGER(KIND=MPI_ADDRESS_KIND) :: baseptr
+            INTEGER :: ierror
+          END SUBROUTINE MPI_Alloc_mem
+          SUBROUTINE MPI_Alloc_mem_cptr(size, info, baseptr, ierror)
+            USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+            USE, INTRINSIC :: ISO_C_BINDING, ONLY : C_PTR
+            IMPLICIT NONE
+            INTEGER(KIND=MPI_ADDRESS_KIND) :: size
+            INTEGER :: info
+            TYPE(C_PTR) :: baseptr
+            INTEGER :: ierror
+          END SUBROUTINE MPI_Alloc_mem_cptr
+        END INTERFACE
+
+        INTERFACE MPI_Win_allocate
+          SUBROUTINE MPI_Win_allocate(size, disp_unit, info, comm, baseptr, win, ierror)
+            USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+            IMPLICIT NONE
+            INTEGER(KIND=MPI_ADDRESS_KIND) :: size
+            INTEGER :: disp_unit
+            INTEGER :: info
+            INTEGER :: comm
+            INTEGER(KIND=MPI_ADDRESS_KIND) :: baseptr
+            INTEGER :: win
+            INTEGER :: ierror
+          END SUBROUTINE MPI_Win_allocate
+          SUBROUTINE MPI_Win_allocate_cptr(size, disp_unit, info, comm, baseptr, win, ierror)
+            USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+            USE, INTRINSIC :: ISO_C_BINDING, ONLY : C_PTR
+            IMPLICIT NONE
+            INTEGER(KIND=MPI_ADDRESS_KIND) :: size
+            INTEGER :: disp_unit
+            INTEGER :: info
+            INTEGER :: comm
+            TYPE(C_PTR) :: baseptr
+            INTEGER :: win
+            INTEGER :: ierror
+          END SUBROUTINE MPI_Win_allocate_cptr
+        END INTERFACE
+
+        INTERFACE MPI_Win_allocate_shared
+          SUBROUTINE MPI_Win_allocate_shared(size, disp_unit, info, comm, &
+                  baseptr, win, ierror)
+            USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+            IMPLICIT NONE
+            INTEGER(KIND=MPI_ADDRESS_KIND) :: size
+            INTEGER :: disp_unit
+            INTEGER :: info
+            INTEGER :: comm
+            INTEGER(KIND=MPI_ADDRESS_KIND) :: baseptr
+            INTEGER :: win
+            INTEGER :: ierror
+          END SUBROUTINE MPI_Win_allocate_shared
+          SUBROUTINE MPI_Win_allocate_shared_cptr(size, disp_unit, info, comm, &
+                  baseptr, win, ierror)
+            USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+            USE, INTRINSIC :: ISO_C_BINDING, ONLY : C_PTR
+            IMPLICIT NONE
+            INTEGER(KIND=MPI_ADDRESS_KIND) :: size
+            INTEGER :: disp_unit
+            INTEGER :: info
+            INTEGER :: comm
+            TYPE(C_PTR) :: baseptr
+            INTEGER :: win
+            INTEGER :: ierror
+          END SUBROUTINE MPI_Win_allocate_shared_cptr
+        END INTERFACE
+
+        INTERFACE MPI_Win_shared_query
+          SUBROUTINE MPI_Win_shared_query(win, rank, size, disp_unit, baseptr, ierror)
+            USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+            IMPLICIT NONE
+            INTEGER :: win
+            INTEGER :: rank
+            INTEGER(KIND=MPI_ADDRESS_KIND) :: size
+            INTEGER :: disp_unit
+            INTEGER(KIND=MPI_ADDRESS_KIND) :: baseptr
+            INTEGER :: ierror
+          END SUBROUTINE MPI_Win_shared_query
+          SUBROUTINE MPI_Win_shared_query_cptr(win, rank, size, disp_unit, baseptr, ierror)
+            USE MPI_CONSTANTS, ONLY: MPI_ADDRESS_KIND
+            USE, INTRINSIC :: ISO_C_BINDING, ONLY : C_PTR
+            IMPLICIT NONE
+            INTEGER :: win
+            INTEGER :: rank
+            INTEGER(KIND=MPI_ADDRESS_KIND) :: size
+            INTEGER :: disp_unit
+            TYPE(C_PTR) :: baseptr
+            INTEGER :: ierror
+          END SUBROUTINE MPI_Win_shared_query_cptr
+        END INTERFACE
+
        END MODULE MPI_BASE
 
        MODULE MPI_SIZEOFS
