@@ -1,0 +1,151 @@
+diff --git a/Source/cmake/OptionsQt.cmake b/Source/cmake/OptionsQt.cmake
+index 1ee60b7..490caee 100644
+--- a/Source/cmake/OptionsQt.cmake
++++ b/Source/cmake/OptionsQt.cmake
+@@ -453,6 +453,25 @@ if (MSVC)
+     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+ endif ()
+ 
++find_package(PkgConfig REQUIRED)
++
++macro(pkg_ensure_static pkg_name module_name)
++  if (NOT TARGET PkgConfig::${pkg_name}_STATIC)
++    pkg_check_modules(STATIC_${pkg_name} QUIET ${module_name})
++    if (STATIC_${pkg_name}_FOUND)
++      STRING(REGEX REPLACE "[ <>=].*$" "" _pc_name "${module_name}")
++      list(APPEND ARCHIVE_PC_REQUIRES_PRIVATE ${_pc_name})
++      add_library(PkgConfig::${pkg_name}_STATIC INTERFACE IMPORTED GLOBAL)
++      set_target_properties(PkgConfig::${pkg_name}_STATIC PROPERTIES
++        INTERFACE_INCLUDE_DIRECTORIES "${STATIC_${pkg_name}_STATIC_INCLUDE_DIRS}"
++        INTERFACE_COMPILE_OPTIONS     "${STATIC_${pkg_name}_STATIC_CFLAGS_OTHER}"
++        INTERFACE_LINK_LIBRARIES      "${STATIC_${pkg_name}_STATIC_LDFLAGS}")
++    else ()
++      MESSAGE(WARNING "No static pkg-config data for ${module_name}")
++    endif ()
++  endif ()
++endmacro ()
++
+ if (DEFINED ENV{SQLITE3SRCDIR})
+     get_filename_component(SQLITE3SRC_ABS_DIR $ENV{SQLITE3SRCDIR} ABSOLUTE)
+     set(SQLITE3_SOURCE_DIR ${SQLITE3SRC_ABS_DIR} CACHE PATH "Path to SQLite sources to use instead of system library" FORCE)
+@@ -471,15 +490,19 @@ if (SQLITE3_SOURCE_DIR)
+     set(SQLITE_LIBRARIES qtsqlite)
+     set(SQLITE_FOUND 1)
+ else ()
+-    find_package(Sqlite REQUIRED)
++    pkg_check_modules(SQLITE REQUIRED IMPORTED_TARGET sqlite3)
++    if (QT_STATIC_BUILD)
++        pkg_ensure_static(SQLITE sqlite3)
++    endif ()
+ endif ()
+ 
+ find_package(Threads REQUIRED)
+ 
+ if (USE_LIBJPEG)
+-    # Additional names of libjpeg to search (fixed in CMake 3.12.0)
+-    set(JPEG_NAMES jpeg-static libjpeg-static)
+-    find_package(JPEG)
++    pkg_check_modules(JPEG REQUIRED IMPORTED_TARGET libjpeg)
++    if (QT_STATIC_BUILD)
++        pkg_ensure_static(JPEG libjpeg)
++    endif ()
+     if (NOT JPEG_FOUND)
+         message(FATAL_ERROR "libjpeg not found. Please make sure that CMake can find its header files and libraries, or build with -DUSE_LIBJPEG=OFF with possible degradation of user experience")
+     endif ()
+@@ -488,13 +511,19 @@ else ()
+ endif ()
+ 
+ if (NOT QT_BUNDLED_PNG)
+-    find_package(PNG REQUIRED)
++    pkg_check_modules(PNG REQUIRED IMPORTED_TARGET libpng)
++    if (QT_STATIC_BUILD)
++        pkg_ensure_static(PNG libpng)
++    endif ()
+ else ()
+     set(PNG_FOUND 1)
+ endif ()
+ 
+ if (NOT QT_BUNDLED_ZLIB)
+-    find_package(ZLIB REQUIRED)
++    pkg_check_modules(ZLIB REQUIRED IMPORTED_TARGET zlib)
++    if (QT_STATIC_BUILD)
++        pkg_ensure_static(ZLIB zlib)
++    endif ()
+ else ()
+     set(ZLIB_FOUND 1)
+ endif ()
+@@ -508,7 +537,14 @@ if (MACOS_USE_SYSTEM_ICU)
+     )
+     set(ICU_LIBRARIES libicucore.dylib)
+ else ()
+-    find_package(ICU REQUIRED)
++    pkg_check_modules(ICU REQUIRED IMPORTED_TARGET icu-uc)
++    pkg_check_modules(ICU_I18N IMPORTED_TARGET icu-i18n)
++    if (QT_STATIC_BUILD)
++        pkg_ensure_static(ICU icu-uc)
++        if (ICU_I18N_FOUND)
++            pkg_ensure_static(ICU_I18N icu-i18n)
++        endif ()
++    endif ()
+ endif ()
+ 
+ if (APPLE)
+@@ -530,9 +566,21 @@ if (MACOS_FORCE_SYSTEM_XML_LIBRARIES)
+         set(LIBXSLT_LIBRARIES xslt)
+     endif ()
+ else ()
+-    find_package(LibXml2 2.8.0 REQUIRED)
++    pkg_check_modules(LIBXML2 REQUIRED IMPORTED_TARGET libxml-2.0>=2.8.0)
++    include_directories(${LIBXML2_INCLUDE_DIRS})
++
+     if (ENABLE_XSLT)
+-        find_package(LibXslt 1.1.7 REQUIRED)
++        pkg_check_modules(LIBXSLT REQUIRED IMPORTED_TARGET libxslt>=1.1.7)
++        include_directories(${LIBXSLT_INCLUDE_DIRS})
++    endif ()
++    if (QT_STATIC_BUILD)
++        pkg_ensure_static(LIBXML2 libxml-2.0)
++        add_compile_definitions(LIBXML_STATIC)
++        set(LIBXML2_LIBRARIES xml2 bcrypt iconv)
++        if (ENABLE_XSLT)
++            pkg_ensure_static(LIBXSLT libxslt)
++            add_compile_definitions(LIBXSLT_STATIC)
++        endif ()
+     endif ()
+ endif ()
+ 
+@@ -550,9 +598,12 @@ if (ENABLE_TEST_SUPPORT)
+     endif ()
+ endif ()
+ 
+-find_package(WebP)
++pkg_check_modules(WEBP IMPORTED_TARGET libwebp)
+ 
+ if (WEBP_FOUND)
++    if (QT_STATIC_BUILD)
++        pkg_ensure_static(WEBP libwebp)
++    endif ()
+     SET_AND_EXPOSE_TO_BUILD(USE_WEBP 1)
+ endif ()
+ 
+diff --git a/Tools/qmake/projects/run_cmake.pro b/Tools/qmake/projects/run_cmake.pro
+index 7187266..4e258a0 100644
+--- a/Tools/qmake/projects/run_cmake.pro
++++ b/Tools/qmake/projects/run_cmake.pro
+@@ -40,14 +40,14 @@ build_pass|!debug_and_release {
+         CMAKE_CONFIG += USE_LIBJPEG=OFF
+     }
+ 
+-    !qtConfig(system-png):qtConfig(png):exists($$QTBASE_DIR) {
++    !static:!qtConfig(system-png):qtConfig(png):exists($$QTBASE_DIR) {
+         CMAKE_CONFIG += \
+             QT_BUNDLED_PNG=1 \
+             PNG_INCLUDE_DIRS=$$QTBASE_DIR/src/3rdparty/libpng \
+             PNG_LIBRARIES=$$staticLibPath(qtpng)
+     }
+ 
+-    !qtConfig(system-zlib):exists($$QTBASE_DIR) {
++    !static:!qtConfig(system-zlib):exists($$QTBASE_DIR) {
+         CMAKE_CONFIG += QT_BUNDLED_ZLIB=1
+ 
+         exists($$QTBASE_DIR/src/3rdparty/zlib/src/zlib.h): \
