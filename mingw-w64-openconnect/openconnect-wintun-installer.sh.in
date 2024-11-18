@@ -1,0 +1,358 @@
+#!/usr/bin/env bash
+#
+#   Wintun installer for use with openconnect on MSYS environments
+#
+#   This script performs a system-wide installation of wintun digitally 
+#   signed DLL, by downloading it from the official binary distribution.
+#
+#   Copyright (c) 2024 Marios Paouris <mspaourh@gmail.com>
+#
+#   This program is free software; you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation; either version 2 of the License, or
+#   (at your option) any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+#   Inspired by makepkg (pacman), which is:
+#     Copyright (c) 2006-2024 Pacman Development Team <pacman-dev@lists.archlinux.org>.
+#     Copyright (C) 2002-2006 Judd Vinet <jvinet@zeroflux.org>.
+
+#
+# These variables are defined in PKGBUILD during package creation
+#
+
+# What to download and from where (PKGBUILD format) 
+source="@_wintun_source@"
+# SHA256 checksum for downloaded ZIP file
+sha256sums="@_wintun_sha256sum@"
+# Wintun architecture interested in; specifies the subdirectory to look for the
+# DLL in the downloaded zip
+WINTUN_ARCH="@WINTUN_ARCH@"
+# ZIP filename
+_wintun_zip="@_wintun_zip@"
+# SHA256 checksum for the DLL
+wintundll_sha256="@wintundll_sha256@"
+# destination location for the DLL
+wintundll_dest="@wintundll_dest@"
+# installer version
+installer_version="@pkgver@-@pkgrel@"
+# installer script name
+installer_script="@installer_script@"
+
+# don't extract the whole zip; will grab only the file of interest.
+noextract=("@_wintun_zip@")
+
+#
+# pull in handy stuff from makepkg
+#
+
+# gettext initialization
+export TEXTDOMAIN='pacman-scripts'
+export TEXTDOMAINDIR='/usr/share/locale'
+
+# file -i does not work on Mac OSX unless legacy mode is set
+export COMMAND_MODE='legacy'
+# Ensure CDPATH doesn't screw with our cd calls
+unset CDPATH
+# Ensure GREP_OPTIONS doesn't screw with our grep calls
+unset GREP_OPTIONS
+
+MAKEPKG_LIBRARY=${MAKEPKG_LIBRARY:-'/usr/share/makepkg'}
+
+# Import libmakepkg
+for lib in "$MAKEPKG_LIBRARY"/*.sh; do
+  source "$lib"
+done
+
+cleanup() {
+  if [ -d $startdir ]; then
+    #msg2 "cleaning up ${startdir}"
+    rm -rf ${startdir}
+  fi
+}
+
+write_info_file() {
+  local file=${wintundll_dest}/wintun.info
+  msg2 "Installing ${file}"
+  echo "${wintundll_sha256} *${installer_version}" > $file
+}
+
+get_info_file_sum() {
+  if [ -f ${wintundll_dest}/wintun.info ]; then
+    sum=$(cat $wintundll_dest/wintun.info)
+    sum="${sum%% *}"
+    printf '%s' "$sum"
+  fi
+}
+
+calc_checksum_file_local() {
+  local file=$1 integ=$2 ret=0 sum
+
+  if [ ! -f $file ]; then
+    return 1
+  fi
+
+  sum="$("${integ}sum" "$file")" || ret=1
+  sum="${sum%% *}"
+
+  printf '%s' "$sum"
+
+  return $ret
+}
+
+verify_installed_wintun() {
+  local actual_sum installed_sum output_var=$1
+
+  #check presence of info file
+  if [ ! -f ${wintundll_dest}/wintun.info ]; then
+    error "Wintun was not installed as part of openconnect"
+    return 1
+  fi
+
+  #verify that actual wintun.dll is the one installed by the installer
+  actual_sum=$(calc_checksum_file_local $wintundll_dest/wintun.dll sha256) || exit 1
+  installed_sum=$(get_info_file_sum) || exit 1
+
+  #printf 'actual    sum %s\n' $actual_sum
+  #printf 'installed sum %s\n' $installed_sum
+
+  if [ "x${actual_sum}" != "x${installed_sum}" ]; then
+    error "Wintun was found but it was not installed as part of openconnect"
+    return 1
+  fi
+
+  if [ "x$output_var" != "x" ]; then
+    eval "$output_var"='$actual_sum'
+  fi
+
+  return 0
+}
+
+remove_file() {
+  local file=$1
+
+  msg2 "Removing $file"
+
+  rm $file
+
+  if [ $? -ne 0 ]; then
+    error "Failed"
+    return 1
+  fi
+
+  return 0
+}
+
+copy_file() {
+  local source=$1 dest=$2
+  msg2 "Installing $dest"
+  cp -f $source $dest
+
+  if [ $? -ne 0 ]; then
+    error "Failed"
+    return 1
+  fi
+
+  return 0
+}
+
+usage() {
+	printf "%s %s\n" "$installer_script" "$installer_version"
+	echo
+	printf -- "$(gettext "Install system-wide version of wintun.dll for use with openconnect")\n"
+	echo
+	printf -- "$(gettext "Usage: %s [options]")\n" "$0"
+	echo
+	printf -- "$(gettext "Options:")\n"
+	printf -- "$(gettext "  -h, --help       Show this help message and exit")\n"
+	printf -- "$(gettext "  -r, --remove     Remove wintun.dll, if already installed by this script")\n"
+	printf -- "$(gettext "  -u, --upgrade    Upgrade wintun.dll, if already installed by this script")\n"
+	printf -- "$(gettext "  -V, --version    Show version information and exit")\n"
+	echo
+}
+
+version() {
+	printf "%s %s\n" "$installer_script" "$installer_version"
+	printf -- "Copyright (c) 2024 Marios Paouris <mspaourh@gmail.com>.\n"
+	printf '\n'
+	printf "Inspired by makepkg (pacman), which is:\n"
+	printf -- "Copyright (c) 2006-2024 Pacman Development Team <pacman-dev@lists.archlinux.org>.\n"
+	printf -- "Copyright (C) 2002-2006 Judd Vinet <jvinet@zeroflux.org>.\n"
+	printf '\n'
+	printf -- "$(gettext "\
+This is free software; see the source for copying conditions.\n\
+There is NO WARRANTY, to the extent permitted by law.\n")"
+}
+
+# PROGRAM START
+
+# ensure we have a sane umask set
+umask 0022
+
+# determine whether we have gettext; make it a no-op if we do not
+if ! type -p gettext >/dev/null; then
+	gettext() {
+		printf "%s\n" "$@"
+	}
+else
+	gettext() {
+		/usr/bin/gettext "$@"
+	}
+fi
+
+ARGLIST=("$@")
+
+# Parse Command Line Options.
+OPT_SHORT="hmruVn"
+OPT_LONG=('help' 'nocolor', 'remove' 'upgrade' 'version')
+
+if ! parseopts "$OPT_SHORT" "${OPT_LONG[@]}" -- "$@"; then
+	exit $E_INVALID_OPTION
+fi
+set -- "${OPTRET[@]}"
+unset OPT_SHORT OPT_LONG OPTRET
+
+while true; do
+	case "$1" in
+		-m|--nocolor)     USE_COLOR='n';;#; PACMAN_OPTS+=("--color" "never") ;;
+		-r|--remove)      RM=1;;
+		-u|--upgrade)     UPG=1;;
+
+		-h|--help)        usage; exit $E_OK ;;
+		-V|--version)     version; exit $E_OK ;;
+
+		--)               shift; break ;;
+	esac
+	shift
+done
+
+
+declare -r startdir="$(mktemp -dp ${TEMP:-/tmp} wintun.XXXXXXXXXX)"
+
+trap cleanup EXIT
+
+load_makepkg_config
+
+# canonicalize paths and provide defaults if anything is still undefined
+for var in PKGDEST SRCDEST SRCPKGDEST LOGDEST BUILDDIR; do
+  printf -v "$var" '%s' "$(canonicalize_path "${!var:-$startdir}")"
+done
+unset var
+
+# check if messages are to be printed using color
+if [[ -t 2 && $USE_COLOR != "n" ]] && check_buildenv "color" "y"; then
+	colorize
+else
+	unset ALL_OFF BOLD BLUE GREEN RED YELLOW
+fi
+
+# check makepkg.conf for some basic requirements
+lint_config || exit $E_CONFIG_ERROR
+
+# check that all settings directories are user-writable
+if ! ensure_writable_dir "BUILDDIR" "$BUILDDIR"; then
+  plainerr "$(gettext "Aborting...")"
+  exit $E_FS_PERMISSIONS
+fi
+
+if [[ $BUILDDIR -ef "$startdir" ]]; then
+  srcdir="$BUILDDIR/src"
+  pkgdirbase="$BUILDDIR/pkg"
+else
+  srcdir="$BUILDDIR/$pkgbase/src"
+  pkgdirbase="$BUILDDIR/$pkgbase/pkg"
+fi
+
+#
+# installer actually starts here
+#
+
+RM=${RM:-0}
+UPG=${UPG:-0}
+INS=1
+action="Installing"
+
+if [ $RM -eq 1 ]; then
+  msg "Removing Wintun"
+  #do remove
+
+  #check presence of wintun.dll
+  if [ ! -f ${wintundll_dest}/wintun.dll ]; then
+    msg "Wintun is not installed"
+    exit 0
+  fi
+
+  verify_installed_wintun || exit 1
+
+  remove_file ${wintundll_dest}/wintun.dll
+  remove_file ${wintundll_dest}/wintun.info
+
+  exit 0
+fi
+
+if [ $UPG -eq 1 ]; then
+  #do upgrade
+  action="Upgrading"
+
+  #check presence of wintun.dll
+  if [ ! -f ${wintundll_dest}/wintun.dll ]; then
+    warning "Wintun is not installed"
+  else
+    verify_installed_wintun "ret_installed_sum"
+    ret=$?
+    if [ $ret -eq 0 ]; then
+      #wintun is installed. Is it the one we want to install?
+      if [ "x${ret_installed_sum}" = "x$wintundll_sha256" ]; then
+        msg "Installed wintun doesn't need upgrade"
+	INS=0
+      fi
+    fi
+  fi
+else
+  #check that wintun.dll is not installed
+  if [ -f ${wintundll_dest}/wintun.dll ]; then
+    error "Wintun is already installed"
+    exit 1
+  fi
+fi
+
+if [ $INS -eq 0 ]; then
+  exit 0
+fi
+
+
+# ensure existence of our src directory so we can begin with sources
+if [ ! -d "$srcdir" ]; then
+  mkdir -p "$srcdir"
+  chmod a-s "$srcdir"
+fi
+
+download_sources
+check_source_integrity
+cd_safe "$srcdir"
+extract_sources
+
+# extract wintun.dll for the specified architecture
+msg "Extracting wintun.dll for ${WINTUN_ARCH}"
+bsdtar --strip-components=3 -xf ${_wintun_zip} "wintun/bin/${WINTUN_ARCH}/wintun.dll" || exit 1
+
+# place it to SRCDEST so its integrity can be verified
+cp -f wintun.dll $SRCDEST/
+
+#verify the integrity of the actual wintun.dll
+msg "Validating wintun.dll"
+verify_integrity_one "wintun.dll" "sha256" $wintundll_sha256
+
+msg "$action Wintun"
+copy_file wintun.dll ${wintundll_dest}/wintun.dll || exit 1
+write_info_file || exit 1
+
+exit 0
+
