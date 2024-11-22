@@ -1,0 +1,885 @@
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -4030,6 +4030,7 @@ dependencies = [
+  "serde_json",
+  "settings",
+  "smol",
++ "util",
+ ]
+
+ [[package]]
+@@ -4115,6 +4116,7 @@ dependencies = [
+  "serde",
+  "serde_json",
+  "toml 0.8.19",
++ "util",
+  "wasm-encoder 0.215.0",
+  "wasmparser 0.215.0",
+  "wit-component",
+@@ -4936,7 +4938,6 @@ dependencies = [
+  "unindent",
+  "url",
+  "util",
+- "windows 0.58.0",
+ ]
+
+ [[package]]
+@@ -6951,7 +6952,6 @@ dependencies = [
+  "serde_json",
+  "smol",
+  "util",
+- "windows 0.58.0",
+ ]
+
+ [[package]]
+@@ -7490,7 +7490,6 @@ dependencies = [
+  "util",
+  "walkdir",
+  "which 6.0.3",
+- "windows 0.58.0",
+ ]
+
+ [[package]]
+@@ -9179,7 +9178,6 @@ dependencies = [
+  "url",
+  "util",
+  "which 6.0.3",
+- "windows 0.58.0",
+  "worktree",
+ ]
+
+@@ -9941,7 +9939,6 @@ dependencies = [
+  "ui",
+  "util",
+  "uuid",
+- "windows 0.58.0",
+  "workspace",
+ ]
+
+@@ -11829,7 +11826,6 @@ dependencies = [
+  "ui",
+  "unicode-segmentation",
+  "util",
+- "windows 0.58.0",
+ ]
+
+ [[package]]
+@@ -13548,6 +13544,7 @@ dependencies = [
+  "rust-embed",
+  "serde",
+  "serde_json",
++ "smol",
+  "take-until",
+  "tempfile",
+  "tendril",
+--- a/crates/context_servers/src/client.rs
++++ b/crates/context_servers/src/client.rs
+@@ -9,7 +9,7 @@ use serde_json::{value::RawValue, Value};
+ use smol::{
+     channel,
+     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+-    process::{self, Child},
++    process::Child,
+ };
+ use std::{
+     fmt,
+@@ -152,7 +152,7 @@ impl Client {
+             &binary.args
+         );
+
+-        let mut command = process::Command::new(&binary.executable);
++        let mut command = util::command::new_smol_command(&binary.executable);
+         command
+             .args(&binary.args)
+             .envs(binary.env.unwrap_or_default())
+--- a/crates/evals/Cargo.toml
++++ b/crates/evals/Cargo.toml
+@@ -30,9 +30,10 @@ languages.workspace = true
+ node_runtime.workspace = true
+ open_ai.workspace = true
+ project.workspace = true
++reqwest_client.workspace = true
+ semantic_index.workspace = true
+ serde.workspace = true
+ serde_json.workspace = true
+ settings.workspace = true
+ smol.workspace = true
+-reqwest_client.workspace = true
++util.workspace = true
+--- a/crates/evals/src/eval.rs
++++ b/crates/evals/src/eval.rs
+@@ -27,7 +27,7 @@ use std::time::Duration;
+ use std::{
+     fs,
+     path::Path,
+-    process::{exit, Command, Stdio},
++    process::{exit, Stdio},
+     sync::{
+         atomic::{AtomicUsize, Ordering::SeqCst},
+         Arc,
+@@ -667,7 +667,7 @@ async fn fetch_eval_repo(
+         return;
+     }
+     if !repo_dir.join(".git").exists() {
+-        let init_output = Command::new("git")
++        let init_output = util::command::new_std_command("git")
+             .current_dir(&repo_dir)
+             .args(&["init"])
+             .output()
+@@ -682,13 +682,13 @@ async fn fetch_eval_repo(
+         }
+     }
+     let url = format!("https://github.com/{}.git", repo);
+-    Command::new("git")
++    util::command::new_std_command("git")
+         .current_dir(&repo_dir)
+         .args(&["remote", "add", "-f", "origin", &url])
+         .stdin(Stdio::null())
+         .output()
+         .unwrap();
+-    let fetch_output = Command::new("git")
++    let fetch_output = util::command::new_std_command("git")
+         .current_dir(&repo_dir)
+         .args(&["fetch", "--depth", "1", "origin", &sha])
+         .stdin(Stdio::null())
+@@ -703,7 +703,7 @@ async fn fetch_eval_repo(
+         );
+         return;
+     }
+-    let checkout_output = Command::new("git")
++    let checkout_output = util::command::new_std_command("git")
+         .current_dir(&repo_dir)
+         .args(&["checkout", &sha])
+         .output()
+--- a/crates/extension/Cargo.toml
++++ b/crates/extension/Cargo.toml
+@@ -28,6 +28,7 @@ semantic_version.workspace = true
+ serde.workspace = true
+ serde_json.workspace = true
+ toml.workspace = true
++util.workspace = true
+ wasm-encoder.workspace = true
+ wasmparser.workspace = true
+ wit-component.workspace = true
+--- a/crates/extension/src/extension_builder.rs
++++ b/crates/extension/src/extension_builder.rs
+@@ -11,7 +11,7 @@ use serde::Deserialize;
+ use std::{
+     env, fs, mem,
+     path::{Path, PathBuf},
+-    process::{Command, Stdio},
++    process::Stdio,
+     sync::Arc,
+ };
+ use wasm_encoder::{ComponentSectionId, Encode as _, RawSection, Section as _};
+@@ -130,7 +130,7 @@ impl ExtensionBuilder {
+             "compiling Rust crate for extension {}",
+             extension_dir.display()
+         );
+-        let output = Command::new("cargo")
++        let output = util::command::new_std_command("cargo")
+             .args(["build", "--target", RUST_TARGET])
+             .args(options.release.then_some("--release"))
+             .arg("--target-dir")
+@@ -237,7 +237,7 @@ impl ExtensionBuilder {
+         let scanner_path = src_path.join("scanner.c");
+
+         log::info!("compiling {grammar_name} parser");
+-        let clang_output = Command::new(&clang_path)
++        let clang_output = util::command::new_std_command(&clang_path)
+             .args(["-fPIC", "-shared", "-Os"])
+             .arg(format!("-Wl,--export=tree_sitter_{grammar_name}"))
+             .arg("-o")
+@@ -264,7 +264,7 @@ impl ExtensionBuilder {
+         let git_dir = directory.join(".git");
+
+         if directory.exists() {
+-            let remotes_output = Command::new("git")
++            let remotes_output = util::command::new_std_command("git")
+                 .arg("--git-dir")
+                 .arg(&git_dir)
+                 .args(["remote", "-v"])
+@@ -287,7 +287,7 @@ impl ExtensionBuilder {
+             fs::create_dir_all(directory).with_context(|| {
+                 format!("failed to create grammar directory {}", directory.display(),)
+             })?;
+-            let init_output = Command::new("git")
++            let init_output = util::command::new_std_command("git")
+                 .arg("init")
+                 .current_dir(directory)
+                 .output()?;
+@@ -298,7 +298,7 @@ impl ExtensionBuilder {
+                 );
+             }
+
+-            let remote_add_output = Command::new("git")
++            let remote_add_output = util::command::new_std_command("git")
+                 .arg("--git-dir")
+                 .arg(&git_dir)
+                 .args(["remote", "add", "origin", url])
+@@ -312,14 +312,14 @@ impl ExtensionBuilder {
+             }
+         }
+
+-        let fetch_output = Command::new("git")
++        let fetch_output = util::command::new_std_command("git")
+             .arg("--git-dir")
+             .arg(&git_dir)
+             .args(["fetch", "--depth", "1", "origin", rev])
+             .output()
+             .context("failed to execute `git fetch`")?;
+
+-        let checkout_output = Command::new("git")
++        let checkout_output = util::command::new_std_command("git")
+             .arg("--git-dir")
+             .arg(&git_dir)
+             .args(["checkout", rev])
+@@ -346,7 +346,7 @@ impl ExtensionBuilder {
+     }
+
+     fn install_rust_wasm_target_if_needed(&self) -> Result<()> {
+-        let rustc_output = Command::new("rustc")
++        let rustc_output = util::command::new_std_command("rustc")
+             .arg("--print")
+             .arg("sysroot")
+             .output()
+@@ -363,7 +363,7 @@ impl ExtensionBuilder {
+             return Ok(());
+         }
+
+-        let output = Command::new("rustup")
++        let output = util::command::new_std_command("rustup")
+             .args(["target", "add", RUST_TARGET])
+             .stderr(Stdio::piped())
+             .stdout(Stdio::inherit())
+--- a/crates/git/Cargo.toml
++++ b/crates/git/Cargo.toml
+@@ -31,10 +31,6 @@ time.workspace = true
+ url.workspace = true
+ util.workspace = true
+
+-[target.'cfg(target_os = "windows")'.dependencies]
+-windows.workspace = true
+-
+-
+ [dev-dependencies]
+ unindent.workspace = true
+ serde_json.workspace = true
+--- a/crates/git/src/blame.rs
++++ b/crates/git/src/blame.rs
+@@ -4,7 +4,7 @@ use anyhow::{anyhow, Context, Result};
+ use collections::{HashMap, HashSet};
+ use serde::{Deserialize, Serialize};
+ use std::io::Write;
+-use std::process::{Command, Stdio};
++use std::process::Stdio;
+ use std::sync::Arc;
+ use std::{ops::Range, path::Path};
+ use text::Rope;
+@@ -80,9 +80,7 @@ fn run_git_blame(
+     path: &Path,
+     contents: &Rope,
+ ) -> Result<String> {
+-    let mut child = Command::new(git_binary);
+-
+-    child
++    let child = util::command::new_std_command(git_binary)
+         .current_dir(working_directory)
+         .arg("blame")
+         .arg("--incremental")
+@@ -91,15 +89,7 @@ fn run_git_blame(
+         .arg(path.as_os_str())
+         .stdin(Stdio::piped())
+         .stdout(Stdio::piped())
+-        .stderr(Stdio::piped());
+-
+-    #[cfg(windows)]
+-    {
+-        use std::os::windows::process::CommandExt;
+-        child.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+-    }
+-
+-    let child = child
++        .stderr(Stdio::piped())
+         .spawn()
+         .map_err(|e| anyhow!("Failed to start git blame process: {}", e))?;
+
+--- a/crates/git/src/commit.rs
++++ b/crates/git/src/commit.rs
+@@ -2,10 +2,6 @@ use crate::Oid;
+ use anyhow::{anyhow, Result};
+ use collections::HashMap;
+ use std::path::Path;
+-use std::process::Command;
+-
+-#[cfg(windows)]
+-use std::os::windows::process::CommandExt;
+
+ pub fn get_messages(working_directory: &Path, shas: &[Oid]) -> Result<HashMap<Oid, String>> {
+     if shas.is_empty() {
+@@ -14,19 +10,12 @@ pub fn get_messages(working_directory: &Path, shas: &[Oid]) -> Result<HashMap<Oi
+
+     const MARKER: &str = "<MARKER>";
+
+-    let mut command = Command::new("git");
+-
+-    command
++    let output = util::command::new_std_command("git")
+         .current_dir(working_directory)
+         .arg("show")
+         .arg("-s")
+         .arg(format!("--format=%B{}", MARKER))
+-        .args(shas.iter().map(ToString::to_string));
+-
+-    #[cfg(windows)]
+-    command.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+-
+-    let output = command
++        .args(shas.iter().map(ToString::to_string))
+         .output()
+         .map_err(|e| anyhow!("Failed to start git blame process: {}", e))?;
+
+--- a/crates/git/src/status.rs
++++ b/crates/git/src/status.rs
+@@ -2,7 +2,7 @@ use crate::repository::{GitFileStatus, RepoPath};
+ use anyhow::{anyhow, Result};
+ use std::{
+     path::{Path, PathBuf},
+-    process::{Command, Stdio},
++    process::Stdio,
+     sync::Arc,
+ };
+
+@@ -17,9 +17,7 @@ impl GitStatus {
+         working_directory: &Path,
+         path_prefixes: &[PathBuf],
+     ) -> Result<Self> {
+-        let mut child = Command::new(git_binary);
+-
+-        child
++        let child = util::command::new_std_command(git_binary)
+             .current_dir(working_directory)
+             .args([
+                 "--no-optional-locks",
+@@ -37,15 +35,7 @@ impl GitStatus {
+             }))
+             .stdin(Stdio::null())
+             .stdout(Stdio::piped())
+-            .stderr(Stdio::piped());
+-
+-        #[cfg(windows)]
+-        {
+-            use std::os::windows::process::CommandExt;
+-            child.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+-        }
+-
+-        let child = child
++            .stderr(Stdio::piped())
+             .spawn()
+             .map_err(|e| anyhow!("Failed to start git status process: {}", e))?;
+
+--- a/crates/gpui/src/platform/windows/platform.rs
++++ b/crates/gpui/src/platform/windows/platform.rs
+@@ -292,7 +292,7 @@ impl Platform for WindowsPlatform {
+             pid,
+             app_path.display(),
+         );
+-        let restart_process = std::process::Command::new("powershell.exe")
++        let restart_process = util::command::new_std_command("powershell.exe")
+             .arg("-command")
+             .arg(script)
+             .spawn();
+--- a/crates/languages/Cargo.toml
++++ b/crates/languages/Cargo.toml
+@@ -29,7 +29,7 @@ load-grammars = [
+     "tree-sitter-rust",
+     "tree-sitter-typescript",
+     "tree-sitter-yaml",
+-    "tree-sitter"
++    "tree-sitter",
+ ]
+
+ [dependencies]
+--- a/crates/languages/src/c.rs
++++ b/crates/languages/src/c.rs
+@@ -85,7 +85,7 @@ impl super::LspAdapter for CLspAdapter {
+             }
+             futures::io::copy(response.body_mut(), &mut file).await?;
+
+-            let unzip_status = smol::process::Command::new("unzip")
++            let unzip_status = util::command::new_smol_command("unzip")
+                 .current_dir(&container_dir)
+                 .arg(&zip_path)
+                 .output()
+--- a/crates/languages/src/go.rs
++++ b/crates/languages/src/go.rs
+@@ -8,7 +8,7 @@ pub use language::*;
+ use lsp::{LanguageServerBinary, LanguageServerName};
+ use regex::Regex;
+ use serde_json::json;
+-use smol::{fs, process};
++use smol::fs;
+ use std::{
+     any::Any,
+     borrow::Cow,
+@@ -89,7 +89,7 @@
+
+         let delegate = delegate.clone();
+         Some(cx.spawn(|cx| async move {
+-            let install_output = process::Command::new("go").args(["version"]).output().await;
++            let install_output = util::command::new_smol_command("go").args(["version"]).output().await;
+             if install_output.is_err() {
+                 if DID_SHOW_NOTIFICATION
+                     .compare_exchange(false, true, SeqCst, SeqCst)
+@@ -139,7 +139,7 @@ impl super::LspAdapter for GoLspAdapter {
+
+         let gobin_dir = container_dir.join("gobin");
+         fs::create_dir_all(&gobin_dir).await?;
+-        let install_output = process::Command::new("go")
++        let install_output = util::command::new_smol_command("go")
+             .env("GO111MODULE", "on")
+             .env("GOBIN", &gobin_dir)
+             .args(["install", "golang.org/x/tools/gopls@latest"])
+@@ -157,7 +157,7 @@ impl super::LspAdapter for GoLspAdapter {
+         }
+
+         let installed_binary_path = gobin_dir.join("gopls");
+-        let version_output = process::Command::new(&installed_binary_path)
++        let version_output = util::command::new_smol_command(&installed_binary_path)
+             .arg("version")
+             .output()
+             .await
+--- a/crates/languages/src/python.rs
++++ b/crates/languages/src/python.rs
+@@ -16,7 +16,7 @@ use pet_core::python_environment::PythonEnvironmentKind;
+ use pet_core::Configuration;
+ use project::lsp_store::language_server_settings;
+ use serde_json::{json, Value};
+-use smol::{lock::OnceCell, process::Command};
++use smol::lock::OnceCell;
+
+ use std::sync::Mutex;
+ use std::{
+@@ -698,7 +698,7 @@ impl PyLspAdapter {
+         let mut path = PathBuf::from(work_dir.as_ref());
+         path.push("pylsp-venv");
+         if !path.exists() {
+-            Command::new(python_path)
++            util::command::new_smol_command(python_path)
+                 .arg("-m")
+                 .arg("venv")
+                 .arg("pylsp-venv")
+@@ -779,7 +779,7 @@ impl LspAdapter for PyLspAdapter {
+         let venv = self.base_venv(delegate).await.map_err(|e| anyhow!(e))?;
+         let pip_path = venv.join("bin").join("pip3");
+         ensure!(
+-            Command::new(pip_path.as_path())
++            util::command::new_smol_command(pip_path.as_path())
+                 .arg("install")
+                 .arg("python-lsp-server")
+                 .output()
+@@ -789,7 +789,7 @@ impl LspAdapter for PyLspAdapter {
+             "python-lsp-server installation failed"
+         );
+         ensure!(
+-            Command::new(pip_path.as_path())
++            util::command::new_smol_command(pip_path.as_path())
+                 .arg("install")
+                 .arg("python-lsp-server[all]")
+                 .output()
+@@ -799,7 +799,7 @@ impl LspAdapter for PyLspAdapter {
+             "python-lsp-server[all] installation failed"
+         );
+         ensure!(
+-            Command::new(pip_path)
++            util::command::new_smol_command(pip_path)
+                 .arg("install")
+                 .arg("pylsp-mypy")
+                 .output()
+--- a/crates/languages/src/rust.rs
++++ b/crates/languages/src/rust.rs
+@@ -14,8 +14,7 @@ use std::{
+     any::Any,
+     borrow::Cow,
+     path::{Path, PathBuf},
+-    sync::Arc,
+-    sync::LazyLock,
++    sync::{Arc, LazyLock},
+ };
+ use task::{TaskTemplate, TaskTemplates, TaskVariables, VariableName};
+ use util::{fs::remove_matching, maybe, ResultExt};
+@@ -639,7 +638,7 @@ fn package_name_and_bin_name_from_abs_path(
+     abs_path: &Path,
+     project_env: Option<&HashMap<String, String>>,
+ ) -> Option<(String, String)> {
+-    let mut command = std::process::Command::new("cargo");
++    let mut command = util::command::new_std_command("cargo");
+     if let Some(envs) = project_env {
+         command.envs(envs);
+     }
+@@ -685,11 +684,10 @@ fn human_readable_package_name(
+     package_directory: &Path,
+     project_env: Option<&HashMap<String, String>>,
+ ) -> Option<String> {
+-    let mut command = std::process::Command::new("cargo");
++    let mut command = util::command::new_std_command("cargo");
+     if let Some(envs) = project_env {
+         command.envs(envs);
+     }
+-
+     let pkgid = String::from_utf8(
+         command
+             .current_dir(package_directory)
+--- a/crates/lsp/Cargo.toml
++++ b/crates/lsp/Cargo.toml
+@@ -32,9 +32,6 @@ smol.workspace = true
+ util.workspace = true
+ release_channel.workspace = true
+
+-[target.'cfg(windows)'.dependencies]
+-windows.workspace = true
+-
+ [dev-dependencies]
+ async-pipe.workspace = true
+ ctor.workspace = true
+--- a/crates/lsp/src/lsp.rs
++++ b/crates/lsp/src/lsp.rs
+@@ -19,12 +19,9 @@ use serde_json::{json, value::RawValue, Value};
+ use smol::{
+     channel,
+     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+-    process::{self, Child},
++    process::Child,
+ };
+
+-#[cfg(target_os = "windows")]
+-use smol::process::windows::CommandExt;
+-
+ use std::{
+     ffi::{OsStr, OsString},
+     fmt,
+@@ -346,23 +343,21 @@ impl LanguageServer {
+             &binary.arguments
+         );
+
+-        let mut command = process::Command::new(&binary.path);
+-        command
++        let mut server = util::command::new_smol_command(&binary.path)
+             .current_dir(working_dir)
+             .args(&binary.arguments)
+             .envs(binary.env.unwrap_or_default())
+             .stdin(Stdio::piped())
+             .stdout(Stdio::piped())
+             .stderr(Stdio::piped())
+-            .kill_on_drop(true);
+-        #[cfg(windows)]
+-        command.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+-        let mut server = command.spawn().with_context(|| {
+-            format!(
+-                "failed to spawn command. path: {:?}, working directory: {:?}, args: {:?}",
+-                binary.path, working_dir, &binary.arguments
+-            )
+-        })?;
++            .kill_on_drop(true)
++            .spawn()
++            .with_context(|| {
++                format!(
++                    "failed to spawn command. path: {:?}, working directory: {:?}, args: {:?}",
++                    binary.path, working_dir, &binary.arguments
++                )
++            })?;
+
+         let stdin = server.stdin.take().unwrap();
+         let stdout = server.stdout.take().unwrap();
+--- a/crates/node_runtime/Cargo.toml
++++ b/crates/node_runtime/Cargo.toml
+@@ -37,7 +37,6 @@ which.workspace = true
+
+ [target.'cfg(windows)'.dependencies]
+ async-std = { version = "1.12.0", features = ["unstable"] }
+-windows.workspace = true
+
+ [dev-dependencies]
+ tempfile.workspace = true
+--- a/crates/node_runtime/src/node_runtime.rs
++++ b/crates/node_runtime/src/node_runtime.rs
+@@ -9,7 +9,7 @@ use http_client::{HttpClient, Uri};
+ use semver::Version;
+ use serde::Deserialize;
+ use smol::io::BufReader;
+-use smol::{fs, lock::Mutex, process::Command};
++use smol::{fs, lock::Mutex};
+ use std::ffi::OsString;
+ use std::io;
+ use std::process::{Output, Stdio};
+@@ -20,9 +20,6 @@ use std::{
+ };
+ use util::ResultExt;
+
+-#[cfg(windows)]
+-use smol::process::windows::CommandExt;
+-
+ #[derive(Clone, Debug, Default, Eq, PartialEq)]
+ pub struct NodeBinaryOptions {
+     pub allow_path_lookup: bool,
+@@ -315,9 +312,7 @@ impl ManagedNodeRuntime {
+         let node_binary = node_dir.join(Self::NODE_PATH);
+         let npm_file = node_dir.join(Self::NPM_PATH);
+
+-        let mut command = Command::new(&node_binary);
+-
+-        command
++        let result = util::command::new_smol_command(&node_binary)
+             .env_clear()
+             .arg(npm_file)
+             .arg("--version")
+@@ -326,12 +321,9 @@ impl ManagedNodeRuntime {
+             .stderr(Stdio::null())
+             .args(["--cache".into(), node_dir.join("cache")])
+             .args(["--userconfig".into(), node_dir.join("blank_user_npmrc")])
+-            .args(["--globalconfig".into(), node_dir.join("blank_global_npmrc")]);
+-
+-        #[cfg(windows)]
+-        command.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+-
+-        let result = command.status().await;
++            .args(["--globalconfig".into(), node_dir.join("blank_global_npmrc")])
++            .status()
++            .await;
+         let valid = matches!(result, Ok(status) if status.success());
+
+         if !valid {
+@@ -412,7 +404,7 @@ impl NodeRuntimeTrait for ManagedNodeRuntime {
+                 return Err(anyhow!("missing npm file"));
+             }
+
+-            let mut command = Command::new(node_binary);
++            let mut command = util::command::new_smol_command(node_binary);
+             command.env_clear();
+             command.env("PATH", env_path);
+             command.arg(npm_file).arg(subcommand);
+@@ -473,7 +465,7 @@ pub struct SystemNodeRuntime {
+ impl SystemNodeRuntime {
+     const MIN_VERSION: semver::Version = Version::new(18, 0, 0);
+     async fn new(node: PathBuf, npm: PathBuf) -> Result<Box<dyn NodeRuntimeTrait>> {
+-        let output = Command::new(&node)
++        let output = util::command::new_smol_command(&node)
+             .arg("--version")
+             .output()
+             .await
+@@ -543,7 +535,7 @@ impl NodeRuntimeTrait for SystemNodeRuntime {
+         subcommand: &str,
+         args: &[&str],
+     ) -> anyhow::Result<Output> {
+-        let mut command = Command::new(self.npm.clone());
++        let mut command = util::command::new_smol_command(self.npm.clone());
+         command
+             .env_clear()
+             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+@@ -639,7 +631,11 @@ impl NodeRuntimeTrait for UnavailableNodeRuntime {
+     }
+ }
+
+-fn configure_npm_command(command: &mut Command, directory: Option<&Path>, proxy: Option<&Uri>) {
++fn configure_npm_command(
++    command: &mut smol::process::Command,
++    directory: Option<&Path>,
++    proxy: Option<&Uri>,
++) {
+     if let Some(directory) = directory {
+         command.current_dir(directory);
+         command.args(["--prefix".into(), directory.to_path_buf()]);
+@@ -674,6 +670,5 @@ fn configure_npm_command(command: &mut Command, directory: Option<&Path>, proxy:
+         {
+             command.env("ComSpec", val);
+         }
+-        command.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+     }
+ }
+--- a/crates/project/Cargo.toml
++++ b/crates/project/Cargo.toml
+@@ -73,9 +73,6 @@ url.workspace = true
+ which.workspace = true
+ fancy-regex.workspace = true
+
+-[target.'cfg(target_os = "windows")'.dependencies]
+-windows.workspace = true
+-
+ [dev-dependencies]
+ client = { workspace = true, features = ["test-support"] }
+ collections = { workspace = true, features = ["test-support"] }
+--- a/crates/project/src/lsp_store.rs
++++ b/crates/project/src/lsp_store.rs
+@@ -611,12 +611,7 @@ impl LocalLspStore {
+             Some(worktree_path)
+         })?;
+
+-        let mut child = smol::process::Command::new(command);
+-        #[cfg(target_os = "windows")]
+-        {
+-            use smol::process::windows::CommandExt;
+-            child.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+-        }
++        let mut child = util::command::new_smol_command(command);
+
+         if let Some(buffer_env) = buffer.env.as_ref() {
+             child.envs(buffer_env);
+@@ -7935,7 +7930,7 @@ impl LspAdapterDelegate for LocalLspAdapterDelegate {
+         };
+
+         let env = self.shell_env().await;
+-        let output = smol::process::Command::new(&npm)
++        let output = util::command::new_smol_command(&npm)
+             .args(["root", "-g"])
+             .envs(env)
+             .current_dir(local_package_directory)
+@@ -7969,7 +7964,7 @@ impl LspAdapterDelegate for LocalLspAdapterDelegate {
+
+     async fn try_exec(&self, command: LanguageServerBinary) -> Result<()> {
+         let working_dir = self.worktree_root_path();
+-        let output = smol::process::Command::new(&command.path)
++        let output = util::command::new_smol_command(&command.path)
+             .args(command.arguments)
+             .envs(command.env.clone().unwrap_or_default())
+             .current_dir(working_dir)
+--- a/crates/remote/src/ssh_session.rs
++++ b/crates/remote/src/ssh_session.rs
+@@ -255,7 +255,7 @@ impl SshSocket {
+     // and passes -l as an argument to sh, not to ls.
+     // You need to do it like this: $ ssh host "sh -c 'ls -l /tmp'"
+     fn ssh_command(&self, program: &str, args: &[&str]) -> process::Command {
+-        let mut command = process::Command::new("ssh");
++        let mut command = util::command::new_smol_command("ssh");
+         let to_run = iter::once(&program)
+             .chain(args.iter())
+             .map(|token| {
+@@ -1224,7 +1224,7 @@ trait RemoteConnection: Send + Sync {
+
+ struct SshRemoteConnection {
+     socket: SshSocket,
+-    master_process: Mutex<Option<process::Child>>,
++    master_process: Mutex<Option<Child>>,
+     remote_binary_path: Option<PathBuf>,
+     _temp_dir: TempDir,
+ }
+@@ -1258,7 +1258,7 @@ impl RemoteConnection for SshRemoteConnection {
+         dest_path: PathBuf,
+         cx: &AppContext,
+     ) -> Task<Result<()>> {
+-        let mut command = process::Command::new("scp");
++        let mut command = util::command::new_smol_command("scp");
+         let output = self
+             .socket
+             .ssh_options(&mut command)
+@@ -1910,7 +1910,7 @@ impl SshRemoteConnection {
+
+     async fn upload_file(&self, src_path: &Path, dest_path: &Path) -> Result<()> {
+         log::debug!("uploading file {:?} to {:?}", src_path, dest_path);
+-        let mut command = process::Command::new("scp");
++        let mut command = util::command::new_smol_command("scp");
+         let output = self
+             .socket
+             .ssh_options(&mut command)
+--- a/crates/supermaven/Cargo.toml
++++ b/crates/supermaven/Cargo.toml
+@@ -32,9 +32,6 @@ ui.workspace = true
+ unicode-segmentation.workspace = true
+ util.workspace = true
+
+-[target.'cfg(target_os = "windows")'.dependencies]
+-windows.workspace = true
+-
+ [dev-dependencies]
+ editor = { workspace = true, features = ["test-support"] }
+ env_logger.workspace = true
+--- a/crates/supermaven/src/supermaven.rs
++++ b/crates/supermaven/src/supermaven.rs
+@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
+ use settings::SettingsStore;
+ use smol::{
+     io::AsyncWriteExt,
+-    process::{Child, ChildStdin, ChildStdout, Command},
++    process::{Child, ChildStdin, ChildStdout},
+ };
+ use std::{path::PathBuf, process::Stdio, sync::Arc};
+ use ui::prelude::*;
+@@ -269,21 +269,14 @@ impl SupermavenAgent {
+         client: Arc<Client>,
+         cx: &mut ModelContext<Supermaven>,
+     ) -> Result<Self> {
+-        let mut process = Command::new(&binary_path);
+-        process
++        let mut process = util::command::new_smol_command(&binary_path)
+             .arg("stdio")
+             .stdin(Stdio::piped())
+             .stdout(Stdio::piped())
+             .stderr(Stdio::piped())
+-            .kill_on_drop(true);
+-
+-        #[cfg(target_os = "windows")]
+-        {
+-            use smol::process::windows::CommandExt;
+-            process.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+-        }
+-
+-        let mut process = process.spawn().context("failed to start the binary")?;
++            .kill_on_drop(true)
++            .spawn()
++            .context("failed to start the binary")?;
+
+         let stdin = process
+             .stdin
+--- a/crates/util/Cargo.toml
++++ b/crates/util/Cargo.toml
+@@ -30,6 +30,7 @@ regex.workspace = true
+ rust-embed.workspace = true
+ serde.workspace = true
+ serde_json.workspace = true
++smol.workspace = true
+ take-until = "0.2.0"
+ tempfile = { workspace = true, optional = true }
+ unicase.workspace = true
+new file mode 100644
+--- /dev/null
++++ b/crates/util/src/command.rs
+@@ -0,0 +1,32 @@
++use std::ffi::OsStr;
++
++#[cfg(target_os = "windows")]
++const CREATE_NO_WINDOW: u32 = 0x0800_0000_u32;
++
++#[cfg(target_os = "windows")]
++pub fn new_std_command(program: impl AsRef<OsStr>) -> std::process::Command {
++    use std::os::windows::process::CommandExt;
++
++    let mut command = std::process::Command::new(program);
++    command.creation_flags(CREATE_NO_WINDOW);
++    command
++}
++
++#[cfg(not(target_os = "windows"))]
++pub fn new_std_command(program: impl AsRef<OsStr>) -> std::process::Command {
++    std::process::Command::new(program)
++}
++
++#[cfg(target_os = "windows")]
++pub fn new_smol_command(program: impl AsRef<OsStr>) -> smol::process::Command {
++    use smol::process::windows::CommandExt;
++
++    let mut command = smol::process::Command::new(program);
++    command.creation_flags(CREATE_NO_WINDOW);
++    command
++}
++
++#[cfg(not(target_os = "windows"))]
++pub fn new_smol_command(program: impl AsRef<OsStr>) -> smol::process::Command {
++    smol::process::Command::new(program)
++}
+--- a/crates/util/src/util.rs
++++ b/crates/util/src/util.rs
+@@ -1,4 +1,5 @@
+ pub mod arc_cow;
++pub mod command;
+ pub mod fs;
+ pub mod paths;
+ pub mod serde;
