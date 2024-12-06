@@ -4,7 +4,7 @@
 _realname=tesseract-ocr
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=5.4.1
+pkgver=5.5.0
 pkgrel=1
 pkgdesc="Tesseract OCR (mingw-w64)"
 arch=('any')
@@ -15,62 +15,108 @@ msys2_references=(
   "cpe: cpe:/a:tesseract_project:tesseract"
 )
 license=("spdx:Apache-2.0")
-makedepends=("${MINGW_PACKAGE_PREFIX}-cc" "${MINGW_PACKAGE_PREFIX}-autotools")
-depends=(${MINGW_PACKAGE_PREFIX}-asciidoc
-         ${MINGW_PACKAGE_PREFIX}-cairo
-         ${MINGW_PACKAGE_PREFIX}-curl
-         ${MINGW_PACKAGE_PREFIX}-gcc-libs
-         ${MINGW_PACKAGE_PREFIX}-omp
-         ${MINGW_PACKAGE_PREFIX}-icu
-         ${MINGW_PACKAGE_PREFIX}-leptonica
-         ${MINGW_PACKAGE_PREFIX}-libarchive
-         ${MINGW_PACKAGE_PREFIX}-pango
-         ${MINGW_PACKAGE_PREFIX}-zlib)
+depends=("${MINGW_PACKAGE_PREFIX}-curl"
+         "${MINGW_PACKAGE_PREFIX}-gcc-libs"
+         "${MINGW_PACKAGE_PREFIX}-icu"
+         "${MINGW_PACKAGE_PREFIX}-omp"
+         "${MINGW_PACKAGE_PREFIX}-leptonica"
+         "${MINGW_PACKAGE_PREFIX}-libarchive"
+         "${MINGW_PACKAGE_PREFIX}-libtiff")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             #"${MINGW_PACKAGE_PREFIX}-asciidoc"
+             "${MINGW_PACKAGE_PREFIX}-pango")
+optdepends=("${MINGW_PACKAGE_PREFIX}-pango: for text2image")
 source=(https://github.com/tesseract-ocr/tesseract/archive/${pkgver}/${_realname}-${pkgver}.tar.gz
         https://github.com/tesseract-ocr/tessdata_fast/raw/main/osd.traineddata
-        0001-check-msys2-tessdata-location.patch)
-sha256sums=('c4bc2a81c12a472f445b7c2fb4705a08bd643ef467f51ec84f0e148bd368051b'
+        0001-check-msys2-tessdata-location.patch
+        # https://github.com/tesseract-ocr/tesseract/commit/280779c6
+        0002-fix-soversion-with-cmake.patch
+        0003-install-pango_training.patch
+        0004-fix-build-on-clangarm64.patch)
+sha256sums=('f2fb34ca035b6d087a42875a35a7a5c4155fa9979c6132365b1e5a28ebc3fc11'
             '9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff'
-            'dfa396e9476a03fc8c24ba59394a5dee2c6a604cee44b9b957be4fda0b5e4392')
+            '2d7eaabdb8c56459eddd782a936b2f8512d28b697ebdb33556feb96571b14135'
+            'aede606a2ddd54ee29f9d5b52c5d2eaa2bf84113f92793c24a206fac872b3320'
+            '88f9a1ebb82f4ab747217c6098dab20d9659cd570e37b662b0712ad66858a129'
+            '8d8dfc581f895f25059b60a5274b8a98368bd92bb5d70f24d018e1bd833cef7d')
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
 
 prepare() {
-  cd "${srcdir}/tesseract-${pkgver}"
-  patch -p1 -i ${srcdir}/0001-check-msys2-tessdata-location.patch
-  ./autogen.sh
+  cd "${srcdir}"/tesseract-${pkgver}
+  apply_patch_with_msg \
+    0001-check-msys2-tessdata-location.patch \
+    0002-fix-soversion-with-cmake.patch \
+    0003-install-pango_training.patch \
+    0004-fix-build-on-clangarm64.patch
 }
 
 build() {
-  mkdir "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
-
-  local -a extra_config
-  if check_option "debug" "y"; then
-    extra_config+=( --enable-debug )
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
   fi
 
-  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
-    LDFLAGS+=" -lomp"
-  fi
+  # Build static
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake \
+    -G"Ninja" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DOPENMP_BUILD=ON \
+    -DBUILD_TRAINING_TOOLS=OFF \
+    -DUSE_SYSTEM_ICU=ON \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DSW_BUILD=OFF \
+    "${_extra_config[@]}" \
+    -S tesseract-${pkgver} \
+    -B build-${MSYSTEM}-static
 
-  ../tesseract-${pkgver}/configure \
-    --prefix=${MINGW_PREFIX} \
-    "${extra_config[@]}"
+  ${MINGW_PREFIX}/bin/cmake --build build-${MSYSTEM}-static
+  
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake \
+    -G"Ninja" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
+    -DOPENMP_BUILD=ON \
+    -DBUILD_TRAINING_TOOLS=ON \
+    -DUSE_SYSTEM_ICU=ON \
+    -DBUILD_SHARED_LIBS=ON \
+    -DSW_BUILD=OFF \
+    "${_extra_config[@]}" \
+    -S tesseract-${pkgver} \
+    -B build-${MSYSTEM}-shared
 
-  make
-  make training
+  ${MINGW_PREFIX}/bin/cmake --build build-${MSYSTEM}-shared
 }
 
 check() {
-  cd "${srcdir}/build-${MSYSTEM}"
+  cd "${srcdir}"/build-${MSYSTEM}-shared
   ./tesseract --version
 }
 
 package() {
-  cd "${srcdir}/build-${MSYSTEM}"
-  make DESTDIR="${pkgdir}" install
-  make DESTDIR="${pkgdir}" training-install
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install build-${MSYSTEM}-static
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install build-${MSYSTEM}-shared
 
   install -Dm644 ${srcdir}/osd.traineddata ${pkgdir}${MINGW_PREFIX}/share/tessdata/osd.traineddata
 
-  # Fix .pc file
-  sed -s "/^Libs:/ { s|$(cygpath -m ${MINGW_PREFIX})|${MINGW_PREFIX}|g }" -i "${pkgdir}${MINGW_PREFIX}"/lib/pkgconfig/tesseract.pc
+  install -Dm644 "${srcdir}"/tesseract-${pkgver}/LICENSE \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
+
+  # Fix CMake files
+  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
+  for _f in "${pkgdir}${MINGW_PREFIX}"/lib/cmake/tesseract/*.cmake; do
+    sed -e "s|${PREFIX_WIN}|\$\{_IMPORT_PREFIX\}|g" -i "${_f}"
+  done
 }
