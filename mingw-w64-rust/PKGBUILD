@@ -17,7 +17,7 @@ pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
          $([[ ${CARCH} == i686 ]] || echo "${MINGW_PACKAGE_PREFIX}-rust-wasm")
          "${MINGW_PACKAGE_PREFIX}-rust-src")
 pkgver=1.83.0
-pkgrel=3
+pkgrel=4
 pkgdesc="Systems programming language focused on safety, speed and concurrency (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
@@ -86,15 +86,15 @@ apply_patch_with_msg() {
 # =========================================== #
 
 prepare() {
-  plain "Extracting ${_realname}c-${pkgver}-src.tar.gz"
-  tar -xzf ${_realname}c-${pkgver}-src.tar.gz || true
+  plain "Extracting ${_realname}c-${pkgver}-src.tar.gz to ${MSYSTEM} directory"
+  mkdir -p "${MSYSTEM}" && tar -xzf ${_realname}c-${pkgver}-src.tar.gz -C "${MSYSTEM}" || true
+  cd "${MSYSTEM}/${_realname}c-${pkgver}-src"
 
   # use latest version of psm to fix arm4 build
-  rm -r ${_realname}c-${pkgver}-src/vendor/psm-0.1.23
-  mv psm-0.1.24 ${_realname}c-${pkgver}-src/vendor/psm-0.1.24
+  rm -r vendor/psm-0.1.23
+  mv ${srcdir}/psm-0.1.24 vendor/psm-0.1.24
 
   # 0008-disable-self-contained-for-gnu-targets.patch allows self-contained for non-windows-gnu targets
-  cd ${_realname}c-${pkgver}-src
   apply_patch_with_msg \
     0001-rustc-llvm-fix-libs.patch \
     0008-disable-self-contained-for-gnu-targets.patch
@@ -109,7 +109,15 @@ prepare() {
 }
 
 build() {
-  mkdir -p "${MSYSTEM}" && cd "${MSYSTEM}"
+  cd "${MSYSTEM}/${_realname}c-${pkgver}-src"
+
+  if [[ $MINGW_PACKAGE_PREFIX == *-clang-* ]]; then
+    # We have to do the following because rust doesn't count x86_64-w64-mingw32 as a target triple
+    export OSTYPE="$CARCH-pc-windows-gnullvm"
+  else
+    # We have to do the following because rust doesn't count x86_64-w64-mingw32 as a target triple
+    export OSTYPE="$CARCH-pc-windows-gnu"
+  fi
 
   # hack to inject the bootstrap compiler
   if [[ $_bootstrapping != "no" && $MINGW_PACKAGE_PREFIX == *-clang-aarch64 ]]; then
@@ -118,14 +126,9 @@ build() {
       "${srcdir}/rust-std-${_stage0version}-dev-aarch64-pc-windows-gnullvm.tar.xz" \
       "${srcdir}/rustc-${_stage0version}-dev-aarch64-pc-windows-gnullvm.tar.xz" \
       "build/cache/${_stage0date}/"
-  fi
-
-  if [[ $MINGW_PACKAGE_PREFIX == *-clang-* ]]; then
-    # We have to do the following because rust doesn't count x86_64-w64-mingw32 as a target triple
-    export OSTYPE="$CARCH-pc-windows-gnullvm"
-  else
-    # We have to do the following because rust doesn't count x86_64-w64-mingw32 as a target triple
-    export OSTYPE="$CARCH-pc-windows-gnu"
+  elif [[ $_bootstrapping == "no" ]]; then
+    mkdir -p "build/$OSTYPE/stage0/bin"
+    cp -f "${MINGW_PREFIX}"/bin/{cargo,rustc}.exe "build/$OSTYPE/stage0/bin"
   fi
 
   if [[ $MINGW_PACKAGE_PREFIX != *-clang-aarch64 ]]; then
@@ -153,31 +156,36 @@ build() {
   export MSYS2_ENV_CONV_EXCL='INSTALL_PREFIX'
   export INSTALL_PREFIX="${MINGW_PREFIX}"
   export PKGREL="${pkgrel}"
-  envsubst < ../config.toml > "../${_realname}c-${pkgver}-src/config.toml"
+  envsubst < "${srcdir}/config.toml" > config.toml
 
   if [ "${_bootstrapping}" = "no" ]; then
-    sed -i '/^\[build\]/,/^$/ s|^#||g' "../${_realname}c-${pkgver}-src/config.toml"
+    sed -i '/^\[build\]/,/^$/ s|^#||g' config.toml
   fi
   # generate debuginfo only for non-i686 targets
   if check_option "debug" "y" && [ "${CARCH}" != i686 ]; then
-    sed -i 's/^#debug/debug/g' "../${_realname}c-${pkgver}-src/config.toml"
+    sed -i 's/^#debug/debug/g' config.toml
   fi
 
   # Add target wasm32-*
   if [[ ${CARCH} != i686 ]]; then
-    sed -i '/target = \[/a\  "wasm32-unknown-unknown", "wasm32-wasip1", "wasm32-wasip1-threads", "wasm32-wasip2",' "../${_realname}c-${pkgver}-src/config.toml"
+    sed -i '/target = \[/a\  "wasm32-unknown-unknown", "wasm32-wasip1", "wasm32-wasip1-threads", "wasm32-wasip2",' config.toml
   fi
 
-  # Building out of tree is not officially supported so we have to workaround some things like vendored deps
-  cp -r ../${_realname}c-${pkgver}-src/.cargo .
-  sed -i "s|directory = \"vendor\"|directory = \"../${_realname}c-${pkgver}-src/vendor\"|" .cargo/config.toml
+  if [[ ${CARCH} == x86_64 ]]; then
+    # build opt-dist tool which manages PGO build
+    python x.py build opt-dist --target="$OSTYPE"
 
-  local -a _rust_build=()
-  _rust_build+=("--stage" "2")
-  #_rust_build+=("--verbose")
-
-  # create the install at a temporary directory
-  DESTDIR="$PWD"/dest-rust python ../${_realname}c-${pkgver}-src/x.py install "${_rust_build[@]}"
+    # run opt-dist to get rustc optimized with PGO
+    ./build/$OSTYPE/stage0-tools-bin/opt-dist local \
+      --target-triple="$OSTYPE" \
+      --checkout-dir="$PWD" \
+      --llvm-dir="${MINGW_PREFIX}" \
+      --python="${MINGW_PREFIX}/bin/python.exe" -- \
+      DESTDIR="$PWD"/dest-rust python x.py install --stage 2
+  else
+    # create the install at a temporary directory
+    DESTDIR="$PWD"/dest-rust python x.py install --stage 2
+  fi
 
   if [[ ${CARCH} != i686 ]]; then
     # move wasm32-* targets out of the way for splitting
@@ -192,8 +200,8 @@ build() {
 }
 
 check() {
-  cd "${MSYSTEM}"
-  python ../${_realname}c-${pkgver}-src/x.py test --stage 2 --exclude src/test/debuginfo
+  cd "${MSYSTEM}/${_realname}c-${pkgver}-src"
+  python x.py test --stage 2 --exclude src/test/debuginfo
 }
 
 package_rust() {
@@ -208,7 +216,7 @@ package_rust() {
   conflicts=("${MINGW_PACKAGE_PREFIX}-rust-docs")
   replaces=("${MINGW_PACKAGE_PREFIX}-rust-docs")
 
-  cd "${MSYSTEM}"
+  cd "${MSYSTEM}/${_realname}c-${pkgver}-src"
 
   cp -a dest-rust/* "${pkgdir}"
 
@@ -233,21 +241,19 @@ package_rust-wasm() {
   # object files provided for wasm32-* targets can't be stripped with MSYS2 toolchain
   options=('!strip')
 
-  cd "${MSYSTEM}"
+  cd "${MSYSTEM}/${_realname}c-${pkgver}-src"
 
   cp -a dest-wasm/* "${pkgdir}"
-  install -Dm644 ../${_realname}c-${pkgver}-src/LICENSE-{APACHE,MIT} -t \
-    "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}-wasm/"
+  install -Dm644 LICENSE-{APACHE,MIT} -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}-wasm/"
 }
 
 package_rust-src() {
   pkgdesc='Source code for the Rust standard library (mingw-w64)'
   depends=("${MINGW_PACKAGE_PREFIX}-rust")
 
-  cd "${MSYSTEM}"
+  cd "${MSYSTEM}/${_realname}c-${pkgver}-src"
 
-  install -Dm644 ../${_realname}c-${pkgver}-src/LICENSE-{APACHE,MIT} -t \
-    "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}-src/"
+  install -Dm644 LICENSE-{APACHE,MIT} -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}-src/"
 
   install -d "${pkgdir}${MINGW_PREFIX}/lib/rustlib/"
   cp -a dest-src "${pkgdir}${MINGW_PREFIX}/lib/rustlib/src"
