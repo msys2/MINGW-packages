@@ -3,45 +3,72 @@
 
 _realname=harfbuzz
 pkgbase=mingw-w64-${_realname}
-pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=7.1.0
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}-cairo"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}-icu"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}-utils"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}-docs")
+pkgver=10.1.0
 pkgrel=1
-pkgdesc="OpenType text shaping engine (mingw-w64)"
+pkgdesc="OpenType text shaping engine"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url="https://github.com/harfbuzz/harfbuzz"
-license=("MIT")
+msys2_references=(
+  "archlinux: harfbuzz"
+  "cpe: cpe:/a:harfbuzz_project:harfbuzz"
+)
+license=('spdx:MIT')
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-meson"
-             "${MINGW_PACKAGE_PREFIX}-pkg-config"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
              "${MINGW_PACKAGE_PREFIX}-python"
              "${MINGW_PACKAGE_PREFIX}-gtk-doc"
              "${MINGW_PACKAGE_PREFIX}-gobject-introspection"
              "${MINGW_PACKAGE_PREFIX}-icu"
              "${MINGW_PACKAGE_PREFIX}-cairo"
+             $([[ ${CARCH} == i686 ]] || echo "${MINGW_PACKAGE_PREFIX}-chafa")
              "${MINGW_PACKAGE_PREFIX}-ragel")
 depends=("${MINGW_PACKAGE_PREFIX}-freetype"
          "${MINGW_PACKAGE_PREFIX}-gcc-libs"
+         "${MINGW_PACKAGE_PREFIX}-gettext-runtime"
          "${MINGW_PACKAGE_PREFIX}-glib2"
          "${MINGW_PACKAGE_PREFIX}-graphite2")
-checkdepends=("${MINGW_PACKAGE_PREFIX}-python-fonttools" 
+checkdepends=("${MINGW_PACKAGE_PREFIX}-python-fonttools"
               "${MINGW_PACKAGE_PREFIX}-python-setuptools")
-optdepends=("${MINGW_PACKAGE_PREFIX}-icu: harfbuzz-icu support"
-            "${MINGW_PACKAGE_PREFIX}-cairo: hb-view program")
-source=("https://github.com/harfbuzz/harfbuzz/releases/download/${pkgver}/harfbuzz-${pkgver}.tar.xz")
-sha256sums=('f135a61cd464c9ed6bc9823764c188f276c3850a8dc904628de2a87966b7077b')
+source=("https://github.com/harfbuzz/harfbuzz/releases/download/${pkgver}/harfbuzz-${pkgver}.tar.xz"
+        "001-fix-build-with-chafa.patch")
+sha256sums=('6ce3520f2d089a33cef0fc48321334b8e0b72141f6a763719aaaecd2779ecb82'
+            '26b37a1ca9872973905ecb96bcbe3f054472252320956faa74428206900d360e')
+noextract=("harfbuzz-${pkgver}.tar.xz")
+
+prepare() {
+  echo "Extracting harfbuzz-${pkgver}.tar.xz..."
+  tar -xJf harfbuzz-${pkgver}.tar.xz || true
+
+  cd ${_realname}-${pkgver}
+  patch -p1 -i "${srcdir}"/001-fix-build-with-chafa.patch
+}
 
 build() {
-  # Build static and shared libs separately due to necessity of defining DGRAPHITE2_STATIC
-  # manually when building static version
-  export _static_dir="${srcdir}/build-${MSYSTEM}-static"
-  export _shared_dir="${srcdir}/build-${MSYSTEM}-shared"
+  local -a _static_flags=(
+    -DGIO_STATIC_COMPILATION
+    -DGLIB_STATIC_COMPILATION
+    -DGMODULE_STATIC_COMPILATION
+    -DGOBJECT_STATIC_COMPILATION
+    -DGRAPHITE2_STATIC
+    -DCAIRO_WIN32_STATIC_BUILD
+  )
 
-  mkdir -p "${_static_dir}" && cd "${_static_dir}"
+  declare -a _extra_config
+  if [[ ${CARCH} != i686 ]]; then
+    _extra_config+=("-Dchafa=enabled")
+  else
+    _extra_config+=("-Dchafa=disabled")
+  fi
 
-  # static build
-  CFLAGS="${CFLAGS} -DGRAPHITE2_STATIC" \
-  CXXFLAGS="${CXXFLAGS} -DGRAPHITE2_STATIC" \
+  CFLAGS+=" ${_static_flags[@]}" \
+  CXXFLAGS+=" ${_static_flags[@]}" \
   MSYS2_ARG_CONV_EXCL="--prefix=" \
   ${MINGW_PREFIX}/bin/meson setup \
     --prefix="${MINGW_PREFIX}" \
@@ -54,16 +81,14 @@ build() {
     -Dicu=enabled \
     -Dgdi=enabled \
     -Dgraphite=enabled \
-    -Dchafa=disabled \
     -Ddirectwrite=enabled \
     -Dtests=disabled \
     -Ddocs=disabled \
-    ../${_realname}-${pkgver}
+    "${_extra_config[@]}" \
+    "build-${MSYSTEM}-static" \
+    "${_realname}-${pkgver}"
 
-  ${MINGW_PREFIX}/bin/meson compile
-
-  # shared build
-  mkdir -p "${_shared_dir}" && cd "${_shared_dir}"
+  ${MINGW_PREFIX}/bin/meson compile -C "build-${MSYSTEM}-static"
 
   MSYS2_ARG_CONV_EXCL="--prefix=" \
   ${MINGW_PREFIX}/bin/meson setup \
@@ -77,12 +102,13 @@ build() {
     -Dicu=enabled \
     -Dgdi=enabled \
     -Dgraphite=enabled \
-    -Dchafa=disabled \
     -Ddirectwrite=enabled \
     -Dtests=disabled \
-    ../${_realname}-${pkgver}
+    "${_extra_config[@]}" \
+    "build-${MSYSTEM}-shared" \
+    "${_realname}-${pkgver}"
 
-  ${MINGW_PREFIX}/bin/meson compile
+  ${MINGW_PREFIX}/bin/meson compile -C "build-${MSYSTEM}-shared"
 }
 
 check(){
@@ -92,12 +118,80 @@ check(){
   ${MINGW_PREFIX}/bin/meson test
 }
 
-package() {
-  cd "${srcdir}/build-${MSYSTEM}-static"
-  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/meson install
+package_harfbuzz() {
+  pkgdesc+=" (mingw-w64)"
 
-  cd "${srcdir}/build-${MSYSTEM}-shared"
-  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/meson install
+  ${MINGW_PREFIX}/bin/meson install -C "build-${MSYSTEM}-static" --destdir "${pkgdir}"
 
-  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING"
+  ${MINGW_PREFIX}/bin/meson install -C "build-${MSYSTEM}-shared" --destdir "${pkgdir}"
+
+  mkdir -p dest-docs${MINGW_PREFIX}/share
+  mv "${pkgdir}"${MINGW_PREFIX}/share/gtk-doc dest-docs${MINGW_PREFIX}/share/gtk-doc
+
+  mkdir -p dest-utils${MINGW_PREFIX}/bin
+  mv "${pkgdir}"${MINGW_PREFIX}/bin/*.exe dest-utils${MINGW_PREFIX}/bin/
+
+  mkdir -p dest-cairo${MINGW_PREFIX}/bin
+  mkdir -p dest-cairo${MINGW_PREFIX}/include/harfbuzz/
+  mkdir -p dest-cairo${MINGW_PREFIX}/lib/pkgconfig
+  mv "${pkgdir}"${MINGW_PREFIX}/bin/libharfbuzz-cairo*.dll dest-cairo${MINGW_PREFIX}/bin/
+  mv "${pkgdir}"${MINGW_PREFIX}/include/harfbuzz/hb-cairo.h dest-cairo${MINGW_PREFIX}/include/harfbuzz/
+  mv "${pkgdir}"${MINGW_PREFIX}/lib/libharfbuzz-cairo*.a dest-cairo${MINGW_PREFIX}/lib/
+  mv "${pkgdir}"${MINGW_PREFIX}/lib/pkgconfig/harfbuzz-cairo.pc dest-cairo${MINGW_PREFIX}/lib/pkgconfig/
+
+  mkdir -p dest-icu${MINGW_PREFIX}/bin
+  mkdir -p dest-icu${MINGW_PREFIX}/include/harfbuzz/
+  mkdir -p dest-icu${MINGW_PREFIX}/lib/pkgconfig
+  mv "${pkgdir}"${MINGW_PREFIX}/bin/libharfbuzz-icu*.dll dest-icu${MINGW_PREFIX}/bin/
+  mv "${pkgdir}"${MINGW_PREFIX}/include/harfbuzz/hb-icu.h dest-icu${MINGW_PREFIX}/include/harfbuzz/
+  mv "${pkgdir}"${MINGW_PREFIX}/lib/libharfbuzz-icu*.a dest-icu${MINGW_PREFIX}/lib/
+  mv "${pkgdir}"${MINGW_PREFIX}/lib/pkgconfig/harfbuzz-icu.pc dest-icu${MINGW_PREFIX}/lib/pkgconfig/
+
+  install -Dm644 "${srcdir}"/${_realname}-${pkgver}/COPYING \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/COPYING
 }
+
+package_harfbuzz-cairo() {
+  pkgdesc+=" - Cairo integration (mingw-w64)"
+  depends=("${MINGW_PACKAGE_PREFIX}-harfbuzz"
+           "${MINGW_PACKAGE_PREFIX}-cairo")
+
+  mv dest-cairo/* "${pkgdir}"
+}
+
+package_harfbuzz-icu() {
+  pkgdesc+=" - ICU integration (mingw-w64)"
+  depends=("${MINGW_PACKAGE_PREFIX}-harfbuzz"
+           "${MINGW_PACKAGE_PREFIX}-icu")
+
+  mv dest-icu/* "${pkgdir}"
+}
+
+package_harfbuzz-utils() {
+  pkgdesc+=" - Utilities (mingw-w64)"
+  depends=("${MINGW_PACKAGE_PREFIX}-harfbuzz"
+           "${MINGW_PACKAGE_PREFIX}-harfbuzz-cairo"
+           "${MINGW_PACKAGE_PREFIX}-cairo"
+           $([[ ${CARCH} == i686 ]] || echo "${MINGW_PACKAGE_PREFIX}-chafa"))
+
+  mv dest-utils/* "${pkgdir}"
+}
+
+package_harfbuzz-docs() {
+  pkgdesc+=" - Documentation (mingw-w64)"
+  depends=()
+  optdepends=()
+
+  mv dest-docs/* "${pkgdir}"
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;

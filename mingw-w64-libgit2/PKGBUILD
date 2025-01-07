@@ -4,42 +4,55 @@ _realname=libgit2
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
          "${MINGW_PACKAGE_PREFIX}-${_realname}-winhttp")
-pkgver=1.5.1
-pkgrel=1
+pkgver=1.8.4
+pkgrel=2
 pkgdesc='A linkable library for Git (mingw-w64)'
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
-url='https://github.com/libgit2/libgit2'
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url='https://libgit2.org/'
+msys2_repository_url='https://github.com/libgit2/libgit2'
+msys2_references=(
+  "cpe: cpe:/a:libgit2:libgit2"
+  "cpe: cpe:/a:libgit2_project:libgit2"
+)
 license=('GPL2' 'custom')
 depends=("${MINGW_PACKAGE_PREFIX}-http-parser"
          "${MINGW_PACKAGE_PREFIX}-libssh2"
          "${MINGW_PACKAGE_PREFIX}-libiconv"
          "${MINGW_PACKAGE_PREFIX}-pcre2"
          "${MINGW_PACKAGE_PREFIX}-zlib")
-_openssl_depends=("${MINGW_PACKAGE_PREFIX}-openssl")
 makedepends=(
   "${MINGW_PACKAGE_PREFIX}-cc"
   "${MINGW_PACKAGE_PREFIX}-cmake"
   "${MINGW_PACKAGE_PREFIX}-ninja"
+  "${MINGW_PACKAGE_PREFIX}-openssl"
   "${MINGW_PACKAGE_PREFIX}-python"
 )
-source=(${_realname}-${pkgver}.tar.gz::"https://github.com/libgit2/libgit2/archive/v${pkgver}.tar.gz"
-        "0001-libgit2-1.4.2-rc-filename.patch")
+source=("${msys2_repository_url}/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz"
+        "0001-libgit2-1.4.2-rc-filename.patch"
+        "0003-libgit2-cmake-fix-pkgconfig.patch"
+        "https://github.com/libgit2/libgit2/commit/9ddd72f22a1c02938dcfb60981b7b8856e63be9a.patch")
 noextract=(${_realname}-${pkgver}.tar.gz)
-sha256sums=('7074f1e2697992b82402501182db254fe62d64877b12f6e4c64656516f4cde88'
-            'bdffd718bbf178817d5cfd80f9d5a9706b9c6ff981b1631978ae02657cbf2a55')
+sha256sums=('49d0fc50ab931816f6bfc1ac68f8d74b760450eebdb5374e803ee36550f26774'
+            '1a217eddf7daa549b12ccf88e275782ac7a7fa385d5afb59aac0351ee5b97a44'
+            '0d7cff6db9a7d3f0ed63540a3a91365afeb43217787b0db8519c34fe73bc9757'
+            'c0bfa0742cedcdec5b8d65c49b106d817bdfdd55097cda003d08d9e69d5cb48f')
 
 prepare() {
   tar --exclude tests/resources/testrepo-worktree/link_to_new.txt -zxf ${_realname}-${pkgver}.tar.gz
   cd ${_realname}-${pkgver}
 
   patch -Np1 -i "${srcdir}/0001-libgit2-1.4.2-rc-filename.patch"
+  patch -Np1 -i "${srcdir}/0003-libgit2-cmake-fix-pkgconfig.patch"
+
+  # Backport for nix: https://github.com/msys2/MINGW-packages/issues/22459
+  # https://github.com/libgit2/libgit2/pull/6875
+  # Adds ABI, so make sure to check on the next update if rebuilds are needed
+  patch -Np1 -i "${srcdir}/9ddd72f22a1c02938dcfb60981b7b8856e63be9a.patch"
 }
 
 do_build() {
-  _variant=$1
-  _destdir="${srcdir}/build-${MSYSTEM}${_variant}"
-  mkdir -p "${_destdir}" && cd "${_destdir}"
+  local _variant=$1
 
   declare -a _extra_config
   if check_option "debug" "n"; then
@@ -49,10 +62,32 @@ do_build() {
   fi
 
   if [ "${_variant}" = "-winhttp" ]; then
-    _extra_config+=("-DUSE_WINHTTP=ON")
+    _extra_config+=("-DUSE_HTTPS=WinHTTP")
   elif [ "${_variant}" = "-openssl" ]; then
-    _extra_config+=("-DUSE_WINHTTP=OFF")
+    _extra_config+=("-DUSE_HTTPS=OpenSSL")
   fi
+
+  local -a _static_flags=(
+    -DPCRE2_STATIC
+  )
+
+  CFLAGS+=" ${_static_flags[@]}" \
+  CXXFLAGS+=" ${_static_flags[@]}" \
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake.exe \
+    -GNinja \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DUSE_SSH=ON \
+    -DUSE_ICONV=ON \
+    -DUSE_HTTP_PARSER=system \
+    -DREGEX_BACKEND=pcre2 \
+    "${_extra_config[@]}" \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DBUILD_TESTS=OFF \
+    -S "${_realname}-${pkgver}" \
+    -B "build-${MSYSTEM}${_variant}-static"
+
+  "${MINGW_PREFIX}"/bin/cmake.exe --build "build-${MSYSTEM}${_variant}-static"
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake.exe \
@@ -63,10 +98,13 @@ do_build() {
     -DUSE_HTTP_PARSER=system \
     -DREGEX_BACKEND=pcre2 \
     "${_extra_config[@]}" \
+    -DBUILD_SHARED_LIBS=ON \
     -DBUILD_TESTS=OFF \
-    ../${_realname}-${pkgver}
+    -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
+    -S "${_realname}-${pkgver}" \
+    -B "build-${MSYSTEM}${_variant}-shared"
 
-  ${MINGW_PREFIX}/bin/cmake --build .
+  "${MINGW_PREFIX}"/bin/cmake.exe --build "build-${MSYSTEM}${_variant}-shared"
 }
 
 build() {
@@ -75,32 +113,40 @@ build() {
 }
 
 check() {
-  cd "${srcdir}"/build-${MSYSTEM}-openssl
+  cd "${srcdir}"/build-${MSYSTEM}-openssl-shared
   ${MINGW_PREFIX}/bin/cmake -DBUILD_TESTS=ON ../${_realname}-${pkgver}
   ${MINGW_PREFIX}/bin/cmake --build .
   ${MINGW_PREFIX}/bin/ctest . || true
 
-  cd "${srcdir}"/build-${MSYSTEM}-winhttp
+  cd "${srcdir}"/build-${MSYSTEM}-winhttp-shared
   ${MINGW_PREFIX}/bin/cmake -DBUILD_TESTS=ON ../${_realname}-${pkgver}
   ${MINGW_PREFIX}/bin/cmake --build .
   ${MINGW_PREFIX}/bin/ctest . || true
 }
 
 package_libgit2() {
-  cd "${srcdir}"/build-${MSYSTEM}-openssl
-  depends=("${depends[@]}"
-           "${_openssl_depends[@]}")
+  depends+=("${MINGW_PACKAGE_PREFIX}-openssl")
 
-  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install "build-${MSYSTEM}-openssl-static"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install "build-${MSYSTEM}-openssl-shared"
+
+  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
+  for pcfile in "${pkgdir}${MINGW_PREFIX}"/lib/pkgconfig/*.pc; do
+    sed -s "s|${PREFIX_WIN}|${MINGW_PREFIX}|g" -i "${pcfile}"
+  done
 }
 
 package_libgit2-winhttp() {
-  cd "${srcdir}"/build-${MSYSTEM}-winhttp
-  depends=("${depends[@]}")
   provides=("${MINGW_PACKAGE_PREFIX}-${_realname}")
   conflicts=("${MINGW_PACKAGE_PREFIX}-${_realname}")
 
-  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install "build-${MSYSTEM}-winhttp-static"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install "build-${MSYSTEM}-winhttp-shared"
+
+  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
+  for pcfile in "${pkgdir}${MINGW_PREFIX}"/lib/pkgconfig/*.pc; do
+    sed -s "s|${PREFIX_WIN}|${MINGW_PREFIX}|g" -i "${pcfile}"
+  done
 }
 
 # template start; name=mingw-w64-splitpkg-wrappers; version=1.0;

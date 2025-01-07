@@ -3,56 +3,85 @@
 _realname=helix
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=22.12
-pkgrel=1
+pkgver=24.07
+pkgrel=5
 pkgdesc="A post-modern modal text editor (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url="https://github.com/helix-editor/helix"
 license=('spdx:MPL-2.0')
 makedepends=("${MINGW_PACKAGE_PREFIX}-rust"
-             "${MINGW_PACKAGE_PREFIX}-mdbook")
-options=('staticlibs' 'strip')
-source=("$_realname-$pkgver.tar.gz::$url/archive/$pkgver.tar.gz"
-        'helix.sh')
+             "${MINGW_PACKAGE_PREFIX}-mdbook"
+             "git")
+depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs")
+optdepends=("${MINGW_PACKAGE_PREFIX}-rust-analyzer: Rust LSP"
+            "${MINGW_PACKAGE_PREFIX}-clang-tools-extra: for clangd"
+            "${MINGW_PACKAGE_PREFIX}-lldb: for lldb-dap")
+source=("$url/archive/$pkgver/${_realname}-${pkgver}.tar.gz"
+        'icon.patch'
+        'fix-runtime-dir.patch'
+        'disable-vendoring-and-bump-cc.patch')
 noextract=("${_realname}-${pkgver}.tar.gz")
-sha256sums=('edae8af46401b45c3e71c38b4fa99f931c4458127978ccd1b29aaae79331d972'
-            'c557a1e313586decf3d00fcf67e9a3f6139a2850b2e267b14d33e45636e84790')
+sha256sums=('0f466ed2de039a7eca6faf29fc0db712c92e1a59d0bdc7e8916c717ceee8b3b3'
+            'f45f0656cb1ceb5c90925c80b093335622f9ad3f64d4e2c8a3a0ea0ab43d900e'
+            'f071538f25e12ca0898c61daa3a2fbf9416a5be4f014682942dcf34dfb0f1335'
+            '6a0a2ee91f7a81959a732561ff5899e113e29ca3085121fda1c559d815a4616b')
 
 prepare() {
-  cd "${srcdir}"
   tar xf "${_realname}-${pkgver}.tar.gz" \
     --exclude=contrib/themes
 
+  cd "${_realname}-${pkgver}"
+  cp -a "runtime/themes" "contrib/themes"
 
-  rm -rf "build-${MSYSTEM}" | true
-  cp -r "${_realname}-${pkgver}" "build-${MSYSTEM}"
-  cp -a "${_realname}-${pkgver}/runtime/themes" "build-${MSYSTEM}/contrib/themes"
-  cd "${srcdir}/build-${MSYSTEM}"
+  cargo vendor \
+    --locked \
+    --versioned-dirs
 
-  sed -i "s|hx|helix|g" contrib/completion/hx.*
-  "${MINGW_PREFIX}/bin/cargo.exe" fetch \
-    --locked
+  mkdir -p .cargo
+  cat >> .cargo/config.toml <<END
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
+END
+
+
+  sed -i -e 's/"cfg(all(target_arch = \\"\([^\\]\+\)\\", target_env = \\"gnu\\", target_abi = \\"llvm\\", not(windows_raw_dylib)))"/"\1-pc-windows-gnullvm"/g' \
+    "vendor/windows-targets-0.48.0/Cargo.toml"
+  sed -i -e 's/\("Cargo.toml":\)"[^"]\+"/\1"'"$(sha256sum "vendor/windows-targets-0.48.0/Cargo.toml" | cut -d' ' -f1)"'"/' \
+    "vendor/windows-targets-0.48.0/.cargo-checksum.json"
+
+  patch -Np1 -i ../icon.patch
+  patch -Np1 -i ../fix-runtime-dir.patch
+
+  # pull in https://github.com/rust-lang/cc-rs/pull/1176
+  if [[ "${MSYSTEM}" == *"CLANG"* ]]; then
+    patch -Np1 -i ../disable-vendoring-and-bump-cc.patch
+  fi
 }
 
 build() {
-  msg "Cargo build for ${MSYSTEM}"
-  cd "${srcdir}/build-${MSYSTEM}"
+  rm -rf "build-${MSYSTEM}"
+  cp -r "${_realname}-${pkgver}" "build-${MSYSTEM}"
+  cd "build-${MSYSTEM}"
 
-  "${MINGW_PREFIX}/bin/cargo.exe" build \
+  CXXFLAGS+=" -Wno-implicit-int"
+  cargo build \
     --locked \
     --release
 
   msg "Build documentation"
   cd book
 
-  "${MINGW_PREFIX}/bin/mdbook.exe" build
+  mdbook build
 }
 
 check() {
   cd "${srcdir}/build-${MSYSTEM}"
 
-  "${MINGW_PREFIX}/bin/cargo.exe" test \
+  cargo test \
     --locked \
     --release
 }
@@ -60,21 +89,22 @@ check() {
 package() {
   cd "${srcdir}/build-${MSYSTEM}"
 
-  install -Dm755 "../${_realname}.sh" "${pkgdir}${MINGW_PREFIX}/bin/${_realname}"
-  install -Dm755 "target/release/hx.exe" "${pkgdir}${MINGW_PREFIX}/lib/${_realname}/hx.exe"
-  local runtime_dir="${pkgdir}${MINGW_PREFIX}/var/lib/${_realname}/runtime"
+  install -Dm755 "target/release/hx.exe" "${pkgdir}${MINGW_PREFIX}/bin/hx.exe"
+
+  local runtime_dir="${pkgdir}${MINGW_PREFIX}/lib/${_realname}/runtime"
   mkdir -p "$runtime_dir/grammars"
   cp -r "runtime/queries" "$runtime_dir"
   cp -r "runtime/themes" "$runtime_dir"
   find "runtime/grammars" -type f -name '*.dll' -exec \
     install -Dm 755 {} -t "$runtime_dir/grammars" \;
   install -Dm644 runtime/tutor -t "$runtime_dir"
-  cp -a "${runtime_dir}/" "${pkgdir}${MINGW_PREFIX}/lib/${_realname}/runtime/"
-  install -Dm644 "contrib/completion/hx.bash" "${pkgdir}${MINGW_PREFIX}/share/bash-completion/completions/${_realname}"
-  install -Dm644 "contrib/completion/hx.fish" "${pkgdir}${MINGW_PREFIX}/share/fish/vendor_completions.d/${_realname}.fish"
-  install -Dm644 "contrib/completion/hx.zsh" "${pkgdir}${MINGW_PREFIX}/share/zsh/site-functions/_${_pkgname}"
+
+  install -Dm644 "contrib/completion/hx.bash" "${pkgdir}${MINGW_PREFIX}/share/bash-completion/completions/hx"
+  install -Dm644 "contrib/completion/hx.fish" "${pkgdir}${MINGW_PREFIX}/share/fish/vendor_completions.d/hx.fish"
+  install -Dm644 "contrib/completion/hx.zsh"  "${pkgdir}${MINGW_PREFIX}/share/zsh/site-functions/_hx"
+
   install -d "${pkgdir}${MINGW_PREFIX}/share/doc/${_realname}"
   cp -a "book/book" "${pkgdir}${MINGW_PREFIX}/share/doc/${_realname}/html"
+
   install -Dm644 "LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }
-

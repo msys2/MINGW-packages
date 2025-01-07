@@ -1,0 +1,119 @@
+# Contributor: Mehdi Chinoune <mehdi.chinoune@hotmail.com>
+
+if [[ $MINGW_PACKAGE_PREFIX == *-clang-* ]]; then
+  _clangprefix=1
+fi
+
+_realname=openmp
+pkgbase=mingw-w64-llvm-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-llvm-${_realname}")
+_version=19.1.6
+_rc=""
+_tag=llvmorg-${_version}${_rc}
+pkgver=${_version}${_rc/-/}
+pkgrel=1
+pkgdesc="LLVM OpenMP Library (mingw-w64)"
+url="https://openmp.llvm.org/"
+msys2_references=(
+  "cpe: cpe:/a:llvm:llvm"
+)
+license=("spdx:Apache-2.0 WITH LLVM-exception")
+arch=(any)
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+groups=($( (( _clangprefix )) && echo "${MINGW_PACKAGE_PREFIX}-toolchain"))
+replaces=("${MINGW_PACKAGE_PREFIX}-openmp")
+conflicts=("${MINGW_PACKAGE_PREFIX}-openmp")
+provides=("${MINGW_PACKAGE_PREFIX}-openmp"
+          $( (( _clangprefix )) && echo "${MINGW_PACKAGE_PREFIX}-omp"))
+depends=($( (( _clangprefix )) || echo "${MINGW_PACKAGE_PREFIX}-gcc-libs"))
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-python"
+             $( [[ ${MSYSTEM} == MINGW64 ]] || echo "${MINGW_PACKAGE_PREFIX}-flang")
+             $( [[ $CARCH == aarch64 ]] || echo "${MINGW_PACKAGE_PREFIX}-uasm" ))
+_url=https://github.com/llvm/llvm-project/releases/download/${_tag}
+_pkgfn=$_realname-$pkgver.src
+source=($_url/$_pkgfn.tar.xz{,.sig}
+        ${_url}/cmake-${pkgver}.src.tar.xz{,.sig}
+        "001-cast-to-make-gcc-happy.patch"
+        "002-hacks-for-static-linking.patch")
+sha256sums=('549294ef37e2c9ec8317258b539e56f25d479ed811e2db846017e028b69f8da6'
+            'SKIP'
+            '9c7ec82d9a240dc2287b8de89d6881bb64ceea0dcd6ce133c34ef65bda22d99e'
+            'SKIP'
+            '11352ffbe7559a7170f2abd52b3552c877fbcf8fc82cff77b421e8b130a4dd66'
+            '08e39ea52a99204528740196a13cc29daf1b65a6e230fbd7bdd745dde5d11ef3')
+validpgpkeys=('B6C8F98282B944E3B0D5C2530FC3042E345AD05D'  # Hans Wennborg, Google.
+              '474E22316ABF4785A88C6E8EA2C794A986419D8A'  # Tom Stellard
+              'D574BD5D1D0E98895E3BF90044F2485E45D59042') # Tobias Hieta
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+
+prepare() {
+  cd "${srcdir}"
+  mv cmake-$pkgver.src cmake
+
+  cd ${srcdir}/$_pkgfn
+  if (( ! _clangprefix )); then
+    apply_patch_with_msg \
+      "001-cast-to-make-gcc-happy.patch"
+  fi
+  apply_patch_with_msg 002-hacks-for-static-linking.patch
+}
+
+build() {
+  mkdir -p build-${MSYSTEM}-{shared,static}
+
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  local -a platform_config
+  case "${CARCH}" in
+    x86_64)
+      _extra_config+=("-DLIBOMP_ASMFLAGS=-win64")
+      ;& # fall-through
+    i?86)
+      _extra_config+=("-DCMAKE_ASM_MASM_COMPILER=${MINGW_PREFIX}/bin/uasm.exe")
+      ;;
+  esac
+
+  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+    LDFLAGS=${LDFLAGS/-pipe}
+  fi
+
+  for shared_libs in shared static; do
+    MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    ${MINGW_PREFIX}/bin/cmake \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+      -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib \
+      -DLIBOMP_FORTRAN_MODULES="$( [[ ${MSYSTEM} == MINGW64 ]] && echo OFF || echo ON )" \
+      -DLIBOMP_ENABLE_SHARED="$( [[ $shared_libs == static ]] && echo OFF || echo ON )" \
+      -DLIBOMP_INSTALL_ALIASES=OFF \
+      "${_extra_config[@]}" \
+      -DPython3_EXECUTABLE=${MINGW_PREFIX}/bin/python.exe \
+      -Wno-dev \
+      -S $_pkgfn \
+      -B "build-${MSYSTEM}-${shared_libs}"
+    ${MINGW_PREFIX}/bin/cmake --build "build-${MSYSTEM}-${shared_libs}"
+  done
+  unset shared_libs
+}
+
+package() {
+  DESTDIR=${pkgdir} ${MINGW_PREFIX}/bin/cmake --install "${srcdir}/build-${MSYSTEM}-static"
+  DESTDIR=${pkgdir} ${MINGW_PREFIX}/bin/cmake --install "${srcdir}/build-${MSYSTEM}-shared"
+
+  install -Dm644 $_pkgfn/LICENSE.TXT "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
+}

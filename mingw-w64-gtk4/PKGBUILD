@@ -2,21 +2,31 @@
 
 _realname=gtk4
 pkgbase=mingw-w64-${_realname}
-pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=4.10.0
-pkgrel=1
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         $([[ ${CARCH} == i686 ]] || echo "${MINGW_PACKAGE_PREFIX}-${_realname}-media-gstreamer"))
+pkgver=4.16.12
+pkgrel=2
 pkgdesc="GObject-based multi-platform GUI toolkit (v4) (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url="https://www.gtk.org"
-license=('spdx:GPL-2.0-or-later')
+msys2_repository_url="https://gitlab.gnome.org/GNOME/gtk/"
+msys2_references=(
+  "cpe: cpe:/a:gnome:gtk"
+  "cpe: cpe:/a:gtk:gtk%2b"
+)
+license=('spdx:LGPL-2.1-or-later')
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
-             "${MINGW_PACKAGE_PREFIX}-pkg-config"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
              "${MINGW_PACKAGE_PREFIX}-gobject-introspection"
              "${MINGW_PACKAGE_PREFIX}-sassc"
              "${MINGW_PACKAGE_PREFIX}-meson"
              "${MINGW_PACKAGE_PREFIX}-python-docutils"
-             "${MINGW_PACKAGE_PREFIX}-gi-docgen")
+             "${MINGW_PACKAGE_PREFIX}-gi-docgen"
+             $([[ ${CARCH} == i686 ]] || echo \
+               "${MINGW_PACKAGE_PREFIX}-gst-plugins-bad-libs" \
+               "${MINGW_PACKAGE_PREFIX}-vulkan-headers" \
+               "${MINGW_PACKAGE_PREFIX}-shaderc"))
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-adwaita-icon-theme"
          "${MINGW_PACKAGE_PREFIX}-cairo"
@@ -26,11 +36,26 @@ depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-json-glib"
          "${MINGW_PACKAGE_PREFIX}-libepoxy"
          "${MINGW_PACKAGE_PREFIX}-pango"
+         $([[ ${CARCH} == i686 ]] || echo "${MINGW_PACKAGE_PREFIX}-vulkan-loader")
          "${MINGW_PACKAGE_PREFIX}-gtk-update-icon-cache"
-         "${MINGW_PACKAGE_PREFIX}-gst-plugins-bad-libs"
          "${MINGW_PACKAGE_PREFIX}-shared-mime-info")
-source=("https://download.gnome.org/sources/gtk/${pkgver:0:4}/gtk-${pkgver}.tar.xz")
-sha256sums=('8dc1e7c3b3a46772f0fa416a8ca3fd21d0d0b3b03fb307d2e7327ebee69626e4')
+source=("https://download.gnome.org/sources/gtk/${pkgver:0:4}/gtk-${pkgver}.tar.xz"
+        "https://gitlab.gnome.org/GNOME/gtk/-/commit/b569470b87d143d30c2388046c9a6450696f19b8.patch"
+        "001-fix-font-rendering.patch")
+sha256sums=('ef31bdbd6f082c4401634a20c850b0050c9bf252ef1e079764ee95a2a0c4c95a'
+            '50e6ac71f2081f80d334a5be5c8c49b9c1c3fab001c1f4ca0f2556d7f2ec92ed'
+            'a2c6e3350bd9c1744da6b7714b25cbd419645b731435f7d295a9f99da3c1479f')
+
+prepare() {
+  cd gtk-${pkgver}
+
+  # https://github.com/msys2/MINGW-packages/pull/20311#issuecomment-2014971531
+  patch -R -Np1 -i ../b569470b87d143d30c2388046c9a6450696f19b8.patch
+
+  # Needed since https://gitlab.gnome.org/GNOME/gtk/-/commit/5f7cab4632c93acb3c7c818b5c69e92d657fe8de
+  # otherwise the revert above is ignored too
+  patch -Np1 -i ../001-fix-font-rendering.patch
+}
 
 build() {
   mkdir -p build-${MSYSTEM} && cd build-${MSYSTEM}
@@ -42,6 +67,12 @@ build() {
     extra_config+=("--buildtype=debug")
   fi
 
+  if [[ ${CARCH} == i686 ]]; then
+    extra_config+=("-Dmedia-gstreamer=disabled" "-Dvulkan=disabled")
+  else
+    extra_config+=("-Dmedia-gstreamer=enabled" "-Dvulkan=enabled")
+  fi
+
   MSYS2_ARG_CONV_EXCL="--prefix=" \
   ${MINGW_PREFIX}/bin/meson.exe setup \
     --prefix="${MINGW_PREFIX}" \
@@ -50,6 +81,7 @@ build() {
     "${extra_config[@]}" \
     -Dbuild-examples=false \
     -Dbuild-tests=false \
+    -Dbuild-testsuite=false \
     -Dman-pages=true \
     -Dmacos-backend=false \
     -Dx11-backend=false \
@@ -61,10 +93,33 @@ build() {
   ${MINGW_PREFIX}/bin/meson.exe compile
 }
 
-package() {
-  cd "${srcdir}/build-${MSYSTEM}"
-
-  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/meson.exe install
+package_gtk4() {
+  ${MINGW_PREFIX}/bin/meson.exe install -C "${srcdir}/build-${MSYSTEM}" --destdir "${pkgdir}"
 
   install -Dm644 "${srcdir}/gtk-${pkgver}/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING"
+
+  if [[ ${CARCH} != i686 ]]; then
+    # split media-gstreamer
+    mkdir -p dest${MINGW_PREFIX}/lib
+    mv "${pkgdir}${MINGW_PREFIX}"/lib/gtk-4.0 dest${MINGW_PREFIX}/lib/gtk-4.0
+  fi
 }
+
+package_gtk4-media-gstreamer() {
+  pkgdesc+=" (GStreamer media plugin)"
+  depends=("${MINGW_PACKAGE_PREFIX}-gtk4"
+           "${MINGW_PACKAGE_PREFIX}-gst-plugins-bad-libs")
+
+  mv dest/* "${pkgdir}"
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;

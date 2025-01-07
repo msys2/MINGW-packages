@@ -7,7 +7,7 @@ pkgver=1.0
 pkgrel=1
 pkgdesc="Some package (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url='https://www.somepackage.org/'
 license=('LICENSE')
 makedepends=("${MINGW_PACKAGE_PREFIX}-meson"
@@ -22,36 +22,31 @@ sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc')
 
 prepare() {
-  cd "${srcdir}"/${_realname}-${pkgver}
+  cd "${_realname}-${pkgver}"
 
   patch -Np1 -i "${srcdir}"/0001-A-really-important-fix.patch
   patch -Np1 -i "${srcdir}"/0002-A-less-important-fix.patch
 }
 
 build() {
-  mkdir -p build-${MSYSTEM} && cd build-${MSYSTEM}
-
   MSYS2_ARG_CONV_EXCL="--prefix=" \
     meson setup \
       --prefix="${MINGW_PREFIX}" \
       --wrap-mode=nodownload \
       --auto-features=enabled \
       --buildtype=plain \
-      ../${_realname}-${pkgver}
+      "build-${MSYSTEM}" \
+      "${_realname}-${pkgver}"
 
-  meson compile
+  meson compile -C "build-${MSYSTEM}"
 }
 
 check() {
-  cd "${srcdir}/build-${MSYSTEM}"
-
-  meson test
+  meson test -C "build-${MSYSTEM}"
 }
 
 package() {
-  cd "${srcdir}/build-${MSYSTEM}"
-
-  DESTDIR="${pkgdir}" meson install
+  meson install -C "build-${MSYSTEM}" --destdir "${pkgdir}"
 
   install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING"
 }

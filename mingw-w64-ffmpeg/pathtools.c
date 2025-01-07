@@ -39,7 +39,7 @@
 
 #include "pathtools.h"
 
-char *
+static char *
 malloc_copy_string(char const * original)
 {
   char * result = (char *) malloc (sizeof (char*) * strlen (original)+1);
@@ -263,17 +263,6 @@ simplify_path(char * path)
   *result_p = '\0';
 }
 
-/* Returns actual_to by calculating the relative path from -> to and
-   applying that to actual_from. An assumption that actual_from is a
-   dir is made, and it may or may not end with a '/' */
-char const *
-get_relocated_path (char const * from, char const * to, char const * actual_from)
-{
-  char const * relative_from_to = get_relative_path (from, to);
-  char * actual_to = (char *) malloc (strlen(actual_from) + 2 + strlen(relative_from_to));
-  return actual_to;
-}
-
 int
 get_executable_path(char const * argv0, char * result, ssize_t max_size)
 {
@@ -372,7 +361,7 @@ get_dll_path(char * result, unsigned long max_size)
 }
 #endif
 
-char const *
+static char const *
 strip_n_prefix_folders(char const * path, size_t n)
 {
   if (path == NULL)
@@ -415,7 +404,7 @@ strip_n_suffix_folders(char * path, size_t n)
   return;
 }
 
-size_t
+static size_t
 split_path_list(char const * path_list, char split_char, char *** arr)
 {
   size_t path_count;
@@ -509,6 +498,7 @@ get_relocated_path_list_ref(char const * from, char const * to_path_list, char *
     arr[i] = scratch;
     strcat (scratch, ref_path);
     strcat (scratch, rel_to_datadir);
+    free (rel_to_datadir);
     simplify_path (arr[i]);
     size_t arr_i_size = strlen (arr[i]);
     result_size += arr_i_size;
@@ -564,6 +554,7 @@ single_path_relocation_ref(const char *from, const char *to, char *ref_path)
   }
   char * rel_to_datadir = get_relative_path (from, to);
   strcat (ref_path, rel_to_datadir);
+  free (rel_to_datadir);
   simplify_path (&ref_path[0]);
   return malloc_copy_string(ref_path);
 #else
@@ -595,42 +586,55 @@ single_path_relocation_lib(const char *from, const char *to)
 #endif
 }
 
-char *
-pathlist_relocation(const char *from_path, const char *to_path_list)
+char const *
+msys2_get_relocated_single_path(char const * unix_path)
 {
-#if defined(__MINGW32__)
-  static char stored_path[PATH_MAX];
-  static int stored = 0;
-  if (stored == 0)
-  {
-    char const * relocated = get_relocated_path_list(from_path, to_path_list);
-    strncpy (stored_path, relocated, PATH_MAX);
-    stored_path[PATH_MAX-1] = '\0';
-    free ((void *)relocated);
-    stored = 1;
-  }
-  return stored_path;
-#else
-  return (to_path_list);
-#endif
+  char * unix_part = (char *) strip_n_prefix_folders (unix_path, 1);
+  char win_part[MAX_PATH];
+  get_executable_path (NULL, &win_part[0], MAX_PATH);
+  strip_n_suffix_folders (&win_part[0], 2); /* 2 because the file name is present. */
+  char * new_path = (char *) malloc (strlen (unix_part) + strlen (win_part) + 1);
+  strcpy (new_path, win_part);
+  strcat (new_path, unix_part);
+  return new_path;
 }
 
 char *
-pathlist_relocation_lib(const char *from_path, const char *to_path_list)
+msys2_get_relocated_path_list(char const * paths)
 {
-#if defined(__MINGW32__)
-  static char stored_path[PATH_MAX];
-  static int stored = 0;
-  if (stored == 0)
+  char win_part[MAX_PATH];
+  get_executable_path (NULL, &win_part[0], MAX_PATH);
+  strip_n_suffix_folders (&win_part[0], 2); /* 2 because the file name is present. */
+
+  char **arr = NULL;
+
+  size_t count = split_path_list (paths, ':', &arr);
+  int result_size = 1 + (count - 1); /* count - 1 is for ; delim. */
+  size_t i;
+  for (i = 0; i < count; ++i)
   {
-    char const * relocated = get_relocated_path_list_lib(from_path, to_path_list);
-    strncpy (stored_path, relocated, PATH_MAX);
-    stored_path[PATH_MAX-1] = '\0';
-    free ((void *)relocated);
-    stored = 1;
+    arr[i] = (char *) strip_n_prefix_folders (arr[i], 1);
+    result_size += strlen (arr[i]) + strlen (win_part);
   }
-  return stored_path;
+  char * result = (char *) malloc (result_size);
+  if (result == NULL)
+  {
+    return NULL;
+  }
+  result[0] = '\0';
+  for (i = 0; i < count; ++i)
+  {
+    strcat (result, win_part);
+    strcat (result, arr[i]);
+    if (i != count-1)
+    {
+#if defined(_WIN32)
+      strcat (result, ";");
 #else
-  return (to_path_list);
+      strcat (result, ":");
 #endif
+    }
+  }
+  free ((void*)arr);
+  return result;
 }

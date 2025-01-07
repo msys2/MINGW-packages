@@ -4,22 +4,24 @@ _realname=capstone
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-capstone"
          "${MINGW_PACKAGE_PREFIX}-python-capstone")
-_pkgver=4.0.2
-pkgver=${_pkgver//-/}
-pkgrel=3
-pkgdesc='Lightweight multi-platform, multi-architecture disassembly framework'
+pkgver=5.0.3
+pkgrel=2
+pkgdesc='Lightweight multi-platform, multi-architecture disassembly framework (mingw-w64)'
 url='https://www.capstone-engine.org/index.html'
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
-license=('BSD')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
+license=('spdx:BSD-3-Clause')
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs")
 makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
              "${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-python-build"
+             "${MINGW_PACKAGE_PREFIX}-python-installer"
              "${MINGW_PACKAGE_PREFIX}-python-setuptools")
-source=("${_realname}-${_pkgver}.tar.gz::https://github.com/aquynh/capstone/archive/${_pkgver}.tar.gz"
+source=("${_realname}-${pkgver}.tar.gz::https://github.com/capstone-engine/capstone/archive/refs/tags/${pkgver}.tar.gz"
         "mingw_python.patch")
-sha512sums=('7f93534517307b737422a8825b66b2a1f3e1cca2049465d60ab12595940154aaf843ba40ed348fce58de58b990c19a0caef289060eb72898cb008a88c470970e'
-            'c86d1e9b14e848db1451a9f9422b3e6522b4a021f21a8bdd4b90d398f0e35423f019ec15ff7a0a6f8047c954e8651f57474112ce1afc8dc3f178221e51553e33')
+sha256sums=('3970c63ca1f8755f2c8e69b41432b710ff634f1b45ee4e5351defec4ec8e1753'
+            '6ce3627366434510b0154dd8c5a5e271071d24446be576c0bc1d71d7470672f3')
 
 prepare() {
   cd ${_realname}-${pkgver}
@@ -27,25 +29,43 @@ prepare() {
 }
 
 build() {
-  mkdir -p build-${MINGW_CHOST}
-  cd build-${MINGW_CHOST}
+  declare -a extra_config
+  if check_option "debug" "n"; then
+    extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  # Does not define CAPSTONE_EXPORT for static library (#17779)
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    "${MINGW_PREFIX}"/bin/cmake.exe \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+      "${extra_config[@]}" \
+      -DBUILD_SHARED_LIBS=OFF \
+      -S "${_realname}-${pkgver}" \
+      -B "build-${MSYSTEM}-static"
+
+  "${MINGW_PREFIX}"/bin/cmake.exe --build "build-${MSYSTEM}-static"
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
-  ${MINGW_PREFIX}/bin/cmake \
-    -G"MSYS Makefiles" \
-    -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
-    -DCMAKE_BUILD_TYPE=Release \
-    ../${_realname}-${_pkgver}
+    "${MINGW_PREFIX}"/bin/cmake.exe \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+      "${extra_config[@]}" \
+      -DBUILD_SHARED_LIBS=ON \
+      -S "${_realname}-${pkgver}" \
+      -B "build-${MSYSTEM}-shared"
 
-  make
+  "${MINGW_PREFIX}"/bin/cmake.exe --build "build-${MSYSTEM}-shared"
 }
 
 package_capstone() {
-  cd build-${MINGW_CHOST}
+  DESTDIR="${pkgdir}" "${MINGW_PREFIX}"/bin/cmake.exe --install "build-${MSYSTEM}-static"
+  DESTDIR="${pkgdir}" "${MINGW_PREFIX}"/bin/cmake.exe --install "build-${MSYSTEM}-shared"
 
-  make DESTDIR="${pkgdir}" install
-  install -Dm644 "${srcdir}/${_realname}-${_pkgver}/docs/README" -t "${pkgdir}/${MINGW_PREFIX}/share/doc/${_realname}"
-  install -Dm644 "${srcdir}/${_realname}-${_pkgver}/LICENSE.TXT" -t "${pkgdir}/${MINGW_PREFIX}/share/licenses/${_realname}"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/docs/README" -t "${pkgdir}/${MINGW_PREFIX}/share/doc/${_realname}"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE.TXT" -t "${pkgdir}/${MINGW_PREFIX}/share/licenses/${_realname}"
 }
 
 package_python-capstone() {
@@ -54,13 +74,18 @@ package_python-capstone() {
   provides=("${MINGW_PACKAGE_PREFIX}-python3-${_realname}")
   conflicts=("${MINGW_PACKAGE_PREFIX}-python3-${_realname}")
   replaces=("${MINGW_PACKAGE_PREFIX}-python3-${_realname}")
-  cd ${_realname}-${_pkgver}/bindings/python
 
-  MSYS2_ARG_CONV_EXCL="--prefix=;--install-scripts=;--install-platlib=" \
-  LIBCAPSTONE_PATH="${srcdir}/build-${MINGW_CHOST}/libcapstone.dll" \
-  ${MINGW_PREFIX}/bin/python setup.py install -O1 --root="${pkgdir}" --prefix="${MINGW_PREFIX}"
+  cd "${_realname}-${pkgver}/bindings/python"
 
-  install -Dm644 "${srcdir}/${_realname}-${_pkgver}/LICENSE.TXT" -t "${pkgdir}/${MINGW_PREFIX}/share/licenses/python-${_realname}"
+  LIBCAPSTONE_PATH="${srcdir}/build-${MSYSTEM}-shared/libcapstone.dll" \
+  ${MINGW_PREFIX}/bin/python -m build --wheel --skip-dependency-check --no-isolation
+
+  LIBCAPSTONE_PATH="${srcdir}/build-${MSYSTEM}-shared/libcapstone.dll" \
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+    ${MINGW_PREFIX}/bin/python -m installer --prefix=${MINGW_PREFIX} \
+    --destdir="${pkgdir}" dist/*.whl
+
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE.TXT" -t "${pkgdir}/${MINGW_PREFIX}/share/licenses/python-${_realname}"
 }
 
 # template start; name=mingw-w64-splitpkg-wrappers; version=1.0;

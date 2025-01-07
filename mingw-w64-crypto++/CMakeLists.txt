@@ -9,7 +9,7 @@
 # so nothing should be done with the C compiler. But there is
 # no reliable way to tell CMake we are C++.
 # Cannot set this... Breaks Linux PowerPC with Clang:
-# set(CMAKE_C_COMPILER ${CMAKE_CXX_COMPILER})
+# SET(CMAKE_C_COMPILER ${CMAKE_CXX_COMPILER})
 # # error "The CMAKE_C_COMPILER is set to a C++ compiler"
 
 if(NOT DEFINED cryptopp_DISPLAY_CMAKE_SUPPORT_WARNING)
@@ -35,11 +35,11 @@ cmake_minimum_required(VERSION 2.8.6)
 if (${CMAKE_VERSION} VERSION_LESS "3.0.0")
   project(cryptopp)
   set(cryptopp_VERSION_MAJOR 8)
-  set(cryptopp_VERSION_MINOR 6)
+  set(cryptopp_VERSION_MINOR 9)
   set(cryptopp_VERSION_PATCH 0)
 else ()
   cmake_policy(SET CMP0048 NEW)
-  project(cryptopp VERSION 8.6.0)
+  project(cryptopp VERSION 8.9.0)
   if (NOT ${CMAKE_VERSION} VERSION_LESS "3.1.0")
     cmake_policy(SET CMP0054 NEW)
   endif ()
@@ -462,7 +462,7 @@ endif ()
 
 # Enable PIC for all target machines except 32-bit i386 due to register pressures.
 if (NOT CRYPTOPP_I386)
-  set(CMAKE_POSITION_INDEPENDENT_CODE 1)
+  SET(CMAKE_POSITION_INDEPENDENT_CODE 1)
 endif ()
 
 # IBM XLC compiler options for AIX and Linux.
@@ -1049,7 +1049,7 @@ endif()
 function(cryptopp_target_compile_properties target)
   # CMake >= 2.8.12
   if (NOT ${CMAKE_VERSION} VERSION_LESS "2.8.12")
-    set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} ${CRYPTOPP_COMPILE_OPTIONS}")
+    SET(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} ${CRYPTOPP_COMPILE_OPTIONS}")
   else()
     string (REPLACE ";" " " PROP_STR "${CRYPTOPP_COMPILE_OPTIONS}")
     set_target_properties(${target} PROPERTIES COMPILE_FLAGS "${PROP_STR}")

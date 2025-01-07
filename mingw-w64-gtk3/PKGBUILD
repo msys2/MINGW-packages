@@ -3,19 +3,23 @@
 _realname=gtk3
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}" "${MINGW_PACKAGE_PREFIX}-gtk-update-icon-cache")
-pkgver=3.24.37
+pkgver=3.24.43
 pkgrel=1
-_commit=013b629a2e5420cc01647f859226eb1a37ebe661
 pkgdesc="GObject-based multi-platform GUI toolkit (v3) (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url="https://www.gtk.org/"
+msys2_repository_url="https://gitlab.gnome.org/GNOME/gtk/-/tree/gtk-3-24"
+msys2_references=(
+  'archlinux: gtk3'
+  "cpe: cpe:/a:gnome:gtk"
+  "cpe: cpe:/a:gtk:gtk%2b"
+)
 license=("spdx:LGPL-2.1-or-later")
-makedepends=("git"
-             "${MINGW_PACKAGE_PREFIX}-cc"
-             "${MINGW_PACKAGE_PREFIX}-pkg-config"
-             "${MINGW_PACKAGE_PREFIX}-gtk-doc"
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-meson"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-gtk-doc"
              "${MINGW_PACKAGE_PREFIX}-gobject-introspection"
              "${MINGW_PACKAGE_PREFIX}-sassc"
              "${MINGW_PACKAGE_PREFIX}-libxslt")
@@ -29,16 +33,17 @@ depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-libepoxy"
          "${MINGW_PACKAGE_PREFIX}-pango"
          "${MINGW_PACKAGE_PREFIX}-shared-mime-info")
-options=('strip' '!debug' 'staticlibs')
-source=("git+https://gitlab.gnome.org/GNOME/gtk.git#commit=$_commit"
+source=("https://download.gnome.org/sources/gtk+/${pkgver%.*}/gtk+-${pkgver}.tar.xz"
         "0003-gtkwindow-Don-t-force-enable-CSD-under-Windows.patch"
         "0004-Disable-low-level-keyboard-hook.patch"
+        "0005-meson-fix-linker-flags-pkgconfig.patch"
         "gtk-query-immodules-3.0.hook.in"
         "gtk-update-icon-cache.hook.in"
         "gtk-update-icon-cache.script.in")
-sha256sums=('SKIP'
+sha256sums=('7e04f0648515034b806b74ae5d774d87cffb1a2a96c468cb5be476d51bf2f3c7'
             'b84a7f38f0af80680bee143d431f2a7bae53899efb337de0f67a1b4d9b59fa02'
             'e553083298495f9581ae1454b1046a22b83e81862311b30de984057eec859708'
+            'f006498eaf5e93a927f1ee966512f7f059e66d3f47433eedab5c0f08692bdfac'
             'adbe57eb726d882bba7a031ab8fb1788e7cd03cbf713823fd0f99d3cb380b97c'
             '56a566739c4f153f3c924b2bfe5ec7aaca469e15c023810cd7c5f57036d1a258'
             'ad431cedaa2c4a20db35c753c89b85b45c67872004255762094277d27eb7c18a')
@@ -52,13 +57,8 @@ apply_patch_with_msg() {
   done
 }
 
-pkgver() {
-  cd "${srcdir}/gtk"
-  git describe --tags | sed 's/-/+/g'
-}
-
 prepare() {
-  cd "${srcdir}/gtk"
+  cd "${srcdir}/gtk+-${pkgver}"
 
   # https://gitlab.gnome.org/GNOME/gtk/issues/760
   apply_patch_with_msg \
@@ -66,42 +66,48 @@ prepare() {
 
   apply_patch_with_msg \
     0004-Disable-low-level-keyboard-hook.patch
+
+  # https://gitlab.gnome.org/GNOME/gtk/-/merge_requests/5458
+  apply_patch_with_msg \
+    0005-meson-fix-linker-flags-pkgconfig.patch
 }
 
 build() {
-  [[ -d "${srcdir}"/build-${CARCH} ]] && rm -rf "${srcdir}"/build-${CARCH}
-  mkdir "${srcdir}"/build-${CARCH} && cd "${srcdir}"/build-${CARCH}
+  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
 
-  declare -a extra_config
+  declare -a _extra_config
   if check_option "debug" "n"; then
-    extra_config+=("--buildtype=release")
+    _extra_config+=("--buildtype=release")
   else
-    extra_config+=("--buildtype=debug")
+    _extra_config+=("--buildtype=debug")
+  fi
+
+  if [[ ${CARCH} != aarch64 ]]; then
+    _extra_config+=("-Dman=true")
   fi
 
   CFLAGS+=" -DG_ENABLE_DEBUG"  # so the GTK_DEBUG env var works
   CFLAGS+=" -Wno-deprecated-declarations"
 
   MSYS2_ARG_CONV_EXCL="--prefix=" \
-  meson \
+  ${MINGW_PREFIX}/bin/meson setup \
     --prefix="${MINGW_PREFIX}" \
     --wrap-mode=nodownload \
     --default-library=both \
     --auto-features=enabled \
-    "${extra_config[@]}" \
+    "${_extra_config[@]}" \
     -Dbroadway_backend=true \
-    -Dman=true \
-    "../gtk"
+    "../gtk+-${pkgver}"
 
-  meson compile
+  ${MINGW_PREFIX}/bin/meson compile
 }
 
 package_gtk3() {
   depends+=("${MINGW_PACKAGE_PREFIX}-gtk-update-icon-cache")
 
-  cd "${srcdir}/build-${CARCH}"
+  cd "${srcdir}/build-${MSYSTEM}"
 
-  DESTDIR="${pkgdir}" meson install
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/meson install
 
   # the hook needs this directory to exist, even if empty
   mkdir -p ${pkgdir}${MINGW_PREFIX}/lib/gtk-3.0/3.0.0/immodules
@@ -115,9 +121,11 @@ package_gtk3() {
   done
 
   mv ${pkgdir}${MINGW_PREFIX}/bin/gtk-update-icon-cache "$srcdir"
-  mv ${pkgdir}${MINGW_PREFIX}/share/man/man1/gtk-update-icon-cache.1 "$srcdir"
+  if [[ ${CARCH} != aarch64 ]]; then
+    mv ${pkgdir}${MINGW_PREFIX}/share/man/man1/gtk-update-icon-cache.1 "$srcdir"
+  fi
 
-  install -Dm644 "${srcdir}/gtk/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING"
+  install -Dm644 "${srcdir}/gtk+-${pkgver}/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING"
 }
 
 package_gtk-update-icon-cache() {
@@ -143,7 +151,9 @@ package_gtk-update-icon-cache() {
   done
 
   install -Dt "${pkgdir}${MINGW_PREFIX}/bin" gtk-update-icon-cache
-  install -Dt "${pkgdir}${MINGW_PREFIX}/share/man/man1" gtk-update-icon-cache.1
+  if [[ ${CARCH} != aarch64 ]]; then
+    install -Dt "${pkgdir}${MINGW_PREFIX}/share/man/man1" gtk-update-icon-cache.1
+  fi
   cp ${pkgdir}${MINGW_PREFIX}/bin/gtk-update-icon-cache{,-3.0}.exe
 }
 

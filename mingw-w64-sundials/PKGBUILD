@@ -1,51 +1,71 @@
 # Maintainer: Gene Harvey <gharveymn@gmail.com>
 
+_enable_mpi=no
+
+if [[ ${CARCH} != x86_64 ]]; then
+  # There are currently no msmpi libraries for Windows on ARM.
+  # See: https://github.com/microsoft/Microsoft-MPI/issues/66
+  # So even if it were enabled for other targets above, don't build the features
+  # that require msmpi for ARM targets.
+  _enable_mpi=no
+fi
+
 _realname=sundials
 pkgbase="mingw-w64-${_realname}"
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=6.5.0
+pkgver=7.2.0
 pkgrel=1
 pkgdesc="SUite of Nonlinear and DIfferential/ALgebraic equation Solvers (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url="https://computing.llnl.gov/projects/sundials"
+msys2_repository_url="https://github.com/LLNL/sundials"
+msys2_references=(
+  'archlinux: sundials'
+)
 license=('spdx:BSD-3-Clause')
+replaces=("${MINGW_PACKAGE_PREFIX}-cvode")
+provides=("${MINGW_PACKAGE_PREFIX}-cvode")
+conflicts=("${MINGW_PACKAGE_PREFIX}-cvode")
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
-         $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran")
-         "${MINGW_PACKAGE_PREFIX}-msmpi"
          "${MINGW_PACKAGE_PREFIX}-openblas"
          "${MINGW_PACKAGE_PREFIX}-omp"
-         "${MINGW_PACKAGE_PREFIX}-petsc"
          "${MINGW_PACKAGE_PREFIX}-suitesparse"
-         "${MINGW_PACKAGE_PREFIX}-superlu_dist")
+         $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran")
+         $([[ "$_enable_mpi" == "yes" ]] && echo \
+           "${MINGW_PACKAGE_PREFIX}-petsc" \
+           "${MINGW_PACKAGE_PREFIX}-superlu_dist"))
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
              "${MINGW_PACKAGE_PREFIX}-fc"
-             "${MINGW_PACKAGE_PREFIX}-cmake")
+             $([[ "$_enable_mpi" == "yes" ]] && echo "${MINGW_PACKAGE_PREFIX}-msmpi"))
 optdepends=("${MINGW_PACKAGE_PREFIX}-python: for running examples")
-conflicts=("${MINGW_PACKAGE_PREFIX}-cvode")
 source=(https://github.com/LLNL/sundials/releases/download/v${pkgver}/${_realname}-${pkgver}.tar.gz
-        '0001-fix-nvecpthreads-link-libs.patch'
-        '0002-sundials-missing-export.patch'
-        '0003-sundials-use-default-installdirs.patch'
+        '0001-fix-building-openmp-example-with-flang.patch'
         '0008-sundials-petsc-pkg-config-module.patch')
-sha256sums=('4e0b998dff292a2617e179609b539b511eb80836f5faacf800e688a886288502'
-            '47420e76a4c98d938ba0802048f44e39ecb14cc7d41e88b19d56b456a3af00f8'
-            '7f119fbcc8a630a4e3443e3bba252dafb4b1567ced1bf1389052253529e97ddc'
-            '310b9beb86426fd2f817391baf72c0f9aefe9dc31e737daed5cc0280b7693311'
-            'd4a56ef02d87d8d17970733fe8391c12fea9465f093681a1091a24b2ad0a787a')
+sha256sums=('5c6c0a66a7e27c45bfb57b27f7579463855a85fc3976fed1d5c9dd88dc1ae3ab'
+            '785b7a824702fcc3267cec5d3f9c418dee2940efc9513516c642fd3129e36eb5'
+            '46f341d50e97960fd93ee516e7ade99ca5ac87db7d5d077ae09d26da3e4f7355')
 
-prepare() {
-  patch -d ${_realname}-${pkgver} -p1 < 0001-fix-nvecpthreads-link-libs.patch
-  patch -d ${_realname}-${pkgver} -p1 < 0002-sundials-missing-export.patch
-  patch -d ${_realname}-${pkgver} -p1 < 0003-sundials-use-default-installdirs.patch
-  patch -d ${_realname}-${pkgver} -p1 < 0008-sundials-petsc-pkg-config-module.patch
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying $_patch"
+    patch -Np1 -i "${srcdir}/$_patch"
+  done
 }
 
-petsc_arch=dmo
+prepare() {
+  cd "${_realname}-${pkgver}"
+
+  apply_patch_with_msg \
+    0001-fix-building-openmp-example-with-flang.patch \
+    0008-sundials-petsc-pkg-config-module.patch
+}
+
+_petsc_arch=dmo
 
 build() {
-  [[ -d build-${MSYSTEM} ]] && rm -rf build-${MSYSTEM}
-
   declare -a _extra_config
   if check_option "debug" "n"; then
     _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
@@ -53,26 +73,41 @@ build() {
     _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
   fi
 
-  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
-    export FFLAGS="-flang-experimental-exec -Qunused-arguments"
+  if [[ "$_enable_mpi" != "yes" ]]; then
+    _extra_config+=("-DENABLE_MPI=OFF"
+                    "-DENABLE_PETSC=OFF"
+                    "-DENABLE_SUPERLUDIST=OFF")
+  else
+    _extra_config+=("-DBUILD_NVECTOR_MANYVECTOR=ON"
+                    "-DBUILD_NVECTOR_MPIMANYVECTOR=ON"
+                    "-DBUILD_NVECTOR_MPIPLUSX=ON"
+                    "-DBUILD_NVECTOR_PARALLEL=ON"
+                    "-DENABLE_MPI=ON"
+                    "-DENABLE_PETSC=ON"
+                    "-DENABLE_SUPERLUDIST=ON"
+                    "-DPETSC_PKG_CONFIG_MODULE=petsc-${_petsc_arch}"
+                    "-DSUNDIALS_LOGGING_ENABLE_MPI=OFF"
+                    "-DSUPERLUDIST_INCLUDE_DIRS=${MINGW_PREFIX}/include/superlu_dist"
+                    "-DSUPERLUDIST_CONFIG_PATH=${MINGW_PREFIX}/include/superlu_dist/superlu_dist_config.h"
+                    "-DSUPERLUDIST_INDEX_SIZE=32"
+                    "-DSUPERLUDIST_OpenMP=ON"
+                    "-DMPI_C_COMPILER=${MINGW_PREFIX}/bin/mpicc.exe"
+                    "-DMPI_CXX_COMPILER=${MINGW_PREFIX}/bin/mpicxx.exe")
   fi
 
   I_MPI_ROOT="" \
+  CFLAGS+=" -Wno-return-type -Wno-deprecated-declarations" \
+  LDFLAGS+=" -Wl,--export-all-symbols" \
   MSYS2_ARG_CONV_EXCL="CMAKE_INSTALL_PREFIX=;EXAMPLES_INSTALL_PATH=" \
   ${MINGW_PREFIX}/bin/cmake \
-    -G "MSYS Makefiles" \
     -D BUILD_ARKODE=ON \
     -D BUILD_CVODE=ON \
     -D BUILD_CVODES=ON \
-    -D BUILD_FORTRAN_MODULE_INTERFACE=OFF \
+    -D BUILD_FORTRAN_MODULE_INTERFACE=ON \
     -D BUILD_IDA=ON \
     -D BUILD_IDAS=ON \
     -D BUILD_KINSOL=ON \
-    -D BUILD_NVECTOR_MANYVECTOR=ON \
-    -D BUILD_NVECTOR_MPIMANYVECTOR=ON \
-    -D BUILD_NVECTOR_MPIPLUSX=ON \
     -D BUILD_NVECTOR_OPENMP=ON \
-    -D BUILD_NVECTOR_PARALLEL=ON \
     -D BUILD_NVECTOR_PTHREADS=ON \
     -D BUILD_SHARED_LIBS=ON \
     -D BUILD_STATIC_LIBS=ON \
@@ -80,49 +115,38 @@ build() {
     -D BUILD_SUNLINSOL_LAPACKBAND=ON \
     -D BUILD_SUNLINSOL_LAPACKDENSE=ON \
     -D BUILD_TESTING=OFF \
-    ${_extra_config[@]} \
+    "${_extra_config[@]}" \
     -D CMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
     -D CMAKE_RUNTIME_OUTPUT_DIRECTORY="${srcdir}/build-${MSYSTEM}"/build-output/bin \
     -D CMAKE_SYSTEM_IGNORE_PATH=/usr/lib \
-    -D CMAKE_SHARED_LIBRARY_NAME_WITH_VERSION=ON \
+    -D CMAKE_DLL_NAME_WITH_SOVERSION=ON \
     -D ENABLE_CUDA=OFF \
     -D ENABLE_HIP=OFF \
     -D ENABLE_HYPRE=OFF \
     -D ENABLE_KLU=ON \
     -D ENABLE_LAPACK=ON \
     -D ENABLE_MAGMA=OFF \
-    -D ENABLE_MPI=ON \
     -D ENABLE_OPENMP=ON \
     -D ENABLE_OPENMP_DEVICE=OFF \
-    -D ENABLE_PETSC=ON \
     -D ENABLE_PTHREAD=ON \
     -D ENABLE_RAJA=OFF \
-    -D ENABLE_SUPERLUDIST=ON \
     -D ENABLE_SUPERLUMT=OFF \
     -D ENABLE_SYCL=OFF \
     -D ENABLE_TRILINOS=OFF \
     -D ENABLE_XBRAID=OFF \
     -D EXAMPLES_ENABLE_C=ON \
     -D EXAMPLES_ENABLE_CXX=ON \
-    -D EXAMPLES_ENABLE_F2003=OFF \
+    -D EXAMPLES_ENABLE_F2003=ON \
     -D EXAMPLES_INSTALL=ON \
     -D EXAMPLES_INSTALL_PATH=${MINGW_PREFIX}/share/sundials/examples \
-    -D KLU_LIBRARY=${MINGW_PREFIX}/lib/libklu.dll.a \
     -D LAPACK_LIBRARIES=${MINGW_PREFIX}/lib/libopenblas.dll.a \
-    -D MPI_C_COMPILER=${MINGW_PREFIX}/bin/mpicc.exe \
-    -D MPI_CXX_COMPILER=${MINGW_PREFIX}/bin/mpicxx.exe \
-    -D MPI_Fortran_COMPILER=${MINGW_PREFIX}/bin/mpifort.exe \
-    -D PETSC_PKG_CONFIG_MODULE=petsc-${petsc_arch} \
     -D SUNDIALS_BUILD_WITH_PROFILING=OFF \
     -D SUNDIALS_BUILD_WITH_MONITORING=ON \
-    -D SUNDIALS_INDEX_SIZE=32 \
+    -D SUNDIALS_INDEX_SIZE=64 \
     -D SUNDIALS_PRECISION=DOUBLE \
-    -D SUNDIALS_LOGGING_ENABLE_MPI=OFF \
-    -D SUPERLUDIST_INCLUDE_DIRS=${MINGW_PREFIX}/include/superlu_dist \
-    -D SUPERLUDIST_CONFIG_PATH=${MINGW_PREFIX}/include/superlu_dist/superlu_dist_config.h \
-    -D SUPERLUDIST_INDEX_SIZE=32 \
-    -D SUPERLUDIST_OpenMP=ON \
-    -D CMAKE_C_STANDARD=11 \
+    -D SUNDIALS_LAPACK_CASE=LOWER \
+    -D SUNDIALS_LAPACK_UNDERSCORES=ONE \
+    -D Fortran_INSTALL_MODDIR=include/sundials/fortran \
     -B build-${MSYSTEM} \
     -S ${_realname}-${pkgver}
 

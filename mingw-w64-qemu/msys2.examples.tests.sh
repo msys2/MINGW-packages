@@ -1,10 +1,10 @@
 #!/bin/bash
 
 echo
-echo "Qemu examples & tests."
+echo "QEMU examples & tests."
 echo "----------------------"
-echo "Created to test Msys2 Qemu package, known to work for Cygwin and Linux, too."
-echo "Executed Qemu commandlines will be printed to screen."
+echo "Created to test Msys2 QEMU package, known to work for Cygwin and Linux, too."
+echo "Executed QEMU commandlines will be printed to screen."
 echo
 CONFIGFILE="$(realpath ~/".qemu.$(basename $0)")"
 CONFIGFILENAME="$(basename $CONFIGFILE)"
@@ -35,34 +35,27 @@ then
 	validDownloadDir || exit 1
 fi
 echo
-echo "On execution each test needs to download, most test only a few 10 MB or less,"
-echo "but several up to some 100MB."
-read -p "Only accept reasonable downloads? ([y]|n) " TEST
-[ "n" != "$TEST" ] || IGNORESIZE=1
-echo
-read -p "Clean after execution (removes all but downloads)? (y|[n]) " TEST
-[ "y" == "$TEST" ] && REMOVEEXECDIR=1
-echo
-read -p "Audio input (microphone) accessible? ([y]|n) " TEST
-[ "n" != "$TEST" ] && MICROPHONE=1
-echo
-echo "Name block of qemu examples/tests to execute."
-echo "Choose year of qemu-advent-calender (2014, 2016, 2018, 2020) or"
-echo " qemu-desktop (DVD), qemu-image-util (QIMG), qemu-guest-agent (QGA)"
-read -p "Your choice? (2014|2016|2018|2020|QIMG|QGA|[DVD]) " BLOCK
-echo
-if [ -n "$MINGW_PACKAGE_PREFIX" ]
+if [ -z "$IGNORESIZE" ]
 then
-	read -p "Execute as regression test? (y|[n]) " REGRESSION
-	if [ "y" == "$REGRESSION" ]
-	then
-		echo "To execute as regression test, provide absolute paths of two"
-		echo "$MINGW_PACKAGE_PREFIX-qemu-Archives to compare, leave empty otherwise."
-		read -p "First  $MINGW_PACKAGE_PREFIX-qemu archive? " FIRSTQEMU
-		read -p "Second $MINGW_PACKAGE_PREFIX-qemu archive? " SECONDQEMU
-	fi
+	echo "On execution each test needs to download, most tests only a few 10 MB or less,"
+	echo "but several up to some 100MB."
+	read -p "Only accept reasonable downloads? ([y]|n) " TEST
+	[ "n" == "$TEST" ] && IGNORESIZE="true" || IGNORESIZE="false"
 	echo
 fi
+if [ -z "$REMOVEEXECDIR" ]
+then
+	read -p "Clean after execution (removes all but downloads)? (y|[n]) " TEST
+	[ "y" == "$TEST" ] && REMOVEEXECDIR="true" || REMOVEEXECDIR="false"
+	echo
+fi
+[ -n "$MICROPHONE" ] || MICROPHONE="true"
+echo "Name block of QEMU examples/tests to execute."
+echo "Choose year of QEMU advent calender (2014, 2016, 2018, 2020, 2023),"
+echo "QEMU desktop with LiveDVD (DVD), QEMU disk image utility (QIMG),"
+echo "QEMU guest agent (QGA), QEMU plugins (QPI) or own QEMU tests (QOWN) "
+read -p "Your choice? (2014|2016|2018|2020|2023|QIMG|QGA|QPI|QOWN|[DVD]) " BLOCK
+echo
 
 LIVE_IMAGE_FILE=openSUSE-Leap-15.3-GNOME-Live-x86_64-Media.iso
 LIVE_IMAGE_URL=https://download.opensuse.org/distribution/leap/15.3/live/$LIVE_IMAGE_FILE
@@ -78,13 +71,19 @@ function download {
 	[ -n "$FILE" ] || FILE=$(basename "$URL")
 	[ -n "$FILE" ] || exit 1
 	rm -f $FILE.tmp
-	[ -f $FILE ] || wget -O $FILE.tmp $URL || exit 1
+	if [ -f $FILE ]
+	then
+		wget --method=HEAD -O /dev/null $URL 2> /dev/null ||
+			echo "$FILE already downloaded, but $URL is no longer valid."
+	else
+		wget -O $FILE.tmp $URL || exit 1
+	fi
 	[ -f $FILE.tmp ] && mv $FILE.tmp $FILE
 }
 
 function removeDir {
 	local EXECDIR="$1"
-	[ -n "$REMOVEEXECDIR" ] && [ -d "$EXECDIR" ] && rm -rfv $EXECDIR
+	( [ "$REMOVEEXECDIR" != "true" ] || [ ! -d "$EXECDIR" ] ) || rm -rfv $EXECDIR
 }
 
 function testImageInDir {
@@ -137,6 +136,14 @@ function toolexec {
 	echo
 }
 
+function clearScreenIfRequired {
+	local TOKEN="$1"
+	if [ -n "$REQUIRE_CLEAR_SCREEN" ] && [[ $REQUIRE_CLEAR_SCREEN =~ $TOKEN ]]
+	then
+		for I in {1..80} ; do echo ; done
+	fi
+}
+
 function execute {
 	echo "--------------------------------------------------------------------------------"
 	showMsys2ArgConvEnv && echo "export MSYS2_ARG_CONV_EXCL=\"$MSYS2_ARG_CONV_EXCL\""
@@ -167,11 +174,13 @@ function execute {
 	showMsys2ArgConvEnv && echo "unset MSYS2_ARG_CONV_EXCL"
 	echo "--------------------------------------------------------------------------------"
 	echo
+	clearScreenIfRequired before
 	"${@}"
+	clearScreenIfRequired after
 }
 
 function ignoreSize {
-	[ -n "$IGNORESIZE" ]
+	[ "$IGNORESIZE" == "true" ]
 }
 
 function isQemuSystem {
@@ -211,7 +220,7 @@ function hasElevatedWindowsPrivileges {
 }
 
 function killBackgroundQemu {
-	# Qemu stopped, if not exists
+	# QEMU stopped, if not exists
 	if [ -f "$PIDFILE" ]
 	then
 		local PID=$(cat "$PIDFILE")
@@ -222,11 +231,11 @@ function killBackgroundQemu {
 		fi
 		if [ -n "$PID" ]
 		then
-			echo "Killing Qemu PID $PID..."
+			echo "Killing QEMU PID $PID..."
 			kill "$PID"
 			sleep 1
 		else
-			echo "Couldn't kill background Qemu, stopping!"
+			echo "Couldn't kill background QEMU, stopping!"
 			exit 1
 		fi
 	fi
@@ -329,35 +338,6 @@ function require {
 	fi
 }
 
-function isQemuPkgCompatible {
-	local QARC="$1"
-	[ -f "$QARC" ] && [[ $QARC =~ ${MINGW_PACKAGE_PREFIX}-qemu-[0-9] ]]
-}
-
-function regTestReplace {
-	local QARC="$1"
-
-	# Uninstall previous qemu package with qemu deps
-	local Q_ALL_OLD_PKGS=$(pacman -Q -s "${MINGW_PACKAGE_PREFIX}-qemu.*" |
-		grep "^local" | sed "s%local/%%" | sed "s/ .*//")
-	[ -z "$Q_ALL_OLD_PKGS" ] || pacman --noconfirm -R $Q_ALL_OLD_PKGS &> /dev/null
-
-	# Install next qemu package with qemu deps
-	if pacman --noconfirm -U "$QARC" 2>&1 | grep "cannot resolve" | grep qemu &> /dev/null
-	then
-		# Not installed because of missing deps, determine deps and install along
-		local Q_DEPS=$(pacman --noconfirm -U  "$QARC" 2>&1 |
-			grep "cannot resolve" | grep qemu | sed "s/[^\"]*\"//" | sed "s/\".*//") QDEP
-		local -a Q_DEP_ARCS=("$QARC")
-		for DEP in $Q_DEPS
-		do
-			DEP="$(echo $QARC | sed "s/${MINGW_PACKAGE_PREFIX}-qemu/$DEP/")"
-			Q_DEP_ARCS+=("$DEP")
-		done
-		pacman --noconfirm -U "${Q_DEP_ARCS[@]}" &> /dev/null
-	fi
-}
-
 function perform {
 	local FUN=$1
 	if [ -n "$DIR" ]
@@ -373,21 +353,8 @@ function perform {
 	echo 
 	read -p "Execute $FUN? (y|[n]) " TEST
 	[ "y" == "$TEST" ] || return 0
-	if isQemuPkgCompatible "$FIRSTQEMU" && isQemuPkgCompatible "$SECONDQEMU"
-	then
-		echo
-		regTestReplace "$FIRSTQEMU"
-		echo "First part of regression test with $(basename $FIRSTQEMU)"
-		echo
-		$FUN
-		echo
-		regTestReplace "$SECONDQEMU"
-		echo "Second part of regression test with $(basename $SECONDQEMU)"
-		$FUN
-	else
-		echo
-		$FUN
-	fi
+	echo
+	$FUN
 }
 
 function extractReadme {
@@ -426,9 +393,25 @@ function qemuMinVersion {
 }
 
 function determineAccel {
-	qemuMinVersion 6 0 && WHPX="whpx,kernel-irqchip=off" || WHPX=whpx
-	isWindows && TESTACCELS="$WHPX hax"
-	isLinux && TESTACCELS="kvm xen"
+	if ! isQemuSystem x86_64
+	then
+		return
+	fi
+	if isWindows
+	then
+		if qemuMinVersion 8 1 90
+		then
+			TESTACCELS="whpx,kernel-irqchip=off"
+		elif qemuMinVersion 6 0
+		then
+			TESTACCELS="whpx,kernel-irqchip=off hax"
+		else
+			TESTACCELS="whpx hax"
+		fi
+	elif isLinux
+	then
+		TESTACCELS="kvm xen"
+	fi
 	local TESTACCEL
 	for TESTACCEL in $TESTACCELS
 	do
@@ -446,7 +429,7 @@ function accel {
 	echo "-accel $ACCEL"
 }
 
-# Intended to determine absolute path for qemu-provided firmware files only
+# Intended to determine absolute path for QEMU-provided firmware files only
 function firmware {
 	local FW_NAME="$1"
 
@@ -489,9 +472,25 @@ function firmwareAvailable {
 
 function audiodev {
 	local ID=$1 APPEND=""
-	[ -z "$MICROPHONE" ] && APPEND=",in.voices=0"
-	qemu-system-x86_64 -audio-help 2> /dev/null | grep "^-audiodev" | head -n1 |
-		sed "s/ id=[a-z]*,/ id=$ID,/" | sed "s/\s*$/$APPEND/"
+	[ "$MICROPHONE" != "false" ] || APPEND=",in.voices=0"
+	if qemuMinVersion 8 1 90
+	then
+		if [ -z "$AUDIODRIVER" ]
+		then
+			for ADRIVER in dsound coreaudio pipewire sndio pa oss alsa sdl
+			do
+				if qemu-system-x86_64 -audiodev help | grep $ADRIVER &> /dev/null
+				then
+					AUDIODRIVER=$ADRIVER
+					break
+				fi
+			done
+		fi
+		echo "-audiodev id=${ID},driver=${AUDIODRIVER}${APPEND}"
+	else
+		qemu-system-x86_64 -audio-help 2> /dev/null | grep "^-audiodev" | head -n1 |
+			sed "s/ id=[a-z]*,/ id=$ID,/" | sed "s/\s*$/$APPEND/"
+	fi
 }
 
 function pcspk {
@@ -529,13 +528,13 @@ function qemuLiveDesktopUEFI_Pflash {
 		echo
 		cp -p "$(firmware edk2-i386-vars.fd)" $TESTDIR/
 		firmwareAvailable edk2-x86_64-code.fd &&
-		execute qemu-system-x86_64 -M q35 -m 1536 $(audioq35) \
-			$( [ "$1" != "noaccel" ] && echo $(accel)) \
+		execute qemu-system-x86_64 -M q35 -m 1536 $(audioq35) -usb -device usb-tablet \
+			$( [ "$1" != "noaccel" ] && echo $(accel)) -boot menu=on \
 			-drive file="$(firmware edk2-x86_64-code.fd)",if=pflash,format=raw,readonly=on \
 			-drive file=$TESTDIR/edk2-i386-vars.fd,if=pflash,format=raw,readonly=off \
 			-drive id=hd0,if=none,file=$TESTDIR/testimage.qcow2,format=qcow2 \
 			-device ide-hd,drive=hd0,bus=ide.0,bootindex=0 \
-			-drive id=cd0,if=none,file=$LIVE_IMAGE_FILE,format=raw \
+			-drive id=cd0,if=none,file=$LIVE_IMAGE_FILE,format=raw,read-only=on \
 			-device ide-cd,drive=cd0,bus=ide.1,bootindex=1
 	)
 	removeDir $TESTDIR
@@ -557,12 +556,12 @@ function qemuLiveDesktopUEFI_Bios {
 		echo "cat '$(firmware edk2-i386-vars.fd)' '$(firmware edk2-x86_64-code.fd)' > $TESTDIR/edk2-x86_64.fd"
 		echo
 		cat "$(firmware edk2-i386-vars.fd)" "$(firmware edk2-x86_64-code.fd)" > $TESTDIR/edk2-x86_64.fd
-		execute qemu-system-x86_64 -M q35 -m 1536 $(audioq35) \
-			$( [ "$1" != "noaccel" ] && echo $(accel)) \
+		execute qemu-system-x86_64 -M q35 -m 1536 $(audioq35) -usb -device usb-tablet \
+			$( [ "$1" != "noaccel" ] && echo $(accel)) -boot menu=on \
 			-bios $TESTDIR/edk2-x86_64.fd \
 			-drive id=hd0,if=none,file=$TESTDIR/testimage.qcow2,format=qcow2 \
 			-device ide-hd,drive=hd0,bus=ide.0,bootindex=0 \
-			-drive id=cd0,if=none,file=$LIVE_IMAGE_FILE,format=raw \
+			-drive id=cd0,if=none,file=$LIVE_IMAGE_FILE,format=raw,read-only=on \
 			-device ide-cd,drive=cd0,bus=ide.1,bootindex=1
 	)
 	removeDir $TESTDIR
@@ -577,8 +576,8 @@ function qemuLiveDesktopUEFI_Bios_Noaccel {
 function qemuLiveDesktopSDL {
 	download $LIVE_IMAGE_URL
 	testImageInDir sdl
-	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 \
-		-display sdl $(audioq35 hda-duplex) \
+	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -usb -device usb-tablet \
+		-display sdl $(audioq35 hda-duplex) -boot menu=on \
 		-cdrom $LIVE_IMAGE_FILE -drive file=sdl/testimage.qcow2,media=disk
 	removeDir sdl
 }
@@ -587,10 +586,30 @@ function qemuLiveDesktopSDL {
 function qemuLiveDesktopGTK {
 	download $LIVE_IMAGE_URL
 	testImageInDir gtk
-	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 \
-		-display gtk $(audioq35 hda-micro) \
+	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -usb -device usb-tablet \
+		-display gtk $(audioq35 hda-micro) -boot menu=on \
 		-cdrom $LIVE_IMAGE_FILE -drive file=gtk/testimage.qcow2,media=disk
 	removeDir gtk
+}
+
+# GTK-Desktop (LiveImage)
+function qemuLiveDesktopGTKVgaGl {
+	download $LIVE_IMAGE_URL
+	testImageInDir gtkvgagl
+	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -usb -device usb-tablet \
+		-display gtk,gl=on -device virtio-vga-gl $(audioq35 hda-micro) -boot menu=on \
+		-cdrom $LIVE_IMAGE_FILE -drive file=gtkvgagl/testimage.qcow2,media=disk
+	removeDir gtkvgagl
+}
+
+# GTK-Desktop (LiveImage)
+function qemuLiveDesktopGTKGpuGl {
+	download $LIVE_IMAGE_URL
+	testImageInDir gtkgpugl
+	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -usb -device usb-tablet \
+		-display gtk,gl=on -device virtio-gpu-gl $(audioq35 hda-micro) -boot menu=on \
+		-cdrom $LIVE_IMAGE_FILE -drive file=gtkgpugl/testimage.qcow2,media=disk
+	removeDir gtkgpugl
 }
 
 # VNC-Desktop (LiveImage)
@@ -598,8 +617,8 @@ function qemuLiveDesktopVNC {
 	download $LIVE_IMAGE_URL
 	testImageInDir vnc
 	cygwinXlaunch
-	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -pidfile "$PIDFILE" \
-		-display vnc=:05 -k de $(audioq35 hda-duplex) \
+	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -usb -device usb-tablet -pidfile "$PIDFILE" \
+		-display vnc=:05 -k de $(audioq35 hda-duplex) -boot menu=on \
 		-cdrom $LIVE_IMAGE_FILE -drive file=vnc/testimage.qcow2,media=disk &
 	executeVncForBackgroundQemu
 	removeDir vnc
@@ -610,8 +629,9 @@ function qemuLiveDesktopSPICE {
 	download $LIVE_IMAGE_URL
 	testImageInDir spice
 	cygwinXlaunch
-	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -pidfile "$PIDFILE" $(audioq35 hda-micro) \
-		-vga qxl -spice port=5905,addr=127.0.0.1,disable-ticketing=on \
+	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -pidfile "$PIDFILE" \
+		-vga qxl $(audioq35 hda-micro) -boot menu=on \
+		-spice port=5905,addr=127.0.0.1,disable-ticketing=on \
 		-device virtio-serial -chardev spicevmc,id=spicechannel0,name=vdagent \
 		-device virtserialport,chardev=spicechannel0,name=com.redhat.spice.0 \
 		-cdrom $LIVE_IMAGE_FILE -drive file=spice/testimage.qcow2,media=disk &
@@ -680,7 +700,7 @@ function qemuLiveDesktopQemuImgConversions {
 	# Conversion tests with qcow qcow2 qed raw vdi vhdx vmdk vpc
 	download $LIVE_IMAGE_URL
 	local IMG_SIZE=$(qemu-img info "$LIVE_IMAGE_FILE" |
-		grep bytes | sed "s/.*(//" | sed "s/ bytes.*//")
+		grep "virtual.*bytes" | sed "s/.*(//" | sed "s/ bytes.*//")
 
 	local TESTDIR="qemu-img-conversion" FMT
 	mkdir -p $TESTDIR
@@ -750,7 +770,7 @@ function qemuLiveDesktopQemuImgConversions {
 	removeDir $TESTDIR
 }
 
-# For qemu guest support
+# For QEMU guest support
 function qemuLiveDesktopQemuGuestSupport {
 	download $LIVE_IMAGE_URL
 	cygwinXlaunch
@@ -822,6 +842,7 @@ function qemuElevatedInstallWinGuestAgent {
 					echo
 					echo "Send test requests to $QGA now!"
 					echo "E.g. send '{\"execute\":\"guest-info\"}'"
+					echo "       or '{\"execute\":\"guest-suspend-disk\"}'"
 					read -p "All test requests sent? RETURN " TEST
 					net stop "$QGA"
 				fi
@@ -851,88 +872,299 @@ function qemuElevatedInstallWinGuestAgent {
 	fi
 }
 
-# Extended SDL-Desktop (HDImage)
-function qemuInstalledDesktopSDL {
-	local IMAGE='d:\Qemu\test\test-usernet.qcow2'
-	[ -f "$IMAGE" ] || return 0
-	execute qemu-system-x86_64 -M q35 $(accel) -m 1G \
-		-display sdl $(audioq35 hda-micro) \
-		-netdev user,id=un0,hostfwd=tcp::2222-:22 -device virtio-net,netdev=un0 \
-		-drive file="$IMAGE",media=disk,if=none,id=drive0,discard=unmap,detect-zeroes=unmap \
-		-device virtio-scsi,id=scsi0 -device scsi-hd,bus=scsi0.0,drive=drive0
+function qemuPlugins {
+	local -A PLUGIN_OPTS
+	PLUGIN_OPTS["libmem.dll"]=",inline=true"
+	PLUGIN_OPTS["libbb.dll"]=",inline=true,idle=true"
+	PLUGIN_OPTS["libstoptrigger.dll"]=",addr=0xd4"
+	PLUGIN_OPTS["libinsn.dll"]=",inline=false,sizes=true"
+	PLUGIN_OPTS["libhotpages.dll"]=",sortby=reads,io=on"
+	PLUGIN_OPTS["libexeclog.dll"]=",ifilter=msr"
+	PLUGIN_OPTS["libcache.dll"]=",evict=fifo"
+	echo "QEMU plugin dir for $MSYSTEM is '$MINGW_PREFIX/lib/qemu/plugins'"
+	local PLUGIN
+	for PLUGIN in $(find $MINGW_PREFIX/lib/qemu/plugins -type f | sort -r)
+	do
+		local PLUGIN_NAME=$(basename $PLUGIN)
+		echo "--------------------------------------------------------------------------------"
+		echo "Testing plugin: $PLUGIN_NAME"
+		mkdir -p $PLUGIN_NAME
+		cd $PLUGIN_NAME
+		if execute qemu-system-i386 -plugin ${PLUGIN}${PLUGIN_OPTS[${PLUGIN_NAME}]} -d plugin -D plugin.log
+		then
+			if [ -f plugin.log ] && [ -n "$(cat plugin.log)" ]
+			then
+				head -n 15 plugin.log
+				local PLUGIN_LOG_LENGTH="$(cat plugin.log | wc -l)"
+				if (( PLUGIN_LOG_LENGTH > 15 ))
+				then
+					echo "..."
+				fi
+				echo
+			fi
+			echo "Plugin $PLUGIN_NAME successfully executed"
+		else
+			echo "Plugin $PLUGIN_NAME execution failed"
+		fi
+		echo
+		cd ..
+		removeDir $PLUGIN_NAME
+	done
+
 }
 
-# Extended GTK-Desktop (HDImage)
-function qemuInstalledDesktopGTK {
-	local IMAGE='/d/Qemu/test/test-usernet.qcow2'
-	[ -f "$IMAGE" ] || return 0
-	execute qemu-system-x86_64 -M q35 $(accel) -m 1G \
-		-display gtk $(audioq35 hda-duplex) \
-		-netdev user,id=un0,hostfwd=tcp::2222-:22 -device virtio-net,netdev=un0 \
-		-drive file="$IMAGE",media=disk,if=none,id=drive0,discard=unmap,detect-zeroes=unmap \
-		-device virtio-scsi,id=scsi0 -device scsi-hd,bus=scsi0.0,drive=drive0
+function qemuOwnLocalTests {
+	# /.../msys2.examples.tests.sh
+	local SOURCEFILE="$(realpath $0)"
+	# /.../msys2.examples.tests.own
+	SOURCEFILE="${SOURCEFILE:0:-3}.own"
+	if [ -f "$SOURCEFILE" ]
+	then
+		source "$SOURCEFILE" || exit 1
+	else
+		echo "No own local qemu tests available"
+	fi
 }
 
-# Extended VNC-Desktop (HDImage)
-function qemuInstalledDesktopVNC1 {
-	local IMAGE='\Qemu\test\test-usernet.qcow2'
-	[ -f "$IMAGE" ] || return 0
-	cygwinXlaunch
-	execute qemu-system-x86_64 -M q35 $(accel) -m 1G -pidfile "$PIDFILE" \
-		-display vnc=:05 -k de $(audioq35 hda-micro) \
-		-netdev user,id=un0,hostfwd=tcp::2222-:22 -device virtio-net,netdev=un0 \
-		-drive file="$IMAGE",media=disk,if=none,id=drive0,discard=unmap,detect-zeroes=unmap \
-		-device virtio-scsi,id=scsi0 -device scsi-hd,bus=scsi0.0,drive=drive0 &
-	executeVncForBackgroundQemu
+function qemu2023day01 {
+	download https://www.qemu-advent-calendar.org/2023/download/day01.tar.gz
+	tar -xf day01.tar.gz
+	cat day01/adv-cal.txt
+	execute qemu-system-i386 -drive file=day01/TinyCore-current.iso,format=raw,if=ide
+	removeDir day01
 }
 
-# Extended VNC-Desktop (HDImage) with tap-Network and host configuation of tapDevices
-function qemuInstalledDesktopVNC2 {
-	local IMAGE='d:\Qemu\test\test.qcow2'
-	[ -f "$IMAGE" ] || return 0
-	cygwinXlaunch
-	execute qemu-system-x86_64 -M q35 $(accel) -m 1G -pidfile "$PIDFILE" \
-		-display vnc=:05 -k de $(audioq35 hda-micro) \
-		-netdev tap,ifname=qemuTap05,id=tap0 -device virtio-net,netdev=tap0,mac=00:00:00:00:00:05 \
-		-drive file="$IMAGE",media=disk,if=none,id=drive0,discard=unmap,detect-zeroes=unmap \
-		-device virtio-scsi,id=scsi0 -device scsi-hd,bus=scsi0.0,drive=drive0 &
-	executeVncForBackgroundQemu
+function qemu2023day02 {
+	download https://www.qemu-advent-calendar.org/2023/download/day02.tar.gz
+	tar -xf day02.tar.gz
+	cat day02/adv-cal.txt
+	execute qemu-system-i386 -drive format=raw,file=day02/happy_holidays.pdf
+	removeDir day02
 }
 
-# Extended Spice-Desktop (HDImage)
-function qemuInstalledDesktopSPICE1 {
-	local IMAGE='/d/Qemu/test/test-usernet.qcow2'
-	[ -f "$IMAGE" ] || return 0
-	cygwinXlaunch
-	execute qemu-system-x86_64 -M q35 $(accel) -m 1G -pidfile "$PIDFILE" \
-		-vga qxl -spice port=5905,addr=127.0.0.1,disable-ticketing=on $(audioq35 hda-duplex) \
-		-device virtio-serial -chardev spicevmc,id=spicechannel0,name=vdagent \
-		-device virtserialport,chardev=spicechannel0,name=com.redhat.spice.0 \
-		-usb -device qemu-xhci \
-		-chardev spicevmc,id=usbredirchardev0,name=usbredir \
-		-device usb-redir,chardev=usbredirchardev0,id=usbredirdevice0 \
-		-netdev user,id=un0,hostfwd=tcp::2222-:22 -device virtio-net,netdev=un0 \
-		-drive file="$IMAGE",media=disk,if=none,id=drive0,discard=unmap,detect-zeroes=unmap \
-		-device virtio-scsi,id=scsi0 -device scsi-hd,bus=scsi0.0,drive=drive0 &
-	executeSpicyForBackgroundQemu
+function qemu2023day03 {
+	download https://www.qemu-advent-calendar.org/2023/download/day03.tar.gz
+	tar -xf day03.tar.gz
+	cat day03/adv-cal.txt
+	execute qemu-system-i386 -display sdl -drive format=raw,file=day03/FLORDLE.IMG
+	removeDir day03
 }
 
-# Extended Spice-Desktop (HDImage) with tap-Network and host configuation of tapDevices
-function qemuInstalledDesktopSPICE2 {
-	local IMAGE='/d/Qemu/test/test.qcow2'
-	[ -f "$IMAGE" ] || return 0
-	cygwinXlaunch
-	execute qemu-system-x86_64 -M q35 $(accel) -m 1G -pidfile "$PIDFILE" \
-		-vga qxl -spice port=5905,addr=127.0.0.1,disable-ticketing=on $(audioq35 hda-duplex) \
-		-device virtio-serial -chardev spicevmc,id=spicechannel0,name=vdagent \
-		-device virtserialport,chardev=spicechannel0,name=com.redhat.spice.0 \
-		-usb -device qemu-xhci \
-		-chardev spicevmc,id=usbredirchardev0,name=usbredir \
-		-device usb-redir,chardev=usbredirchardev0,id=usbredirdevice0 \
-		-netdev tap,ifname=qemuTap05,id=tap0 -device virtio-net,netdev=tap0,mac=00:00:00:00:00:05 \
-		-drive file="$IMAGE",media=disk,if=none,id=drive0,discard=unmap,detect-zeroes=unmap \
-		-device virtio-scsi,id=scsi0 -device scsi-hd,bus=scsi0.0,drive=drive0 &
-	executeSpicyForBackgroundQemu
+function qemu2023day04 {
+	download https://www.qemu-advent-calendar.org/2023/download/day04.tar.gz
+	tar -xf day04.tar.gz
+	cat day04/adv-cal.txt
+	execute qemu-system-i386 -display sdl -drive format=qcow2,file=day04/conway.qcow2
+	execute qemu-system-i386 $(accel) -display sdl -drive format=qcow2,file=day04/shell.qcow2
+	removeDir day04
+}
+
+function qemu2023day05 {
+	download https://www.qemu-advent-calendar.org/2023/download/day05.tar.gz
+	tar -xf day05.tar.gz
+	cat day05/adv-cal.txt
+	(
+		cd day05
+		execute qemu-system-x86_64 -m 1G -drive file=barebones.iso,format=raw -display sdl
+	)
+	removeDir day05
+}
+
+function qemu2023day06 {
+	download https://www.qemu-advent-calendar.org/2023/download/day06.tar.gz
+	local REQUIRE_CLEAR_SCREEN="before"
+	tar -xf day06.tar.gz
+	cat day06/adv-cal.txt
+	execute qemu-system-x86_64 -boot order=d -drive file=day06/router7.img \
+		-nic user,model=virtio-net-pci,mac=52:55:00:d1:55:03 \
+		-nic user,model=virtio-net-pci,id=lan,mac=52:55:00:d1:55:04,net=10.254.0.0/24,hostfwd=tcp:127.0.0.1:7733-10.254.0.1:7733 \
+		-device i6300esb,id=watchdog0 -watchdog-action reset \
+		-bios day06/OVMF.fd -smp 2 -m 4096 -serial stdio
+	removeDir day06
+}
+
+function qemu2023day07 {
+	download https://www.qemu-advent-calendar.org/2023/download/day07.tar.gz
+	tar -xf day07.tar.gz
+	cat day07/README
+	execute qemu-system-x86_64 -drive file=day07/bricks.img,format=raw
+	removeDir day07
+}
+
+function qemu2023day08 {
+	download https://www.qemu-advent-calendar.org/2023/download/day08.tar.gz
+	tar -xf day08.tar.gz
+	cat day08/readme.txt
+	execute qemu-system-x86_64 -name SerenityOS  -m 1G -smp 2 $(accel) $(audioq35) \
+	-device VGA,vgamem_mb=64 -device virtio-rng-pci -device pci-bridge,chassis_nr=1,id=bridge1 \
+	-device i82801b11-bridge,bus=bridge1,id=bridge2 -device sdhci-pci,bus=bridge2 \
+	-device i82801b11-bridge,id=bridge3 -device sdhci-pci,bus=bridge3 -device ich9-ahci,bus=bridge3 \
+	-chardev stdio,id=stdout,mux=on -device i82801b11-bridge,id=bridge4 -device sdhci-pci,bus=bridge4 \
+	-drive file=day08/rootfs.qcow2,format=qcow2,index=0,media=disk,if=none,id=disk \
+	-device nvme,serial=deadbeef,drive=disk,bus=bridge4,logical_block_size=4096,physical_block_size=4096 \
+	-nic user,model=e1000 -usb -kernel day08/Prekernel -initrd day08/Kernel -append "hello root=nvme0:1:0" \
+	-device virtio-serial,max_ports=2 -device virtconsole,chardev=stdout -device isa-debugcon,chardev=stdout
+	removeDir day08
+}
+
+function qemu2023day09 {
+	download https://www.qemu-advent-calendar.org/2023/download/day09.tar.gz
+	tar -xf day09.tar.gz
+	cat day09/adv-cal.txt
+	execute qemu-system-x86_64 -drive file=day09/MATCHUP.IMG,format=raw
+	removeDir day09
+}
+
+function qemu2023day10 {
+	download https://www.qemu-advent-calendar.org/2023/download/day10.tar.gz
+	tar -xf day10.tar.gz
+	cat day10/adv-cal.txt
+	(
+		cd day10
+		execute qemu-system-x86_64 $(accel) -drive file=mandelbrot.qcow2,format=qcow2 -monitor stdio
+	)
+	removeDir day10
+}
+
+function qemu2023day11 {
+	download https://www.qemu-advent-calendar.org/2023/download/day11.tar.gz
+	tar -xf day11.tar.gz
+	cat day11/adv-cal.txt
+	execute qemu-system-x86_64 -m 1G -drive file=day11/9front.qcow2,format=qcow2
+	removeDir day11
+}
+
+function qemu2023day12 {
+	download https://www.qemu-advent-calendar.org/2023/download/day12.tar.gz
+	tar -xf day12.tar.gz
+	cat day12/adv-cal.txt
+	(
+		cd day12
+		execute qemu-system-i386 -drive if=floppy,file=space-invaders.img,format=raw
+	)
+	removeDir day12
+}
+
+function qemu2023day13 {
+	download https://www.qemu-advent-calendar.org/2023/download/day13.tar.gz
+	tar -xf day13.tar.gz
+	cat day13/adv-cal.txt
+	execute qemu-system-microblazeel -monitor none -kernel day13/xmaton.bin
+	removeDir day13
+}
+
+function qemu2023day14 {
+	download https://www.qemu-advent-calendar.org/2023/download/day14.tar.gz
+	tar -xf day14.tar.gz
+	cat day14/adv-cal.txt
+	(
+		cd day14
+		execute qemu-system-i386 \
+			-drive file=supergrub2-classic-2.06s2-beta1-multiarch-CD.iso,format=raw \
+			-drive file=day14.qcow2,format=qcow2 -serial stdio
+	)
+	removeDir day14
+}
+
+function qemu2023day15 {
+	download https://www.qemu-advent-calendar.org/2023/download/day15.tar.gz
+	tar -xf day15.tar.gz
+	cat day15/adv-cal.txt
+	(
+		cd day15
+		execute qemu-system-x86_64 -net none -drive file=sectorlisp.qcow2,index=0,if=floppy \
+			-boot a -loadvm vm-20231214233001 -M pc-i440fx-7.2
+	)
+	removeDir day15
+}
+
+function qemu2023day16 {
+	download https://www.qemu-advent-calendar.org/2023/download/day16.tar.gz
+	tar -xf day16.tar.gz
+	cat day16/adv-cal.txt
+	execute qemu-system-x86_64 -net none $(accel) -chardev stdio,id=char0 -serial chardev:char0 \
+		-rtc base=utc -usb  -drive file=day16/duskos.img,format=raw,index=0,if=ide
+	removeDir day16
+}
+
+function qemu2023day17 {
+	download https://www.qemu-advent-calendar.org/2023/download/day17.tar.gz
+	local REQUIRE_CLEAR_SCREEN="before"
+	tar -xf day17.tar.gz
+	cat day17/README
+	execute qemu-system-arm -M lm3s6965evb -kernel day17/Snake.bin -serial stdio \
+		-vga none -parallel none -monitor none
+	removeDir day17
+}
+
+function qemu2023day18 {
+	download https://www.qemu-advent-calendar.org/2023/download/day18.tar.gz
+	tar -xf day18.tar.gz
+	cat day18/adv-cal.txt
+	execute qemu-system-arm -net none -parallel none -M versatileab \
+		-kernel day18/mandy.zImage -dtb day18/versatile-ab.dtb
+	removeDir day18
+}
+
+function qemu2023day19 {
+	download https://www.qemu-advent-calendar.org/2023/download/day19.tar.gz
+	local REQUIRE_CLEAR_SCREEN="before after"
+	tar -xf day19.tar.gz
+	cat day19/adv-cal.txt
+	(
+		cd day19
+		execute qemu-system-x86_64 -net none -drive file=snowflake.com,format=raw,index=0,if=ide \
+			-vga none -parallel none -monitor none -serial stdio
+	)
+	removeDir day19
+}
+
+function qemu2023day21 {
+	download https://www.qemu-advent-calendar.org/2023/download/day21.tar.gz
+	tar -xf day21.tar.gz
+	cat day21/adv-cal.txt
+	(
+		cd day21
+		execute qemu-system-i386 -net none -option-rom basic.rom
+	)
+	removeDir day21
+}
+
+function qemu2023day22 {
+	download https://www.qemu-advent-calendar.org/2023/download/day22.tar.gz
+	tar -xf day22.tar.gz
+	cat day22/adv-cal.txt
+	(
+		cd day22
+		execute qemu-system-arm -machine lm3s6965evb -net none -kernel day22.bin -serial stdio
+	)
+	removeDir day22
+}
+
+function qemu2023day23 {
+	download https://www.qemu-advent-calendar.org/2023/download/day23.tar.gz
+	local REQUIRE_CLEAR_SCREEN="before after"
+	tar -xf day23.tar.gz
+	cat day23/adv-cal.txt
+	(
+		cd day23
+		execute qemu-system-ppc64 -M ppce500 -cpu e6500 -smp 4 -m 2G -vga none \
+			-parallel none -monitor none -serial stdio -kernel vmlinux -append "quiet"
+	)
+	removeDir day23
+}
+
+function qemu2023day24 {
+	download https://www.qemu-advent-calendar.org/2023/download/day24.tar.gz
+	tar -xf day24.tar.gz
+	cat day24/adv-cal.txt
+	(
+		cd day24
+		execute qemu-system-riscv64 -m 1G -machine virt -kernel uboot_smode.elf -cpu rv64 \
+			 -parallel none -monitor none -vga none -serial stdio \
+			 -device virtio-blk-device,drive=hd -drive file=r64.qcow2,if=none,id=hd
+	)
+	removeDir day24
 }
 
 function qemu2020day01 {
@@ -1049,6 +1281,14 @@ function qemu2020day14 {
 	download https://www.qemu-advent-calendar.org/2020/download/day14.tar.xz
 	tar -xf day14.tar.xz
 	cat day14/README
+	echo
+	echo 'Start server in guest:'
+	echo "sshd"
+	echo
+	echo 'Test in host:'
+	echo 'ssh -o HostKeyAlgorithms=+ssh-rsa -o UserKnownHostsFile=/dev/null \'
+	echo '    -p 19220 root@localhost'
+	echo
 	execute qemu-system-x86_64 -drive file=day14/eggos.img,if=virtio \
 		-net user,hostfwd=::19220-:22 -net nic,model=e1000
 	removeDir day14
@@ -1111,6 +1351,12 @@ function qemu2020day21 {
 	download https://www.qemu-advent-calendar.org/2020/download/day21.tar.gz
 	tar -xf day21.tar.gz
 	cat day21/README
+	echo
+	echo 'Test:'
+	echo 'ssh -i "'$(realpath day21/id_rsa)'" \'
+	echo '    -o PubkeyAcceptedKeyTypes=+ssh-rsa -o HostKeyAlgorithms=+ssh-rsa \'
+	echo '    -o UserKnownHostsFile=/dev/null -p 10222 root@localhost'
+	echo
 	execute qemu-system-x86_64 -kernel day21/vmlinuz -initrd day21/initramfs.linux_amd64.cpio \
 		-append ip=dhcp -nic user,hostfwd=tcp::10222-:22
 	removeDir day21
@@ -1128,6 +1374,14 @@ function qemu2020day23 {
 	download https://www.qemu-advent-calendar.org/2020/download/day23.tar.gz
 	tar -xf day23.tar.gz
 	cat day23/README
+	echo
+	echo 'Start server in guest:'
+	echo 'net start'
+	echo
+	echo 'Test in host:'
+	echo 'wget -O - http://localhost:8080/'
+	echo 'telnet localhost 2323'
+	echo
 	execute qemu-system-x86_64 -L day23/bios -nodefaults -name ELKS -machine isapc -cpu 486,tsc \
 		-m 1M -vga std -rtc base=utc \
 		-netdev user,id=mynet,hostfwd=tcp::8080-:80,hostfwd=tcp::2323-:23 \
@@ -1209,7 +1463,14 @@ function qemu2018day08 {
 	download https://www.qemu-advent-calendar.org/2018/download/day08.tar.xz
 	tar -xf day08.tar.xz
 	cat day08/readme.txt
-	execute qemu-system-i386 -m 32 -M isapc $(accel) -cpu pentium -no-acpi $(pcspk) \
+	echo
+	echo "Test:"
+	echo "Login as root"
+	echo "loadkeys <en|de|...>"
+	echo "lynx -source http://www.google.com/"
+	echo "shutdown -h now"
+	echo
+	execute qemu-system-i386 -m 32 -M isapc,acpi=off $(accel) -cpu pentium $(pcspk) \
 		-net nic,model=ne2k_isa -net user -drive if=ide,file=day08/hd.qcow2
 	removeDir day08
 }
@@ -1227,7 +1488,8 @@ function qemu2018day10 {
 	download https://www.qemu-advent-calendar.org/2018/download/day10.tar.xz
 	tar -xf day10.tar.xz
 	cat day10/readme.txt
-	execute qemu-system-i386 -net none -M q35 $(accel) -cdrom day10/gamebro.iso
+	execute qemu-system-i386 -net none -M $(qemuMinVersion 8 0 90 && echo "pc-q35-8.0" || echo "q35") \
+		$(accel) -cdrom day10/gamebro.iso
 	removeDir day10
 }
 
@@ -1496,6 +1758,11 @@ function qemu2016day14 {
 	download https://www.qemu-advent-calendar.org/2016/download/day14.tar.xz
 	tar -xf day14.tar.xz
 	cat acorn/readme.txt
+	echo
+	echo 'Test:'
+	echo 'wget -O - http://localhost:8080/'
+	echo
+	sleep 2
 	execute qemu-system-x86_64 $(accel) -net nic,model=virtio -net user,hostfwd=tcp::8080-:80 \
 		 -smp 4 -serial stdio -m 128 -drive file=acorn/acorn.img,format=raw,if=ide -k en-us
 	removeDir acorn
@@ -1645,6 +1912,11 @@ function qemu2014day20 {
 	download https://www.qemu-advent-calendar.org/2014/download/helenos.tar.xz
 	tar -xf helenos.tar.xz
 	extractReadme helenos/run
+	echo
+	echo 'Test:'
+	echo 'telnet localhost 2223'
+	echo '# /app/wavplay demo.wav'
+	echo
 	execute qemu-system-x86_64 $(accel) -net nic,model=e1000 \
 		-net user,hostfwd=::2223-:2223,hostfwd=::8080-:8080 \
 		-usb $(audio hda-duplex) -boot d -cdrom helenos/HelenOS-0.6.0-rc3-amd64.iso
@@ -1663,6 +1935,10 @@ function qemu2014day18 {
 	download https://www.qemu-advent-calendar.org/2014/download/ceph.tar.xz
 	tar -xf ceph.tar.xz
 	extractReadme ceph/run
+	echo
+	echo 'Test:'
+	echo 'ssh -p 10022 -o "UserKnownHostsFile=/dev/null" ceph@localhost'
+	echo
 	execute qemu-system-x86_64 $(accel) -m 1024M -drive file=ceph/ceph.qcow2,format=qcow2 \
 		-netdev user,id=net0,hostfwd=tcp::10022-:22 -device virtio-net-pci,netdev=net0
 	removeDir ceph
@@ -1720,6 +1996,10 @@ function qemu2014day11 {
 	download https://www.qemu-advent-calendar.org/2014/download/osv-redis.tar.xz
 	tar -xf osv-redis.tar.xz
 	extractReadme osv-redis/run
+	echo
+	echo 'Test:'
+	echo 'wget -O - http://localhost:18000/'
+	echo
 	execute qemu-system-x86_64 $(accel) -m 256 \
 		-netdev user,id=user0,hostfwd=tcp::18000-:8000,hostfwd=tcp::16379-:6379 \
 		-device virtio-net-pci,netdev=user0 osv-redis/osv-redis-memonly-v0.16.qemu.qcow2
@@ -1739,6 +2019,10 @@ function qemu2014day09 {
 	download https://www.qemu-advent-calendar.org/2014/download/ubuntu-core-alpha.tar.xz
 	tar -xf ubuntu-core-alpha.tar.xz
 	extractReadme ubuntu-core-alpha/run
+	echo
+	echo 'Test:'
+	echo 'ssh -p 12222 -o "UserKnownHostsFile=/dev/null" ubuntu@localhost'
+	echo
 	execute qemu-system-x86_64 $(accel) -m 1024 \
 		-drive if=virtio,file=ubuntu-core-alpha/ubuntu-core-alpha-01.img,format=qcow2 \
 		-netdev user,id=user0,hostfwd=tcp::18000-:80,hostfwd=tcp::12222-:22 \
@@ -1787,6 +2071,10 @@ function qemu2014day05 {
 	tar -xf arm64.tar.xz
 	extractReadme arm64/run
 	cat arm64/README
+	echo
+	echo 'Test:'
+	echo 'ssh -p 5555 -o "UserKnownHostsFile=/dev/null" root@localhost'
+	echo
 	export MSYS2_ARG_CONV_EXCL='*'
 	execute qemu-system-aarch64 -m 1024 -cpu cortex-a57 -machine virt -monitor none -kernel arm64/Image \
 		-append 'root=/dev/vda2 rw rootwait mem=1024M console=ttyAMA0,38400n8' \
@@ -1826,6 +2114,13 @@ function qemu2014day01 {
 	xzcat qemu-xmas-slackware/slackware.qcow2.xz > qemu-xmas-slackware/slackware.qcow2
 	extractReadme qemu-xmas-slackware/run
 	cat qemu-xmas-slackware/README
+	echo
+	echo 'Test after login as root:'
+	echo '# telnet www.google.com 80'
+	echo 'GET / HTTP/1.1'
+	echo 'Host: www.google.com'
+	echo '<NEWLINE>'
+	echo
 	execute qemu-system-x86_64 $(accel) -m 16M \
 		-drive if=ide,format=qcow2,file=qemu-xmas-slackware/slackware.qcow2 \
 		-netdev user,id=slirp -device ne2k_isa,netdev=slirp
@@ -1835,6 +2130,34 @@ function qemu2014day01 {
 export PIDFILE=".qemupid.$(date +%s)"
 determineAccel
 case $BLOCK in
+	2023)
+		DIR="$DOWNLOADDIR/qemu-advent-calendar/2023"
+		require ${MINGW_PACKAGE_PREFIX}-qemu wget
+		perform qemu2023day01
+		perform qemu2023day02
+		perform qemu2023day03
+		perform qemu2023day04
+		perform qemu2023day05
+		perform qemu2023day06
+		perform qemu2023day07
+		ignoreSize && perform qemu2023day08
+		perform qemu2023day09
+		perform qemu2023day10
+		ignoreSize && perform qemu2023day11
+		perform qemu2023day12
+		perform qemu2023day13
+		perform qemu2023day14
+		perform qemu2023day15
+		perform qemu2023day16
+		perform qemu2023day17
+		perform qemu2023day18
+		perform qemu2023day19
+		# SKIP qemu2023day20 - contains qemu-8.2-0.tar.xz
+		perform qemu2023day21
+		perform qemu2023day22
+		ignoreSize && perform qemu2023day23
+		perform qemu2023day24
+		;;
 	2020)
 		DIR="$DOWNLOADDIR/qemu-advent-calendar/2020"
 		require ${MINGW_PACKAGE_PREFIX}-qemu wget
@@ -1879,7 +2202,7 @@ case $BLOCK in
 		perform qemu2018day11
 		# SKIP qemu2018day12 - contains qemu-3.1.0.tar.xz
 		perform qemu2018day13
-		perform qemu2018day14
+		isQemuSystem nios2 && perform qemu2018day14
 		perform qemu2018day15
 		perform qemu2018day16
 		perform qemu2018day17
@@ -1951,15 +2274,8 @@ case $BLOCK in
 		perform qemu2014day23
 		perform qemu2014day24
 		;;
-	HD)
-		DIR="$DOWNLOADDIR/qemu-desktop"
-		require ${MINGW_PACKAGE_PREFIX}-qemu wget ${MINGW_PACKAGE_PREFIX}-spice-gtk ${MINGW_PACKAGE_PREFIX}-gtk-vnc
-		perform qemuInstalledDesktopSDL
-		perform qemuInstalledDesktopGTK
-		perform qemuInstalledDesktopVNC1
-		perform qemuInstalledDesktopVNC2
-		perform qemuInstalledDesktopSPICE1
-		perform qemuInstalledDesktopSPICE2
+	QOWN)
+		qemuOwnLocalTests
 		;;
 	QIMG)
 		DIR="$DOWNLOADDIR/qemu-desktop"
@@ -1972,6 +2288,10 @@ case $BLOCK in
 		require ${MINGW_PACKAGE_PREFIX}-qemu-guest-agent
 		isWindows && perform qemuElevatedInstallWinGuestAgent
 		;;
+	QPI)
+		DIR="$DOWNLOADDIR/qemu-plugins"
+		isWindows && perform qemuPlugins
+		;;
 	*)
 		BLOCK=DVD
 		DIR="$DOWNLOADDIR/qemu-desktop"
@@ -1979,6 +2299,8 @@ case $BLOCK in
 		perform qemuLiveDesktopSPICE
 		perform qemuLiveDesktopSDL
 		perform qemuLiveDesktopGTK
+		perform qemuLiveDesktopGTKVgaGl
+		perform qemuLiveDesktopGTKGpuGl
 		perform qemuLiveDesktopVNC
 		perform qemuLiveDesktopUEFI_Bios
 		perform qemuLiveDesktopUEFI_Pflash

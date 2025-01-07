@@ -6,35 +6,48 @@ pkgname=(
   "${MINGW_PACKAGE_PREFIX}-qemu-guest-agent"
   "${MINGW_PACKAGE_PREFIX}-qemu-image-util"
 )
-_base_ver="7.2.0"
+_base_ver="9.2.0"
 # QEMU Versioning of RC-SourcePackage and RC-Version differs
 # e.g. qemu-6.1.0-rc0.tar.xz contains 6.0.90, qemu-6.1.0-rc1.tar.xz contains 6.0.91
 # Unset _rc_no to create Release-Build
-#_rc_no="4"
-_rc_base_ver="7.1.9${_rc_no}"
+#_rc_no="3"
+_rc_base_ver="9.1.9${_rc_no}"
 _rc_file_ver="rc${_rc_no}"
 _tarname=$( [ -z "${_rc_no}" ] && echo ${_realname}-${_base_ver} || echo ${_realname}-${_base_ver}-${_rc_file_ver} )
 pkgver=$( [ -z "${_rc_no}" ] && echo ${_base_ver} || echo ${_rc_base_ver} )
 pkgrel=1
 pkgdesc="QEMU - a generic and open source machine emulator and virtualizer (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
-license=('GPL2' 'LGPL2')
+# clang disabled until attribute gcc_struct is supported, see https://github.com/msys2/MINGW-packages/pull/21540#issuecomment-2287923652
+mingw_arch=('mingw64' 'ucrt64')
+license=('spdx:GPL-2.0-or-later AND LGPL-2.1-or-later AND BSD-2-Clause AND BSD-3-Clause AND MIT')
 url="https://qemu.org/"
-options=('!emptydirs')
+msys2_repository_url="https://gitlab.com/qemu-project/qemu"
+msys2_references=(
+  'archlinux: qemu'
+  'cpe: cpe:/a:qemu:qemu'
+)
 makedepends=(
+  "${MINGW_PACKAGE_PREFIX}-cc"
   "${MINGW_PACKAGE_PREFIX}-meson"
+  "${MINGW_PACKAGE_PREFIX}-autotools"
   "${MINGW_PACKAGE_PREFIX}-ninja"
   "${MINGW_PACKAGE_PREFIX}-python"
   "${MINGW_PACKAGE_PREFIX}-python-sphinx"
   "${MINGW_PACKAGE_PREFIX}-python-sphinx_rtd_theme"
-  "${MINGW_PACKAGE_PREFIX}-autotools"
-  "${MINGW_PACKAGE_PREFIX}-tools-git"
-  "${MINGW_PACKAGE_PREFIX}-cc")
+  "${MINGW_PACKAGE_PREFIX}-tools-git")
+case ${MSYSTEM} in
+  CLANG*)
+    # work around lack of windmc in llvm
+    makedepends+=("binutils")
+      ;;
+esac
 depends=(
+  "${MINGW_PACKAGE_PREFIX}-angleproject"
   "${MINGW_PACKAGE_PREFIX}-capstone"
   "${MINGW_PACKAGE_PREFIX}-curl"
   "${MINGW_PACKAGE_PREFIX}-cyrus-sasl"
+  "${MINGW_PACKAGE_PREFIX}-dtc"
   "${MINGW_PACKAGE_PREFIX}-expat"
   "${MINGW_PACKAGE_PREFIX}-fontconfig"
   "${MINGW_PACKAGE_PREFIX}-freetype"
@@ -82,17 +95,18 @@ depends=(
   "${MINGW_PACKAGE_PREFIX}-orc"
   "${MINGW_PACKAGE_PREFIX}-p11-kit"
   "${MINGW_PACKAGE_PREFIX}-pango"
-  "${MINGW_PACKAGE_PREFIX}-pcre"
   "${MINGW_PACKAGE_PREFIX}-pixman"
   "${MINGW_PACKAGE_PREFIX}-SDL2"
   "${MINGW_PACKAGE_PREFIX}-SDL2_image"
   "${MINGW_PACKAGE_PREFIX}-snappy"
   "${MINGW_PACKAGE_PREFIX}-spice"
   "${MINGW_PACKAGE_PREFIX}-usbredir"
+  "${MINGW_PACKAGE_PREFIX}-virglrenderer"
   "${MINGW_PACKAGE_PREFIX}-xz"
   "${MINGW_PACKAGE_PREFIX}-zlib"
   "${MINGW_PACKAGE_PREFIX}-zstd"
 )
+options=('!emptydirs')
 source=(
   "https://download.qemu.org/${_tarname}.tar.xz"{,.sig}
   msys2.readme.txt
@@ -100,11 +114,11 @@ source=(
   msys2.examples.tests.sh
 )
 sha256sums=(
-  '5b49ce2687744dad494ae90a898c52204a3406e84d072482a1e1be854eeb2157'
+  'f859f0bc65e1f533d040bbe8c92bcfecee5af2c921a6687c652fb44d089bd894'
   'SKIP'
   '51625fd83c0a63729942d3dfc6d48be3491a700fe0f7cb8e88935b46081c9016'
   'f2f9eeb31023d002f54637a9941ea0d8fae3c6f0a66c05c033857b305bd1470d'
-  'cbd98e3fd555a49604db8c61e829bf803a79c7b7da814971a3947ef9dc0e844e'
+  '1478e41f27a4646e14c2abca764d9fd2fd158a4a4cd6421e077fba101d4a74ea'
 )
 validpgpkeys=('CEACC9E15534EBABB82D3FA03353C9CEF108B584') # Michael Roth <flukshun@gmail.com>
 # tar cannot create links, to keep build running, manual extraction is required
@@ -116,15 +130,19 @@ prepare() {
   tar -xf "${srcdir}"/${_tarname}.tar.xz -C "${srcdir}" || true
 }
 
+enablePlugins() {
+  ! [[ $MSYSTEM =~ CLANG ]]
+}
+
 build() {
-  [[ -d "${srcdir}"/build-${MSYSTEM} ]] && rm -rf "${srcdir}"/build-${MSYSTEM}
   mkdir -pv "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
 
   # configure fails to create links, which can be ignored
   # qemu enables all features if possible, so keep it simple
   # For faster testing:
-  #TARGETLIST="--target-list=x86_64-softmmu"
-  ../${_tarname}/configure $TARGETLIST \
+  #CONFIGURE_OPTS="--target-list=x86_64-softmmu"
+  enablePlugins || CONFIGURE_OPTS="--disable-plugins $CONFIGURE_OPTS"
+  ../${_tarname}/configure $CONFIGURE_OPTS \
     --prefix=${MINGW_PREFIX} \
     --bindir=bin \
     --datadir=share/qemu \
@@ -230,6 +248,14 @@ package_qemu() {
   mkdir -pv share/qemu/firmware
   find share/qemu/firmware -type f -exec \
     sed -i "s%\(\"filename\"\s*:\s*\"\).*edk2%\1${MINGW_PREFIX}/share/qemu/edk2%" {} \;
+
+  # Install tcg plugins to lib/qemu/plugins
+  if enablePlugins
+  then
+    mkdir -pv lib/qemu/plugins/test lib/qemu/plugins/contrib
+    install -t lib/qemu/plugins/test "${srcdir}"/build-${MSYSTEM}/tests/tcg/plugins/*.dll
+    install -t lib/qemu/plugins/contrib "${srcdir}"/build-${MSYSTEM}/contrib/plugins/*.dll
+  fi
 }
 
 package_qemu-common() {
@@ -262,7 +288,6 @@ package_qemu-guest-agent() {
     "${MINGW_PACKAGE_PREFIX}-libiconv"
     "${MINGW_PACKAGE_PREFIX}-libunwind"
     "${MINGW_PACKAGE_PREFIX}-libwinpthread"
-    "${MINGW_PACKAGE_PREFIX}-pcre"
   )
   # Split package depends
   depends+=(
@@ -299,7 +324,6 @@ package_qemu-image-util() {
     "${MINGW_PACKAGE_PREFIX}-nettle"
     "${MINGW_PACKAGE_PREFIX}-nghttp2"
     "${MINGW_PACKAGE_PREFIX}-openssl"
-    "${MINGW_PACKAGE_PREFIX}-pcre"
     "${MINGW_PACKAGE_PREFIX}-p11-kit"
     "${MINGW_PACKAGE_PREFIX}-zlib"
     "${MINGW_PACKAGE_PREFIX}-zstd"

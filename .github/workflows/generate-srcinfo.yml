@@ -9,20 +9,29 @@ on:
   workflow_dispatch:
 
 jobs:
-  update-srcinfo:
-    runs-on: windows-2022
+  update-srcinfo-win:
+    runs-on: windows-2025
     if: ${{ github.repository == 'msys2/MINGW-packages' || github.event_name == 'workflow_dispatch' }}
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          filter: tree:0
 
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
+        id: setup-python
         with:
-          python-version: '3.10'
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: .github/workflows/generate-srcinfo.yml
+
+      - name: Install dependencies
+        run: |
+          pipx install --python '${{ steps.setup-python.outputs.python-path }}' git+https://github.com/msys2/msys2-devtools
 
       - uses: msys2/setup-msys2@v2
+        id: msys2
         with:
           msystem: MSYS
           update: true
@@ -30,35 +39,71 @@ jobs:
       - name: Download srcinfo.json.gz and set up the environment
         shell: msys2 {0}
         run: |
-          # XXX: linting PKGBUILDs takes a loooong time, this skips it
-          sed -i s/^lint_pkgbuild/#lint_pkgbuild/g /usr/bin/makepkg
           # makepkg requires strip in PATH even if it wont be used
           touch /usr/bin/strip.exe
           curl --fail -L --retry 5 -o srcinfo.json.gz "https://github.com/$GITHUB_REPOSITORY/releases/download/srcinfo-cache/srcinfo.json.gz"
 
       - name: Parse PKGBUILDs and update srcinfo.json.gz
         run: |
-          $MSYS2_ROOT=(msys2 -c 'cygpath -w /')
-          python -u .ci/ci-generate-srcinfo.py --time-limit 19800 mingw "$MSYS2_ROOT" . srcinfo.json.gz
+          msys2-srcinfo-cache --time-limit 19800 mingw '${{ steps.msys2.outputs.msys2-location }}' . srcinfo.json.gz
 
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
-          name: result
-          path: srcinfo.json.gz
+          name: result-win
+          path: |
+            srcinfo.json.gz
+
+  update-srcinfo-linux:
+    needs: update-srcinfo-win
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: result-win
+
+      - uses: actions/setup-python@v5
+        id: setup-python
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pipx install --python '${{ steps.setup-python.outputs.python-path }}' git+https://github.com/msys2/msys2-devtools
+
+      - name: Update the PyPI cache
+        run: |
+          curl --fail -L --retry 5 -o pypi.json.gz "https://github.com/$GITHUB_REPOSITORY/releases/download/srcinfo-cache/pypi.json.gz" || true
+          msys2-pypi-cache srcinfo.json.gz pypi.json.gz
+
+      - name: Update vulnerability database
+        run: |
+          msys2-sbom create srcinfo.json.gz sbom.cdx.json
+          curl --retry 5 -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s --
+          ./bin/grype sbom:sbom.cdx.json -o cyclonedx-json --file sbom.vuln.cdx.json
+          msys2-sbom merge sbom.cdx.json sbom.vuln.cdx.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: result-linux
+          path: |
+            pypi.json.gz
+            sbom.cdx.json
+            sbom.vuln.cdx.json
 
   upload-srcinfo:
-    needs: update-srcinfo
+    needs: [update-srcinfo-win, update-srcinfo-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
-          name: result
+          pattern: result-*
+          merge-multiple: true
 
       - name: Upload srcinfo.json.gz
         run: |
-          gh release upload srcinfo-cache srcinfo.json.gz --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload srcinfo-cache srcinfo.json.gz pypi.json.gz sbom.cdx.json sbom.vuln.cdx.json --clobber --repo "$GITHUB_REPOSITORY"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

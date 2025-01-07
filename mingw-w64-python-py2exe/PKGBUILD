@@ -3,49 +3,71 @@
 _realname=py2exe
 pkgbase=mingw-w64-python-${_realname}
 pkgname=${MINGW_PACKAGE_PREFIX}-python-${_realname}
-pkgver=0.13.0.0
+pkgver=0.13.0.2
 pkgrel=1
 pkgdesc='A distutils extension to create standalone Windows programs from Python code (mingw-w64)'
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
-license=('MIT')
+# py2exe is currently incompatible to Python 3.12 or newer:
+# https://github.com/py2exe/py2exe/issues/191
+# Re-enable if this is fixed upstream.
+#mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+mingw_arch=()
+msys2_references=(
+  'pypi: py2exe'
+)
+license=('spdx:MIT')
 url='https://github.com/py2exe/py2exe'
 depends=(
-    ${MINGW_PACKAGE_PREFIX}-python
-    ${MINGW_PACKAGE_PREFIX}-python-cachetools
-    ${MINGW_PACKAGE_PREFIX}-python-pefile
+    "${MINGW_PACKAGE_PREFIX}-python"
+    "${MINGW_PACKAGE_PREFIX}-python-cachetools"
+    "${MINGW_PACKAGE_PREFIX}-python-pefile"
 )
 makedepends=(
-    ${MINGW_PACKAGE_PREFIX}-python-setuptools
-    ${MINGW_PACKAGE_PREFIX}-cc
-    ${MINGW_PACKAGE_PREFIX}-python-wheel)
-source=(https://github.com/py2exe/${_realname}/archive/v${pkgver}.tar.gz
+  "${MINGW_PACKAGE_PREFIX}-python-build"
+  "${MINGW_PACKAGE_PREFIX}-python-installer"
+  "${MINGW_PACKAGE_PREFIX}-python-setuptools"
+  "${MINGW_PACKAGE_PREFIX}-cc")
+source=(https://github.com/py2exe/${_realname}/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz
         001-setup-fix.patch
         002-mingw-fix.patch)
-sha256sums=('a07b927460a86b45b78751d84fa1a28f0b6008e925edd34b61126f1ecfe1d60e'
-            '80f69d375eb0dc33b21f9de9601ca6ee4b5e8c22e088101f96796bc22ecde19a'
-            'fdf6fe050f6ca0cbc3f1c4136378e81b69ef3332a83e4d5bde72ad7228284be7')
+sha256sums=('ef2907f5b82ec8b2259bea41a2d7d798ecd67aa4a92a74a06550b9123dadd8a4'
+            'dabe972096c34f5e9ffd0023794807cc665a8870cd6bef6985f9d7197ec4d717'
+            '3ac8b13f12ca901a07f3ca87b494f5c97ea31192715b6f1fb36563b458462a0f')
 
 prepare() {
-  rm -rf python-build-${MSYSTEM} | true
-  cp -r "${_realname}-${pkgver}" "python-build-${MSYSTEM}"
-
-  cd "${srcdir}/python-build-${MSYSTEM}"
+  cd "${srcdir}/${_realname}-${pkgver}"
   patch -p1 -i ${srcdir}/001-setup-fix.patch
   patch -p1 -i ${srcdir}/002-mingw-fix.patch
 }
 
 build() {
-  msg "Python build for ${MSYSTEM}"
+  # build separate zipextimporter wheel for _memimporter pyd (#20382)
+  cp -r "${_realname}-${pkgver}" "python-build-${MSYSTEM}-zipextimporter"
+  pushd "${srcdir}/python-build-${MSYSTEM}-zipextimporter"
+  mv setup_zipextimporter.py setup.py
+  ${MINGW_PREFIX}/bin/python -m build --wheel --skip-dependency-check --no-isolation
+  popd
+
+  rm -rf python-build-${MSYSTEM} | true
+  cp -r "${_realname}-${pkgver}" "python-build-${MSYSTEM}"
   cd "${srcdir}/python-build-${MSYSTEM}"
-  ${MINGW_PREFIX}/bin/python setup.py build
+  ${MINGW_PREFIX}/bin/python -m build --wheel --skip-dependency-check --no-isolation
 }
 
 package() {
+  cd "${srcdir}/python-build-${MSYSTEM}-zipextimporter"
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+    ${MINGW_PREFIX}/bin/python -m installer --prefix=${MINGW_PREFIX} \
+    --destdir="${pkgdir}" dist/*.whl
+
+  local _pythonpath=`python -c "import sysconfig; print(sysconfig.get_path('platlib'))"`
+  local _site_packages="${pkgdir}$(cygpath ${_pythonpath})"
+  rm -rf "${_site_packages}"/zipextimporter*
+
   cd "${srcdir}/python-build-${MSYSTEM}"
-  MSYS2_ARG_CONV_EXCL="--prefix=;--install-scripts=;--install-platlib=" \
-  ${MINGW_PREFIX}/bin/python setup.py install --prefix=${MINGW_PREFIX} \
-    --root="${pkgdir}" --optimize=1 --skip-build
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+    ${MINGW_PREFIX}/bin/python -m installer --prefix=${MINGW_PREFIX} \
+    --destdir="${pkgdir}" dist/*.whl
 
   install -Dm644 LICENSE.txt "${pkgdir}${MINGW_PREFIX}/share/licenses/python-${_realname}/LICENSE"
 }

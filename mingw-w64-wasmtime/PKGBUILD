@@ -1,0 +1,132 @@
+# Maintainer: Maksim Bondarenkov <maksapple2306@gmail.com>
+
+_realname=wasmtime
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-lib${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}-docs")
+pkgver=28.0.0
+pkgrel=1
+pkgdesc="A fast and secure runtime for WebAssembly (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url='https://wasmtime.dev'
+msys2_repository_url='https://github.com/bytecodealliance/wasmtime'
+msys2_references=(
+  'purl: pkg:cargo/wasmtime'
+)
+license=('spdx:Apache-2.0')
+depends=("${MINGW_PACKAGE_PREFIX}-zstd")
+makedepends=("${MINGW_PACKAGE_PREFIX}-rust"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-zstd"
+             "${MINGW_PACKAGE_PREFIX}-mdbook"
+             'git')
+source=("git+${msys2_repository_url}.git#tag=v${pkgver}"
+        "zstd-sys.tar.gz::https://crates.io/api/v1/crates/zstd-sys/2.0.9+zstd.1.5.5/download"
+        "zstd-sys-remove-statik.patch")
+sha256sums=('c02d4588616a1f779edd7e396fd4364c285a2e335e1ff52e543864c6b9cc823e'
+            '9e16efa8a874a0481a574084d34cc26fdb3b99627480f785888deb6386506656'
+            '48f4900ceb02d3aaf9a1020f33d56629156e96759f456c0e7ca18bfcf910767b')
+
+prepare() {
+  cd "${_realname}"
+
+  git submodule update --init --recursive
+  patch -d ../zstd-sys-2.0.9+zstd.1.5.5 -i ../zstd-sys-remove-statik.patch
+  cat >> Cargo.toml <<END
+
+[patch.crates-io]
+zstd-sys = { path = "../zstd-sys-2.0.9+zstd.1.5.5" }
+END
+
+  cargo update -p zstd-sys -p cc
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  export ZSTD_SYS_USE_PKG_CONFIG=1
+  export WINAPI_NO_BUNDLED_LIBRARIES=1
+
+  declare -a extra_config
+  if check_option "debug" "n"; then
+    extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    cmake \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+      -DBUILD_SHARED_LIBS=ON \
+      -DWASMTIME_FASTEST_RUNTIME=ON \
+      -DWASMTIME_TARGET="$(rustc -vV | sed -n 's/host: //p')" \
+      "${extra_config[@]}" \
+      -S "${_realname}/crates/c-api" \
+      -B "build-${MSYSTEM}"
+
+  cmake --build "build-${MSYSTEM}"
+
+  cargo build \
+    --frozen \
+    --profile fastest-runtime \
+    -p wasmtime-cli \
+    --manifest-path "${_realname}/Cargo.toml"
+
+  mdbook build "${_realname}/docs"
+}
+
+check() {
+  cd "${_realname}"
+
+  cargo test --frozen --profile fastest-runtime -p wasmtime-cli
+}
+
+package_wasmtime() {
+  cd "${_realname}"
+
+  cargo install \
+    --offline \
+    --no-track \
+    --frozen \
+    --path . \
+    --root "${pkgdir}${MINGW_PREFIX}" \
+    --profile fastest-runtime
+
+  install -Dm644 LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+}
+
+package_libwasmtime() {
+  pkgdesc+=' (C-API)'
+  conflicts=("${MINGW_PACKAGE_PREFIX}-libwasmer")
+  options=('!staticlibs')
+
+  DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}"
+  install -Dm644 "build-${MSYSTEM}/include/wasmtime/conf.h" \
+    "${pkgdir}${MINGW_PREFIX}/include/wasmtime/conf.h"
+  install -d "${pkgdir}${MINGW_PREFIX}/bin"
+
+  mv "${pkgdir}${MINGW_PREFIX}/lib/wasmtime.dll" "${pkgdir}${MINGW_PREFIX}/bin/wasmtime.dll"
+
+  install -Dm644 "${_realname}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/lib${_realname}/LICENSE"
+}
+
+package_wasmtime-docs() {
+  pkgdesc+=" (Documentation)"
+  depends=()
+
+  install -d "${pkgdir}${MINGW_PREFIX}/share/doc/${_realname}/html/"
+  cp -r -t "${pkgdir}${MINGW_PREFIX}/share/doc/${_realname}/html/" "${_realname}"/docs/book/*
+}
+
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done

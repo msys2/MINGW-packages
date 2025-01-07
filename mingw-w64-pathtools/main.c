@@ -5,9 +5,11 @@
  */
 
 #include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "pathtools.h"
-#include "msys2_relocate.h"
 
 void
 sanitise_path_debug(char const * path, char const * expected)
@@ -31,7 +33,7 @@ sanitise_path_debug(char const * path, char const * expected)
 void
 simplify_path_debug (const char * input, const char * expected)
 {
-  char * input_copy = malloc_copy_string (input);
+  char * input_copy = _strdup (input);
   if ( input_copy == NULL )
   {
     _exit(1);
@@ -156,7 +158,8 @@ int main(int argc, char *argv[])
 
   sanitise_path_debug ("C:\\windows\\path", "C:/windows/path");
   sanitise_path_debug ("", "");
-  sanitise_path_debug ("\\\\", "/");
+  sanitise_path_debug ("\\\\", "//");
+  sanitise_path_debug ("a\\\\", "a/");
 
   char const * win_path = X509_get_default_private_dir ();
   printf ("%s -> %s\n", X509_PRIVATE_DIR, win_path);

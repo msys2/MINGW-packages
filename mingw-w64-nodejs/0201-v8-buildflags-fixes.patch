@@ -1,0 +1,172 @@
+diff --git a/deps/v8/BUILD.gn b/deps/v8/BUILD.gn
+index 19e0d2b5..6ba7ff0f 100644
+--- a/deps/v8/BUILD.gn
++++ b/deps/v8/BUILD.gn
+@@ -1487,18 +1487,22 @@ config("toolchain") {
+ 
+   if (v8_current_cpu == "x86") {
+     defines += [ "V8_TARGET_ARCH_IA32" ]
+-    if (is_win) {
++    if (is_msvc) {
+       # Ensure no surprising artifacts from 80bit double math with x86.
+       cflags += [ "/arch:SSE2" ]
++    } else {
++      cflags += [ "-msse2" ]
+     }
+   }
+   if (v8_current_cpu == "x64") {
+     defines += [ "V8_TARGET_ARCH_X64" ]
+-    if (is_win) {
++    if (is_msvc) {
+       # Increase the initial stack size. The default is 1MB, this is 2MB. This
+       # applies only to executables and shared libraries produced by V8 since
+       # ldflags are not pushed to dependants.
+       ldflags += [ "/STACK:2097152" ]
++    } else {
++      ldflags += [ "-Wl,--stack,2097152" ]
+     }
+   }
+   if (is_android && v8_android_log_stdout) {
+@@ -1526,7 +1530,7 @@ config("toolchain") {
+   }
+ 
+   if (v8_no_inline) {
+-    if (is_win) {
++    if (is_msvc) {
+       cflags += [ "/Ob0" ]
+     } else {
+       cflags += [
+@@ -1553,7 +1557,7 @@ config("toolchain") {
+     }
+   }
+ 
+-  if (is_clang || !is_win) {
++  if (is_clang || !is_msvc) {
+     cflags += [
+       # On clang and gcc, disable warnings about offsetof being used on
+       # non-standard-layout types. offsetof is only specified for
+@@ -1564,7 +1568,15 @@ config("toolchain") {
+     ]
+   }
+ 
+-  if (is_win) {
++  if (is_clang && !is_msvc) {
++    cflags += [
++      # Disable warnings on unused variables
++      "-Wno-unused-variable",
++      "-Wno-deprecated-this-capture",
++    ]
++  }
++
++  if (is_msvc) {
+     cflags += [
+       "/wd4245",  # Conversion with signed/unsigned mismatch.
+       "/wd4267",  # Conversion with possible loss of data.
+@@ -1586,7 +1598,7 @@ config("toolchain") {
+     ]
+   }
+ 
+-  if (!is_clang && is_win) {
++  if (!is_clang && is_msvc) {
+     cflags += [
+       "/wd4506",  # Benign "no definition for inline function"
+ 
+@@ -1727,7 +1739,7 @@ config("toolchain") {
+     ]
+   }
+ 
+-  if (!is_clang && !is_win) {
++  if (!is_clang && !is_msvc) {
+     cflags += [
+       # Disable gcc warnings for optimizations based on the assumption that
+       # signed overflow does not occur. Generates false positives (see
+@@ -1768,6 +1780,11 @@ config("toolchain") {
+       # Disable dangling pointer warnings, which are often false positives when
+       # using scopes.
+       "-Wno-dangling-pointer",
++    ],
++    cflags_cc = [
++      # Disable some more warnings on gcc c++20
++      "-Wno-deprecated-declarations",
++      "-Wno-template-id-cdtor",
+     ]
+   }
+ 
+diff --git a/tools/v8_gypfiles/features.gypi b/tools/v8_gypfiles/features.gypi
+index 18479d7d..8afbdb69 100644
+--- a/tools/v8_gypfiles/features.gypi
++++ b/tools/v8_gypfiles/features.gypi
+@@ -41,6 +41,11 @@
+       }, {
+         'is_win': 0,
+       }],
++      ['OS == "msvc"', { # Dummy OS, to differentiate between MSVC and MinGW
++        'is_msvc': 1,
++      }, {
++        'is_msvc': 0,
++      }],
+       ['OS == "fuchsia"', {
+         'is_fuchsia': 1,
+       }, {
+diff --git a/tools/v8_gypfiles/toolchain.gypi b/tools/v8_gypfiles/toolchain.gypi
+index e75ccf52..4089bc56 100644
+--- a/tools/v8_gypfiles/toolchain.gypi
++++ b/tools/v8_gypfiles/toolchain.gypi
+@@ -131,7 +131,7 @@
+     ],
+     'cflags!': ['-Wall', '-Wextra'],
+     'conditions': [
+-      ['clang==0 and OS!="win"', {
++      ['clang==0 and OS!="msvc"', {
+         'cflags': [
+           # In deps/v8/BUILD.gn: if (!is_clang && !is_win) { cflags += [...] }
+           '-Wno-strict-overflow',
+@@ -147,8 +147,12 @@
+           # On by default in Clang and V8 requires it at least for arm64.
+           '-flax-vector-conversions',
+         ],
++        'cflags_cc': [
++          '-Wno-deprecated-declarations',
++          '-Wno-template-id-cdtor',
++        ],
+       }],
+-      ['clang==1 or OS!="win"', {
++      ['clang==1 or OS!="msvc"', {
+         'cflags_cc': [
+           # In deps/v8/BUILD.gn: if (is_clang || !is_win) { cflags += [...] }
+           '-Wno-invalid-offsetof',
+@@ -163,6 +167,12 @@
+           },
+         },
+       }],
++      ['clang==1 and OS!="msvc"', {
++        'cflags_cc': [
++          '-Wno-unused-variable',
++          '-Wno-deprecated-this-capture',
++        ],
++      }],
+       ['v8_target_arch=="arm"', {
+         'defines': [
+           'V8_TARGET_ARCH_ARM',
+diff --git a/tools/v8_gypfiles/v8.gyp b/tools/v8_gypfiles/v8.gyp
+index 226a3f6d..eccebfe3 100644
+--- a/tools/v8_gypfiles/v8.gyp
++++ b/tools/v8_gypfiles/v8.gyp
+@@ -48,7 +48,7 @@
+       'type': 'none',
+       'toolsets': ['host', 'target'],
+       'conditions': [
+-        ['OS=="win"', {
++        ['OS=="msvc"', {
+           'direct_dependent_settings': {
+             'msvs_precompiled_header': '<(V8_ROOT)/../../tools/msvs/pch/v8_pch.h',
+             'msvs_precompiled_source': '<(V8_ROOT)/../../tools/msvs/pch/v8_pch.cc',
+@@ -487,7 +487,7 @@
+             'v8_libplatform',
+           ]
+         }],
+-        ['OS=="win" and clang==1', {
++        ['OS=="msvc" and clang==1', {
+           'actions': [
+             {
+               'action_name': 'asm_to_inline_asm',

@@ -1,0 +1,306 @@
+diff --git a/src/Makefile b/src/Makefile
+index 30d64be..bfa2231 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -624,6 +624,7 @@ depend:
+ 	@$(HOST_CC) $(HOST_ACFLAGS) -MM *.c host/*.c | \
+ 	  sed -e "s| [^ ]*/dasm_\S*\.h||g" \
+ 	      -e "s|^\([^l ]\)|host/\1|" \
++	      -e "s|host/iscygpty|iscygpty|" \
+ 	      -e "s| lj_target_\S*\.h| lj_target_*.h|g" \
+ 	      -e "s| lj_emit_\S*\.h| lj_emit_*.h|g" \
+ 	      -e "s| lj_asm_\S*\.h| lj_asm_*.h|g" >Makefile.dep
+@@ -717,9 +718,9 @@ $(LUAJIT_SO): $(LJVMCORE_O)
+ 	$(Q)$(TARGET_LD) $(TARGET_ASHLDFLAGS) -o $@ $(LJVMCORE_DYNO) $(TARGET_ALIBS)
+ 	$(Q)$(TARGET_STRIP) $@
+ 
+-$(LUAJIT_T): $(TARGET_O) $(LUAJIT_O) $(TARGET_DEP)
++$(LUAJIT_T): $(TARGET_O) $(LUAJIT_O) iscygpty.o $(TARGET_DEP)
+ 	$(E) "LINK      $@"
+-	$(Q)$(TARGET_LD) $(TARGET_ALDFLAGS) -o $@ $(LUAJIT_O) $(TARGET_O) $(TARGET_ALIBS)
++	$(Q)$(TARGET_LD) $(TARGET_ALDFLAGS) -o $@ $(LUAJIT_O) iscygpty.o $(TARGET_O) $(TARGET_ALIBS)
+ 	$(Q)$(TARGET_STRIP) $@
+ 	$(E) "OK        Successfully built LuaJIT"
+ 
+diff --git a/src/Makefile.dep b/src/Makefile.dep
+index 400ef8b..4734a23 100644
+--- a/src/Makefile.dep
++++ b/src/Makefile.dep
+@@ -1,3 +1,4 @@
++iscygpty.o: iscygpty.c iscygpty.h
+ lib_aux.o: lib_aux.c lua.h luaconf.h lauxlib.h lj_obj.h lj_def.h \
+  lj_arch.h lj_err.h lj_errmsg.h lj_state.h lj_trace.h lj_jit.h lj_ir.h \
+  lj_dispatch.h lj_bc.h lj_traceerr.h lj_lib.h lj_vmevent.h
+@@ -241,7 +242,8 @@ ljamalg.o: ljamalg.c lua.h luaconf.h lauxlib.h lj_assert.c lj_obj.h \
+  lib_aux.c lib_base.c lj_libdef.h lib_math.c lib_string.c lib_table.c \
+  lib_io.c lib_os.c lib_package.c lib_debug.c lib_bit.c lib_jit.c \
+  lib_ffi.c lib_buffer.c lib_init.c
+-luajit.o: luajit.c lua.h luaconf.h lauxlib.h lualib.h luajit.h lj_arch.h
++luajit.o: luajit.c lua.h luaconf.h lauxlib.h lualib.h luajit.h lj_arch.h \
++ iscygpty.h
+ host/buildvm.o: host/buildvm.c host/buildvm.h lj_def.h lua.h luaconf.h \
+  lj_arch.h lj_obj.h lj_def.h lj_arch.h lj_gc.h lj_obj.h lj_bc.h lj_ir.h \
+  lj_ircall.h lj_ir.h lj_jit.h lj_frame.h lj_bc.h lj_dispatch.h lj_ctype.h \
+diff --git b/src/iscygpty.c b/src/iscygpty.c
+new file mode 100644
+index 0000000..722f88f
+--- /dev/null
++++ b/src/iscygpty.c
+@@ -0,0 +1,185 @@
++/*
++ * iscygpty.c -- part of ptycheck
++ * https://github.com/k-takata/ptycheck
++ *
++ * Copyright (c) 2015-2017 K.Takata
++ *
++ * You can redistribute it and/or modify it under the terms of either
++ * the MIT license (as described below) or the Vim license.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining
++ * a copy of this software and associated documentation files (the
++ * "Software"), to deal in the Software without restriction, including
++ * without limitation the rights to use, copy, modify, merge, publish,
++ * distribute, sublicense, and/or sell copies of the Software, and to
++ * permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be
++ * included in all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
++ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
++ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
++ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
++ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
++ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
++ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++ */
++
++#ifdef _WIN32
++
++#include <ctype.h>
++#include <io.h>
++#include <wchar.h>
++#include <windows.h>
++
++#ifdef USE_FILEEXTD
++/* VC 7.1 or earlier doesn't support SAL. */
++# if !defined(_MSC_VER) || (_MSC_VER < 1400)
++#  define __out
++#  define __in
++#  define __in_opt
++# endif
++/* Win32 FileID API Library:
++ * http://www.microsoft.com/en-us/download/details.aspx?id=22599
++ * Needed for WinXP. */
++# include <fileextd.h>
++#else /* USE_FILEEXTD */
++/* VC 8 or earlier. */
++# if defined(_MSC_VER) && (_MSC_VER < 1500)
++#  ifdef ENABLE_STUB_IMPL
++#   define STUB_IMPL
++#  else
++#   error "Win32 FileID API Library is required for VC2005 or earlier."
++#  endif
++# endif
++#endif /* USE_FILEEXTD */
++
++
++#include "iscygpty.h"
++
++//#define USE_DYNFILEID
++#ifdef USE_DYNFILEID
++typedef BOOL (WINAPI *pfnGetFileInformationByHandleEx)(
++		HANDLE                    hFile,
++		FILE_INFO_BY_HANDLE_CLASS FileInformationClass,
++		LPVOID                    lpFileInformation,
++		DWORD                     dwBufferSize
++);
++static pfnGetFileInformationByHandleEx pGetFileInformationByHandleEx = NULL;
++
++# ifndef USE_FILEEXTD
++static BOOL WINAPI stub_GetFileInformationByHandleEx(
++		HANDLE                    hFile,
++		FILE_INFO_BY_HANDLE_CLASS FileInformationClass,
++		LPVOID                    lpFileInformation,
++		DWORD                     dwBufferSize
++		)
++{
++	return FALSE;
++}
++# endif
++
++static void setup_fileid_api(void)
++{
++	if (pGetFileInformationByHandleEx != NULL) {
++		return;
++	}
++	pGetFileInformationByHandleEx = (pfnGetFileInformationByHandleEx)
++		GetProcAddress(GetModuleHandle(TEXT("kernel32.dll")),
++				"GetFileInformationByHandleEx");
++	if (pGetFileInformationByHandleEx == NULL) {
++# ifdef USE_FILEEXTD
++		pGetFileInformationByHandleEx = GetFileInformationByHandleEx;
++# else
++		pGetFileInformationByHandleEx = stub_GetFileInformationByHandleEx;
++# endif
++	}
++}
++#else
++# define pGetFileInformationByHandleEx	GetFileInformationByHandleEx
++# define setup_fileid_api()
++#endif
++
++
++#define is_wprefix(s, prefix) \
++	(wcsncmp((s), (prefix), sizeof(prefix) / sizeof(WCHAR) - 1) == 0)
++
++/* Check if the fd is a cygwin/msys's pty. */
++int is_cygpty(int fd)
++{
++#ifdef STUB_IMPL
++	return 0;
++#else
++	HANDLE h;
++	int size = sizeof(FILE_NAME_INFO) + sizeof(WCHAR) * (MAX_PATH - 1);
++	FILE_NAME_INFO *nameinfo;
++	WCHAR *p = NULL;
++
++	setup_fileid_api();
++
++	h = (HANDLE) _get_osfhandle(fd);
++	if (h == INVALID_HANDLE_VALUE) {
++		return 0;
++	}
++	/* Cygwin/msys's pty is a pipe. */
++	if (GetFileType(h) != FILE_TYPE_PIPE) {
++		return 0;
++	}
++	nameinfo = malloc(size + sizeof(WCHAR));
++	if (nameinfo == NULL) {
++		return 0;
++	}
++	/* Check the name of the pipe:
++	 * '\{cygwin,msys}-XXXXXXXXXXXXXXXX-ptyN-{from,to}-master' */
++	if (pGetFileInformationByHandleEx(h, FileNameInfo, nameinfo, size)) {
++		nameinfo->FileName[nameinfo->FileNameLength / sizeof(WCHAR)] = L'\0';
++		p = nameinfo->FileName;
++		if (is_wprefix(p, L"\\cygwin-")) {		/* Cygwin */
++			p += 8;
++		} else if (is_wprefix(p, L"\\msys-")) {	/* MSYS and MSYS2 */
++			p += 6;
++		} else {
++			p = NULL;
++		}
++		if (p != NULL) {
++			while (*p && isxdigit(*p))	/* Skip 16-digit hexadecimal. */
++				++p;
++			if (is_wprefix(p, L"-pty")) {
++				p += 4;
++			} else {
++				p = NULL;
++			}
++		}
++		if (p != NULL) {
++			while (*p && isdigit(*p))	/* Skip pty number. */
++				++p;
++			if (is_wprefix(p, L"-from-master")) {
++				//p += 12;
++			} else if (is_wprefix(p, L"-to-master")) {
++				//p += 10;
++			} else {
++				p = NULL;
++			}
++		}
++	}
++	free(nameinfo);
++	return (p != NULL);
++#endif /* STUB_IMPL */
++}
++
++/* Check if at least one cygwin/msys pty is used. */
++int is_cygpty_used(void)
++{
++	int fd, ret = 0;
++
++	for (fd = 0; fd < 3; fd++) {
++		ret |= is_cygpty(fd);
++	}
++	return ret;
++}
++
++#endif /* _WIN32 */
++
++/* vim: set ts=4 sw=4: */
+diff --git b/src/iscygpty.h b/src/iscygpty.h
+new file mode 100644
+index 0000000..82fd0af
+--- /dev/null
++++ b/src/iscygpty.h
+@@ -0,0 +1,41 @@
++/*
++ * iscygpty.h -- part of ptycheck
++ * https://github.com/k-takata/ptycheck
++ *
++ * Copyright (c) 2015-2017 K.Takata
++ *
++ * You can redistribute it and/or modify it under the terms of either
++ * the MIT license (as described below) or the Vim license.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining
++ * a copy of this software and associated documentation files (the
++ * "Software"), to deal in the Software without restriction, including
++ * without limitation the rights to use, copy, modify, merge, publish,
++ * distribute, sublicense, and/or sell copies of the Software, and to
++ * permit persons to whom the Software is furnished to do so, subject to
++ * the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be
++ * included in all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
++ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
++ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
++ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
++ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
++ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
++ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++ */
++
++#ifndef _ISCYGPTY_H
++#define _ISCYGPTY_H
++
++#ifdef _WIN32
++int is_cygpty(int fd);
++int is_cygpty_used(void);
++#else
++#define is_cygpty(fd)		0
++#define is_cygpty_used()	0
++#endif
++
++#endif /* _ISCYGPTY_H */
+diff --git a/src/luajit.c b/src/luajit.c
+index 6dd6402..b11b14f 100644
+--- a/src/luajit.c
++++ b/src/luajit.c
+@@ -19,15 +19,17 @@
+ 
+ #include "lj_arch.h"
+ 
++#include "iscygpty.h"
++
+ #if LJ_TARGET_POSIX
+ #include <unistd.h>
+-#define lua_stdin_is_tty()	isatty(0)
++#define lua_stdin_is_tty()	isatty(0) || is_cygpty(0)
+ #elif LJ_TARGET_WINDOWS
+ #include <io.h>
+ #ifdef __BORLANDC__
+-#define lua_stdin_is_tty()	isatty(_fileno(stdin))
++#define lua_stdin_is_tty()	isatty(_fileno(stdin)) || is_cygpty(_fileno(stdin))
+ #else
+-#define lua_stdin_is_tty()	_isatty(_fileno(stdin))
++#define lua_stdin_is_tty()	_isatty(_fileno(stdin)) || is_cygpty(_fileno(stdin))
+ #endif
+ #else
+ #define lua_stdin_is_tty()	1

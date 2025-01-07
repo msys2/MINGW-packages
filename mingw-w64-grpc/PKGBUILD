@@ -3,37 +3,76 @@
 
 _realname=grpc
 pkgbase=mingw-w64-${_realname}
-pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-pkgver=1.51.1
-pkgrel=4
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-python-grpcio")
+pkgver=1.68.2
+pkgrel=1
+_opencensus_proto_ver=0.4.1
 pkgdesc="Google's high performance, open source, general RPC framework (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url='https://www.grpc.io/'
+msys2_repository_url="https://github.com/grpc/grpc"
+msys2_references=(
+  'archlinux: grpc'
+  "cpe: cpe:/a:grpc:grpc"
+)
 license=('spdx:Apache-2.0')
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-abseil-cpp"
-         "${MINGW_PACKAGE_PREFIX}-c-ares"
          "${MINGW_PACKAGE_PREFIX}-openssl"
-         "${MINGW_PACKAGE_PREFIX}-protobuf"
-         "${MINGW_PACKAGE_PREFIX}-zlib"
-         "${MINGW_PACKAGE_PREFIX}-re2")
+         "${MINGW_PACKAGE_PREFIX}-re2"
+         "${MINGW_PACKAGE_PREFIX}-zlib")
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-cmake"
-             "${MINGW_PACKAGE_PREFIX}-ninja")
-source=("${_realname}-${pkgver}.tar.gz::https://github.com/grpc/grpc/archive/v${pkgver}.tar.gz")
-sha256sums=('b55696fb249669744de3e71acc54a9382bea0dce7cd5ba379b356b12b82d4229')
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-c-ares"
+             "${MINGW_PACKAGE_PREFIX}-protobuf"
+             "${MINGW_PACKAGE_PREFIX}-cython"
+             "${MINGW_PACKAGE_PREFIX}-python-build"
+             "${MINGW_PACKAGE_PREFIX}-python-installer"
+             "${MINGW_PACKAGE_PREFIX}-python-setuptools")
+source=("https://github.com/grpc/grpc/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz"
+        "https://github.com/census-instrumentation/opencensus-proto/archive/v${_opencensus_proto_ver}/opencensus-proto-${_opencensus_proto_ver}.tar.gz"
+        "001-fix-building-shared-libraries-with-clang.patch"
+        "002-fix-building-python-module.patch"
+        "003-fix-build-shared-libs-on-mingw.patch")
+sha256sums=('afbc5d78d6ba6d509cc6e264de0d49dcd7304db435cbf2d630385bacf49e066c'
+            'e3d89f7f9ed84c9b6eee818c2e9306950519402bf803698b15c310b77ca2f0f3'
+            'cf4064ad294bbddf15ac0611a4920dfa133a54ccaebbf813ed4faef6b20d142b'
+            'c08e9a6a4dd569155452660825c8b42a06bbc6eb1e924af98796b138e6698e93'
+            'd1b8334fbd97c833f37f03f222bd443a77772409586c1324cb5bb1b5d85037b3')
 noextract=(${_realname}-${pkgver}.tar.gz)
 
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+
 prepare() {
+  echo "Extracting ${_realname}-${pkgver}.tar.gz ..."
   tar -xzf "${srcdir}"/${_realname}-${pkgver}.tar.gz -C "${srcdir}" || true
 
   cd "${srcdir}"/${_realname}-${pkgver}
+  # Suggested by @mstorsjo in https://github.com/msys2/MINGW-packages/pull/16378#issuecomment-1481002915
+  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+    apply_patch_with_msg \
+      001-fix-building-shared-libraries-with-clang.patch
+  fi
+
+  apply_patch_with_msg \
+    002-fix-building-python-module.patch \
+    003-fix-build-shared-libs-on-mingw.patch
+
+  rm -rf third_party/opencensus-proto
+  mv "${srcdir}"/opencensus-proto-${_opencensus_proto_ver} third_party/opencensus-proto
 }
 
 build() {
-  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
-
   declare -a extra_config
   if check_option "debug" "n"; then
     extra_config+=("-DCMAKE_BUILD_TYPE=Release")
@@ -43,7 +82,8 @@ build() {
 
   # remove __USE_MINGW_ANSI_STDIO=1 define, it breaks grpc string handling for
   # cases like 'gpr_log(GPR_DEBUG, "Failed to free %" PRIuPTR ...'
-  CPPFLAGS="${CPPFLAGS//-D__USE_MINGW_ANSI_STDIO=1/}"
+  CFLAGS="${CFLAGS//-Wp,-D__USE_MINGW_ANSI_STDIO=1/}"
+  CXXFLAGS="${CXXFLAGS//-Wp,-D__USE_MINGW_ANSI_STDIO=1/}"
   # add STRSAFE_NO_DEPRECATE define, otherwise strsafe breaks libc++ headers
   CXXFLAGS+=" -DSTRSAFE_NO_DEPRECATE"
   case "${CARCH}" in
@@ -53,24 +93,44 @@ build() {
     ;;
   esac
 
+  CXXFLAGS+=" -w" \
+  LDFLAGS+=" -Wl,--export-all-symbols" \
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
     ${MINGW_PREFIX}/bin/cmake.exe \
       -Wno-dev \
       -GNinja \
       -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
       "${extra_config[@]}" \
-      -DBUILD_SHARED_LIBS="$( [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] && echo OFF || echo ON )" \
-      -DCMAKE_CXX_STANDARD=17 \
+      -DBUILD_SHARED_LIBS=ON \
+      -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
       -DCMAKE_SKIP_RPATH=ON \
+      -DgRPC_BUILD_TESTS=OFF \
       -DgRPC_ZLIB_PROVIDER="package" \
       -DgRPC_CARES_PROVIDER="package" \
       -DgRPC_RE2_PROVIDER="package" \
       -DgRPC_SSL_PROVIDER="package" \
       -DgRPC_PROTOBUF_PROVIDER="package" \
       -DgRPC_ABSL_PROVIDER="package" \
-      ../${_realname}-${pkgver}
+      -S "${_realname}-${pkgver}" \
+      -B "build-${MSYSTEM}"
 
-  ${MINGW_PREFIX}/bin/cmake.exe --build .
+  ${MINGW_PREFIX}/bin/cmake.exe --build "build-${MSYSTEM}"
+
+
+  rm -rf "${srcdir}"/python-build-${MSYSTEM}
+  cp -r "${srcdir}/${_realname}-${pkgver}" "${srcdir}"/python-build-${MSYSTEM}
+  cd "${srcdir}"/python-build-${MSYSTEM}
+
+  GRPC_PYTHON_BUILD_WITH_CYTHON=1 \
+  GRPC_PYTHON_BUILD_SYSTEM_OPENSSL=1 \
+  GRPC_PYTHON_BUILD_SYSTEM_ZLIB=1 \
+  GRPC_PYTHON_BUILD_SYSTEM_CARES=1 \
+  GRPC_PYTHON_BUILD_SYSTEM_RE2=1 \
+  GRPC_PYTHON_BUILD_SYSTEM_ABSL=1 \
+  GRPC_BUILD_WITH_BORING_SSL_ASM=0 \
+  GRPC_PYTHON_CFLAGS="-DGPR_MSVC_EMPTY_BASE_CLASS_WORKAROUND='' -DSTRSAFE_NO_DEPRECATE" \
+  LDFLAGS="$LDFLAGS -L../build-${MSYSTEM}" \
+  ${MINGW_PREFIX}/bin/python -m build --wheel --skip-dependency-check --no-isolation
 }
 
 check() {
@@ -79,10 +139,37 @@ check() {
   #${MINGW_PREFIX}/bin/cmake.exe --build . --target test
 }
 
-package() {
+package_grpc() {
   cd "${srcdir}/build-${MSYSTEM}"
+  depends+=("${MINGW_PACKAGE_PREFIX}-c-ares"
+            "${MINGW_PACKAGE_PREFIX}-protobuf")
+  conflicts=("${MINGW_PACKAGE_PREFIX}-libgpr")
 
   DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install .
 
   install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }
+
+package_python-grpcio() {
+  pkgdesc='Python language bindings for grpc, remote procedure call (RPC) framework (mingw-w64)'
+  depends+=("${MINGW_PACKAGE_PREFIX}-python")
+
+  cd "${srcdir}"/python-build-${MSYSTEM}
+
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+    ${MINGW_PREFIX}/bin/python -m installer --prefix=${MINGW_PREFIX} \
+    --destdir="${pkgdir}" dist/*.whl
+
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/python-grpcio/LICENSE"
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;

@@ -7,7 +7,7 @@ pkgver=1.0.0
 pkgrel=1
 pkgdesc="Some package (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url='https://www.somepackage.org/'
 license=('LICENSE')
 depends=("${MINGW_PACKAGE_PREFIX}-python")
@@ -22,7 +22,7 @@ sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc')
 
 prepare() {
-  cd "${srcdir}/${_realname}-${pkgver}"
+  cd "${_realname}-${pkgver}"
 
   patch -Np1 -i "${srcdir}/0001-A-really-important-fix.patch"
   patch -Np1 -i "${srcdir}/0002-A-less-important-fix.patch"
@@ -33,28 +33,24 @@ prepare() {
 }
 
 build() {
-  msg "Python build for ${MSYSTEM}"
-  cd "${srcdir}"
   cp -r "${_realname}-${pkgver}" "python-build-${MSYSTEM}" && cd "python-build-${MSYSTEM}"
 
-  ${MINGW_PREFIX}/bin/python -m build --wheel --skip-dependency-check --no-isolation
+  python -m build --wheel --skip-dependency-check --no-isolation
 }
 
 check() {
-  msg "Python test for ${MSYSTEM}"
-  cd "${srcdir}/python-build-${MSYSTEM}"
+  cd "python-build-${MSYSTEM}"
 
 # The test command will usually depend upon what is contained in the tox.ini file
 # or in the [testenv:py] section of the pyproject.toml file.
-  ${MINGW_PREFIX}/bin/python -m pytest
+  python -m pytest
 }
 
 package() {
-  msg "Python install for ${MSYSTEM}"
-  cd "${srcdir}/python-build-${MSYSTEM}"
+  cd "python-build-${MSYSTEM}"
 
   MSYS2_ARG_CONV_EXCL="--prefix=" \
-    ${MINGW_PREFIX}/bin/python -m installer --prefix=${MINGW_PREFIX} \
+    python -m installer --prefix=${MINGW_PREFIX} \
     --destdir="${pkgdir}" dist/*.whl
 
   install -Dm644 LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/python-${_realname}/LICENSE"

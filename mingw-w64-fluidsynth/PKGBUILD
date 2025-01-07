@@ -3,12 +3,16 @@
 _realname=fluidsynth
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=2.3.1
+pkgver=2.4.0
 pkgrel=1
 pkgdesc="A real-time software synthesizer based on the SoundFont 2 specifications (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url="https://www.fluidsynth.org/"
+msys2_repository_url='https://github.com/FluidSynth/fluidsynth'
+msys2_references=(
+  "cpe: cpe:/a:fluidsynth:fluidsynth"
+)
 license=('spdx:LGPL-2.1-or-later')
 depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-glib2"
@@ -16,19 +20,18 @@ depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-portaudio"
          "${MINGW_PACKAGE_PREFIX}-readline"
          "${MINGW_PACKAGE_PREFIX}-SDL2")
-makedepends=("${MINGW_PACKAGE_PREFIX}-pkg-config"
-             "${MINGW_PACKAGE_PREFIX}-ninja"
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-cmake"
-             "${MINGW_PACKAGE_PREFIX}-cc")
-options=('strip' 'staticlibs')
+             "${MINGW_PACKAGE_PREFIX}-ladspa-sdk"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf")
 source=("${_realname}-${pkgver}.tar.gz::https://github.com/FluidSynth/${_realname}/archive/v${pkgver}.tar.gz"
         "010-no-undefined.patch")
-sha256sums=('d734e4cf488be763cf123e5976f3154f0094815093eecdf71e0e9ae148431883'
+sha256sums=('fd4d216a3030abc56a339985ab0506328660cd77b2d71dd98c240c58c03d8f7f'
             '8b865ac2b0ea760f3c5fa640573793131a09cdc7af833ab6fd8f69b583e41153')
 noextract=("${_realname}-${pkgver}.tar.gz")
 
 prepare() {
-    cd ${srcdir}
     tar -xf "${_realname}-${pkgver}.tar.gz" || true
 
     cd "${_realname}-${pkgver}"
@@ -36,15 +39,37 @@ prepare() {
 }
 
 build() {
-  [[ -d "${srcdir}"/build-${MSYSTEM} ]] && rm -rf "${srcdir}"/build-${MSYSTEM}
-  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
-
   declare -a extra_config
   if check_option "debug" "n"; then
     extra_config+=("-DCMAKE_BUILD_TYPE=Release")
   else
     extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
   fi
+
+  local -a _static_flags=(
+    -DGIO_STATIC_COMPILATION
+    -DGLIB_STATIC_COMPILATION
+    -DGMODULE_STATIC_COMPILATION
+    -DGOBJECT_STATIC_COMPILATION
+  )
+
+  mkdir -p "${srcdir}"/build-${MSYSTEM}-static && cd "${srcdir}"/build-${MSYSTEM}-static
+
+  CFLAGS+=" ${_static_flags[@]}" \
+  CXXFLAGS+=" ${_static_flags[@]}" \
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    ${MINGW_PREFIX}/bin/cmake.exe \
+      -G'Ninja' \
+      -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+      "${extra_config[@]}" \
+      -DBUILD_SHARED_LIBS=OFF \
+      -Denable-portaudio=ON \
+      -Denable-dbus=OFF \
+      ../${_realname}-${pkgver}
+
+  ${MINGW_PREFIX}/bin/cmake.exe --build ./
+
+  mkdir -p "${srcdir}"/build-${MSYSTEM}-shared && cd "${srcdir}"/build-${MSYSTEM}-shared
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
     ${MINGW_PREFIX}/bin/cmake.exe \
@@ -60,13 +85,17 @@ build() {
 }
 
 package() {
-  cd "${srcdir}"/build-${MSYSTEM}
+  cd "${srcdir}"/build-${MSYSTEM}-static
   DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install ./
 
-  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
-  for pcfile in "${pkgdir}${MINGW_PREFIX}"/lib/pkgconfig/*.pc; do
-    sed -s "s|${PREFIX_WIN}|${MINGW_PREFIX}|g" -i "${pcfile}"
-  done
+  cd "${srcdir}"/build-${MSYSTEM}-shared
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install ./
+
+  local MINGW_PREFIX_WIN=$(cygpath -am ${MINGW_PREFIX})
+  find "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig" -type f -name '*.pc' \
+    -exec sed -i -e "s|${MINGW_PREFIX_WIN}|${MINGW_PREFIX}|g" \
+    -e "s|${MINGW_PREFIX}/include|\${prefix}/include|g" \
+    -e "s|${MINGW_PREFIX}/lib|\${prefix}/lib|g" {} \;
 
   install -vDm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }

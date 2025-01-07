@@ -1,0 +1,118 @@
+# Maintainer: Maksim Bondarenkov <maksapple2306@gmail.com>
+
+_realname=zed
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=0.167.1
+pkgrel=1
+pkgdesc="A high-performance, multiplayer code editor (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64')
+url='https://zed.dev'
+msys2_repository_url='https://github.com/zed-industries/zed'
+msys2_documentation_url='https://zed.dev/docs'
+license=('spdx:AGPL-3.0-or-later AND Apache-2.0 AND GPL-3.0-or-later')
+msys2_references=(
+  'anitya: 373275'
+  'archlinux: zed'
+  'aur'
+  'gentoo: app-editors/zed'
+)
+depends=("${MINGW_PACKAGE_PREFIX}-libgit2"
+         "${MINGW_PACKAGE_PREFIX}-zstd"
+         "${MINGW_PACKAGE_PREFIX}-nodejs")
+makedepends=("${MINGW_PACKAGE_PREFIX}-rust"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-protobuf"
+             "${MINGW_PACKAGE_PREFIX}-fontconfig"
+             "${MINGW_PACKAGE_PREFIX}-openssl"
+             #"${MINGW_PACKAGE_PREFIX}-sqlite3"
+             "${MINGW_PACKAGE_PREFIX}-cargo-about"
+             "${MINGW_PACKAGE_PREFIX}-lld"
+             'git')
+optdepends=("${MINGW_PACKAGE_PREFIX}-ollama: provides LLMs for assistance panel"
+            "${MINGW_PACKAGE_PREFIX}-clang-tools-extra: for a better C/C++ language support"
+            "${MINGW_PACKAGE_PREFIX}-rust-analyzer: for a better Rust language support"
+            "${MINGW_PACKAGE_PREFIX}-ruff: for 'Ruff' extension")
+# mesonlsp isn't available in CLANG environments
+if [[ ${MSYSTEM} != CLANG* ]]; then
+  optdepends+=("${MINGW_PACKAGE_PREFIX}-mesonlsp: for 'Meson' extension")
+fi
+source=("git+${msys2_repository_url}.git#tag=v${pkgver}"
+        "zstd-sys.tar.gz::https://crates.io/api/v1/crates/zstd-sys/2.0.13+zstd.1.5.6/download"
+        "zed-dont-vendor-cargo-about.patch"
+        "zstd-sys-remove-statik.patch"
+        "https://github.com/zed-industries/zed/commit/298b9df589c2be910676b59cb8213f98a8396fed.patch"
+        "https://github.com/zed-industries/zed/commit/95911aaa1450b6e613139298b676e15cdb928ec1.patch")
+sha256sums=('b8e0964dd69eacec029d2f9ef665c2a55ff347c69f70206d89d3e6a1b3ea92ff'
+            '38ff0f21cfee8f97d94cef41359e0c89aa6113028ab0291aa8ca0038995a95aa'
+            'b126b7a9e3cc8d3d68c49dbfc184d54691b10172dbfd3272d4c2f43424cfca5b'
+            '48f4900ceb02d3aaf9a1020f33d56629156e96759f456c0e7ca18bfcf910767b'
+            '42bee2aa82ba73a4939b028c800529ad005607a4abdf372a348bf02851034b8c'
+            'acff5a34927c4fb611e9f866fd2d339a737aecd1e2594eb4ff47e30b324b24ac')
+
+prepare() {
+  cd "${_realname}"
+
+  rm rust-toolchain.toml
+
+  # use system cargo about to generate license file
+  patch -Np1 -i "../zed-dont-vendor-cargo-about.patch"
+  # backport https://github.com/zed-industries/zed/pull/20853
+  patch -Np1 -i "../298b9df589c2be910676b59cb8213f98a8396fed.patch"
+  # backport https://github.com/zed-industries/zed/pull/22414 (requires previous patch)
+  patch -Np1 -i "../95911aaa1450b6e613139298b676e15cdb928ec1.patch"
+  # link system deps dynamically
+  patch -d "../zstd-sys-2.0.13+zstd.1.5.6" -i "../zstd-sys-remove-statik.patch"
+  # use patched *-sys crates
+  sed -i '/\[patch\.crates-io\]/a zstd-sys = { path = "../zstd-sys-2.0.13+zstd.1.5.6" }' Cargo.toml
+
+  # change git config so `pet*` crates would be fetched without error. requires Windows registry
+  # changes, see
+  # https://github.com/zed-industries/zed/blob/main/docs/src/development/windows.md#build-fails-path-too-long
+  # for details
+  if test true != "$(git config core.longpaths)"; then
+    git config --global core.longpaths true
+  fi
+
+  cargo update -p zstd-sys
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+  # generate license for whole Zed contents
+  sh script/generate-licenses
+}
+
+build() {
+  cd "${_realname}"
+
+  export PROTOC="${MINGW_PREFIX}/bin/protoc.exe"
+  export PROTOC_INCLUDE="${MINGW_PREFIX}/include"
+  export OPENSSL_NO_VENDOR=1
+  export LIBGIT2_NO_VENDOR=1
+  export PKG_CONFIG_ALL_DYNAMIC=1
+  export ZSTD_SYS_USE_PKG_CONFIG=1
+  export WINAPI_NO_BUNDLED_LIBRARIES=1
+  # see https://github.com/zed-industries/zed/issues/17695
+  #export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+  export ZED_UPDATE_EXPLANATION='Updates are handled by pacman'
+  export CARGO_PROFILE_RELEASE_DEBUG=0
+  export RELEASE_VERSION="${pkgver} (Rev${pkgrel}, Built by MSYS2 project)"
+  # keyboard shortcuts are broken when compiled with ld
+  # https://github.com/msys2/MINGW-packages/issues/22071
+  if [[ $MINGW_PACKAGE_PREFIX != *-clang-* ]]; then
+    export RUSTFLAGS+=" -Clink-arg=-fuse-ld=lld"
+  fi
+
+  cargo build --release --frozen -p zed
+}
+
+check() {
+  cd "${_realname}"
+
+  cargo test --release --frozen -p zed
+}
+
+package() {
+  install -Dm755 "${_realname}/target/release/zed" "${pkgdir}${MINGW_PREFIX}/bin/zed"
+  install -Dm644 "${_realname}/assets/licenses.md" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE.md"
+}

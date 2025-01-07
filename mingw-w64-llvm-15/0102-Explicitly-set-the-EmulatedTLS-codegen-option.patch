@@ -1,0 +1,88 @@
+From fbfe1db4a95a73ed6a0767db0ab7d449fc03405e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Martin=20Storsj=C3=B6?= <martin@martin.st>
+Date: Fri, 26 Aug 2022 16:47:07 +0300
+Subject: [PATCH] [clang] Explicitly set the EmulatedTLS codegen option. NFC.
+
+Set the EmulatedTLS option based on `Triple::hasDefaultEmulatedTLS()`
+if the user didn't specify it; set `ExplicitEmulatedTLS` to true
+in `llvm::TargetOptions` and set `EmulatedTLS` to Clang's
+opinion of what the default or preference is.
+
+This avoids any risk of deviance between the two.
+
+This affects one check of `getCodeGenOpts().EmulatedTLS` in
+`shouldAssumeDSOLocal` in CodeGenModule, but as that check only
+is done for `TT.isWindowsGNUEnvironment()`, and
+`hasDefaultEmulatedTLS()` returns false for such environments
+it doesn't make any current testable difference - thus NFC.
+
+Some mingw distributions carry a downstream patch, that enables
+emulated TLS by default for mingw targets in `hasDefaultEmulatedTLS()`
+- and for such cases, this patch does make a difference and fixes the
+detection of emulated TLS, if it is implicitly enabled.
+
+Differential Revision: https://reviews.llvm.org/D132916
+---
+ include/clang/Basic/CodeGenOptions.def |  1 -
+ lib/CodeGen/BackendUtil.cpp            |  2 +-
+ lib/Frontend/CompilerInvocation.cpp    | 15 +++++----------
+ 3 files changed, 6 insertions(+), 12 deletions(-)
+
+diff --git a/include/clang/Basic/CodeGenOptions.def b/include/clang/Basic/CodeGenOptions.def
+index ca2aa0d09aaf9..9c1a23cb17261 100644
+--- a/include/clang/Basic/CodeGenOptions.def
++++ b/include/clang/Basic/CodeGenOptions.def
+@@ -88,7 +88,6 @@ CODEGENOPT(EmitGcovArcs      , 1, 0) ///< Emit coverage data files, aka. GCDA.
+ CODEGENOPT(EmitGcovNotes     , 1, 0) ///< Emit coverage "notes" files, aka GCNO.
+ CODEGENOPT(EmitOpenCLArgMetadata , 1, 0) ///< Emit OpenCL kernel arg metadata.
+ CODEGENOPT(EmulatedTLS       , 1, 0) ///< Set by default or -f[no-]emulated-tls.
+-CODEGENOPT(ExplicitEmulatedTLS , 1, 0) ///< Set if -f[no-]emulated-tls is used.
+ /// Embed Bitcode mode (off/all/bitcode/marker).
+ ENUM_CODEGENOPT(EmbedBitcode, EmbedBitcodeKind, 2, Embed_Off)
+ /// Inline asm dialect, -masm=(att|intel)
+diff --git a/lib/CodeGen/BackendUtil.cpp b/lib/CodeGen/BackendUtil.cpp
+index f4a4f1cd22ab9..aff277f59c054 100644
+--- a/lib/CodeGen/BackendUtil.cpp
++++ b/lib/CodeGen/BackendUtil.cpp
+@@ -440,7 +440,7 @@ static bool initTargetOptions(DiagnosticsEngine &Diags,
+       CodeGenOpts.UniqueBasicBlockSectionNames;
+   Options.TLSSize = CodeGenOpts.TLSSize;
+   Options.EmulatedTLS = CodeGenOpts.EmulatedTLS;
+-  Options.ExplicitEmulatedTLS = CodeGenOpts.ExplicitEmulatedTLS;
++  Options.ExplicitEmulatedTLS = true;
+   Options.DebuggerTuning = CodeGenOpts.getDebuggerTuning();
+   Options.EmitStackSizeSection = CodeGenOpts.StackSizeSection;
+   Options.StackUsageOutput = CodeGenOpts.StackUsageOutput;
+diff --git a/lib/Frontend/CompilerInvocation.cpp b/lib/Frontend/CompilerInvocation.cpp
+index 9ac522adfd9a9..201b9965bb0eb 100644
+--- a/lib/Frontend/CompilerInvocation.cpp
++++ b/lib/Frontend/CompilerInvocation.cpp
+@@ -1492,13 +1492,8 @@ void CompilerInvocation::GenerateCodeGenArgs(
+                 F.Filename, SA);
+   }
+ 
+-  // TODO: Consider removing marshalling annotations from f[no_]emulated_tls.
+-  //  That would make it easy to generate the option only **once** if it was
+-  //  explicitly set to non-default value.
+-  if (Opts.ExplicitEmulatedTLS) {
+-    GenerateArg(
+-        Args, Opts.EmulatedTLS ? OPT_femulated_tls : OPT_fno_emulated_tls, SA);
+-  }
++  GenerateArg(
++      Args, Opts.EmulatedTLS ? OPT_femulated_tls : OPT_fno_emulated_tls, SA);
+ 
+   if (Opts.FPDenormalMode != llvm::DenormalMode::getIEEE())
+     GenerateArg(Args, OPT_fdenormal_fp_math_EQ, Opts.FPDenormalMode.str(), SA);
+@@ -1862,9 +1857,9 @@ bool CompilerInvocation::ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args,
+     Opts.LinkBitcodeFiles.push_back(F);
+   }
+ 
+-  if (Args.getLastArg(OPT_femulated_tls) ||
+-      Args.getLastArg(OPT_fno_emulated_tls)) {
+-    Opts.ExplicitEmulatedTLS = true;
++  if (!Args.getLastArg(OPT_femulated_tls) &&
++      !Args.getLastArg(OPT_fno_emulated_tls)) {
++    Opts.EmulatedTLS = T.hasDefaultEmulatedTLS();
+   }
+ 
+   if (Arg *A = Args.getLastArg(OPT_ftlsmodel_EQ)) {

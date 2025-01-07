@@ -5,41 +5,69 @@
 _realname=sqlite3
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
-         "${MINGW_PACKAGE_PREFIX}-sqlite-docs")
-_sqlite_year=2023
-_amalgamationver=3410000
+         $([[ ${CARCH} == i686 ]] || echo "${MINGW_PACKAGE_PREFIX}-sqlite-docs"))
+_sqlite_year=2024
+_amalgamationver=3470200
 _docver=${_amalgamationver}
-pkgver=3.41.0
+pkgver=3.47.2
 pkgrel=1
 pkgdesc="A C library that implements an SQL database engine (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url="https://www.sqlite.org/"
+msys2_repository_url="https://www.sqlite.org/cgi/src/dir?ci=trunk"
+msys2_references=(
+  'archlinux: sqlite'
+  "cpe: cpe:/a:sqlite:sqlite"
+)
 license=(PublicDomain)
-url="https://www.sqlite.org"
-depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
-         "${MINGW_PACKAGE_PREFIX}-readline"
-         "${MINGW_PACKAGE_PREFIX}-tcl"
+depends=($([[ ${CARCH} == i686 ]] || echo "${MINGW_PACKAGE_PREFIX}-readline")
          "${MINGW_PACKAGE_PREFIX}-zlib")
-makedepends=("${MINGW_PACKAGE_PREFIX}-cc" "${MINGW_PACKAGE_PREFIX}-autotools")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-autotools"
+             "${MINGW_PACKAGE_PREFIX}-tcl")
 source=(https://www.sqlite.org/${_sqlite_year}/sqlite-src-${_amalgamationver}.zip
         https://www.sqlite.org/${_sqlite_year}/sqlite-doc-${_docver}.zip
+        0001-sqlite-pcachetrace-include-sqlite3.patch
+        0002-fix-building-sqldiff.patch
+        0003-do-not-install-tclsqlite3-with-make.patch
         Makefile.ext.in
         README.md.in
         LICENSE)
-sha256sums=('64a7638a35e86b991f0c15ae8e2830063b694b28068b8f7595358e3205a9eb66'
-            '3b877ca5e24b28e3a027b30a04e03cecba25d88c53ab30f8cf47f16ab652078b'
+sha256sums=('e6a471f1238225f34c2c48c5601b54024cc538044368230f59ff0672be1fc623'
+            '6dcca89a6749029fba81bc0f4188cbd4f78acb48d6a3eadc6d548af9117c3f41'
+            '6518119034ceb2820d058afcb099d11f636271f55a41ffae22855af66a369166'
+            '9eed63acd9c1423faabca6a53cddaf649227d698999d67b1fe06971437b0e1a1'
+            'a500428a3434075932de84247b1405f3d73e7ed0a8b664eb20a736bd02d6ed29'
             '4a8a87289253529cf04c916e5743c8727a5506b5185bc9bd4070b42037e8ae20'
             '5ca42f1f92abfb61bacc9ff60f5836cc56e2ce2af52264f918cb06c3d566d562'
             '0b76663a90e034f3d7f2af5bfada4cedec5ebc275361899eccc5c18e6f01ff1f')
-options=('staticlibs' '!buildflags')
 
-sqlite_tools="sqlite3_analyzer.exe dbhash.exe sqldiff.exe"
+# From Debian sqlite3-tools
+_sqlite_tools="showdb.exe showjournal.exe showstat4.exe showwal.exe dbhash.exe sqldiff.exe"
+if [[ ${CARCH} != i686 ]]; then
+  _sqlite_tools+=" sqlite3_analyzer.exe"
+fi
+
+prepare() {
+  cd "sqlite-src-${_amalgamationver}"
+  patch -p1 -i "${srcdir}/0001-sqlite-pcachetrace-include-sqlite3.patch"
+  patch -p1 -i "${srcdir}/0002-fix-building-sqldiff.patch"
+  # Installing tclsqlite3 fails on Windows.
+  patch -p1 -i "${srcdir}/0003-do-not-install-tclsqlite3-with-make.patch"
+}
 
 build() {
-  test -d ${srcdir}/build-${MSYSTEM} && rm -rf ${srcdir}/build-${MSYSTEM}
   mkdir -p ${srcdir}/build-${MSYSTEM} && cd ${srcdir}/build-${MSYSTEM}
 
   export lt_cv_deplibs_check_method='pass_all'
+
+  declare -a _extra_config
+  if [[ ${CARCH} != i686 ]]; then
+    _extra_config+=("--enable-readline" "--enable-tcl")
+  else
+    _extra_config+=("--disable-readline" "--disable-tcl")
+  fi
 
   declare -a SQLITE_OPTIONS=(
             "-DSQLITE_ENABLE_COLUMN_METADATA=1"
@@ -55,22 +83,19 @@ build() {
 
   ../sqlite-src-${_amalgamationver}/configure -C \
     --prefix=${MINGW_PREFIX} \
-    --host=${MINGW_CHOST} \
-    --target=${MINGW_CHOST} \
-    --build=${MINGW_CHOST} \
     --enable-threadsafe \
     --disable-editline \
-    --enable-readline \
     --enable-all \
     --enable-session \
     --with-readline-inc=-I${MINGW_PREFIX}/include \
     --with-tcl=${MINGW_PREFIX}/lib \
+    "${_extra_config[@]}" \
     TCLLIBDIR=${MINGW_PREFIX}/lib/sqlite${pkgver}
 
   make
 
   # build additional tools
-  make $sqlite_tools
+  make ${_sqlite_tools}
 
   # build extensions
   ./config.status --file=ext/misc/Makefile:../Makefile.ext.in
@@ -80,23 +105,27 @@ build() {
 check() {
   cd "${srcdir}/build-${MSYSTEM}"
   # This test run lasts very loooong ... despite the target name
-  make quicktest || true
+  make quicktest || warning "Tests failed"
 }
 
 package_sqlite3() {
-  provides=(${MINGW_PACKAGE_PREFIX}-sqlite=${pkgver}
-            ${MINGW_PACKAGE_PREFIX}-sqlite-analyzer=${pkgver})
-  conflicts=(${MINGW_PACKAGE_PREFIX}-sqlite-analyzer)
-  replaces=(${MINGW_PACKAGE_PREFIX}-sqlite-analyzer)
+  if [[ ${CARCH} != i686 ]]; then
+    optdepends=("${MINGW_PACKAGE_PREFIX}-tcl: for sqlite3_analyzer")
+    provides=(${MINGW_PACKAGE_PREFIX}-sqlite=${pkgver}
+              ${MINGW_PACKAGE_PREFIX}-sqlite-analyzer=${pkgver})
+    conflicts=(${MINGW_PACKAGE_PREFIX}-sqlite-analyzer)
+    replaces=(${MINGW_PACKAGE_PREFIX}-sqlite-analyzer)
+  fi
 
   cd ${srcdir}/build-${MSYSTEM}
   make DESTDIR="${pkgdir}" install
 
-  for t in $sqlite_tools; do
-    install -Dm755 .libs/$t "${pkgdir}${MINGW_PREFIX}/bin/$t"
+  for tools in ${_sqlite_tools}; do
+    install -Dm755 .libs/$tools "${pkgdir}${MINGW_PREFIX}/bin/$tools"
   done
-  mv ${pkgdir}${MINGW_PREFIX}/lib/bin/*.* ${pkgdir}${MINGW_PREFIX}/lib/sqlite${pkgver}/
-  rm -rf ${pkgdir}${MINGW_PREFIX}/lib/bin
+  # Move tcl dlls
+  # mv ${pkgdir}${MINGW_PREFIX}/lib/bin/*.* ${pkgdir}${MINGW_PREFIX}/lib/sqlite${pkgver}/
+  # rm -rf ${pkgdir}${MINGW_PREFIX}/lib/bin
 
   # Install extensions
   make -C ext/misc DESTDIR="${pkgdir}" install

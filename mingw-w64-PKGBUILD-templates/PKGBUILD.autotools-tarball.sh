@@ -7,7 +7,7 @@ pkgver=1.0
 pkgrel=1
 pkgdesc="Some package (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url='https://www.somepackage.org/'
 license=('LICENSE')
 makedepends=("${MINGW_PACKAGE_PREFIX}-autotools"
@@ -18,14 +18,13 @@ sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
 
 prepare() {
-  cd "${srcdir}/${_realname}-${pkgver}"
+  cd "${_realname}-${pkgver}"
 
   patch -p1 -i "${srcdir}/0001-A-fix.patch"
 }
 
 build() {
-  cd "${srcdir}/${_realname}-${pkgver}"
-  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
+  mkdir -p "build-${MSYSTEM}" && cd "build-${MSYSTEM}"
 
   ../"${_realname}-${pkgver}"/configure \
     --prefix="${MINGW_PREFIX}" \
@@ -39,13 +38,13 @@ build() {
 }
 
 check() {
-  cd "${srcdir}/build-${MSYSTEM}"
+  cd "build-${MSYSTEM}"
 
   make check
 }
 
 package() {
-  cd "${srcdir}/build-${MSYSTEM}"
+  cd "build-${MSYSTEM}"
 
   make install DESTDIR="${pkgdir}"
 

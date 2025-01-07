@@ -1,0 +1,67 @@
+From c72dbeafffa5b3262e90023e092bb1f9928d7079 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Robert-Andr=C3=A9=20Mauchin?= <zebob.m@gmail.com>
+Date: Tue, 14 May 2024 11:03:49 +0200
+Subject: [PATCH] Add compatibility with FFMPEG 7.0
+
+key_frame was deprecated then remove, we should use AV_FRAME_FLAG_KEY
+instead.
+
+read_seek2 and read_seek were internalized and can't be used anymore, so
+we check directly the return of av_seek_frame.
+---
+ intern/ffmpeg/ffmpeg_compat.h             |  9 +++++++++
+ source/blender/imbuf/intern/anim_movie.cc | 11 +++++------
+ 2 files changed, 14 insertions(+), 6 deletions(-)
+
+diff --git a/intern/ffmpeg/ffmpeg_compat.h b/intern/ffmpeg/ffmpeg_compat.h
+index 91ea1701db6..78778482e8d 100644
+--- a/intern/ffmpeg/ffmpeg_compat.h
++++ b/intern/ffmpeg/ffmpeg_compat.h
+@@ -141,6 +141,15 @@ int64_t av_get_frame_duration_in_pts_units(const AVFrame *picture)
+ #endif
+ }
+ 
++FFMPEG_INLINE
++bool av_get_cur_key_frame_pts(const AVFrame *picture) {
++#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(58, 29, 100)
++  return (picture->flags & AV_FRAME_FLAG_KEY);
++#else
++  return (picture->key_frame);
++#endif
++}
++
+ /* -------------------------------------------------------------------- */
+ /** \name Deinterlace code block
+  *
+diff --git a/source/blender/imbuf/intern/anim_movie.cc b/source/blender/imbuf/intern/anim_movie.cc
+index 3d51969dd46..bb07a8bb14c 100644
+--- a/source/blender/imbuf/intern/anim_movie.cc
++++ b/source/blender/imbuf/intern/anim_movie.cc
+@@ -653,7 +653,7 @@ static void ffmpeg_decode_store_frame_pts(ImBufAnim *anim)
+ {
+   anim->cur_pts = av_get_pts_from_frame(anim->pFrame);
+ 
+-  if (anim->pFrame->key_frame) {
++  if (av_get_cur_key_frame_pts(anim->pFrame)) {
+     anim->cur_key_frame_pts = anim->cur_pts;
+   }
+ 
+@@ -1032,11 +1032,10 @@ static int ffmpeg_seek_to_key_frame(ImBufAnim *anim,
+ 
+     AVFormatContext *format_ctx = anim->pFormatCtx;
+ 
+-    if (format_ctx->iformat->read_seek2 || format_ctx->iformat->read_seek) {
+-      ret = av_seek_frame(anim->pFormatCtx, anim->videoStream, seek_pos, AVSEEK_FLAG_BACKWARD);
+-    }
+-    else {
+-      ret = ffmpeg_generic_seek_workaround(anim, &seek_pos, pts_to_search);
++    int ret = av_seek_frame(anim->pFormatCtx, anim->videoStream, seek_pos, AVSEEK_FLAG_BACKWARD);
++
++    if (ret < 0) {
++      ret = ffmpeg_generic_seek_workaround(anim, &seek_pos, pts_to_search);\
+       av_log(anim->pFormatCtx,
+              AV_LOG_DEBUG,
+              "Adjusted final seek seek_pos = %" PRId64 "\n",
+-- 
+2.30.2
+

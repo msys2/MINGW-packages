@@ -1,64 +1,114 @@
 # Maintainer: Johannes Schindelin <johannes.schindelin@gmx.de>
 
 _realname=jj
-_commit=c59dcd76a4e085de85577df7c515bcf7884c8373
 pkgbase=mingw-w64-${_realname}
-pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-pkgver=0.2.0.586.c59dcd7
-pkgrel=2
-pkgdesc='Jujutsu (an experimental VCS) (mingw-w64)'
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}-docs")
+pkgver=0.25.0
+pkgrel=1
+pkgdesc="Jujutsu (an experimental VCS) (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32')
-url="https://github.com/martinvonz/jj"
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url="https://github.com/jj-vcs/jj"
+msys2_documentation_url="https://jj-vcs.github.io/jj/latest"
+msys2_references=(
+  'archlinux: jujutsu'
+  'purl: pkg:cargo/jj-cli'
+)
 license=('spdx:Apache-2.0')
-makedepends=("${MINGW_PACKAGE_PREFIX}-rust" "git")
-source=("git+https://github.com/martinvonz/jj#commit=${_commit}")
-sha256sums=('SKIP')
+makedepends=("${MINGW_PACKAGE_PREFIX}-rust"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-openssl"
+             'git')
+depends=("${MINGW_PACKAGE_PREFIX}-libgit2"
+         "${MINGW_PACKAGE_PREFIX}-libssh2"
+         "${MINGW_PACKAGE_PREFIX}-zstd")
+source=("git+${url}.git#tag=v${pkgver}"
+        "zstd-sys.tar.gz::https://crates.io/api/v1/crates/zstd-sys/2.0.13+zstd.1.5.6/download"
+        "zstd-sys-remove-statik.patch")
+sha256sums=('81a4fba33ef41385f489eb2ddec66deaa7e04df13a79f264c924666551c727c4'
+            '38ff0f21cfee8f97d94cef41359e0c89aa6113028ab0291aa8ca0038995a95aa'
+            '8917b1fbb95021d46f61f2067bcd723657fda781f0a063739f168cd9fb68e555')
 
-pkgver() {
-  cd "${_realname}"
-  test ! -f "$(git rev-parse --git-path shallow)" || git -c http.sslbackend fetch --unshallow
-  rev_version="$(git blame -lsL '/^version *=/,+1' Cargo.toml)"
-  rev=${rev_version%% *}
-  version=${rev_version##*=}
-  version="${version%\"}"
-  version="${version# \"}"
-  printf "%s.%s.%s" "${version// /}" "$(git rev-list --count $rev.. -- .)" "$(git rev-parse --short HEAD)"
+_env() {
+  export OPENSSL_NO_VENDOR=1
+  export LIBGIT2_NO_VENDOR=1
+  export ZSTD_SYS_USE_PKG_CONFIG=1
+  export LIBSSH2_SYS_USE_PKG_CONFIG=1
 }
 
 prepare() {
-  if test ! -d build-${MSYSTEM}
-  then
-    git -C ${_realname} worktree add --detach "$PWD/build-${MSYSTEM}"
-  else
-    git -C build-${MSYSTEM} reset --hard $(git -C ${_realname} rev-parse HEAD)
-  fi
-  ${MINGW_PREFIX}/bin/cargo fetch \
-    --locked \
-	--manifest-path build-${MSYSTEM}/Cargo.toml
+  cd "${_realname}"
+
+  patch -d "../zstd-sys-2.0.13+zstd.1.5.6" -i "${srcdir}/zstd-sys-remove-statik.patch"
+  cat >> Cargo.toml <<END
+
+[patch.crates-io]
+zstd-sys = { path = "../zstd-sys-2.0.13+zstd.1.5.6" }
+END
+
+  cargo update -p zstd-sys
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
-  ${MINGW_PREFIX}/bin/cargo build \
-	--release \
-	--frozen \
-	--manifest-path build-${MSYSTEM}/Cargo.toml
+  cd "${_realname}"
+
+  _env
+  cargo build \
+    -p jj-cli \
+    --release \
+    --frozen \
+    --features packaging
 }
 
 check() {
-  ${MINGW_PREFIX}/bin/cargo test \
-	--release \
-	--frozen \
-	--manifest-path build-${MSYSTEM}/Cargo.toml
+  cd "${_realname}"
+
+  _env
+  cargo test \
+    -p jj-cli \
+    --release \
+    --frozen \
+    --features packaging
 }
 
-package() {
-  ${MINGW_PREFIX}/bin/cargo install \
-	--frozen \
-	--offline \
-	--no-track \
-	--path build-${MSYSTEM} \
-	--root ${pkgdir}${MINGW_PREFIX}
+package_jj() {
+  cd "${_realname}"
 
-  install -Dm644 build-${MSYSTEM}/LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+  _env
+  cargo install \
+    --frozen \
+    --offline \
+    --no-track \
+    --path cli \
+    --root "${pkgdir}${MINGW_PREFIX}" \
+    --features packaging
+
+  install -Dm644 LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+
+  local _complete="./target/release/jj util completion"
+  $_complete bash | install -Dm644 /dev/stdin "${pkgdir}${MINGW_PREFIX}/share/bash-completion/completions/jj"
+  $_complete fish | install -Dm644 /dev/stdin "${pkgdir}${MINGW_PREFIX}/share/fish/vendor_completions.d/jj.fish"
+  $_complete zsh | install -Dm644 /dev/stdin "${pkgdir}${MINGW_PREFIX}/share/zsh/site-functions/_jj"
 }
+
+package_jj-docs() {
+  pkgdesc+=" (documentation)"
+  depends=()
+
+  install -Dm644 "${_realname}"/README.md "${pkgdir}${MINGW_PREFIX}/share/doc/${_realname}/README.md"
+  cp -r "${_realname}"/docs "${pkgdir}${MINGW_PREFIX}/share/doc/${_realname}"
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;
