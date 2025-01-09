@@ -10,7 +10,7 @@ on:
 
 jobs:
   update-srcinfo-win:
-    runs-on: windows-2022
+    runs-on: windows-2025
     if: ${{ github.repository == 'msys2/MINGW-packages' || github.event_name == 'workflow_dispatch' }}
 
     steps:
@@ -36,33 +36,22 @@ jobs:
           msystem: MSYS
           update: true
 
-      - name: Download srcinfo.json.gz/pypi.json.gz and set up the environment
+      - name: Download srcinfo.json.gz and set up the environment
         shell: msys2 {0}
         run: |
           # makepkg requires strip in PATH even if it wont be used
           touch /usr/bin/strip.exe
           curl --fail -L --retry 5 -o srcinfo.json.gz "https://github.com/$GITHUB_REPOSITORY/releases/download/srcinfo-cache/srcinfo.json.gz"
-          curl --fail -L --retry 5 -o pypi.json.gz "https://github.com/$GITHUB_REPOSITORY/releases/download/srcinfo-cache/pypi.json.gz" || true
 
       - name: Parse PKGBUILDs and update srcinfo.json.gz
         run: |
           msys2-srcinfo-cache --time-limit 19800 mingw '${{ steps.msys2.outputs.msys2-location }}' . srcinfo.json.gz
-
-      - name: Update the PyPI cache
-        run: |
-          msys2-pypi-cache srcinfo.json.gz pypi.json.gz
-
-      - name: Generate SBOM
-        run: |
-          msys2-sbom srcinfo.json.gz sbom.cdx.json
 
       - uses: actions/upload-artifact@v4
         with:
           name: result-win
           path: |
             srcinfo.json.gz
-            pypi.json.gz
-            sbom.cdx.json
 
   update-srcinfo-linux:
     needs: update-srcinfo-win
@@ -72,15 +61,33 @@ jobs:
         with:
           name: result-win
 
+      - uses: actions/setup-python@v5
+        id: setup-python
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pipx install --python '${{ steps.setup-python.outputs.python-path }}' git+https://github.com/msys2/msys2-devtools
+
+      - name: Update the PyPI cache
+        run: |
+          curl --fail -L --retry 5 -o pypi.json.gz "https://github.com/$GITHUB_REPOSITORY/releases/download/srcinfo-cache/pypi.json.gz" || true
+          msys2-pypi-cache srcinfo.json.gz pypi.json.gz
+
       - name: Update vulnerability database
         run: |
+          msys2-sbom create srcinfo.json.gz sbom.cdx.json
           curl --retry 5 -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s --
           ./bin/grype sbom:sbom.cdx.json -o cyclonedx-json --file sbom.vuln.cdx.json
+          msys2-sbom merge sbom.cdx.json sbom.vuln.cdx.json
 
       - uses: actions/upload-artifact@v4
         with:
           name: result-linux
           path: |
+            pypi.json.gz
+            sbom.cdx.json
             sbom.vuln.cdx.json
 
   upload-srcinfo:
