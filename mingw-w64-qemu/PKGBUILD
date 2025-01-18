@@ -15,11 +15,10 @@ _rc_base_ver="9.1.9${_rc_no}"
 _rc_file_ver="rc${_rc_no}"
 _tarname=$( [ -z "${_rc_no}" ] && echo ${_realname}-${_base_ver} || echo ${_realname}-${_base_ver}-${_rc_file_ver} )
 pkgver=$( [ -z "${_rc_no}" ] && echo ${_base_ver} || echo ${_rc_base_ver} )
-pkgrel=1
+pkgrel=2
 pkgdesc="QEMU - a generic and open source machine emulator and virtualizer (mingw-w64)"
 arch=('any')
-# clang disabled until attribute gcc_struct is supported, see https://github.com/msys2/MINGW-packages/pull/21540#issuecomment-2287923652
-mingw_arch=('mingw64' 'ucrt64')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 license=('spdx:GPL-2.0-or-later AND LGPL-2.1-or-later AND BSD-2-Clause AND BSD-3-Clause AND MIT')
 url="https://qemu.org/"
 msys2_repository_url="https://gitlab.com/qemu-project/qemu"
@@ -101,14 +100,17 @@ depends=(
   "${MINGW_PACKAGE_PREFIX}-snappy"
   "${MINGW_PACKAGE_PREFIX}-spice"
   "${MINGW_PACKAGE_PREFIX}-usbredir"
-  "${MINGW_PACKAGE_PREFIX}-virglrenderer"
+  $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-virglrenderer")
   "${MINGW_PACKAGE_PREFIX}-xz"
   "${MINGW_PACKAGE_PREFIX}-zlib"
   "${MINGW_PACKAGE_PREFIX}-zstd"
 )
+
 options=('!emptydirs')
 source=(
   "https://download.qemu.org/${_tarname}.tar.xz"{,.sig}
+  01-win32-remove-usage-of-attribute-gcc_struct.patch::https://gitlab.com/qemu-project/qemu/-/commit/8f5a4cfc7ed9e06e07fdd8e8fdf50ef3ea783f63.patch
+  02-plugins-enable-linking-with-clang-lld.patch::https://gitlab.com/qemu-project/qemu/-/commit/923710b6d5b21d9b3fcecc7e6719cfa5a53de268.patch
   msys2.readme.txt
   msys2.qemu-guest-agent.txt
   msys2.examples.tests.sh
@@ -116,6 +118,8 @@ source=(
 sha256sums=(
   'f859f0bc65e1f533d040bbe8c92bcfecee5af2c921a6687c652fb44d089bd894'
   'SKIP'
+  '16056f047d838245bc8cc327dc2a73ab9b9ee851ffee7a62f7a16530ba21c0f3'
+  '385f3fae53afa29b5d344bb6565f24833d22cf0a6d407a1efbd2cfb0e94c407e'
   '51625fd83c0a63729942d3dfc6d48be3491a700fe0f7cb8e88935b46081c9016'
   'f2f9eeb31023d002f54637a9941ea0d8fae3c6f0a66c05c033857b305bd1470d'
   '1478e41f27a4646e14c2abca764d9fd2fd158a4a4cd6421e077fba101d4a74ea'
@@ -124,14 +128,23 @@ validpgpkeys=('CEACC9E15534EBABB82D3FA03353C9CEF108B584') # Michael Roth <fluksh
 # tar cannot create links, to keep build running, manual extraction is required
 noextract=(${_tarname}.tar.xz)
 
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+
 prepare() {
   [[ -d "${srcdir}"/${_tarname} ]] && rm -rf "${srcdir}"/${_tarname}
   # tar cannot create links here, therefore hide the failure
   tar -xf "${srcdir}"/${_tarname}.tar.xz -C "${srcdir}" || true
-}
 
-enablePlugins() {
-  ! [[ $MSYSTEM =~ CLANG ]]
+  cd "${srcdir}"/${_realname}-${pkgver}
+  apply_patch_with_msg \
+    ./01-win32-remove-usage-of-attribute-gcc_struct.patch \
+    ./02-plugins-enable-linking-with-clang-lld.patch
 }
 
 build() {
@@ -141,7 +154,6 @@ build() {
   # qemu enables all features if possible, so keep it simple
   # For faster testing:
   #CONFIGURE_OPTS="--target-list=x86_64-softmmu"
-  enablePlugins || CONFIGURE_OPTS="--disable-plugins $CONFIGURE_OPTS"
   ../${_tarname}/configure $CONFIGURE_OPTS \
     --prefix=${MINGW_PREFIX} \
     --bindir=bin \
@@ -250,12 +262,9 @@ package_qemu() {
     sed -i "s%\(\"filename\"\s*:\s*\"\).*edk2%\1${MINGW_PREFIX}/share/qemu/edk2%" {} \;
 
   # Install tcg plugins to lib/qemu/plugins
-  if enablePlugins
-  then
-    mkdir -pv lib/qemu/plugins/test lib/qemu/plugins/contrib
-    install -t lib/qemu/plugins/test "${srcdir}"/build-${MSYSTEM}/tests/tcg/plugins/*.dll
-    install -t lib/qemu/plugins/contrib "${srcdir}"/build-${MSYSTEM}/contrib/plugins/*.dll
-  fi
+  mkdir -pv lib/qemu/plugins/test lib/qemu/plugins/contrib
+  install -t lib/qemu/plugins/test "${srcdir}"/build-${MSYSTEM}/tests/tcg/plugins/*.dll
+  install -t lib/qemu/plugins/contrib "${srcdir}"/build-${MSYSTEM}/contrib/plugins/*.dll
 }
 
 package_qemu-common() {
