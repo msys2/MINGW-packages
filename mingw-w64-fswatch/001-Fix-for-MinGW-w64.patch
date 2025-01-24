@@ -1,0 +1,162 @@
+--- a/fswatch/src/fswatch.cpp
++++ b/fswatch/src/fswatch.cpp
+@@ -309,6 +309,7 @@
+ 
+ static void register_signal_handlers()
+ {
++#ifndef _WIN32
+   struct sigaction action{};
+   action.sa_handler = close_handler;
+   sigemptyset(&action.sa_mask);
+@@ -340,6 +341,7 @@
+   {
+     std::cerr << _("SIGINT handler registration failed") << std::endl;
+   }
++#endif
+ }
+ 
+ static void print_event_path(const event& evt)
+--- a/libfswatch/CMakeLists.txt
++++ b/libfswatch/CMakeLists.txt
+@@ -108,10 +108,9 @@
+ 
+ check_cxx_symbol_exists(FindFirstChangeNotification windows.h HAVE_WINDOWS_HEADER)
+ 
+-if (HAVE_WINDOWS_HEADER AND CYGWIN)
++if (HAVE_WINDOWS_HEADER)
+     check_include_file_cxx(sys/cygwin.h HAVE_CYGWIN)
+ 
+-    if (HAVE_CYGWIN)
+         set(LIBFSWATCH_HEADER_FILES
+                 ${LIBFSWATCH_HEADER_FILES}
+                 src/libfswatch/c++/windows/win_directory_change_event.hpp
+@@ -130,8 +129,7 @@
+                 src/libfswatch/c++/windows/win_strings.cpp
+                 src/libfswatch/c++/windows_monitor.cpp)
+         set(HAVE_WINDOWS ON CACHE BOOL "Enable Windows support")
+-    endif (HAVE_CYGWIN)
+-endif (HAVE_WINDOWS_HEADER AND CYGWIN)
++endif (HAVE_WINDOWS_HEADER)
+ 
+ if (APPLE)
+     check_include_file_cxx(CoreServices/CoreServices.h HAVE_FSEVENTS_FILE_EVENTS)
+--- a/libfswatch/src/Makefile.am
++++ b/libfswatch/src/Makefile.am
+@@ -52,7 +52,7 @@
+   libfswatch_la_SOURCES += libfswatch/c++/inotify_monitor.cpp
+ endif
+ if USE_WINDOWS
+-if USE_CYGWIN
++if USE_WINDOWS
+   libfswatch_la_SOURCES += libfswatch/c++/windows_monitor.cpp
+   libfswatch_la_SOURCES += libfswatch/c++/windows/win_handle.cpp
+   libfswatch_la_SOURCES += libfswatch/c++/windows/win_handle.hpp
+--- a/libfswatch/src/libfswatch/c++/path_utils.cpp
++++ b/libfswatch/src/libfswatch/c++/path_utils.cpp
+@@ -79,10 +79,15 @@
+ 
+   bool lstat_path(const std::string& path, struct stat& fd_stat)
+   {
++#ifdef _WIN32
++    fsw_logf_perror(_("Cannot lstat %s (not implemented on Windows)"), path.c_str());
++    return false;
++#else
+     if (lstat(path.c_str(), &fd_stat) == 0)
+       return true;
+ 
+     fsw_logf_perror(_("Cannot lstat %s"), path.c_str());
+     return false;
++#endif
+   }
+ }
+--- a/libfswatch/src/libfswatch/c++/path_utils.hpp
++++ b/libfswatch/src/libfswatch/c++/path_utils.hpp
+@@ -31,6 +31,8 @@
+ #  include <filesystem>
+ #  include <sys/stat.h>
+ 
++#  define realpath(N,R) _fullpath((R),(N),_MAX_PATH)
++
+ namespace fsw
+ {
+   /**
+--- a/libfswatch/src/libfswatch/c++/poll_monitor.cpp
++++ b/libfswatch/src/libfswatch/c++/poll_monitor.cpp
+@@ -132,14 +132,14 @@
+         return;
+       }
+ 
+-      if (!accept_path(path)) return;
++      if (!accept_path(path.string())) return;
+ 
+       // TODO: C++17 doesn't standardize access to ctime, so we need to keep
+       // using lstat for now.
+       struct stat fd_stat;
+-      if (!stat_path(path, fd_stat, follow_symlinks)) return;
++      if (!stat_path(path.string(), fd_stat, follow_symlinks)) return;
+ 
+-      if (!add_path(path, fd_stat, fn)) return;
++      if (!add_path(path.string(), fd_stat, fn)) return;
+       if (!recursive) return;
+       if (!S_ISDIR(fd_stat.st_mode)) return;
+ 
+--- a/libfswatch/src/libfswatch/c++/windows/win_paths.cpp
++++ b/libfswatch/src/libfswatch/c++/windows/win_paths.cpp
+@@ -14,7 +14,11 @@
+  * this program.  If not, see <http://www.gnu.org/licenses/>.
+  */
+ #include "win_paths.hpp"
+-#include <sys/cygwin.h>
++#ifdef  __CYGWIN__
++#   include <sys/cygwin.h>
++#else
++#   include <windows.h>
++#endif
+ #include "../libfswatch_exception.hpp"
+ #include "../../gettext_defs.h"
+ 
+@@ -26,6 +30,7 @@
+   {
+     wstring posix_to_win_w(string path)
+     {
++#ifdef  __CYGWIN__
+       void * raw_path = cygwin_create_path(CCP_POSIX_TO_WIN_W, path.c_str());
+       if (raw_path == nullptr) throw libfsw_exception(_("cygwin_create_path could not allocate memory to convert the path."));
+ 
+@@ -34,10 +39,20 @@
+       free(raw_path);
+ 
+       return win_path;
++#else
++      int pathlen = (int)path.length() + 1;
++      int buflen = MultiByteToWideChar(CP_ACP, 0, path.c_str(), pathlen, 0, 0);
++      wchar_t* buf = new wchar_t[buflen];
++      MultiByteToWideChar(CP_ACP, 0, path.c_str(), pathlen, buf, buflen);
++      std::wstring result(buf);
++      delete[] buf;
++      return result;
++#endif
+     }
+ 
+     string win_w_to_posix(wstring path)
+     {
++#ifdef  __CYGWIN__
+       void * raw_path = cygwin_create_path(CCP_WIN_W_TO_POSIX, path.c_str());
+       if (raw_path == nullptr) throw libfsw_exception(_("cygwin_create_path could not allocate memory to convert the path."));
+ 
+@@ -46,6 +61,15 @@
+       free(raw_path);
+ 
+       return posix_path;
++#else
++      int pathlen = (int)path.length() + 1;
++      int buflen = WideCharToMultiByte(CP_ACP, 0, path.c_str(), pathlen, 0, 0, 0, 0);
++      char* buf = new char[buflen];
++      WideCharToMultiByte(CP_ACP, 0, path.c_str(), pathlen, buf, buflen, 0, 0);
++      std::string result(buf);
++      delete[] buf;
++      return result;
++#endif
+     }
+   }
+ }
