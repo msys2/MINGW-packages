@@ -1,0 +1,440 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 265ce29d974c99..5bf1912842b86c 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2653,6 +2653,7 @@ dependencies = [
+  "serde",
+  "tempfile",
+  "util",
++ "windows 0.58.0",
+ ]
+ 
+ [[package]]
+diff --git a/Cargo.toml b/Cargo.toml
+index f4e90eae465a34..58066a253fe037 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -619,6 +619,7 @@ features = [
+     "Win32_Storage_FileSystem",
+     "Win32_System_Com",
+     "Win32_System_Com_StructuredStorage",
++    "Win32_System_Console",
+     "Win32_System_DataExchange",
+     "Win32_System_LibraryLoader",
+     "Win32_System_Memory",
+diff --git a/crates/cli/Cargo.toml b/crates/cli/Cargo.toml
+index 94e79bd389c674..a7af18a0e4f487 100644
+--- a/crates/cli/Cargo.toml
++++ b/crates/cli/Cargo.toml
+@@ -33,10 +33,13 @@ util.workspace = true
+ tempfile.workspace = true
+ 
+ [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+-exec.workspace =  true
++exec.workspace = true
+ fork.workspace = true
+ 
+ [target.'cfg(target_os = "macos")'.dependencies]
+ core-foundation.workspace = true
+ core-services = "0.2"
+ plist = "1.3"
++
++[target.'cfg(target_os = "windows")'.dependencies]
++windows.workspace = true
+diff --git a/crates/cli/src/main.rs b/crates/cli/src/main.rs
+index a8568360254346..1210dbb49853f4 100644
+--- a/crates/cli/src/main.rs
++++ b/crates/cli/src/main.rs
+@@ -521,30 +521,108 @@ mod flatpak {
+     }
+ }
+ 
+-// todo("windows")
+ #[cfg(target_os = "windows")]
+ mod windows {
++    use anyhow::Context;
++    use release_channel::APP_IDENTIFIER;
++    use windows::{
++        core::HSTRING,
++        Win32::{
++            Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, GENERIC_WRITE},
++            Storage::FileSystem::{
++                CreateFileW, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE, OPEN_EXISTING,
++            },
++            System::Threading::CreateMutexW,
++        },
++    };
++
+     use crate::{Detect, InstalledApp};
+     use std::io;
+-    use std::path::Path;
++    use std::path::{Path, PathBuf};
+     use std::process::ExitStatus;
+ 
+-    struct App;
++    fn check_single_instance() -> bool {
++        let mutex = unsafe {
++            CreateMutexW(
++                None,
++                false,
++                &HSTRING::from(format!("{}-Instance-Mutex", *APP_IDENTIFIER)),
++            )
++            .expect("Unable to create instance sync event")
++        };
++        let last_err = unsafe { GetLastError() };
++        let _ = unsafe { CloseHandle(mutex) };
++        last_err != ERROR_ALREADY_EXISTS
++    }
++
++    struct App(PathBuf);
++
+     impl InstalledApp for App {
+         fn zed_version_string(&self) -> String {
+-            unimplemented!()
++            format!(
++                "Zed {}{}{} – {}",
++                if *release_channel::RELEASE_CHANNEL_NAME == "stable" {
++                    "".to_string()
++                } else {
++                    format!("{} ", *release_channel::RELEASE_CHANNEL_NAME)
++                },
++                option_env!("RELEASE_VERSION").unwrap_or_default(),
++                match option_env!("ZED_COMMIT_SHA") {
++                    Some(commit_sha) => format!(" {commit_sha} "),
++                    None => "".to_string(),
++                },
++                self.0.display(),
++            )
+         }
+-        fn launch(&self, _ipc_url: String) -> anyhow::Result<()> {
+-            unimplemented!()
++
++        fn launch(&self, ipc_url: String) -> anyhow::Result<()> {
++            if check_single_instance() {
++                std::process::Command::new(self.0.clone())
++                    .arg(ipc_url)
++                    .spawn()?;
++            } else {
++                unsafe {
++                    let pipe = CreateFileW(
++                        &HSTRING::from(format!("\\\\.\\pipe\\{}-Named-Pipe", *APP_IDENTIFIER)),
++                        GENERIC_WRITE.0,
++                        FILE_SHARE_MODE::default(),
++                        None,
++                        OPEN_EXISTING,
++                        FILE_FLAGS_AND_ATTRIBUTES::default(),
++                        None,
++                    )?;
++                    let message = ipc_url.as_bytes();
++                    let mut bytes_written = 0;
++                    WriteFile(pipe, Some(message), Some(&mut bytes_written), None)?;
++                    CloseHandle(pipe)?;
++                }
++            }
++            Ok(())
+         }
+-        fn run_foreground(&self, _ipc_url: String) -> io::Result<ExitStatus> {
+-            unimplemented!()
++
++        fn run_foreground(&self, ipc_url: String) -> io::Result<ExitStatus> {
++            std::process::Command::new(self.0.clone())
++                .arg(ipc_url)
++                .arg("--foreground")
++                .spawn()?
++                .wait()
+         }
+     }
+ 
+     impl Detect {
+-        pub fn detect(_path: Option<&Path>) -> anyhow::Result<impl InstalledApp> {
+-            Ok(App)
++        pub fn detect(path: Option<&Path>) -> anyhow::Result<impl InstalledApp> {
++            let path = if let Some(path) = path {
++                path.to_path_buf().canonicalize()?
++            } else {
++                std::env::current_exe()?
++                    .parent()
++                    .context("no parent path for cli")?
++                    .parent()
++                    .context("no parent path for cli folder")?
++                    .join("Zed.exe")
++            };
++
++            Ok(App(path))
+         }
+     }
+ }
+diff --git a/crates/release_channel/src/lib.rs b/crates/release_channel/src/lib.rs
+index 21c015fd949bcd..26be9ea697c548 100644
+--- a/crates/release_channel/src/lib.rs
++++ b/crates/release_channel/src/lib.rs
+@@ -23,6 +23,15 @@ pub static RELEASE_CHANNEL: LazyLock<ReleaseChannel> =
+         _ => panic!("invalid release channel {}", *RELEASE_CHANNEL_NAME),
+     });
+ 
++/// The app identifier for the current release channel, Windows only.
++#[cfg(target_os = "windows")]
++pub static APP_IDENTIFIER: LazyLock<&str> = LazyLock::new(|| match *RELEASE_CHANNEL {
++    ReleaseChannel::Dev => "Zed-Editor-Dev",
++    ReleaseChannel::Nightly => "Zed-Editor-Nightly",
++    ReleaseChannel::Preview => "Zed-Editor-Preview",
++    ReleaseChannel::Stable => "Zed-Editor-Stable",
++});
++
+ /// The Git commit SHA that Zed was built at.
+ #[derive(Clone)]
+ pub struct AppCommitSha(pub String);
+diff --git a/crates/zed/src/main.rs b/crates/zed/src/main.rs
+index b25052f8399a5c..b7ea61651c5b7f 100644
+--- a/crates/zed/src/main.rs
++++ b/crates/zed/src/main.rs
+@@ -173,6 +173,22 @@ fn fail_to_open_window(e: anyhow::Error, _cx: &mut App) {
+ }
+ 
+ fn main() {
++    let args = Args::parse();
++
++    #[cfg(target_os = "windows")]
++    let run_foreground = args.foreground;
++
++    #[cfg(all(not(debug_assertions), target_os = "windows"))]
++    if run_foreground {
++        unsafe {
++            use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
++
++            if run_foreground {
++                let _ = AttachConsole(ATTACH_PARENT_PROCESS);
++            }
++        }
++    }
++
+     menu::init();
+     zed_actions::init();
+ 
+@@ -217,7 +233,10 @@ fn main() {
+ 
+             #[cfg(target_os = "windows")]
+             {
+-                !crate::zed::windows_only_instance::check_single_instance()
++                !crate::zed::windows_only_instance::check_single_instance(
++                    open_listener.clone(),
++                    run_foreground,
++                )
+             }
+ 
+             #[cfg(target_os = "macos")]
+@@ -574,7 +593,6 @@ fn main() {
+         })
+         .detach_and_log_err(cx);
+ 
+-        let args = Args::parse();
+         let urls: Vec<_> = args
+             .paths_or_urls
+             .iter()
+@@ -1012,6 +1030,11 @@ struct Args {
+     /// Instructs zed to run as a dev server on this machine. (not implemented)
+     #[arg(long)]
+     dev_server_token: Option<String>,
++
++    /// Run zed in the foreground, only used on Windows, to match the behavior of the behavior on macOS.
++    #[arg(long)]
++    #[cfg(target_os = "windows")]
++    foreground: bool,
+ }
+ 
+ #[derive(Clone, Debug)]
+diff --git a/crates/zed/src/zed/windows_only_instance.rs b/crates/zed/src/zed/windows_only_instance.rs
+index 2645650bfae70e..79c6254f65e5d4 100644
+--- a/crates/zed/src/zed/windows_only_instance.rs
++++ b/crates/zed/src/zed/windows_only_instance.rs
+@@ -1,31 +1,173 @@
+-use release_channel::ReleaseChannel;
++use std::{sync::Arc, thread::JoinHandle};
++
++use anyhow::Context;
++use clap::Parser;
++use cli::{ipc::IpcOneShotServer, CliRequest, CliResponse, IpcHandshake};
++use parking_lot::Mutex;
++use release_channel::APP_IDENTIFIER;
++use util::ResultExt;
+ use windows::{
+     core::HSTRING,
+     Win32::{
+-        Foundation::{GetLastError, ERROR_ALREADY_EXISTS},
+-        System::Threading::CreateEventW,
++        Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, GENERIC_WRITE, HANDLE},
++        Storage::FileSystem::{
++            CreateFileW, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE,
++            OPEN_EXISTING, PIPE_ACCESS_INBOUND,
++        },
++        System::{
++            Pipes::{
++                ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_MESSAGE,
++                PIPE_TYPE_MESSAGE, PIPE_WAIT,
++            },
++            Threading::CreateMutexW,
++        },
+     },
+ };
+ 
+-fn retrieve_app_instance_event_identifier() -> &'static str {
+-    match *release_channel::RELEASE_CHANNEL {
+-        ReleaseChannel::Dev => "Local\\Zed-Editor-Dev-Instance-Event",
+-        ReleaseChannel::Nightly => "Local\\Zed-Editor-Nightly-Instance-Event",
+-        ReleaseChannel::Preview => "Local\\Zed-Editor-Preview-Instance-Event",
+-        ReleaseChannel::Stable => "Local\\Zed-Editor-Stable-Instance-Event",
+-    }
+-}
++use crate::{Args, OpenListener};
+ 
+-pub fn check_single_instance() -> bool {
++pub fn check_single_instance(opener: OpenListener, run_foreground: bool) -> bool {
+     unsafe {
+-        CreateEventW(
++        CreateMutexW(
+             None,
+             false,
+-            false,
+-            &HSTRING::from(retrieve_app_instance_event_identifier()),
++            &HSTRING::from(format!("{}-Instance-Mutex", *APP_IDENTIFIER)),
+         )
+         .expect("Unable to create instance sync event")
+     };
+-    let last_err = unsafe { GetLastError() };
+-    last_err != ERROR_ALREADY_EXISTS
++    let first_instance = unsafe { GetLastError() } != ERROR_ALREADY_EXISTS;
++
++    if first_instance {
++        // We are the first instance, listen for messages sent from other instances
++        std::thread::spawn(move || with_pipe(|url| opener.open_urls(vec![url])));
++    } else if !run_foreground {
++        // We are not the first instance, send args to the first instance
++        send_args_to_instance().log_err();
++    }
++
++    first_instance
++}
++
++fn with_pipe(f: impl Fn(String)) {
++    let pipe = unsafe {
++        CreateNamedPipeW(
++            &HSTRING::from(format!("\\\\.\\pipe\\{}-Named-Pipe", *APP_IDENTIFIER)),
++            PIPE_ACCESS_INBOUND,
++            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
++            1,
++            128,
++            128,
++            0,
++            None,
++        )
++    };
++    if pipe.is_invalid() {
++        log::error!("Failed to create named pipe: {:?}", unsafe {
++            GetLastError()
++        });
++        return;
++    }
++
++    loop {
++        if let Some(message) = retrieve_message_from_pipe(pipe)
++            .context("Failed to read from named pipe")
++            .log_err()
++        {
++            f(message);
++        }
++    }
++}
++
++fn retrieve_message_from_pipe(pipe: HANDLE) -> anyhow::Result<String> {
++    unsafe { ConnectNamedPipe(pipe, None)? };
++    let message = retrieve_message_from_pipe_inner(pipe);
++    unsafe { DisconnectNamedPipe(pipe).log_err() };
++    message
++}
++
++fn retrieve_message_from_pipe_inner(pipe: HANDLE) -> anyhow::Result<String> {
++    let mut buffer = [0u8; 128];
++    unsafe {
++        ReadFile(pipe, Some(&mut buffer), None, None)?;
++    }
++    let message = std::ffi::CStr::from_bytes_until_nul(&buffer)?;
++    Ok(message.to_string_lossy().to_string())
++}
++
++// This part of code is mostly from crates/cli/src/main.rs
++fn send_args_to_instance() -> anyhow::Result<()> {
++    let Args { paths_or_urls, .. } = Args::parse();
++    let (server, server_name) =
++        IpcOneShotServer::<IpcHandshake>::new().context("Handshake before Zed spawn")?;
++    let url = format!("zed-cli://{server_name}");
++
++    let mut paths = vec![];
++    let mut urls = vec![];
++    for path in paths_or_urls.into_iter() {
++        match std::fs::canonicalize(&path) {
++            Ok(path) => paths.push(path.to_string_lossy().to_string()),
++            Err(error) => {
++                if path.starts_with("zed://")
++                    || path.starts_with("http://")
++                    || path.starts_with("https://")
++                    || path.starts_with("file://")
++                    || path.starts_with("ssh://")
++                {
++                    urls.push(path);
++                } else {
++                    log::error!("error parsing path argument: {}", error);
++                }
++            }
++        }
++    }
++    let exit_status = Arc::new(Mutex::new(None));
++    let sender: JoinHandle<anyhow::Result<()>> = std::thread::spawn({
++        let exit_status = exit_status.clone();
++        move || {
++            let (_, handshake) = server.accept().context("Handshake after Zed spawn")?;
++            let (tx, rx) = (handshake.requests, handshake.responses);
++
++            tx.send(CliRequest::Open {
++                paths,
++                urls,
++                wait: false,
++                open_new_workspace: None,
++                env: None,
++            })?;
++
++            while let Ok(response) = rx.recv() {
++                match response {
++                    CliResponse::Ping => {}
++                    CliResponse::Stdout { message } => log::info!("{message}"),
++                    CliResponse::Stderr { message } => log::error!("{message}"),
++                    CliResponse::Exit { status } => {
++                        exit_status.lock().replace(status);
++                        return Ok(());
++                    }
++                }
++            }
++            Ok(())
++        }
++    });
++
++    unsafe {
++        let pipe = CreateFileW(
++            &HSTRING::from(format!("\\\\.\\pipe\\{}-Named-Pipe", *APP_IDENTIFIER)),
++            GENERIC_WRITE.0,
++            FILE_SHARE_MODE::default(),
++            None,
++            OPEN_EXISTING,
++            FILE_FLAGS_AND_ATTRIBUTES::default(),
++            None,
++        )?;
++        let message = url.as_bytes();
++        let mut bytes_written = 0;
++        WriteFile(pipe, Some(message), Some(&mut bytes_written), None)?;
++        CloseHandle(pipe)?;
++    }
++    sender.join().unwrap()?;
++    if let Some(exit_status) = exit_status.lock().take() {
++        std::process::exit(exit_status);
++    }
++    Ok(())
+ }
