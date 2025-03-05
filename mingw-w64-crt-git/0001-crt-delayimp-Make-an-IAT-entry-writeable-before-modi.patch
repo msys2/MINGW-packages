@@ -1,0 +1,64 @@
+From d9bcae01bb0cbfaa8b6d35ab5dd6d5e7b9b98edd Mon Sep 17 00:00:00 2001
+From: LIU Hao <lh_mouse@126.com>
+Date: Tue, 11 Feb 2025 10:34:14 +0800
+Subject: [PATCH] crt/delayimp: Make an IAT entry writeable before modifying it
+
+Since Binutils 2.44, the import address table (abbr. IAT) is now read-only,
+in alignment with Microsoft LINK and LLD. This commit serves two purposes:
+
+First, at the moment, DLLTOOL, when generating a delay-import library,
+mistakenly places delay-import pointers in the ordinary read-only IAT, which
+can cause access violation if such functions are called. Eventually DLLTOOL
+has to be fixed, but nevertheless this commit is a kludge for such broken
+import libraries to be usable.
+
+Second, in the future, if `IMAGE_GUARD_PROTECT_DELAYLOAD_IAT` is specified in
+`GuardFlags` of the load config directory of an image, the delay-load IAT can
+also be made read-only, which may also require this change.
+
+Reference: https://sourceware.org/git/?p=binutils-gdb.git;a=commitdiff;h=db00f6c3aceabbf03acdb69e74b59b2d2b043cd7
+Signed-off-by: LIU Hao <lh_mouse@126.com>
+---
+ mingw-w64-crt/misc/delayimp.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/mingw-w64-crt/misc/delayimp.c b/mingw-w64-crt/misc/delayimp.c
+index caa6166f0..d92e6b2d4 100644
+--- a/mingw-w64-crt/misc/delayimp.c
++++ b/mingw-w64-crt/misc/delayimp.c
+@@ -131,6 +131,8 @@ static int WINAPI FLoadedAtPreferredAddress(PIMAGE_NT_HEADERS pinh,HMODULE hmod)
+ /*typedef unsigned long *PULONG_PTR;*/
+ #endif
+ 
++static CRITICAL_SECTION gDelayLoadLock = { .LockCount = -1 };
++
+ FARPROC WINAPI __delayLoadHelper2(PCImgDelayDescr pidd,FARPROC *ppfnIATEntry);
+ 
+ FARPROC WINAPI __delayLoadHelper2(PCImgDelayDescr pidd,FARPROC *ppfnIATEntry)
+@@ -147,7 +149,9 @@ FARPROC WINAPI __delayLoadHelper2(PCImgDelayDescr pidd,FARPROC *ppfnIATEntry)
+   unsigned iIAT, iINT;
+   PCImgThunkData pitd;
+   FARPROC pfnRet;
+-  
++  DWORD dwOldProtect;
++  WINBOOL bUnprotected;
++
+   if(!(idd.grAttrs & dlattrRva)) {
+     PDelayLoadInfo rgpdli[1] = { &dli};
+     RaiseException(VcppException(ERROR_SEVERITY_ERROR,ERROR_INVALID_PARAMETER),0,1,(PULONG_PTR)(rgpdli));
+@@ -217,7 +221,12 @@ FARPROC WINAPI __delayLoadHelper2(PCImgDelayDescr pidd,FARPROC *ppfnIATEntry)
+     }
+   }
+ SetEntryHookBypass:
++  EnterCriticalSection(&gDelayLoadLock);
++  bUnprotected = VirtualProtect(ppfnIATEntry, sizeof(FARPROC), PAGE_READWRITE, &dwOldProtect);
+   *ppfnIATEntry = pfnRet;
++  if(bUnprotected && dwOldProtect != PAGE_READWRITE)
++    VirtualProtect(ppfnIATEntry, sizeof(FARPROC), dwOldProtect, &dwOldProtect);
++  LeaveCriticalSection(&gDelayLoadLock);
+ HookBypass:
+   if(__pfnDliNotifyHook2) {
+     dli.dwLastError = 0;
+-- 
+2.48.1
+
