@@ -1,0 +1,155 @@
+# Maintainer: Fabien Chouteau <chouteau@adacore.com>
+# Based on mingw-w64-arm-none-eabi-newlib
+
+_bootstrap=1
+if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+  _bootstrap=1
+fi
+
+_realname=newlib
+_target=riscv32-unknown-elf
+_gccver=14.1.0
+
+pkgbase=mingw-w64-${_target}-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_target}-${_realname}")
+pkgver=4.4.0.20231231
+pkgrel=1
+pkgdesc='GNU Tools for RISC-V Embedded Processors - Newlib (mingw-w64)'
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64')
+url="https://sourceware.org/newlib/"
+license=('spdx:GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND LGPL-3.0-only AND 0BSD AND BSD-2-Clause AND BSD-3-Clause-Clear AND custom')
+groups=("${MINGW_PACKAGE_PREFIX}-${_target}-toolchain")
+depends=("${MINGW_PACKAGE_PREFIX}-${_target}-binutils")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-autotools"
+             "${MINGW_PACKAGE_PREFIX}-gmp"
+             "${MINGW_PACKAGE_PREFIX}-mpc"
+             "${MINGW_PACKAGE_PREFIX}-mpfr"
+             "${MINGW_PACKAGE_PREFIX}-isl"
+             $( (( _bootstrap )) || echo "${MINGW_PACKAGE_PREFIX}-${_target}-gcc"))
+options=('!strip' '!emptydirs')
+source=(
+    "https://sourceware.org/pub/newlib/newlib-${pkgver}.tar.gz"
+    $( (( !_bootstrap )) || echo "https://ftp.gnu.org/gnu/gcc/gcc-${_gccver}/gcc-${_gccver}.tar.xz")
+)
+sha256sums=(
+    '0c166a39e1bf0951dfafcd68949fe0e4b6d3658081d6282f39aeefc6310f2f13'
+    $( (( !_bootstrap )) || echo 'e283c654987afe3de9d8080bc0bd79534b5ca0d681a73a11ff2b5d3767426840')
+)
+noextract=("newlib-${pkgver}.tar.gz")
+
+prepare() {
+    cd ${srcdir}
+    # bsdtar doesn't like the symlinks
+    tar -xzf newlib-${pkgver}.tar.gz || true
+}
+
+# Newlib is required to build GCC, but GCC is also required to compile newlib
+# So we must build a minimal GCC first, to avoid the circular dependency
+_build_gcc() {
+    cp -a ${MINGW_PREFIX}/${_target} ${srcdir}/gcc-install-${MSYSTEM}
+
+    if [[ ${CC} == clang ]]; then
+        CFLAGS+=" -w"
+        CXXFLAGS+=" -w"
+    fi
+
+    declare -a _extra_config
+    if [[ ${CC} == clang ]]; then
+        _extra_config+=("--disable-win32-utf8-manifest")
+    fi
+
+    local _GCC_LDFLAGS="${LDFLAGS} -Wl,--disable-dynamicbase,--image-base=0x400000"
+    ../gcc-${_gccver}/configure \
+        --prefix=/ \
+        --target=${_target} \
+        --enable-languages=c \
+        --disable-nls \
+        --disable-libssp \
+        --disable-shared \
+        --disable-threads \
+        --disable-libgomp \
+        --disable-werror \
+        --disable-lto \
+        --disable-libffi \
+        --disable-decimal-float \
+        --disable-libmudflap \
+        --disable-libquadmath \
+        --disable-libstdcxx-pch \
+        --disable-libsanitizer \
+        --disable-tls \
+        --enable-multilib \
+        --enable-interwork \
+        --without-headers \
+        --with-libelf \
+        --with-newlib \
+        --with-host-libstdcxx="-static-libgcc -Wl,-Bstatic,-lstdc++,-Bdynamic -lm" \
+        --with-sysroot=${MINGW_PREFIX} \
+        --with-build-sysroot=${srcdir}/gcc-install-${MSYSTEM} \
+        --with-build-time-tools=${MINGW_PREFIX}/${_target}/bin \
+        "${_extra_config[@]}" \
+        LDFLAGS="${_GCC_LDFLAGS}"
+
+    make all-gcc
+    make DESTDIR=${srcdir}/gcc-install-${MSYSTEM} install-gcc
+}
+
+build() {
+    if (( _bootstrap )); then
+      mkdir -p gcc-install-${MSYSTEM}
+      mkdir -p gcc-build-${MSYSTEM} && cd gcc-build-${MSYSTEM}
+      _build_gcc
+      export PATH="${srcdir}/gcc-install-${MSYSTEM}/bin:${PATH}"
+    fi
+
+    mkdir -p ${srcdir}/build-${MSYSTEM} && cd ${srcdir}/build-${MSYSTEM}
+
+    ../newlib-${pkgver}/configure \
+        --target=${_target} \
+        --prefix=${MINGW_PREFIX} \
+        --enable-newlib-io-long-double \
+        --enable-newlib-io-long-long \
+        --enable-newlib-io-c99-formats \
+        --enable-newlib-register-fini \
+        --disable-nls
+    make
+
+    mkdir -p ${srcdir}/nano-build-${MSYSTEM} && cd ${srcdir}/nano-build-${MSYSTEM}
+
+    ../newlib-${pkgver}/configure \
+        --target=${_target} \
+        --prefix=${MINGW_PREFIX} \
+        --enable-newlib-reent-small \
+        --disable-newlib-fvwrite-in-streamio \
+        --disable-newlib-fseek-optimization \
+        --disable-newlib-wide-orient \
+        --enable-newlib-nano-malloc \
+        --disable-newlib-unbuf-stream-opt \
+        --enable-lite-exit \
+        --enable-newlib-global-atexit \
+        --enable-newlib-nano-formatted-io \
+        --disable-newlib-supplied-syscalls \
+        --disable-nls
+    make
+}
+
+package() {
+    cd ${pkgdir}
+
+    cd ${srcdir}/nano-build-${MSYSTEM}
+
+    make DESTDIR=${pkgdir} install
+
+    find ${pkgdir} -regex ".*/lib\(c\|g\|rdimon\|gloss\)\.a" -exec rename .a _nano.a '{}' \;
+    install -Dm644 -t ${pkgdir}${MINGW_PREFIX}/${_target}/include/newlib-nano ${pkgdir}${MINGW_PREFIX}/${_target}/include/newlib.h
+
+    cd ${srcdir}/build-${MSYSTEM}
+
+    make DESTDIR=${pkgdir} install
+
+    find ${pkgdir}${MINGW_PREFIX}/${_target}/lib \( -name "*.a" -or -name "*.o" \) -exec ${_target}-objcopy -R .comment -R .note -R .debug_info -R .debug_aranges -R .debug_pubnames -R .debug_pubtypes -R .debug_abbrev -R .debug_line -R .debug_str -R .debug_ranges -R .debug_loc '{}' \;
+
+    # Avoid conflict with other targets newlib
+    mv ${pkgdir}${MINGW_PREFIX}/share/info/porting.info ${pkgdir}${MINGW_PREFIX}/share/info/${_target}-porting.info
+}
