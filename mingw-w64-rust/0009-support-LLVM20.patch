@@ -1,0 +1,167 @@
+--- a/compiler/rustc_codegen_llvm/src/debuginfo/metadata/enums/native.rs
++++ b/compiler/rustc_codegen_llvm/src/debuginfo/metadata/enums/native.rs
+@@ -437,6 +437,12 @@ fn build_enum_variant_member_di_node<'ll, 'tcx>(
+         .source_info
+         .unwrap_or_else(|| (unknown_file_metadata(cx), UNKNOWN_LINE_NUMBER));
+ 
++    let discr = discr_value.opt_single_val().map(|value| {
++        let tag_base_type = tag_base_type(cx.tcx, enum_type_and_layout);
++        let size = cx.size_of(tag_base_type);
++        cx.const_uint_big(cx.type_ix(size.bits()), value)
++    });
++
+     unsafe {
+         llvm::LLVMRustDIBuilderCreateVariantMemberType(
+             DIB(cx),
+@@ -448,7 +454,7 @@ fn build_enum_variant_member_di_node<'ll, 'tcx>(
+             enum_type_and_layout.size.bits(),
+             enum_type_and_layout.align.abi.bits() as u32,
+             Size::ZERO.bits(),
+-            discr_value.opt_single_val().map(|value| cx.const_u128(value)),
++            discr,
+             DIFlags::FlagZero,
+             variant_member_info.variant_struct_type_di_node,
+         )
+--- a/compiler/rustc_llvm/llvm-wrapper/PassWrapper.cpp
++++ b/compiler/rustc_llvm/llvm-wrapper/PassWrapper.cpp
+@@ -22,6 +22,7 @@
+ #include "llvm/Passes/StandardInstrumentations.h"
+ #include "llvm/Support/CBindingWrapping.h"
+ #include "llvm/Support/FileSystem.h"
++#include "llvm/Support/Program.h"
+ #include "llvm/Support/TimeProfiler.h"
+ #include "llvm/Support/VirtualFileSystem.h"
+ #include "llvm/Target/TargetMachine.h"
+@@ -472,16 +473,19 @@ extern "C" LLVMTargetMachineRef LLVMRustCreateTargetMachine(
+     assert(ArgsCstrBuff[ArgsCstrBuffLen - 1] == '\0');
+     auto Arg0 = std::string(ArgsCstrBuff);
+     buffer_offset = Arg0.size() + 1;
+-    auto ArgsCppStr = std::string(ArgsCstrBuff + buffer_offset,
+-                                  ArgsCstrBuffLen - buffer_offset);
+-    auto i = 0;
+-    while (i != std::string::npos) {
+-      i = ArgsCppStr.find('\0', i + 1);
+-      if (i != std::string::npos)
+-        ArgsCppStr.replace(i, 1, " ");
++
++    std::string CommandlineArgs;
++    raw_string_ostream OS(CommandlineArgs);
++    ListSeparator LS(" ");
++    for (StringRef Arg : split(StringRef(ArgsCstrBuff + buffer_offset,
++                                         ArgsCstrBuffLen - buffer_offset),
++                               '\0')) {
++      OS << LS;
++      sys::printArg(OS, Arg, /*Quote=*/true);
+     }
++    OS.flush();
+     Options.MCOptions.Argv0 = Arg0;
+-    Options.MCOptions.CommandlineArgs = ArgsCppStr;
++    Options.MCOptions.CommandlineArgs = CommandlineArgs;
+ #else
+     int buffer_offset = 0;
+     assert(ArgsCstrBuff[ArgsCstrBuffLen - 1] == '\0');
+--- a/library/Cargo.lock
++++ b/library/Cargo.lock
+@@ -61,9 +61,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "compiler_builtins"
+-version = "0.1.140"
++version = "0.1.145"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "df14d41c5d172a886df3753d54238eefb0f61c96cbd8b363c33ccc92c457bee3"
++checksum = "da0705f5abaaab7168ccc14f8f340ded61be2bd3ebea86b9834b6acbc8495de8"
+ dependencies = [
+  "cc",
+  "rustc-std-workspace-core",
+--- a/library/alloc/Cargo.toml
++++ b/library/alloc/Cargo.toml
+@@ -10,7 +10,7 @@ edition = "2021"
+ 
+ [dependencies]
+ core = { path = "../core" }
+-compiler_builtins = { version = "=0.1.140", features = ['rustc-dep-of-std'] }
++compiler_builtins = { version = "=0.1.145", features = ['rustc-dep-of-std'] }
+ 
+ [dev-dependencies]
+ rand = { version = "0.8.5", default-features = false, features = ["alloc"] }
+--- a/library/std/Cargo.toml
++++ b/library/std/Cargo.toml
+@@ -17,7 +17,7 @@ cfg-if = { version = "1.0", features = ['rustc-dep-of-std'] }
+ panic_unwind = { path = "../panic_unwind", optional = true }
+ panic_abort = { path = "../panic_abort" }
+ core = { path = "../core", public = true }
+-compiler_builtins = { version = "=0.1.140" }
++compiler_builtins = { version = "=0.1.145" }
+ unwind = { path = "../unwind" }
+ hashbrown = { version = "0.15", default-features = false, features = [
+     'rustc-dep-of-std',
+--- a/compiler/rustc_codegen_gcc/src/back/lto.rs
++++ b/compiler/rustc_codegen_gcc/src/back/lto.rs
+@@ -660,9 +660,7 @@ pub unsafe fn optimize_thin_module(
+         {
+             let _timer =
+                 cgcx.prof.generic_activity_with_arg("LLVM_thin_lto_rename", thin_module.name());
+-            if !llvm::LLVMRustPrepareThinLTORename(thin_module.shared.data.0, llmod, target) {
+-                return Err(write::llvm_err(&dcx, LlvmError::PrepareThinLtoModule));
+-            }
++            unsafe { llvm::LLVMRustPrepareThinLTORename(thin_module.shared.data.0, llmod, target) };
+             save_temp_bitcode(cgcx, &module, "thin-lto-after-rename");
+         }
+ 
+--- a/compiler/rustc_codegen_llvm/src/back/lto.rs
++++ b/compiler/rustc_codegen_llvm/src/back/lto.rs
+@@ -737,11 +737,7 @@ pub(crate) unsafe fn optimize_thin_module(
+         {
+             let _timer =
+                 cgcx.prof.generic_activity_with_arg("LLVM_thin_lto_rename", thin_module.name());
+-            if unsafe {
+-                !llvm::LLVMRustPrepareThinLTORename(thin_module.shared.data.0, llmod, target)
+-            } {
+-                return Err(write::llvm_err(dcx, LlvmError::PrepareThinLtoModule));
+-            }
++            unsafe { llvm::LLVMRustPrepareThinLTORename(thin_module.shared.data.0, llmod, target) };
+             save_temp_bitcode(cgcx, &module, "thin-lto-after-rename");
+         }
+ 
+--- a/compiler/rustc_codegen_llvm/src/llvm/ffi.rs
++++ b/compiler/rustc_codegen_llvm/src/llvm/ffi.rs
+@@ -2374,7 +2374,7 @@ unsafe extern "C" {
+         Data: &ThinLTOData,
+         Module: &Module,
+         Target: &TargetMachine,
+-    ) -> bool;
++    );
+     pub fn LLVMRustPrepareThinLTOResolveWeak(Data: &ThinLTOData, Module: &Module) -> bool;
+     pub fn LLVMRustPrepareThinLTOInternalize(Data: &ThinLTOData, Module: &Module) -> bool;
+     pub fn LLVMRustPrepareThinLTOImport(
+--- a/compiler/rustc_llvm/llvm-wrapper/PassWrapper.cpp
++++ b/compiler/rustc_llvm/llvm-wrapper/PassWrapper.cpp
+@@ -1389,20 +1389,14 @@ static bool clearDSOLocalOnDeclarations(Module &Mod, TargetMachine &TM) {
+   return ClearDSOLocalOnDeclarations;
+ }
+ 
+-extern "C" bool LLVMRustPrepareThinLTORename(const LLVMRustThinLTOData *Data,
++extern "C" void LLVMRustPrepareThinLTORename(const LLVMRustThinLTOData *Data,
+                                              LLVMModuleRef M,
+                                              LLVMTargetMachineRef TM) {
+   Module &Mod = *unwrap(M);
+   TargetMachine &Target = *unwrap(TM);
+ 
+   bool ClearDSOLocal = clearDSOLocalOnDeclarations(Mod, Target);
+-  bool error = renameModuleForThinLTO(Mod, Data->Index, ClearDSOLocal);
+-
+-  if (error) {
+-    LLVMRustSetLastError("renameModuleForThinLTO failed");
+-    return false;
+-  }
+-  return true;
++  renameModuleForThinLTO(Mod, Data->Index, ClearDSOLocal);
+ }
+ 
+ extern "C" bool
+--- a/vendor/compiler_builtins-0.1.145/.cargo-checksum.json
++++ b/vendor/compiler_builtins-0.1.145/.cargo-checksum.json
+@@ -0,0 +1 @@
++{"files":{"Cargo.lock":"bffffc61fbea397273c4570574d31876b29e876aaa64b9497ff827b91cf50fdd","Cargo.toml":"e6d0c240c0de9177b8cc2d8157470df04f9949e64e28c22b3d4272844eca5e4e","LICENSE.txt":"789f172b2ebcfdd6ce9f0ef16763615c07d04fd1e0d352f7ce39c927d308de64","README.md":"5ca977ba59b34545eab8c123546a913bdd2f1b9925b6ec66b9e9f1968a7c16b5","build.rs":"0a4c5faf66a47fb7b978fffdfe8fd555d402f656dfb79289382b1c5bd42d3d92","configure.rs":"83863b636f9db60552c30ed9ff8a848ba2abd59e0255c7c55553810164bd665a","examples/intrinsics.rs":"2d29441bf7b09343afc9399beb732c442e50fd486bc3d57fe3bd13c45fe65ad7","libm/src/math/acos.rs":"fb066ba84aba1372d706425ec14f35ff8d971756d15eeebd22ecf42a716493bb","libm/src/math/acosf.rs":"a112b82309bba1d35c4e3d6ad4d6c21ef305343d9ab601ddf4bc61d43bc9f1af","libm/src/math/acosh.rs":"99de01ded7922bb93a882ad5ad8b472b5cae0059dea0bdca2077f65e94483150","libm/src/math/acoshf.rs":"10750c4d39ef6717b20a15ef1ce43e15eb851682d2f820f7e94501adec98b9a5","libm/src/math/arch/i586.rs":"9ccc465421c4ae4337c289f114319320ceabdbbe62f0660ac4ecdd4842fd0327","libm/src/math/arch/i686.rs":"b6f1626060d6a5e458a01c89ff0eeabf8949035670bb0f8b12f4897f9c83b2c7","libm/src/math/arch/mod.rs":"7c8ed4e70fa9296123ef77e5dddb3dbb822cc1872a84b88d49b4d8220e9d86c8","libm/src/math/arch/wasm32.rs":"d6e15498bafa238199cd5451ae441deb378e27803adfc1d542633d84c0e0bd19","libm/src/math/asin.rs":"fa0a75355e36bf28269f1119e5e17babbee106158a910f3ffddc76acb88a9473","libm/src/math/asinf.rs":"2f051721107588abfa872386299508488a30f8242bfb4941cd7e1f489919cdad","libm/src/math/asinh.rs":"19cdf0965c81a56b6e2dc7a102e25e3310ad69c7b2b18dd7f922658a76a96451","libm/src/math/asinhf.rs":"d226edd4636dfb9af8797693ce4de6a799d8411454cf482cadb09623156fb48a","libm/src/math/atan.rs":"7d590c8c31c300ab24cdbac393e1424ddde09e35c6eb2f33f2a533eaf1e427ac","libm/src/math/atan2.rs":"59618a543d8d6543fbde7211c1b842ca19f945c71960b91f84d000b61a0c6345","libm/src/math/atan2f.rs":"afc398fed6ebae60fb32713521fbb8e46ec842cc44bcaa1ca84ed0b3d3acd531","libm/src/math/atanf.rs":"e7e4906c394bb4523b5955117490df18e8f95807989dcae7db6795d616da1e65","libm/src/math/atanh.rs":"9c89b21a90f6a5986e61516d71ddd2a5c0786d687cab2afa978d97772ade6a4f","libm/src/math/atanhf.rs":"5e05e118e9b12fb8ac40aa01cff0e4e0aea1451cbe4abd6e3e3b079c73246a26","libm/src/math/cbrt.rs":"f2c45612d2eecd93cfcdd9ebf824c754fc8f8dfd6d16862c0b9c4ccea78c2a0f","libm/src/math/cbrtf.rs":"ad0b483854aa9f17a44d36c049bf0e8ebab34c27e90b787c05f45cc230ec7d19","libm/src/math/ceil.rs":"e41a3b67126e71ed9ab71322c7755d2bdc46ef5f9d76beba3741a6e753b6f4a7","libm/src/math/ceilf.rs":"f371f3d2d6bea5792664accc730f859499f4cb0de147b751a6c736f020279c7a","libm/src/math/copysign.rs":"d08ccedd7f4c7b0a35ca4e7051c60edb8d82ae9eb4cd846bce4cf09263af667c","libm/src/math/copysignf.rs":"a7c805891c70d185c9f01b8c3f1883855c94d40558c785302d5d52985061c539","libm/src/math/copysignf128.rs":"71f8898e4ce02099c2527594d8102f9b7725cb829d3252d9ce77fb7d05fd965d","libm/src/math/copysignf16.rs":"16c0aef25f6b5631a8f611debfaf3e7ebf34b4f09861806a2d0c08aa1fd6f43d","libm/src/math/cos.rs":"05c7f45241a28169bfd9031e53d07450f9e869d0eff6dc9a1304efa1dd29234c","libm/src/math/cosf.rs":"8ec9d03db02272178bee0fefa27acf6ec432e8d8e3d2e7e7ab10689b6491e920","libm/src/math/cosh.rs":"71a5bf9414a2d054978e3ef5204ce258275507ace5090bd567c44e211aee6b44","libm/src/math/coshf.rs":"2aad47d61bd99a960f0e3ea68d52c66840eaeaa741e97d35076085520c0e96b4","libm/src/math/erf.rs":"904a4add331e07017aa1414ced783b1ad6dcadd4cc5fee7af873ee0fc4e8fd02","libm/src/math/erff.rs":"4b33966aed64b7b09dc3ccbc6b800e0cf3a6cb7230b037393b1e4766448be44f","libm/src/math/exp.rs":"dcaff5a7c004944a526a6fd73fbbccf2a85261b9d850cfeb044854f2824fbe0e","libm/src/math/exp10.rs":"40d86c8d09d624deea9ebe9adc8854d8aac7871c8ebcb766840f9b6849ca47bf","libm/src/math/exp10f.rs":"939d97f2f3f999a1b5e48deb164c9d36accec1a10772f247bfd818825dd780aa","libm/src/math/exp2.rs":"48bd9acfe1f838a8b0a9199c0da23aabcaed1c657c57d33a2b590b7275950303","libm/src/math/exp2f.rs":"faba44a87eb4ef7d17846e217d747a8e68b9b8ebaded5bc869a3878067712814","libm/src/math/expf.rs":"bbae85acadd2f2a0b7facbf591551f52c936420bb6779672c609cbfd8de0900f","libm/src/math/expm1.rs":"719702ee260fd1cb1c27f22c05fab2a02fbff22f1495bd6f7e3158d21fa75bc7","libm/src/math/expm1f.rs":"db350764df4762419805ed790c2d0b9b32dd404ecc9549a53196d072ace886b7","libm/src/math/expo2.rs":"4f4f9fecfccb43f30c2784aa7c0bb656754a52b8ab431f7d1b551c673ab133f1","libm/src/math/fabs.rs":"4d0579325c7d448033927490f6437a918bffc13c7fa66b9b5de77602afdc8d0f","libm/src/math/fabsf.rs":"45bae5ee0e1dcb6521104e796d7d91315864d3144e2f8084b792c9be9e655c40","libm/src/math/fabsf128.rs":"75aeb9fa21d7ab23d89553afbbbee99d43de945ef656e0a72ab3ca1fc59c7ad9","libm/src/math/fabsf16.rs":"07642466d7bdcef3366bc400c4cc69d1f45c9a60147fd3ff15f3000ace0d143b","libm/src/math/fdim.rs":"8a8960fc4d20aea657e6c7818e0614c1160d6009dc588d8e0f0899212d5ad79f","libm/src/math/fdimf.rs":"a8bf78aa4b07a5446818156515120df52d19f35fa76879a0aebd558bb5914ff8","libm/src/math/fenv.rs":"916ae11e4763588518d64dee82afb41be9d1ee38ecc0679c821d4e7e22cd3dc5","libm/src/math/floor.rs":"9100d39166091610cacaa4d73d6960f5c35eb050430120abf09d3426b5aaa686","libm/src/math/floorf.rs":"e4f7ed59c95c9f687d1892422994fe3e85c340395bd244c222f15b77d23862b6","libm/src/math/fma.rs":"9b4153b85521650e940230fece888fa359e1ecb003bb3b60d7726e98f8731f38","libm/src/math/fmaf.rs":"9d5225fd8fc9532d7ba968ed9232e08aacc88478d65284a0713abbb3c24b800b","libm/src/math/fmax.rs":"f6c8e96a8b1a170648d2fa3513e7b6b459085d708c839869f82e305fe58fac37","libm/src/math/fmaxf.rs":"dff0025433232e8a5ec7bd54d847ccf596d762ea4e35f5c54fbaac9404d732fd","libm/src/math/fmin.rs":"95b6cb66ca0e0e22276f0bf88dbe8fb69796a69a196a7491bd4802efbcf2e298","libm/src/math/fminf.rs":"304bc839b15ea3d84e68d2af9f40524ec120d30a36a667b22fcb98a6c258f4c7","libm/src/math/fmod.rs":"6441fe6deafb686c84386b30d29ce5395d118a24b5bf5a8f05929c743d2e9546","libm/src/math/fmodf.rs":"b65e505c44b9ef2e71ef4def27201d230470cdebfb60189f3a7738a35379cdb7","libm/src/math/frexp.rs":"28af70026922a8ab979744c7ad4d8faba6079c4743b7eeb6d14c983a982fbbcc","libm/src/math/frexpf.rs":"2e2593ae8002ba420809ebfaf737ef001cdc912354be3d978a8c0cb930350d4d","libm/src/math/generic/copysign.rs":"df7a9b73220851b9586c20d0f8a9dcdca84205e696fae4504809cac9e8156e1f","libm/src/math/generic/fabs.rs":"a641d79b43e66c674e9b39b57d33c270c39c0235bd69effe7fbb56112942135b","libm/src/math/generic/mod.rs":"bdb0ef46c75836c755bb1b187196f4745504885e1fb67092f2eec4c45b6368ec","libm/src/math/hypot.rs":"841131c4a0cea75bc8a86e29f3f6d0815a61fc99731c9984651ce83d3050d218","libm/src/math/hypotf.rs":"5f317323edc2eb699580fe54b074b7e570a7734d51a0a149c0b49b54470a836c","libm/src/math/ilogb.rs":"143729f97f645d190020c9290d5ccfff1da35758af00026982f64abf884e93a4","libm/src/math/ilogbf.rs":"5e402b07aa21f8af73ebb259f1de43d41fe5c8be4cae29d1446711d2817f4976","libm/src/math/j0.rs":"c145a1646071b3ade56c3b030865f52342a6367d7362f02b8b993f91311bfb6d","libm/src/math/j0f.rs":"4f85862b031104901789ecf7b1901eb4bdfe274f1bfabb56d9e84a1b7501728d","libm/src/math/j1.rs":"402e6b5c3ac3f53e380bf194b99f3685fbcb5277cc6d3fba310c746da7b4c17a","libm/src/math/j1f.rs":"f5d01154d3bba41a74d2dcb4bc113f680c0bb7169598c9507f78ea99277e32a1","libm/src/math/jn.rs":"9680834ede69af520268919f67fa14306840ed7b25c2618ae4ee60004bc3f604","libm/src/math/jnf.rs":"cc501ef76acad49624de55e626f77bcdcdbafecd9e140e39196c1c4ac519b1ef","libm/src/math/k_cos.rs":"f34a69e44d6b8901b03b578a75972f438ab20a7b98a0903fc1903d6fde3899be","libm/src/math/k_cosf.rs":"8f7117ff21cebf8e890a5bcfd7ea858a94172f4172b79a66d53824c2cb0888b1","libm/src/math/k_expo2.rs":"eb4ca9e6a525b7ea6da868c3cb136896682cc46f8396ba2a2ebc3ae9e9ba54b0","libm/src/math/k_expo2f.rs":"d51ad5df61cb5d1258bdb90c52bfed4572bb446a9337de9c04411ed9454ae0cb","libm/src/math/k_sin.rs":"4e7df9c8dc688c6650ca2d122933a9e4b1b060235e856886fc23a4f7dafef2eb","libm/src/math/k_sinf.rs":"2775fcc710807164e6f37a4f8da3c8143cd5f16e19ce7c31c5591522151d7a96","libm/src/math/k_tan.rs":"a72beae4ccd9631eeeb61d6365bbeecae81c8411f3120a999c515cca0d5ea5c5","libm/src/math/k_tanf.rs":"6a794be56fa4b2f60452b9bab19af01c388f174560acbf829a351378ea39495d","libm/src/math/ldexp.rs":"b647f0096e80e4d926d8dd18d294c892ee2cb1778effe2c5e1b2664ae5cb1a4e","libm/src/math/ldexpf.rs":"98743fad2cd97a7be496f40ba3157ac1438fce0d0c25d5ab90c3b8c71c3fd0ed","libm/src/math/lgamma.rs":"717a64b7afd8080d1eb5b21c9a6ecfef1dccf04c59ba8397286aa29eccc332d9","libm/src/math/lgamma_r.rs":"b25f8aac64fd371b2b62b6f86063e16a98f2a71d0701ce6eb5e25732eafc7134","libm/src/math/lgammaf.rs":"e4ca4a61ae9040161f4361059ba3fdb35c4df3366fc65d2bb2c9bae61831b611","libm/src/math/lgammaf_r.rs":"7a6069d52cf95dca56e8e505ca0e1f8813e116d06368b1f6936ccd383a677690","libm/src/math/log.rs":"568aa4bfe309d1925929415227fffbed5653dbc66fe70ee732802c0e6cdf4cf7","libm/src/math/log10.rs":"2655e642136ba4201882342512a54a6574704d2dff940309613e3183e1116b4d","libm/src/math/log10f.rs":"a25fd5ff50353c72e17dea41a2ebbe7db466c09fe53401508f7e80d2985bba9b","libm/src/math/log1p.rs":"f93bbc370e242b92077309a7fe97b27069fe76e4237a7770c142b73b19378739","libm/src/math/log1pf.rs":"1a00a8a397c34cfcd2add255d1d9ac90b8f936c6fb7ce7d55a39de997d405dfe","libm/src/math/log2.rs":"b68ef2ab36c010ae7a63756d07f34e36054ed4574a3b0f09b778e29dd9706a91","libm/src/math/log2f.rs":"56f0f7d3c8e112e8058d54e8d8a440e7ad3ec8d3584d59783c0e7a6b3e9b9215","libm/src/math/logf.rs":"a371279e4f713a8a25bdbeba96430ed537c6ac60cc4153cbc5f6e1872a341d3e","libm/src/math/mod.rs":"de92487602dfb1aea9538f1a97d7b575919b8ca3258fced53162e822f318028a","libm/src/math/modf.rs":"7285ab75bb8f5ffd11c700ced2c76c0a264bfe3d4db521e23d59399434c170dd","libm/src/math/modff.rs":"9297ae54eddb02ee757b1b80dabc5f5faf7cc331081916da3fb1fcb60468a783","libm/src/math/nextafter.rs":"6e345937a511f0445fd16ee0075e9128385ef2b56adff045dc3584fcaa0ca68a","libm/src/math/nextafterf.rs":"601d83d745f485992ec68c0782501a3114ebb9e9bfd1d3b71ef7c82eb766e437","libm/src/math/pow.rs":"1adb35024259f7b7c0171269fc47a445d1c711f61542b874f5d535e343b244dd","libm/src/math/powf.rs":"8d237e6a695e7225858e7efac2b45d6c845af42dfd97a4a8a48c5220a1805cba","libm/src/math/rem_pio2.rs":"624d2db8130b7c555ee268a74bfa3e05e86964d003c40df855d210740ef53a1c","libm/src/math/rem_pio2_large.rs":"535824452d3df2d18b8f9b9c8235770b9b1efcfb4d1a563c74d901ba167aab68","libm/src/math/rem_pio2f.rs":"0e0296845955aef7c32dbd27946f0a30eb57835fd7ea73729a4cdb9b5fbe8237","libm/src/math/remainder.rs":"63865f4370853c476b45bb27a5c54a4072146aa4a626835ae5263871a4e7e5dc","libm/src/math/remainderf.rs":"dd3fa432dbda8f2135428198be7bd69c57f8d13df3f365b12f52bf6a82352ac4","libm/src/math/remquo.rs":"e41b51dde3dfc47668811801b41c1456ff2ce38b8b653c94146e6fbf659e70a6","libm/src/math/remquof.rs":"f08cb97cf0252976c8860fab2aca1a94f30e0b19990c9f26f5a98df620f5ca52","libm/src/math/rint.rs":"644c7cc446ba355c22b186a7601cfb3ba73f44873861a77e81d7d0a86e45316b","libm/src/math/rintf.rs":"4b805b918b3b6df878cbcac8c204724d973fbbd51be5a55935d50dd4ea6d883c","libm/src/math/round.rs":"cc0c715f06366ba310c7a49da74e6943f77971e1aeeafb9523f62bcf0ec1d13d","libm/src/math/roundf.rs":"0ba9dff7cd7966d4c64bb0024b37c01baf19431c15b20a5dda4a4f38a2cac8e4","libm/src/math/scalbn.rs":"b5c9d6d4177fe393cbfe1c634d75ce14b754f6cbce87c5bf979a9661491748a2","libm/src/math/scalbnf.rs":"4f198d06db1896386256fb9a5ac5b805b16b836226c18780a475cf18d7c1449c","libm/src/math/sin.rs":"4a02fc4d62c17dd2bd1e7114aa024ec49c8d49a6e8c52db5dfc32b772a7c7865","libm/src/math/sincos.rs":"691f64aba0e8ce50b3f5588108c818904e7895031fae663332eb23bbd5037eb0","libm/src/math/sincosf.rs":"fd437602389f147244e488d73503fe7b69498b59f751ccb11938bc70f06fb917","libm/src/math/sinf.rs":"5faa9ca4cab57e4a5ed28b5ba4947ede90200bcc2bef543bedf49e1b079bacf4","libm/src/math/sinh.rs":"a9ec92213b3975cfd67c38275866c0d34ab3c60904104a88148af51f52246499","libm/src/math/sinhf.rs":"45718b227cb129d57397dd2aec445882177edf982659f66bd12b7af8318fc64d","libm/src/math/sqrt.rs":"b7823fc78d1bfd7b8473c6143084dd06fc7d64ef8bb9fad507ddb62a3697b825","libm/src/math/sqrtf.rs":"757437e8bf555dfd0c6a3ce9fb5322a800a66c536510df74c1bc8c886f6a20f6","libm/src/math/support/float_traits.rs":"9b706d113cb42a275b9e014e8c2f54da42ca2e404fce7761781e93936e5265ca","libm/src/math/support/hex_float.rs":"075bd35dfd93ec56ac28faa78bae92927643a39080a86a192c378d37af85d0d8","libm/src/math/support/int_traits.rs":"958437d17e680a6866351d0b6e0540a6e5f99c97f9928be462eb99469ac38a81","libm/src/math/support/macros.rs":"18fed534bd06d8808a0180c7ff823627b945df514d9adfc89ee89899ba721b28","libm/src/math/support/mod.rs":"51b8bcc4df75d7c6a7bf8a2b62f42841d030a3817e070614e3c6c550cb54ceb8","libm/src/math/tan.rs":"0e1f1c18fe525329545f18daa250ec16e277565509d93a00b22e92b4fa95f778","libm/src/math/tanf.rs":"c648d6b0bf184fdd9363fb31d7c9e86be664658682a8c61aa71c342cbf3665cb","libm/src/math/tanh.rs":"b1e9698181a65245748f1fe671f8053bcab52218cba2ced2936fc87f00fedc53","libm/src/math/tanhf.rs":"bd7879cb81870de06e1b4ceaf0e0e5f5a82f63b618b687cd899306b976bd68a2","libm/src/math/tgamma.rs":"48f8ddb72e7f50835f6e3af0d727fa0df69e58935213ae0ecd64a541d609327d","libm/src/math/tgammaf.rs":"ae32ed41e536fd6b7fd8d52392a5b71afe3bc45e522c471156046cb0501936b8","libm/src/math/trunc.rs":"09c4cf0fd74464b5137a43743ef42bd48a93eb3473d759d5701d71feefe923be","libm/src/math/truncf.rs":"808c7e5bff1c6a53294ea2c0e05f5ce19bc5e6dcc2ae0e0fea6e8e76ea4a793f","src/aarch64.rs":"9b9c0a4d5e234895f65e0cdc9cb9839546ddc42d99f75b29f26867b4c7cea26e","src/aarch64_linux.rs":"3ee475cb58831ad61de554a565862b853d23287592929dc928afc37378ebfa16","src/arm.rs":"db6eeb48b18e688a7b81f4bf1b24f68819d8958f0e3c6d0944cfb0131fb46516","src/arm_linux.rs":"35a4cb7b75015543feb15b0c692da0faf0e6037d3b97a4a18067ba416eae1a70","src/float/add.rs":"12ffd4989aed9f37ffcdadf271a723d7ab04b233102624b10a5fa71aba7c5ec2","src/float/cmp.rs":"5ffa5dffc41c2caff6da5512bc8a834ee46682ab6b2c559c77bb613e784dd868","src/float/conv.rs":"0c5bd3b188917198d106d50b351fc8c5d9d992e070c426748a44e23293d4c1c1","src/float/div.rs":"8e84e767247f82de3ac68718b001300e7b21308fa1a47a991d4d871b75445d12","src/float/extend.rs":"45e6a0e5e470f75222a49a625286c78ac5aa632787bf0d07be312c54ff5dfe38","src/float/mod.rs":"80027b62f4458059d3b878494f61f77ca8bdf9a7601b05a00155b8f7d460c227","src/float/mul.rs":"fa081675ae3293f718bffc32eba7a41001f5e3b0fcab9db3440acb7267656342","src/float/pow.rs":"ca2ab601deb76e3e83607c3c78f41f89d96f0de647020317d5360c66c4a95fa9","src/float/sub.rs":"b3242cd5b1d8b69dfabb4b65e19b026287afc682a0c6c0915e2e9b0cd45d1e2e","src/float/trunc.rs":"bc23effc1b0c7b9f62d2665e1461ab8c9cf5c3cbdf9ce25d02a4a2022da4fbe0","src/hexagon.rs":"bc42fc9f4749cff1350bb19326bff97ae2f9cceedb72bf1e90d9b59a93727f82","src/hexagon/dfaddsub.s":"4d100ac8e15559d635a7a59db7883a418ab678325448561e1771e60e8be572b6","src/hexagon/dfdiv.s":"80357702ad05cd3e9e5d2e9de622a4deee79c0cfa08876f66d5abc7fe23bb914","src/hexagon/dffma.s":"c952c0fc97fac177191ac2f93cfbca1f15a0205c8975a1bf086a813e97867dcf","src/hexagon/dfminmax.s":"425162bfc2ef1f2265e3e0ac8e59601b1518880644727a6241e7ecc4839f789b","src/hexagon/dfmul.s":"c05a8ac061e3a923704688dd7b15fd35e6dfceef88761f48ab126c290a624cf0","src/hexagon/dfsqrt.s":"7ecc42449aa3c45e6c8b0cbaa8dbf7eb3bdd125f8b20320cf13a9b5668f86c99","src/hexagon/divdi3.s":"21ff6787df365f9dc6fa92be9ca0d5fce4adc55ce7d43da227d60c590f42f879","src/hexagon/divsi3.s":"14da4a289e3b18a3240ba8f313904bca42e7b912fa288dbeda2ad57beabc8400","src/hexagon/fastmath2_dlib_asm.s":"d6d1b4daa5db746d66e9991e14997191d8ac13f85a47c0a90a591b62f369eb9e","src/hexagon/fastmath2_ldlib_asm.s":"bfe7fda0d4b32e397458f795daf4f657b0c5d0308ef56751cb52af48f96c8021","src/hexagon/func_macro.s":"4d6248a31cea3d60e790a706725d9e587d758c047cfd6d3d6952d5da4b0d035d","src/hexagon/memcpy_forward_vp4cp4n2.s":"2ca2c807831258ccb58dd0f52f76230ea3b79cafd10a5dcca05e851c14e7ff41","src/hexagon/memcpy_likely_aligned.s":"5a2d2e938cb5dc4bdae743f9806978c4b24295c8ff168d5c62d0d3c126a3e6b5","src/hexagon/moddi3.s":"6feac04ab63f0ca9d1198cee321eecda844ca8c19340830c084129f71d8ec724","src/hexagon/modsi3.s":"457d070dbff8d10ed950a6dbc20c52f9e6d4518f73e1855ea596997c0924adf3","src/hexagon/sfdiv_opt.s":"ca13c3b24cfc7e3f6a73045584cfeb6fa670440958a38a5c80ad387586f52157","src/hexagon/sfsqrt_opt.s":"d9bf0ba9948eefc62c095f28b7c6b18f60c70ccfa95fd4db932fdb12c660721b","src/hexagon/udivdi3.s":"6cb96d73b59246431bba37e1f4c4003a8c1d4a059449e897c1282bcd90bcb7c5","src/hexagon/udivmoddi4.s":"f6e6e2eaedc32b6ac84a81c5dec2c4b054d123cbc749b9a1fdc4efdf598cdcb5","src/hexagon/udivmodsi4.s":"7b06ef270c1bd1b03d36863a3dc2f1fa67c44aa21a192e7e647c829658da4a11","src/hexagon/udivsi3.s":"66c0a1e5548b9c5e1ed850a76ad0baf505f1f594cdbd6e3ed27c2e64f90e629e","src/hexagon/umoddi3.s":"51cac49914d511ea9fd827b599d07d5f97eff885b88ef85ca767ffdf98c94798","src/hexagon/umodsi3.s":"24142f8cafd2aa903358176bbd67ef01c0cce0aa3ddb9a5ff1fd797d46e4a54b","src/int/addsub.rs":"aa07836f67e8e10de6498cac6594b6693361debd68e64851b19ffad7371cb494","src/int/big.rs":"5a5e8a08319404d71057b9f1b1bcc44433383421794e78f666bd6fa77c3627f4","src/int/bswap.rs":"91b8d471774fc030b33a8d34f40a050d6d8f15054ccc0ebd76976358b7d93534","src/int/leading_zeros.rs":"f89ae2f79325bd58fa998286bf8d5bbdea60a89bc088190d06673a7a4bfa34f2","src/int/mod.rs":"e3ec480884703ff4cf14361970b8e998029e527229043f3b8054b40cd34fc691","src/int/mul.rs":"30703251ebbea6ccda56b8e7c09521ac7d3ba0ab5088ecd0809e23c799cc0c55","src/int/sdiv.rs":"01d62e65f34ec0d3dbca41ea350e241367d4cf8dcc55882e09c701d4e84ae895","src/int/shift.rs":"26306d3c20bf4010e463c6a0cd617600127bfb92a8881c5715e74b693db8aee1","src/int/specialized_div_rem/asymmetric.rs":"27f5bf70a35109f9d4e4e1ad1e8003aa17da5a1e436bf3e63a493d7528a3a566","src/int/specialized_div_rem/binary_long.rs":"6bdb94c349705e68ca17ae6ac53a87658d2e0b1860ee72d73c53cc9d171062ae","src/int/specialized_div_rem/delegate.rs":"9df141af98e391361e25d71ae38d5e845a91d896edd2c041132fd46af8268e85","src/int/specialized_div_rem/mod.rs":"baa7153935594e0c27a5c5dde6976661235767b5c053e7f0ea88aee464e93d73","src/int/specialized_div_rem/norm_shift.rs":"3be7ee0dea545c1f702d9daf67dad2b624bf7b17b075c8b90d3d3f7b53df4c21","src/int/specialized_div_rem/trifecta.rs":"87eef69da255b809fd710b14f2eb3f9f59e3dac625f8564ebc8ba78f9763523b","src/int/trailing_zeros.rs":"019c01b59ed72e8dc7b13583bffc5ce8f8fd272170cca750e53bdb02f59f6bdd","src/int/udiv.rs":"e451ead3c1c8cf38c71288d7473d6fb47e567c33d07f68b39e91081b1dff346c","src/lib.miri.rs":"ce4d3d64f5e1bc4b9f639aacecdac1b5c00c70839611ec7e4e2bd03c9b5ad864","src/lib.rs":"37f06b354dcb1e9c344b95b947b3e82a4914628126532911e63bec686d1c2f9d","src/macros.rs":"6edc7ccddd472a2e497ae6351efd1d9307b5031752700f0d49a8a986737362e4","src/math.rs":"9d82e4a2f7ebe3dcd7a4e8e10876f4d763ef315079422f1aa672010daa857727","src/mem/impls.rs":"51133b97a43c7ed98269649d42e10930d01c48bff61890e15663eaebd52c4553","src/mem/mod.rs":"4d76d09b1bc11d6e1a88cf618d020bbffba752b3e929dba18ef34bf1b38c0379","src/mem/x86_64.rs":"2f29fb392086b3f7e2e78fcfcbf0f0e205822eb4599f1bdf93e41833e1bd2766","src/probestack.rs":"ef5c07e9b95de7b2b77a937789fcfefd9846274317489ad6d623e377c9888601","src/riscv.rs":"50ddd6c732a9f810ab6e15a97b22fdc94cfc1dea09c45d87c833937f9206bee0","src/x86.rs":"05d2980a76e1b6042203c92bbad33acf054123be60f4bf8e2666ea09f58a1b09","src/x86_64.rs":"9494c9d838c1abb799f37833253223ece63171d894448020240fcde4e9c442df"},"package":"da0705f5abaaab7168ccc14f8f340ded61be2bd3ebea86b9834b6acbc8495de8"}
+\ No newline at end of file
