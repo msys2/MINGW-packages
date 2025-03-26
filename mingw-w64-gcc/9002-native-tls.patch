@@ -1,0 +1,308 @@
+From 9d77df29a0dbe01e9eb94296e7419020fd8ec766 Mon Sep 17 00:00:00 2001
+From: TheShermanTanker <tanksherman27@gmail.com>
+Date: Tue, 15 Oct 2024 20:56:22 +0800
+Subject: [PATCH] Implement Windows TLS
+
+---
+ gcc/config/i386/i386.cc       | 61 ++++++++++++++++++++++++++++++++++-
+ gcc/config/i386/i386.h        |  1 +
+ gcc/config/i386/i386.md       |  1 +
+ gcc/config/i386/predicates.md |  1 +
+ gcc/config/mingw/mingw32.h    |  9 ++++++
+ gcc/config/mingw/winnt.cc     | 14 ++++++++
+ gcc/config/mingw/winnt.h      |  1 +
+ gcc/configure.ac              | 29 +++++++++++++++++
+ 8 files changed, 116 insertions(+), 1 deletion(-)
+
+diff --git a/gcc/config/i386/i386.cc b/gcc/config/i386/i386.cc
+index 473e4cbf10e..304189bd947 100644
+--- a/gcc/config/i386/i386.cc
++++ b/gcc/config/i386/i386.cc
+@@ -11170,6 +11170,9 @@ ix86_legitimate_constant_p (machine_mode mode, rtx x)
+ 	    x = XVECEXP (x, 0, 0);
+ 	    return (GET_CODE (x) == SYMBOL_REF
+ 		    && SYMBOL_REF_TLS_MODEL (x) == TLS_MODEL_LOCAL_DYNAMIC);
++	  case UNSPEC_SECREL32:
++	    x = XVECEXP (x, 0, 0);
++	    return GET_CODE (x) == SYMBOL_REF;
+ 	  default:
+ 	    return false;
+ 	  }
+@@ -11306,6 +11309,9 @@ legitimate_pic_operand_p (rtx x)
+ 	    x = XVECEXP (inner, 0, 0);
+ 	    return (GET_CODE (x) == SYMBOL_REF
+ 		    && SYMBOL_REF_TLS_MODEL (x) == TLS_MODEL_LOCAL_EXEC);
++	  case UNSPEC_SECREL32:
++	    x = XVECEXP (inner, 0, 0);
++	    return GET_CODE (x) == SYMBOL_REF;
+ 	  case UNSPEC_MACHOPIC_OFFSET:
+ 	    return legitimate_pic_address_disp_p (x);
+ 	  default:
+@@ -11486,6 +11492,9 @@ legitimate_pic_address_disp_p (rtx disp)
+       disp = XVECEXP (disp, 0, 0);
+       return (GET_CODE (disp) == SYMBOL_REF
+ 	      && SYMBOL_REF_TLS_MODEL (disp) == TLS_MODEL_LOCAL_DYNAMIC);
++    case UNSPEC_SECREL32:
++      disp = XVECEXP (disp, 0, 0);
++      return GET_CODE (disp) == SYMBOL_REF;
+     }
+ 
+   return false;
+@@ -11763,6 +11772,7 @@ ix86_legitimate_address_p (machine_mode, rtx addr, bool strict,
+ 	  case UNSPEC_INDNTPOFF:
+ 	  case UNSPEC_NTPOFF:
+ 	  case UNSPEC_DTPOFF:
++	  case UNSPEC_SECREL32:
+ 	    break;
+ 
+ 	  default:
+@@ -11788,7 +11798,8 @@ ix86_legitimate_address_p (machine_mode, rtx addr, bool strict,
+ 		  || GET_CODE (XEXP (XEXP (disp, 0), 0)) != UNSPEC
+ 		  || !CONST_INT_P (XEXP (XEXP (disp, 0), 1))
+ 		  || (XINT (XEXP (XEXP (disp, 0), 0), 1) != UNSPEC_DTPOFF
+-		      && XINT (XEXP (XEXP (disp, 0), 0), 1) != UNSPEC_NTPOFF))
++		      && XINT (XEXP (XEXP (disp, 0), 0), 1) != UNSPEC_NTPOFF
++		      && XINT (XEXP (XEXP (disp, 0), 0), 1) != UNSPEC_SECREL32))
+ 		/* Non-constant pic memory reference.  */
+ 		return false;
+ 	    }
+@@ -12112,6 +12123,22 @@ get_thread_pointer (machine_mode tp_mode, bool to_reg)
+   return tp;
+ }
+ 
++/* Construct the SYMBOL_REF for the _tls_index symbol.  */
++
++static GTY(()) rtx ix86_tls_index_symbol;
++
++static rtx
++ix86_tls_index (void)
++{
++  if (!ix86_tls_index_symbol)
++    ix86_tls_index_symbol = gen_rtx_SYMBOL_REF (SImode, "_tls_index");
++
++  if (flag_pic)
++    return gen_rtx_CONST (Pmode, gen_rtx_UNSPEC (Pmode, gen_rtvec (1, ix86_tls_index_symbol), UNSPEC_PCREL));
++  else
++    return ix86_tls_index_symbol;
++}
++
+ /* Construct the SYMBOL_REF for the tls_get_addr function.  */
+ 
+ static GTY(()) rtx ix86_tls_symbol;
+@@ -12170,6 +12197,26 @@ legitimize_tls_address (rtx x, enum tls_model model, bool for_mov)
+   machine_mode tp_mode = Pmode;
+   int type;
+ 
++#if TARGET_WIN32_TLS
++  off = gen_const_mem (SImode, ix86_tls_index ());
++  set_mem_alias_set (off, GOT_ALIAS_SET);
++
++  tp = gen_const_mem (Pmode, GEN_INT (TARGET_64BIT ? 88 : 44));
++  set_mem_addr_space (tp, DEFAULT_TLS_SEG_REG);
++
++  if (TARGET_64BIT)
++    off = convert_to_mode (Pmode, off, 1);
++
++  base = force_reg (Pmode, off);
++  tp = copy_to_mode_reg (Pmode, tp);
++
++  tp = gen_const_mem (Pmode, gen_rtx_PLUS (Pmode, tp, gen_rtx_MULT (Pmode, base, GEN_INT (UNITS_PER_WORD))));
++  set_mem_alias_set (tp, GOT_ALIAS_SET);
++
++  base = force_reg (Pmode, tp);
++
++  return gen_rtx_PLUS (Pmode, base, gen_rtx_CONST (Pmode, gen_rtx_UNSPEC (SImode, gen_rtvec (1, x), UNSPEC_SECREL32)));
++#else
+   /* Fall back to global dynamic model if tool chain cannot support local
+      dynamic.  */
+   if (TARGET_SUN_TLS && !TARGET_64BIT
+@@ -12403,6 +12450,7 @@ legitimize_tls_address (rtx x, enum tls_model model, bool for_mov)
+     }
+ 
+   return dest;
++#endif
+ }
+ 
+ /* Return true if the TLS address requires insn using integer registers.
+@@ -12872,6 +12920,9 @@ output_pic_addr_const (FILE *file, rtx x, int code)
+ 	case UNSPEC_INDNTPOFF:
+ 	  fputs ("@indntpoff", file);
+ 	  break;
++	case UNSPEC_SECREL32:
++	  fputs ("@secrel32", file);
++	  break;
+ #if TARGET_MACHO
+ 	case UNSPEC_MACHOPIC_OFFSET:
+ 	  putc ('-', file);
+@@ -12897,7 +12948,11 @@ i386_output_dwarf_dtprel (FILE *file, int size, rtx x)
+ {
+   fputs (ASM_LONG, file);
+   output_addr_const (file, x);
++#if TARGET_WIN32_TLS
++  fputs ("@secrel32", file);
++#else
+   fputs ("@dtpoff", file);
++#endif
+   switch (size)
+     {
+     case 4:
+@@ -14650,6 +14705,10 @@ i386_asm_output_addr_const_extra (FILE *file, rtx x)
+       output_addr_const (file, op);
+       fputs ("@indntpoff", file);
+       break;
++    case UNSPEC_SECREL32:
++      output_addr_const (file, op);
++      fputs ("@secrel32", file);
++      break;
+ #if TARGET_MACHO
+     case UNSPEC_MACHOPIC_OFFSET:
+       output_addr_const (file, op);
+diff --git a/gcc/config/i386/i386.h b/gcc/config/i386/i386.h
+index 51934400951..a10a368a5f7 100644
+--- a/gcc/config/i386/i386.h
++++ b/gcc/config/i386/i386.h
+@@ -510,6 +510,7 @@ extern unsigned char ix86_prefetch_sse;
+ #define TARGET_GNU2_TLS		(ix86_tls_dialect == TLS_DIALECT_GNU2)
+ #define TARGET_ANY_GNU_TLS	(TARGET_GNU_TLS || TARGET_GNU2_TLS)
+ #define TARGET_SUN_TLS		0
++#define TARGET_WIN32_TLS	0
+ 
+ #ifndef TARGET_64BIT_DEFAULT
+ #define TARGET_64BIT_DEFAULT 0
+diff --git a/gcc/config/i386/i386.md b/gcc/config/i386/i386.md
+index effab299349..865bf29d853 100644
+--- a/gcc/config/i386/i386.md
++++ b/gcc/config/i386/i386.md
+@@ -79,6 +79,7 @@
+   UNSPEC_MACHOPIC_OFFSET
+   UNSPEC_PCREL
+   UNSPEC_SIZEOF
++  UNSPEC_SECREL32
+ 
+   ;; Prologue support
+   UNSPEC_STACK_ALLOC
+diff --git a/gcc/config/i386/predicates.md b/gcc/config/i386/predicates.md
+index 053312bbe27..d83b27355cc 100644
+--- a/gcc/config/i386/predicates.md
++++ b/gcc/config/i386/predicates.md
+@@ -218,6 +218,7 @@
+ 	  case UNSPEC_DTPOFF:
+ 	  case UNSPEC_GOTNTPOFF:
+ 	  case UNSPEC_NTPOFF:
++	  case UNSPEC_SECREL32:
+ 	    return true;
+ 	  default:
+ 	    break;
+diff --git a/gcc/config/mingw/mingw32.h b/gcc/config/mingw/mingw32.h
+index 0dfe8e995b6..251271901a3 100644
+--- a/gcc/config/mingw/mingw32.h
++++ b/gcc/config/mingw/mingw32.h
+@@ -308,6 +308,15 @@ do {						         \
+ #undef TARGET_N_FORMAT_TYPES
+ #define TARGET_N_FORMAT_TYPES 3
+ 
++#undef TARGET_WIN32_TLS
++#define TARGET_WIN32_TLS 1
++
++#undef TARGET_ASM_SELECT_SECTION
++#define TARGET_ASM_SELECT_SECTION mingw_pe_select_section
++
++#undef DEFAULT_TLS_SEG_REG
++#define DEFAULT_TLS_SEG_REG (TARGET_64BIT ? ADDR_SPACE_SEG_GS : ADDR_SPACE_SEG_FS)
++
+ #define HAVE_ENABLE_EXECUTE_STACK
+ #undef  CHECK_EXECUTE_STACK_ENABLED
+ #define CHECK_EXECUTE_STACK_ENABLED flag_setstackexecutable
+diff --git a/gcc/config/mingw/winnt.cc b/gcc/config/mingw/winnt.cc
+index 9d433daaf5a..8453965f625 100644
+--- a/gcc/config/mingw/winnt.cc
++++ b/gcc/config/mingw/winnt.cc
+@@ -392,6 +392,15 @@ i386_pe_strip_name_encoding_full (const char *str)
+   return name;
+ }
+ 
++section *
++mingw_pe_select_section (tree decl, int reloc, unsigned HOST_WIDE_INT align)
++{
++  if (TREE_CODE (decl) == VAR_DECL && DECL_THREAD_LOCAL_P (decl))
++    return get_named_section (decl, ".tls$", reloc);
++  else
++    return default_select_section (decl, reloc, align);
++}
++
+ void
+ mingw_pe_unique_section (tree decl, int reloc)
+ {
+@@ -416,6 +425,8 @@ mingw_pe_unique_section (tree decl, int reloc)
+     prefix = ".text$";
+   else if (decl_readonly_section (decl, reloc))
+     prefix = ".rdata$";
++  else if (DECL_THREAD_LOCAL_P (decl))
++    prefix = ".tls$";
+   else
+     prefix = ".data$";
+   len = strlen (name) + strlen (prefix);
+@@ -490,6 +501,9 @@ mingw_pe_asm_named_section (const char *name, unsigned int flags,
+     *f++ = 'e';
+ #endif
+ 
++  if (strcmp (name, ".tls$") == 0)
++    *f++ = 'd';
++
+   if ((flags & (SECTION_CODE | SECTION_WRITE)) == 0)
+     /* readonly data */
+     {
+diff --git a/gcc/config/mingw/winnt.h b/gcc/config/mingw/winnt.h
+index 97fefbcebca..525ac3691f4 100644
+--- a/gcc/config/mingw/winnt.h
++++ b/gcc/config/mingw/winnt.h
+@@ -30,6 +30,7 @@ extern void mingw_pe_file_end (void);
+ extern void mingw_pe_maybe_record_exported_symbol (tree, const char *, int);
+ extern void mingw_pe_record_stub (const char *);
+ extern unsigned int mingw_pe_section_type_flags (tree, const char *, int);
++extern section *mingw_pe_select_section (tree, int, unsigned HOST_WIDE_INT);
+ extern void mingw_pe_unique_section (tree, int);
+ extern bool mingw_pe_valid_dllimport_attribute_p (const_tree);
+ 
+diff --git a/gcc/configure.ac b/gcc/configure.ac
+index bdb22d53e2c..0a58f25f010 100644
+--- a/gcc/configure.ac
++++ b/gcc/configure.ac
+@@ -4166,6 +4166,35 @@ else
+   [$tls_as_opt], [$conftest_s],,
+   [set_have_as_tls=yes])
+ fi
++case $target_os in
++  win32 | pe | cygwin* | mingw32*)
++    if test $set_have_as_tls = yes; then
++      # Hack to check whether ld breaks on @secrel32 for Windows
++      if test $in_tree_ld = yes; then
++        if test "$gcc_cv_gld_major_version" -eq 2 -a "$gcc_cv_gld_minor_version" -ge 44 -o "$gcc_cv_gld_major_version" -gt 2; then
++          : # ld support for @secrel32 was fixed in this version
++        else
++          AC_MSG_ERROR([ld version is known to have broken secrel32 relocations, configure without --enable-tls or with --disable-tls to remove this error])
++        fi
++      elif test x$gcc_cv_as != x -a x$gcc_cv_ld != x -a x$gcc_cv_objdump != x; then
++        echo '.text'          > conftest.s
++        echo 'foo: nop'      >> conftest.s
++        echo '.data'         >> conftest.s
++        echo '.secrel32 foo' >> conftest.s
++        if $gcc_cv_as -o conftest.o conftest.s > /dev/null 2>&1 && $gcc_cv_ld -o conftest.exe conftest.o > /dev/null; then
++          if $gcc_cv_objdump -h conftest.exe | grep '\.reloc\>' > /dev/null; then
++            AC_MSG_ERROR([ld has broken secrel32 relocations, configure without --enable-tls or with --disable-tls to remove this error])
++          fi
++        else
++          AC_MSG_ERROR([Error occurred while checking for broken secrel32 relocations])
++        fi
++        rm -f conftest.s conftest.o conftest.exe
++      else
++        AC_MSG_ERROR([Cannot check for broken secrel32 relocations to determine support for --enable-tls])
++      fi
++    fi
++    ;;
++esac
+ if test $set_have_as_tls = yes ; then
+   AC_DEFINE(HAVE_AS_TLS, 1,
+ 	    [Define if your assembler and linker support thread-local storage.])
+-- 
+2.45.2.windows.1
