@@ -12,8 +12,8 @@ path = sys.argv[1]
 with open(path, "rb") as f:
     data = f.read()
 with open(path, "wb") as f:
-    f.write(re.sub(b"^#![^\n\r]*", b'', data))
+    f.write(re.sub(b"^#![^\n\r]*", b'#!pythonw.exe', data))
 root, ext = os.path.splitext(path)
 with open(root + ".exe", "wb") as f:
-    f.write(get_win_launcher("cli"))
-os.rename(path, root + "-script.py")
+    f.write(get_win_launcher("gui"))
+os.rename(path, root + "-script.pyw")
