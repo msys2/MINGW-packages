@@ -4,24 +4,31 @@ _realname=ollama
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 pkgdesc='Create, run and share large language models (LLMs) (mingw-w64)'
-pkgver=0.5.7
-pkgrel=2
+pkgver=0.6.1
+pkgrel=1
 arch=(any)
 mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
-msys2_repository_url='https://github.com/ollama/ollama'
 url='https://ollama.com'
+msys2_repository_url='https://github.com/ollama/ollama'
 msys2_references=(
   'cpe: cpe:2.3:a:ollama:ollama'
 )
 license=('spdx:MIT')
-depends=(${MINGW_PACKAGE_PREFIX}-gcc-libs)
-makedepends=(${MINGW_PACKAGE_PREFIX}-cc
-             ${MINGW_PACKAGE_PREFIX}-go
+depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
+         "${MINGW_PACKAGE_PREFIX}-omp")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-go"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-openblas"
              git)
+optdepends=("${MINGW_PACKAGE_PREFIX}-openblas")
 source=(https://github.com/ollama/ollama/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz
-        0001-no-static-linking.patch)
-sha256sums=('baaf7d8106f865c9698ee0d2c86b1eeec90998414b9f26106739cd7a1e83a4f5'
-            'c36d1d1fcc5730a8ce9dce3e5f5293f85b0f6032d03a73ffeb9f0c90113426d5')
+        0001-no-static-linking.patch
+        0002-fix-dynamic-libraries-path.patch)
+sha256sums=('c75eda0951e6596abae691ea7b718bcda538547e868d4a1de753bedf712e8fb1'
+            'ddc8c62091b6609d6ebcc69bb8ed0d15e05a470546961cd1f2de4fd1998d4577'
+            '8a5e95cf824ff8871e89b43cd900ffe89847aa7de115f5a428fe99288b3d62bc')
 
 apply_patch_with_msg() {
   for _patch in "$@"
@@ -35,7 +42,8 @@ prepare() {
   cd ${_realname}-${pkgver}
 
   apply_patch_with_msg \
-    0001-no-static-linking.patch
+    0001-no-static-linking.patch \
+    0002-fix-dynamic-libraries-path.patch
 
   if check_option "debug" "n"; then
     sed -i 's,var mode string = gin.DebugMode,var mode string = gin.ReleaseMode,g' server/routes.go
@@ -53,15 +61,25 @@ build() {
     CXXFLAGS+=" ${_flags}"
   fi
 
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake -Wno-dev \
+    -G"Ninja" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DBUILD_SHARED_LIBS=ON \
+    -DGGML_WIN_VER="0xA00" \
+    -DGGML_OPENMP=ON \
+    -DGGML_BLAS=ON \
+    -DGGML_BLAS_VENDOR=OpenBLAS \
+    ../${_realname}-${pkgver}
+
+  ${MINGW_PREFIX}/bin/cmake --build .
+
   export CGO_CFLAGS="$CFLAGS" CGO_CPPFLAGS="$CPPFLAGS" CGO_CXXFLAGS="$CXXFLAGS" CGO_LDFLAGS="$LDFLAGS"
   export GOPROXY=direct
   export GOROOT=${MINGW_PREFIX}/lib/go
   export GOPATH=${MINGW_PREFIX}/
 
-  make \
-    OLLAMA_SKIP_CUDA_GENERATE=yes \
-    OLLAMA_SKIP_ROCM_GENERATE=yes \
-    VERSION=${pkgver}
+  go build -ldflags "${LDFLAGS} -X=github.com/ollama/ollama/version.Version=${pkgver}" .
 }
 
 check() {
@@ -74,14 +92,11 @@ check() {
 package() {
   cd $srcdir/build-$MSYSTEM
 
-  mkdir -p "${pkgdir}${MINGW_PREFIX}/bin"
-  install ollama.exe -t"${pkgdir}${MINGW_PREFIX}/bin"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
+  cp lib/ollama/libggml-blas.dll "${pkgdir}"${MINGW_PREFIX}/lib/ollama
 
-  if [[ ${CARCH} == x86_64 ]]; then
-    mkdir -p "${pkgdir}"${MINGW_PREFIX}/lib/ollama/runners
-    cp -r llama/build/windows-amd64/runners/cpu* \
-      "${pkgdir}"${MINGW_PREFIX}/lib/ollama/runners/
-  fi
+  mkdir -p "${pkgdir}"${MINGW_PREFIX}/bin
+  install ollama.exe -t"${pkgdir}"${MINGW_PREFIX}/bin
 
   install -Dm644 LICENSE "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }

@@ -15,18 +15,23 @@ jobs:
       fail-fast: false
       matrix:
         include: [
-          { msystem: UCRT64, runner: windows-2025 },
-          { msystem: CLANG64, runner: windows-2025 },
-          { msystem: MINGW64, runner: windows-2025 },
-          { msystem: MINGW32, runner: windows-2025 },
-          # { msystem: CLANGARM64, runner: ['Windows', 'ARM64', 'CI'] }
+          { msystem: UCRT64, runner: windows-2025},
+          { msystem: CLANG64, runner: windows-2025},
+          { msystem: MINGW64, runner: windows-2025},
+          { msystem: MINGW32, runner: windows-2025},
+          { msystem: CLANGARM64, runner: windows-11-arm}
         ]
     name: ${{ matrix.msystem }}
     runs-on: ${{ matrix.runner }}
     steps:
-      - name: Get CPU Name
+      - name: Gather Facts
+        id: facts
         run : |
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize -Wrap
           Get-CIMInstance -Class Win32_Processor | Select-Object -Property Name
+          Get-CIMInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum | Format-Table @{n="TotalPhysicalMemory";e={$_.Sum}}
+          $BUILD_DRIVE = Split-Path $env:GITHUB_WORKSPACE -Qualifier
+          echo "drive=$BUILD_DRIVE" >> $env:GITHUB_OUTPUT
 
       - name: Setup JIT minidump
         if: ${{ matrix.msystem != 'CLANGARM64' }}
@@ -46,6 +51,7 @@ jobs:
         with:
           minimum-size: 4GB
           maximum-size: 16GB
+          # Needs to be C:, see https://github.com/al-cheb/configure-pagefile-action/issues/18
           disk-root: "C:"
 
       - uses: actions/checkout@v4
@@ -55,19 +61,12 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
-      # to match the autobuild environment
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          architecture: 'x64'
-
       - uses: msys2/setup-msys2@v2
         with:
           msystem: ${{ matrix.msystem }}
           install: git python base-devel
           update: true
-          release: ${{ runner.arch != 'ARM64' }}
-          location: 'D:\M'
+          location: '${{ steps.facts.outputs.drive }}\M'
 
       - name: Add staging repo
         shell: msys2 {0}
@@ -82,15 +81,15 @@ jobs:
 
       - name: Move Checkout
         run: |
-          If (Test-Path "C:\_") { rm -r -fo "C:\_" }
-          Copy-Item -Path ".\temp" -Destination "C:\_" -Recurse
+          $path = "${{ steps.facts.outputs.drive }}\_"
+          If (Test-Path "$path") { rm -r -fo "$path" }
+          Move-Item -Path ".\temp" -Destination "$path"
 
       - name: CI-Build
         shell: msys2 {0}
         id: build
         run: |
-          cd /C/_
-          unset VCPKG_ROOT
+          cd "$(cygpath '${{ steps.facts.outputs.drive }}/_')"
           MINGW_ARCH=${{ matrix.msystem }} ./.ci/ci-build.sh
 
       - name: "Upload binaries"
@@ -98,7 +97,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.msystem }}-packages
-          path: C:/_/artifacts/*.pkg.tar.*
+          path: ${{ steps.facts.outputs.drive }}/_/artifacts/*.pkg.tar.*
           if-no-files-found: ignore
 
       - name: "Upload dumps"
@@ -109,15 +108,6 @@ jobs:
           path: ${{ runner.temp }}/_dumps/*.dmp
           if-no-files-found: ignore
 
-      - name: "Clean up runner"
-        if: ${{ always() }}
-        continue-on-error: true
-        run: |
-          If (Test-Path "C:\_") { rm -r -fo "C:\_" }
-          msys2 -c 'mv -f /etc/pacman.conf.bak /etc/pacman.conf'
-          msys2 -c 'pacman --noconfirm -Suuy'
-          msys2 -c 'pacman --noconfirm -Suu'
-
   check:
     needs: [build]
     runs-on: windows-2025
@@ -127,17 +117,16 @@ jobs:
         continue-on-error: true
         with:
           name: UCRT64-packages
-          path: C:/_/artifacts
+          path: ${{ runner.temp }}/artifacts
       - name: Check whether to Run
         id: check-run
         run: |
-          python .ci/ci-check.py --whether-to-run
+          python .ci/ci-check.py --whether-to-run "${{ runner.temp }}/artifacts"
       - uses: msys2/setup-msys2@v2
         if: steps.check-run.outputs.run == 'true'
         with:
           msystem: UCRT64
           update: true
-          release: ${{ runner.arch != 'ARM64' }}
           install: mingw-w64-ucrt-x86_64-python-pip mingw-w64-ucrt-x86_64-python-pacdb
       - name: Add staging repo
         if: steps.check-run.outputs.run == 'true'
@@ -153,7 +142,7 @@ jobs:
         if: steps.check-run.outputs.run == 'true'
         shell: msys2 {0}
         run: |
-          python .ci/ci-check.py
+          python .ci/ci-check.py "${{ runner.temp }}/artifacts"
 
   package-grokker:
     runs-on: ubuntu-latest
