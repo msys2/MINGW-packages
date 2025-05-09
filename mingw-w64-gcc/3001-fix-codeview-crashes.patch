@@ -1,0 +1,125 @@
+--- ./gcc/dwarf2codeview.cc.orig	2025-04-25 11:18:00 +0300
++++ ./gcc/dwarf2codeview.cc	2025-05-09 12:23:01 +0300
+@@ -1178,6 +1178,7 @@
+   codeview_function *next;
+   codeview_function *htab_next;
+   function *func;
++  dw_die_ref decl_die;
+   unsigned int end_label;
+   codeview_line_block *blocks, *last_block;
+   codeview_function *parent;
+@@ -1472,7 +1473,7 @@
+ 
+   static bool equal (const codeview_function *f, dw_die_ref die)
+   {
+-    return lookup_decl_die (f->func->decl) == die;
++    return f->decl_die == die;
+   }
+ };
+ 
+@@ -1566,7 +1567,7 @@
+   if (!cv_func_htab)
+     cv_func_htab = new hash_table<cv_func_hasher> (10);
+ 
+-  die = lookup_decl_die (cfun->decl);
++  f->decl_die = die = lookup_decl_die (cfun->decl);
+ 
+   slot = cv_func_htab->find_slot_with_hash (die, htab_hash_pointer (die),
+ 					    INSERT);
+@@ -2281,6 +2282,9 @@
+   const char *name = get_AT_string (die, DW_AT_name);
+   uint32_t type;
+ 
++  if (!name)
++    return;
++
+   /* This is struct LOCALSYM in Microsoft's cvinfo.h:
+ 
+     struct LOCALSYM {
+@@ -2597,7 +2601,7 @@
+     } ATTRIBUTE_PACKED;
+   */
+ 
+-  if (!fbloc)
++  if (!fbloc || !name)
+     return;
+ 
+   if (fbloc->dw_loc_opc >= DW_OP_breg0 && fbloc->dw_loc_opc <= DW_OP_breg31)
+@@ -3455,6 +3459,9 @@
+   codeview_function *top_parent;
+   unsigned int line_no, label_num;
+ 
++  if (!inlinee_lines_htab)
++    return;
++
+   slot = inlinee_lines_htab->find_slot_with_hash (func_id, func_id, NO_INSERT);
+   if (!slot || !*slot)
+     return;
+@@ -4465,8 +4472,9 @@
+   fprint_whex (asm_out_file, t->lf_enum.fieldlist);
+   putc ('\n', asm_out_file);
+ 
+-  name_len = strlen (t->lf_enum.name) + 1;
+-  ASM_OUTPUT_ASCII (asm_out_file, t->lf_enum.name, name_len);
++  const char* ename = t->lf_enum.name ? t->lf_enum.name : "<unnamed-tag>";
++  name_len = strlen (ename) + 1;
++  ASM_OUTPUT_ASCII (asm_out_file, ename, name_len);
+ 
+   leaf_len = 14 + name_len;
+   write_cv_padding (4 - (leaf_len % 4));
+@@ -5175,11 +5183,11 @@
+   write_source_files ();
+   write_line_numbers ();
+ 
++  write_codeview_symbols ();
++
+   if (inlinee_lines_htab)
+     write_inlinee_lines ();
+ 
+-  write_codeview_symbols ();
+-
+   /* If we reference a nested struct but not its parent, add_deferred_type
+      gets called if we create a forward reference for this, even though we've
+      already flushed this in codeview_debug_early_finish.  In this case we will
+@@ -6318,6 +6326,7 @@
+   codeview_custom_type *ct;
+   uint16_t num_members = 0;
+   uint32_t last_type = 0;
++  codeview_type **slot;
+ 
+   parent = dw_get_die_parent(type);
+ 
+@@ -6335,6 +6344,20 @@
+ 
+   *is_fwd_ref = false;
+ 
++  /* Let's check if there was a declaration of our type and, if not, add it -
++     otherwise, infinite recursion is possible when processing fields and
++     member-functions. */
++  slot = types_htab->find_slot_with_hash (type, htab_hash_pointer (type), INSERT);
++  if (!*slot)
++  {
++    *slot = (codeview_type *) xmalloc (sizeof (codeview_type));
++    (*slot)->die = type;
++    (*slot)->is_fwd_ref = true;
++    (*slot)->num = 0;
++  }
++  if (!(*slot)->num)
++    (*slot)->num = add_struct_forward_def (type);
++
+   /* First, add an LF_FIELDLIST for the structure's members.  We don't need to
+      worry about deduplication here, as ld will take care of that for us.
+      If there's a lot of entries, add more LF_FIELDLISTs with LF_INDEXes
+@@ -6784,7 +6807,11 @@
+ 
+       ct = (codeview_custom_type *) xmalloc (sizeof (codeview_custom_type));
+ 
+-      size *= get_AT_unsigned (dimension_arr[i], DW_AT_upper_bound) + 1;
++      { /* skip variable size array */
++        dw_attr_node *a = get_AT (dimension_arr[i], DW_AT_upper_bound);
++        if (a && AT_class (a) != dw_val_class_loc)
++          size *= AT_unsigned (a) + 1;
++      }
+ 
+       index = get_AT_ref (dimension_arr[i], DW_AT_type);
+ 
