@@ -1,0 +1,425 @@
+From b97172ca313627df4fac14c386e5baeeba5fbd6e Mon Sep 17 00:00:00 2001
+From: Luca Bacci <luca.bacci982@gmail.com>
+Date: Mon, 28 Apr 2025 14:49:48 +0200
+Subject: [PATCH] DWrite: Get glyph bitmap with D2D in selected cases
+
+Getting the glyph coverage mask in linear space using IDWriteGlyphRunAnalysis
+brings us very close to the way FreeType fonts are rendered, however that doesn't
+tie very well to the way text is rendered on Windows. That's mainly due to the
+lack of gamma correct rendering in pixman.
+
+Bring back the method to get glyph coverage masks with D2D rendering, but avoid
+messing the RGB mask with _cairo_compute_glyph_mask(), which always extracts the
+green channel. This brings back the previous look of fonts while still avoiding
+the color fringing issue with light text on dark backgrounds.
+---
+ src/win32/cairo-dwrite-font.cpp | 327 ++++++++++++++++++++++++++++----
+ 1 file changed, 295 insertions(+), 32 deletions(-)
+
+diff --git a/src/win32/cairo-dwrite-font.cpp b/src/win32/cairo-dwrite-font.cpp
+index bf5191967..5faed36ae 100644
+--- a/src/win32/cairo-dwrite-font.cpp
++++ b/src/win32/cairo-dwrite-font.cpp
+@@ -96,6 +96,11 @@ _dwrite_draw_glyphs_to_gdi_surface_gdi(cairo_win32_surface_t *surface,
+ 				       cairo_dwrite_scaled_font_t *scaled_font,
+ 				       const RECT &area);
+ 
++#ifndef _MSC_VER
++// mingw-w64 headers don't have WICInProcPointer
++typedef BYTE* WICInProcPointer;
++#endif
++
+ /**
+  * _cairo_dwrite_error:
+  * @hr HRESULT code
+@@ -1319,23 +1324,105 @@ _cairo_dwrite_scaled_font_init_glyph_color_surface(cairo_dwrite_scaled_font_t *s
+     return CAIRO_INT_STATUS_SUCCESS;
+ }
+ 
+-// Helper for OS versions up to Windows 8
+ static cairo_int_status_t
+-init_glyph_surface_fallback_a8 (cairo_dwrite_scaled_font_t  *scaled_font,
+-                                cairo_scaled_glyph_t        *scaled_glyph,
+-                                int                          width,
+-                                int                          height,
+-                                double                       x1,
+-                                double                       y1,
+-                                DWRITE_MATRIX               *matrix,
+-                                DWRITE_GLYPH_RUN            *run)
++create_glyph_bitmap_d2d (cairo_dwrite_scaled_font_t *scaled_font,
++                         cairo_scaled_glyph_t       *scaled_glyph)
+ {
+-    RefPtr<IWICBitmap> bitmap;
+     HRESULT hr;
+ 
++    // TODO:
++    //   - Check return value of CreateSolidColorBrush
++    //   - Add support for vertical subpixel orders
++    //   - Add call to flush, which should be a no-op when multithreaded rendering
++    //     is not enabled
++
++    double x1 = _cairo_fixed_integer_floor (scaled_glyph->bbox.p1.x);
++    double y1 = _cairo_fixed_integer_floor (scaled_glyph->bbox.p1.y);
++    double x2 = _cairo_fixed_integer_ceil (scaled_glyph->bbox.p2.x);
++    double y2 = _cairo_fixed_integer_ceil (scaled_glyph->bbox.p2.y);
++    int width = (int)(x2 - x1);
++    int height = (int)(y2 - y1);
++
++    if (width <= 0)
++        width = 1;
++    if (height <= 0)
++        height = 1;
++
++    FLOAT advance = 0;
++    UINT16 index = (UINT16)_cairo_scaled_glyph_index (scaled_glyph);
++    DWRITE_GLYPH_OFFSET offset;
++    double x = -x1 + .25 * _cairo_scaled_glyph_xphase (scaled_glyph);
++    double y = -y1 + .25 * _cairo_scaled_glyph_yphase (scaled_glyph);
++
++    /* We transform by the inverse transformation here. This will put our glyph
++     * locations in the space in which we draw. Which is later transformed by
++     * the transformation matrix that we use. This will transform the
++     * glyph positions back to where they were before when drawing, but the
++     * glyph shapes will be transformed by the transformation matrix. */
++    cairo_matrix_transform_point(&scaled_font->mat_inverse, &x, &y);
++    offset.advanceOffset = (FLOAT)x;
++    offset.ascenderOffset = -(FLOAT)y; /* Y axis is inverted */
++
++    DWRITE_MATRIX matrix = _cairo_dwrite_matrix_from_matrix(&scaled_font->mat);
++
++    DWRITE_GLYPH_RUN run;
++    run.glyphCount = 1;
++    run.glyphAdvances = &advance;
++    run.fontFace = scaled_font->dwriteface;
++    run.fontEmSize = 1.0f;
++    run.bidiLevel = 0;
++    run.glyphIndices = &index;
++    run.isSideways = FALSE;
++    run.glyphOffsets = &offset;
++
++    // Reduce the many Cairo antialias values to the
++    // three we actually care about: NONE, GRAY, RGB
++    enum {
++        ANTIALIAS_NONE,
++        ANTIALIAS_GRAY,
++        ANTIALIAS_CLEARTYPE,
++    } antialias = ANTIALIAS_CLEARTYPE;
++
++    switch (scaled_font->antialias_mode) {
++        case CAIRO_ANTIALIAS_NONE:
++            antialias = ANTIALIAS_NONE;
++            break;
++        case CAIRO_ANTIALIAS_FAST:
++        case CAIRO_ANTIALIAS_GRAY:
++            antialias = ANTIALIAS_GRAY;
++            break;
++        case CAIRO_ANTIALIAS_DEFAULT:
++        case CAIRO_ANTIALIAS_GOOD:
++        case CAIRO_ANTIALIAS_BEST:
++        case CAIRO_ANTIALIAS_SUBPIXEL:
++            antialias = ANTIALIAS_CLEARTYPE;
++            break;
++    }
++
++    WICPixelFormatGUID wic_pixel_format;
++    D2D1_PIXEL_FORMAT d2d1_pixel_format;
++
++    switch (antialias) {
++        case ANTIALIAS_CLEARTYPE:
++            wic_pixel_format = GUID_WICPixelFormat32bppPBGRA;
++            d2d1_pixel_format = D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
++                                                  D2D1_ALPHA_MODE_PREMULTIPLIED);
++            break;
++        case ANTIALIAS_GRAY:
++        case ANTIALIAS_NONE:
++            // WIC bitmap render target doesn't support 1bpp formats. We
++            // can render onto a 8bpp bitmap in aliased mode and later
++            // transform the bitmap to 1bpp.
++            wic_pixel_format = GUID_WICPixelFormat8bppAlpha;
++            d2d1_pixel_format = D2D1::PixelFormat(DXGI_FORMAT_A8_UNORM,
++                                                  D2D1_ALPHA_MODE_PREMULTIPLIED);
++            break;
++    }
++
++    RefPtr<IWICBitmap> bitmap;
+     hr = WICImagingFactory::Instance()->CreateBitmap ((UINT)width,
+                                                       (UINT)height,
+-                                                      GUID_WICPixelFormat8bppAlpha,
++                                                      wic_pixel_format,
+                                                       WICBitmapCacheOnLoad,
+                                                       &bitmap);
+     if (FAILED(hr))
+@@ -1343,11 +1430,7 @@ init_glyph_surface_fallback_a8 (cairo_dwrite_scaled_font_t  *scaled_font,
+ 
+     D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
+         D2D1_RENDER_TARGET_TYPE_DEFAULT,
+-        D2D1::PixelFormat(
+-            DXGI_FORMAT_A8_UNORM,
+-            D2D1_ALPHA_MODE_PREMULTIPLIED),
+-        0,
+-        0,
++        d2d1_pixel_format,
+         D2D1_RENDER_TARGET_USAGE_NONE,
+         D2D1_FEATURE_LEVEL_DEFAULT);
+ 
+@@ -1356,14 +1439,43 @@ init_glyph_surface_fallback_a8 (cairo_dwrite_scaled_font_t  *scaled_font,
+     if (FAILED(hr))
+         return _cairo_dwrite_error (hr, "CreateWicBitmapRenderTarget failed");
+ 
+-    RefPtr<ID2D1SolidColorBrush> brush;
+-    hr = rt->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::Black, 1.0), &brush);
++    D2D1_TEXT_ANTIALIAS_MODE d2d1_text_antialias_mode;
++    D2D1_COLOR_F background_color;
++    D2D1_COLOR_F foreground_color;
++
++    // For ANTIALIAS_CLEARTYPE we render text as black on white and then
++    // invert component values. That gives better results overall (Cairo
++    // does that for GDI fonts as well)
++
++    switch (antialias) {
++        case ANTIALIAS_CLEARTYPE:
++            d2d1_text_antialias_mode = D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE;
++            background_color = D2D1::ColorF(D2D1::ColorF::White, 1.0);
++            foreground_color = D2D1::ColorF(D2D1::ColorF::Black, 1.0);
++            break;
++        case ANTIALIAS_GRAY:
++            d2d1_text_antialias_mode = D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE;
++            background_color = D2D1::ColorF(D2D1::ColorF::Black, 0.0);
++            foreground_color = D2D1::ColorF(D2D1::ColorF::Black, 1.0);
++            break;
++        case ANTIALIAS_NONE:
++            d2d1_text_antialias_mode = D2D1_TEXT_ANTIALIAS_MODE_ALIASED;
++            background_color = D2D1::ColorF(D2D1::ColorF::Black, 0.0);
++            foreground_color = D2D1::ColorF(D2D1::ColorF::Black, 1.0);
++            break;
++    }
++
++    RefPtr<ID2D1SolidColorBrush> foreground_brush;
++    hr = rt->CreateSolidColorBrush(foreground_color, &foreground_brush);
++
++    rt->SetTextAntialiasMode (d2d1_text_antialias_mode);
+ 
+     rt->BeginDraw();
+ 
+-    rt->SetTransform(*(D2D1_MATRIX_3X2_F*)matrix);
++    rt->Clear(background_color);
++    rt->SetTransform(*(D2D1_MATRIX_3X2_F*)&matrix);
+ 
+-    rt->DrawGlyphRun({0, 0}, run, brush, scaled_font->measuring_mode);
++    rt->DrawGlyphRun({0, 0}, &run, foreground_brush, scaled_font->measuring_mode);
+ 
+     hr = rt->EndDraw();
+     if (FAILED(hr))
+@@ -1371,20 +1483,122 @@ init_glyph_surface_fallback_a8 (cairo_dwrite_scaled_font_t  *scaled_font,
+ 
+     // TODO: rt->Flush()?
+ 
+-    cairo_surface_t *surface = cairo_image_surface_create (CAIRO_FORMAT_A8, width, height);
++    cairo_format_t surface_format = antialias == ANTIALIAS_NONE ? CAIRO_FORMAT_A1 :
++                                    antialias == ANTIALIAS_GRAY ? CAIRO_FORMAT_A8 :
++                                    CAIRO_FORMAT_ARGB32;
++
++    cairo_surface_t *surface = cairo_image_surface_create (surface_format, width, height);
+     if (cairo_surface_status (surface))
+         return CAIRO_INT_STATUS_UNSUPPORTED;
+ 
+-    // Tell pixman that it should use component alpha blending when the surface is
+-    // used as a source
+-    pixman_image_set_component_alpha (((cairo_image_surface_t*)surface)->pixman_image, TRUE);
++    if (antialias == ANTIALIAS_CLEARTYPE) {
++        // Tell pixman that it should use component alpha blending when the surface is
++        // used as a source
++        pixman_image_set_component_alpha (((cairo_image_surface_t*)surface)->pixman_image, TRUE);
++    }
++
++    // That's probably not needed right after creation
++    cairo_surface_flush (surface);
++    unsigned char *surface_data = cairo_image_surface_get_data (surface);
++    int surface_stride = cairo_image_surface_get_stride (surface);
++
++    WICRect wic_rect = { 0, 0, width, height };
++
++    if (antialias != ANTIALIAS_NONE) {
++        hr = bitmap->CopyPixels(&wic_rect,
++                                surface_stride,
++                                height * surface_stride, // TODO
++                                surface_data);
++        if (FAILED (hr)) {
++            cairo_surface_destroy (surface);
++            return _cairo_dwrite_error (hr, "IWICBitmapSource::CopyPixels() failed");
++        }
++    }
++    else {
++        RefPtr<IWICBitmapLock> bitmap_lock;
++        hr = bitmap->Lock(&wic_rect, WICBitmapLockRead, &bitmap_lock);
++        if (FAILED (hr)) {
++            cairo_surface_destroy (surface);
++            return _cairo_dwrite_error (hr, "IWICBitmap::Lock() failed");
++        }
++
++        WICInProcPointer wic_data = nullptr;
++        UINT wic_data_size = 0;
++        UINT wic_stride = 0;
++
++        hr = bitmap_lock->GetDataPointer(&wic_data_size, &wic_data);
++        if (FAILED (hr)) {
++            cairo_surface_destroy (surface);
++            return _cairo_dwrite_error (hr, "IWICBitmapLock::GetDataPointer() failed");
++        }
++        hr = bitmap_lock->GetStride(&wic_stride);
++        if (FAILED (hr)) {
++            cairo_surface_destroy (surface);
++            return _cairo_dwrite_error (hr, "IWICBitmapLock::GetStride() failed");
++        }
++
++        //assert();
++
++        unsigned char *source = static_cast<unsigned char*>(wic_data);
++        unsigned char *destination = surface_data;
++
++        for (int i = 0; i < height; i++) {
++            unsigned char *dst = destination;
++            unsigned char *src = source;
++
++            for (int j = 0; j < width / 8; j++) {
++                *dst = (src[0] ? (1 << 0) : 0) +
++                       (src[1] ? (1 << 1) : 0) +
++                       (src[2] ? (1 << 2) : 0) +
++                       (src[3] ? (1 << 3) : 0) +
++                       (src[4] ? (1 << 4) : 0) +
++                       (src[5] ? (1 << 5) : 0) +
++                       (src[6] ? (1 << 6) : 0) +
++                       (src[7] ? (1 << 7) : 0);
++
++                dst++;
++                src += 8;
++            }
++
++            if (width % 8 != 0) {
++                *dst = 0;
++
++                for (int k = 0; k < width % 8; k++) {
++                    *dst += (src[k] ? (1 << k) : 0);
++                }
++
++                dst++;
++                src += (width % 8);
++            }
++
++            source += wic_stride;
++            destination += surface_stride;
++        }
++    }
++
++    if (antialias == ANTIALIAS_CLEARTYPE) {
++        // We rendered as black on white, now invert the mask to
++        // get 255 on the glyph and 0 outside. Also set the alpha
++        // channel, which will be used to render on A8 or A1 surfaces
++        // (where cleartype cannot work)
++        unsigned char *ptr = cairo_image_surface_get_data (surface);
++
++        for (int i = 0; i < height; i++) {
++            unsigned char *p = ptr;
++
++            for (int j = 0; j < width; j++) {
++                unsigned char alpha;
++
++                *p = 255 - *p; p++;             // red
++                *p = 255 - *p; alpha = *p; p++; // green
++                *p = 255 - *p; p++;             // blue
++                *p = alpha; p++;                // alpha
++            }
++
++            ptr += surface_stride;
++        }
++    }
+ 
+-    int stride = cairo_image_surface_get_stride (surface);
+-    WICRect rect = { 0, 0, width, height };
+-    bitmap->CopyPixels(&rect,
+-                       stride,
+-                       height * stride,
+-                       cairo_image_surface_get_data (surface));
+     cairo_surface_mark_dirty (surface);
+     cairo_surface_set_device_offset (surface, -x1, -y1);
+     _cairo_scaled_glyph_set_surface (scaled_glyph,
+@@ -1394,9 +1608,10 @@ init_glyph_surface_fallback_a8 (cairo_dwrite_scaled_font_t  *scaled_font,
+     return CAIRO_INT_STATUS_SUCCESS;
+ }
+ 
++// Create a glyph bitmap by rasterization with D2D
+ static cairo_int_status_t
+-_cairo_dwrite_scaled_font_init_glyph_surface (cairo_dwrite_scaled_font_t *scaled_font,
+-                                              cairo_scaled_glyph_t       *scaled_glyph)
++create_glyph_bitmap_dwrite (cairo_dwrite_scaled_font_t *scaled_font,
++                            cairo_scaled_glyph_t       *scaled_glyph)
+ {
+     HRESULT hr;
+ 
+@@ -1560,8 +1775,11 @@ _cairo_dwrite_scaled_font_init_glyph_surface (cairo_dwrite_scaled_font_t *scaled
+             // IDWriteGlyphRunAnalysis supports gray-scale antialiasing only when
+             // created from IDWriteFactory2 or later. If we have IDWriteFactory
+             // only, fallback to rendering with Direct2D on A8 targets.
++            return CAIRO_INT_STATUS_UNSUPPORTED;
++#if 0
+             return init_glyph_surface_fallback_a8 (scaled_font, scaled_glyph,
+                                                    width, height, x1, y1, &matrix, &run);
++#endif
+         }
+ 
+         hr = DWriteFactory::Instance()->CreateGlyphRunAnalysis(&run, 1,
+@@ -1813,6 +2031,51 @@ _cairo_dwrite_scaled_font_init_glyph_surface (cairo_dwrite_scaled_font_t *scaled
+     return CAIRO_INT_STATUS_SUCCESS;
+ }
+ 
++static cairo_int_status_t
++_cairo_dwrite_scaled_font_init_glyph_surface (cairo_dwrite_scaled_font_t *scaled_font,
++                                              cairo_scaled_glyph_t       *scaled_glyph)
++{
++    // Reduce the many Cairo antialias values to the
++    // three we actually care about: NONE, GRAY, RGB
++    enum {
++        ANTIALIAS_NONE,
++        ANTIALIAS_GRAY,
++        ANTIALIAS_CLEARTYPE,
++    } antialias = ANTIALIAS_CLEARTYPE;
++
++    switch (scaled_font->antialias_mode) {
++        case CAIRO_ANTIALIAS_NONE:
++            antialias = ANTIALIAS_NONE;
++            break;
++        case CAIRO_ANTIALIAS_FAST:
++        case CAIRO_ANTIALIAS_GRAY:
++            antialias = ANTIALIAS_GRAY;
++            break;
++        case CAIRO_ANTIALIAS_DEFAULT:
++        case CAIRO_ANTIALIAS_GOOD:
++        case CAIRO_ANTIALIAS_BEST:
++        case CAIRO_ANTIALIAS_SUBPIXEL:
++            antialias = ANTIALIAS_CLEARTYPE;
++            break;
++    }
++
++    typedef cairo_int_status_t
++    (*init_glyph_surface_func_t)(cairo_dwrite_scaled_font_t *scaled_font,
++                                 cairo_scaled_glyph_t *scaled_glyph);
++
++    init_glyph_surface_func_t procs[2] = {
++        (antialias == ANTIALIAS_CLEARTYPE) ? create_glyph_bitmap_d2d : create_glyph_bitmap_dwrite,
++        (antialias == ANTIALIAS_CLEARTYPE) ? create_glyph_bitmap_dwrite : create_glyph_bitmap_d2d,
++    };
++
++    cairo_int_status_t ret;
++    ret = procs[0](scaled_font, scaled_glyph);
++    if (ret == CAIRO_INT_STATUS_UNSUPPORTED)
++      ret = procs[1](scaled_font, scaled_glyph);
++
++    return ret;
++}
++
+ static cairo_int_status_t
+ _cairo_dwrite_load_truetype_table(void                 *scaled_font,
+ 				  unsigned long         tag,
+-- 
+2.49.0.windows.1
+
