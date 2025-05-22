@@ -41,6 +41,8 @@ _wintun_zip="@_wintun_zip@"
 wintundll_sha256="@wintundll_sha256@"
 # destination location for the DLL
 wintundll_dest="@wintundll_dest@"
+# destination localtion for the license file
+wintun_license_dest="@wintun_license_dest@"
 # installer version
 installer_version="@pkgver@-@pkgrel@"
 # installer script name
@@ -163,6 +165,66 @@ copy_file() {
   return 0
 }
 
+accept_yes_no() {
+  local message="$1"
+  local answer
+  local ret=1
+
+  message="$message [Yy/Nn]? "
+
+  ask "$message"
+
+  if [[ $NOCONFIRM -eq 1 ]]; then
+    printf " (automatically confirmed)\n"
+    answer=y
+  else
+    read answer
+  fi
+
+  if [[ $answer == [Yy] ]]; then
+    ret=0
+  fi
+
+  return $ret
+}
+
+show_and_accept() {
+  local file=$1
+  local confirm
+  local lessret
+  local autotext
+  local ret
+
+  if [[ $NOCONFIRM -eq 1 ]]; then
+    autotext=" (automatically confirmed)"
+    lessret=77
+  else
+    # create a lesskey source file with custom commands
+    cat > $startdir/lesskey.src <<_EOF
+#command
+y quit M #ascii 7 for M
+Y quit M #ascii 7 for M
+n quit
+N quit
+_EOF
+
+    # show the license and prompt the user to accept
+    less --lesskey-src="$startdir/lesskey.src" --prompt="%F\: Do you accepth the license [Yy/Nn]?" $file
+    lessret=$?
+  fi
+
+  if [ "x$lessret" = "x77" ]; then
+    printf '    %s%s.\n' "License accepted" "$autotext"
+    ret=0
+  else
+    confirm="n"
+    printf '    %s.\n' "License rejected"
+    ret=1
+  fi
+
+  return $ret
+}
+
 usage() {
 	printf "%s %s\n" "$installer_script" "$installer_version"
 	echo
@@ -174,6 +236,7 @@ usage() {
 	printf -- "$(gettext "  -h, --help       Show this help message and exit")\n"
 	printf -- "$(gettext "  -r, --remove     Remove wintun.dll, if already installed by this script")\n"
 	printf -- "$(gettext "  -u, --upgrade    Upgrade wintun.dll, if already installed by this script")\n"
+	printf -- "$(gettext "      --noconfirm  Bypass any and all confirmation messages. It’s not a good idea to do this unless you want to run $installer_script from a script")\n"
 	printf -- "$(gettext "  -V, --version    Show version information and exit")\n"
 	echo
 }
@@ -211,7 +274,7 @@ ARGLIST=("$@")
 
 # Parse Command Line Options.
 OPT_SHORT="hmruVn"
-OPT_LONG=('help' 'nocolor', 'remove' 'upgrade' 'version')
+OPT_LONG=('help' 'nocolor', 'remove' 'upgrade' 'version' 'noconfirm')
 
 if ! parseopts "$OPT_SHORT" "${OPT_LONG[@]}" -- "$@"; then
 	exit $E_INVALID_OPTION
@@ -224,6 +287,7 @@ while true; do
 		-m|--nocolor)     USE_COLOR='n';;#; PACMAN_OPTS+=("--color" "never") ;;
 		-r|--remove)      RM=1;;
 		-u|--upgrade)     UPG=1;;
+		   --noconfirm)   NOCONFIRM=1;;
 
 		-h|--help)        usage; exit $E_OK ;;
 		-V|--version)     version; exit $E_OK ;;
@@ -274,9 +338,16 @@ fi
 # installer actually starts here
 #
 
+# verify existence of the license directory
+if [ ! -d "${wintun_license_dest}" ]; then
+  error "Openconnect license directory not found"
+  exit 1
+fi
+
 RM=${RM:-0}
 UPG=${UPG:-0}
 INS=1
+NOCONFIRM=${NOCONFIRM:-0}
 action="Installing"
 
 if [ $RM -eq 1 ]; then
@@ -291,8 +362,9 @@ if [ $RM -eq 1 ]; then
 
   verify_installed_wintun || exit 1
 
-  remove_file ${wintundll_dest}/wintun.dll
-  remove_file ${wintundll_dest}/wintun.info
+  remove_file "${wintun_license_dest}/LICENSE.wintun"
+  remove_file "${wintundll_dest}/wintun.dll"
+  remove_file "${wintundll_dest}/wintun.info"
 
   exit 0
 fi
@@ -334,10 +406,26 @@ if [ ! -d "$srcdir" ]; then
   chmod a-s "$srcdir"
 fi
 
+# show message that we are going to download wintun and from where
+msg "This script will download wintun binary distribution from"
+printf "    ${BOLD}URL      : ${ALL_OFF}%s\n" "$(get_url $source)"
+printf "    ${BOLD}Filename : ${ALL_OFF}%s\n" "$(get_filename $source)"
+accept_yes_no "Do you want to proceed" || {
+  printf '    %s\n' "Download rejected."
+  exit 1
+}
+
 download_sources
 check_source_integrity
 cd_safe "$srcdir"
 extract_sources
+
+# extract LICENSE.txt
+msg "Extracting License"
+bsdtar --strip-components=1 -xf ${_wintun_zip} "wintun/LICENSE.txt" || exit 1
+
+# show the license and prompt the user to accept it
+show_and_accept LICENSE.txt || exit 1
 
 # extract wintun.dll for the specified architecture
 msg "Extracting wintun.dll for ${WINTUN_ARCH}"
@@ -351,7 +439,8 @@ msg "Validating wintun.dll"
 verify_integrity_one "wintun.dll" "sha256" $wintundll_sha256
 
 msg "$action Wintun"
-copy_file wintun.dll ${wintundll_dest}/wintun.dll || exit 1
+copy_file LICENSE.txt "${wintun_license_dest}/LICENSE.wintun" || exit 1
+copy_file wintun.dll "${wintundll_dest}/wintun.dll" || exit 1
 write_info_file || exit 1
 
 exit 0
