@@ -17,9 +17,10 @@ pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
          $([[ ${CARCH} == i686 ]] || echo \
          "${MINGW_PACKAGE_PREFIX}-rust-wasm" \
          "${MINGW_PACKAGE_PREFIX}-rust-emscripten" \
+         "${MINGW_PACKAGE_PREFIX}-rust-cygwin" \
          "${MINGW_PACKAGE_PREFIX}-rust-src"))
 pkgver=1.87.0
-pkgrel=2
+pkgrel=3
 pkgdesc="Systems programming language focused on safety, speed and concurrency (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
@@ -45,17 +46,22 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              $([[ "$_bootstrapping" == "no" ]] && echo "${MINGW_PACKAGE_PREFIX}-rust")
              $([[ ${CARCH} == i686 ]] || echo "${MINGW_PACKAGE_PREFIX}-wasi-libc ${MINGW_PACKAGE_PREFIX}-wasm-component-ld ${MINGW_PACKAGE_PREFIX}-emscripten")
              "${MINGW_PACKAGE_PREFIX}-xz"
+             $([[ ${CARCH} == i686 ]] || echo "gcc")
              "${MINGW_PACKAGE_PREFIX}-zstd"
              "${MINGW_PACKAGE_PREFIX}-zlib")
 source=("${rust_dist_server}/${_realname}c-${pkgver}-src.tar.gz"{,.asc}
         "bootstrap.toml"
+        "wrapper.c"
+        "llvm-config-wrapper.c"
         "0001-rustc-llvm-fix-libs.patch"
         "0004-compiler-Use-wasm-ld-for-wasm-targets.patch"
         "0008-disable-self-contained-for-gnu-targets.patch")
 noextract=(${_realname}c-${pkgver}-src.tar.gz)
 sha256sums=('149bb9fd29be592da4e87900fc68f0629a37bf6850b46339dd44434c04fd8e76'
             'SKIP'
-            '4450ad9b3acd4cb694f1b4356545aabdbc1074fadba01c5f6f09639c2d94f786'
+            '7f2a8933364114504b5d5883540c242a4b240e0659a1b38436feb36d6005d35d'
+            'dd2cb45dd2dd67794fb41411d692b5f26a43a854cf1859cfedb62e0339e70ab5'
+            '71d2f13f6f7d10db2a0b45b578a53d16b4125fcb191b8c921cc17cd0b12b3d0e'
             '7cb1773c288ffb1c1e751edc49b1890c84bf9c362742bc5225d19d474edb73a0'
             '56882f1a0f1404c10c7726d6cc37444f2b343e72b969badfcb43760f80db0f32'
             '87b68c2dfbe996d3ef439278e1ac90997fc4ea192f449e8f00262360a551386a')
@@ -106,6 +112,14 @@ prepare() {
 }
 
 build() {
+  if [[ ${CARCH} != i686 ]]; then
+    /usr/bin/gcc -o llvm-config.exe llvm-config-wrapper.c
+    /usr/bin/gcc -o gcc.exe wrapper.c
+    for dst in g++ ar ranlib x86_64-pc-msys-gcc curl-config; do
+      ln -s gcc.exe ${dst}.exe
+    done
+  fi
+
   cd "${_realname}c-${pkgver}-src"
 
   # hack to inject the bootstrap compiler
@@ -149,7 +163,7 @@ build() {
   export MSYS2_ENV_CONV_EXCL='INSTALL_PREFIX'
   export INSTALL_PREFIX="${MINGW_PREFIX}"
   export PKGREL="${pkgrel}"
-  envsubst < ../bootstrap.toml > bootstrap.toml
+  SRCDIR="${srcdir}" envsubst < ../bootstrap.toml > bootstrap.toml
 
   if [ "${_bootstrapping}" = "no" ]; then
     sed -i '/^\[build\]/,/^$/ s|^#||g' bootstrap.toml
@@ -159,9 +173,9 @@ build() {
     sed -i 's/^#debug/debug/g' bootstrap.toml
   fi
 
-  # Add target wasm32-*
+  # Add target wasm32-* and *-cygwin
   if [[ ${CARCH} != i686 ]]; then
-    sed -i -e '/target = \[/a\  "wasm32-unknown-unknown", "wasm32-unknown-emscripten", "wasm32-wasip1", "wasm32v1-none", "wasm32-wasip1-threads", "wasm32-wasip2",' \
+    sed -i -e '/target = \[/a\  "wasm32-unknown-unknown", "wasm32-unknown-emscripten", "wasm32-wasip1", "wasm32v1-none", "wasm32-wasip1-threads", "wasm32-wasip2", "x86_64-pc-cygwin",' \
            -e '/tools = \[/a\  "clippy", "rustdoc", "rustfmt", "rust-analyzer-proc-macro-srv", "analysis", "src",' bootstrap.toml
   fi
 
@@ -180,6 +194,9 @@ build() {
     # move wasm32-* targets out of the way for splitting
     mkdir -p dest-wasm${MINGW_PREFIX}/lib/rustlib
     mv dest-rust${MINGW_PREFIX}/lib/rustlib/wasm32{,v1}-* dest-wasm${MINGW_PREFIX}/lib/rustlib
+    # move *-cygwin targets out of the way for splitting
+    mkdir -p dest-cygwin${MINGW_PREFIX}/lib/rustlib
+    mv dest-rust${MINGW_PREFIX}/lib/rustlib/*-cygwin dest-cygwin${MINGW_PREFIX}/lib/rustlib
     # move src out of the way for splitting
     mkdir -p dest-src${MINGW_PREFIX}/lib/rustlib
     mv dest-rust${MINGW_PREFIX}/lib/rustlib/src dest-src${MINGW_PREFIX}/lib/rustlib
@@ -263,6 +280,24 @@ package_rust-emscripten() {
     "${pkgdir}${MINGW_PREFIX}/lib/rustlib/$OSTYPE/bin/gcc-ld/"
 
   install -Dm644 ../LICENSE-{APACHE,MIT} -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}-emscripten"
+}
+
+package_rust-cygwin() {
+  pkgdesc="MSYS2 target for Rust (mingw-w64)"
+  depends=("gcc"
+           "${MINGW_PACKAGE_PREFIX}-rust")
+  # strip cygwin object files manually
+  options=('!strip')
+
+  cd "${_realname}c-${pkgver}-src/build-${MSYSTEM}"
+
+  cp -a dest-cygwin/* "${pkgdir}"
+
+  pushd "${pkgdir}${MINGW_PREFIX}"/lib/rustlib
+    /usr/bin/strip --strip-debug *-cygwin/lib/*.rlib
+  popd
+
+  install -Dm644 ../LICENSE-{APACHE,MIT} -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}-cygwin"
 }
 
 package_rust-src() {
