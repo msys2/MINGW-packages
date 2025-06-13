@@ -1,0 +1,573 @@
+From 31ed2c87d3ef91159f8262e93ea24cc75722b9ab Mon Sep 17 00:00:00 2001
+From: LIU Hao <lh_mouse@126.com>
+Date: Fri, 13 Jun 2025 07:52:29 +0200
+Subject: [PATCH 5004/5007] bfd,ld,dlltool: Emit delay-load import data into
+ its own section
+
+A delay-import symbol (of a function) is resolved when a call to it is made.
+The delay loader may overwrite the `__imp_` pointer to the actual function
+after it has been resolved, which requires the pointer itself be in a
+writeable section.
+
+Previously it was placed in the ordinary Import Address Table (IAT), which
+is emitted into the `.idata` section, which had been changed to read-only
+in db00f6c3aceabbf03acdb69e74b59b2d2b043cd7, which caused segmentation
+faults when functions from delay-import library were called.  This is
+PR 32675.
+
+This commit makes DLLTOOL emit delay-import IAT into `.didat`, as specified
+by Microsoft. Most of the code is copied from `.idata`, except that this
+section is writeable.  As a side-effect of this, PR 14339 is also fixed.
+
+Using this DEF:
+
+   ```
+   ; ws2_32.def
+   LIBRARY "WS2_32.DLL"
+   EXPORTS
+     WSAGetLastError
+   ```
+
+and this C program:
+
+   ```
+   // delay.c
+   #define WIN32_LEAN_AND_MEAN 1
+   #include <windows.h>
+   #include <stdio.h>
+
+   /////////////////////////////////////////////////////////
+   // User code
+   /////////////////////////////////////////////////////////
+
+   DWORD WINAPI WSAGetLastError(void);
+   extern PVOID __imp_WSAGetLastError;
+
+   int
+   main(void)
+     {
+       fprintf(stderr, "before delay load, __imp_WSAGetLastError = %p\n", __imp_WSAGetLastError);
+       SetLastError(123);
+       fprintf(stderr, "WSAGetLastError() = %d\n", WSAGetLastError());
+       fprintf(stderr, "after delay load, __imp_WSAGetLastError = %p\n", __imp_WSAGetLastError);
+       __imp_WSAGetLastError = (PVOID) 1234567;
+       fprintf(stderr, "after plain write, __imp_WSAGetLastError = %p\n", __imp_WSAGetLastError);
+     }
+
+   /////////////////////////////////////////////////////////
+   // Overridden `__delayLoadHelper2` facility
+   /////////////////////////////////////////////////////////
+
+   extern char __ImageBase[];
+   PVOID WINAPI ResolveDelayLoadedAPI(PVOID ParentModuleBase, LPCVOID DelayloadDescriptor,
+                                      PVOID FailureDllHook, PVOID FailureSystemHook,
+                                      FARPROC* ThunkAddress, ULONG Flags);
+   FARPROC WINAPI DelayLoadFailureHook(LPCSTR name, LPCSTR function);
+
+   FARPROC WINAPI __delayLoadHelper2(LPCVOID pidd, FARPROC* ppfnIATEntry)
+   {
+     return ResolveDelayLoadedAPI(&__ImageBase, pidd, NULL, (PVOID) DelayLoadFailureHook,
+                                  ppfnIATEntry, 0);
+   }
+   ```
+
+This program used to crash:
+
+   ```
+   $ dlltool -nn -d ws2_32.def -y delay_ws2_32.a
+   $ gcc -g delay.c delay_ws2_32.a -o delay.exe
+   $ ./delay.exe
+   before delay load, __imp_WSAGetLastError = 00007FF6937215C6
+   Segmentation fault
+   ```
+
+After this commit, it loads and calls `WSAGetLastError()` properly, and
+`__imp_WSAGetLastError` is writeable:
+
+   ```
+   $ dlltool -nn -d ws2_32.def -y delay_ws2_32.a
+   $ gcc -g delay.c delay_ws2_32.a -o delay.exe
+   $ ./delay.exe
+   before delay load, __imp_WSAGetLastError = 00007FF76E2215C6
+   WSAGetLastError() = 123
+   after delay load, __imp_WSAGetLastError = 00007FFF191FA720
+   after plain write, __imp_WSAGetLastError = 000000000012D687
+   ```
+
+Reference: https://learn.microsoft.com/en-us/windows/win32/secbp/pe-metadata#import-handling
+Co-authored-by: Jeremy Drake <sourceware-bugzilla@jdrake.com>
+Signed-off-by: LIU Hao <lh_mouse@126.com>
+Signed-off-by: Jeremy Drake <sourceware-bugzilla@jdrake.com>
+---
+ bfd/coffgen.c         | 15 +++++++++
+ bfd/pe-aarch64.c      |  2 ++
+ bfd/pe-arm.c          |  2 ++
+ bfd/pe-i386.c         |  2 ++
+ bfd/pe-x86_64.c       |  2 ++
+ bfd/peXXigen.c        |  1 +
+ bfd/pei-aarch64.c     |  2 ++
+ bfd/pei-arm.c         |  2 ++
+ bfd/pei-i386.c        |  2 ++
+ bfd/pei-loongarch64.c |  2 ++
+ bfd/pei-riscv64.c     |  2 ++
+ bfd/pei-x86_64.c      |  2 ++
+ bfd/syms.c            |  1 +
+ binutils/dlltool.c    | 76 +++++++++++++++++++++++++++++++++++++++----
+ ld/scripttempl/pe.sc  | 26 ++++++++++++++-
+ ld/scripttempl/pep.sc | 27 ++++++++++++++-
+ 16 files changed, 158 insertions(+), 8 deletions(-)
+
+diff --git a/bfd/coffgen.c b/bfd/coffgen.c
+index d8c60e26342..8a01b7fdef8 100644
+--- a/bfd/coffgen.c
++++ b/bfd/coffgen.c
+@@ -43,6 +43,7 @@
+ #include "coff/internal.h"
+ #include "libcoff.h"
+ #include "hashtab.h"
++#include "safe-ctype.h"
+ 
+ /* Extract a long section name at STRINDEX and copy it to the bfd objstack.
+    Return NULL in case of error.  */
+@@ -3099,6 +3100,19 @@ coff_gc_sweep_symbol (struct coff_link_hash_entry *h,
+ typedef bool (*gc_sweep_hook_fn)
+   (bfd *, struct bfd_link_info *, asection *, const struct internal_reloc *);
+ 
++static inline bool
++is_subsection (const char *str, const char *prefix)
++{
++  size_t n = strlen (prefix);
++  if (strncmp (str, prefix, n) != 0)
++    return false;
++  if (str[n] == 0)
++    return true;
++  else if (str[n] != '$')
++    return false;
++  return ISDIGIT (str[n + 1]) && str[n + 2] == 0;
++}
++
+ static bool
+ coff_gc_sweep (bfd *abfd ATTRIBUTE_UNUSED, struct bfd_link_info *info)
+ {
+@@ -3120,6 +3134,7 @@ coff_gc_sweep (bfd *abfd ATTRIBUTE_UNUSED, struct bfd_link_info *info)
+ 	  else if (startswith (o->name, ".idata")
+ 		   || startswith (o->name, ".pdata")
+ 		   || startswith (o->name, ".xdata")
++		   || is_subsection (o->name, ".didat")
+ 		   || startswith (o->name, ".rsrc"))
+ 	    o->gc_mark = 1;
+ 
+diff --git a/bfd/pe-aarch64.c b/bfd/pe-aarch64.c
+index 64975d19f67..2204a51c509 100644
+--- a/bfd/pe-aarch64.c
++++ b/bfd/pe-aarch64.c
+@@ -48,6 +48,8 @@
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".idata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
++{ COFF_SECTION_NAME_PARTIAL_MATCH (".didat"), \
++  COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_EXACT_MATCH (".pdata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".debug"), \
+diff --git a/bfd/pe-arm.c b/bfd/pe-arm.c
+index fe4e18e7e06..5efa559a353 100644
+--- a/bfd/pe-arm.c
++++ b/bfd/pe-arm.c
+@@ -43,6 +43,8 @@
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".idata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
++{ COFF_SECTION_NAME_PARTIAL_MATCH (".didat"), \
++  COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_EXACT_MATCH (".pdata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".debug"), \
+diff --git a/bfd/pe-i386.c b/bfd/pe-i386.c
+index 07f674342cf..3742fd8feb4 100644
+--- a/bfd/pe-i386.c
++++ b/bfd/pe-i386.c
+@@ -36,6 +36,8 @@
+ #define COFF_SECTION_ALIGNMENT_ENTRIES \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".idata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
++{ COFF_SECTION_NAME_PARTIAL_MATCH (".didat"), \
++  COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_EXACT_MATCH (".pdata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".debug"), \
+diff --git a/bfd/pe-x86_64.c b/bfd/pe-x86_64.c
+index d56d75dabd0..9151aac5792 100644
+--- a/bfd/pe-x86_64.c
++++ b/bfd/pe-x86_64.c
+@@ -57,6 +57,8 @@
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 4 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".idata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
++{ COFF_SECTION_NAME_PARTIAL_MATCH (".didat"), \
++  COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_EXACT_MATCH (".pdata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".debug"), \
+diff --git a/bfd/peXXigen.c b/bfd/peXXigen.c
+index 9938108ce6b..7dfa82ee43e 100644
+--- a/bfd/peXXigen.c
++++ b/bfd/peXXigen.c
+@@ -1001,6 +1001,7 @@ _bfd_XXi_swap_scnhdr_out (bfd * abfd, void * in, void * out)
+ 	{ ".arch",  IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_DISCARDABLE | IMAGE_SCN_ALIGN_8BYTES },
+ 	{ ".bss",   IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_UNINITIALIZED_DATA | IMAGE_SCN_MEM_WRITE },
+ 	{ ".data",  IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_WRITE },
++	{ ".didat", IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_WRITE },
+ 	{ ".edata", IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_INITIALIZED_DATA },
+ 	{ ".idata", IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_INITIALIZED_DATA },
+ 	{ ".pdata", IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_INITIALIZED_DATA },
+diff --git a/bfd/pei-aarch64.c b/bfd/pei-aarch64.c
+index 3d7f5b376a6..00f38e0f9bb 100644
+--- a/bfd/pei-aarch64.c
++++ b/bfd/pei-aarch64.c
+@@ -49,6 +49,8 @@
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".idata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
++{ COFF_SECTION_NAME_PARTIAL_MATCH (".didat"), \
++  COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_EXACT_MATCH (".pdata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".debug"), \
+diff --git a/bfd/pei-arm.c b/bfd/pei-arm.c
+index 2abc14de025..07cebb510ef 100644
+--- a/bfd/pei-arm.c
++++ b/bfd/pei-arm.c
+@@ -45,6 +45,8 @@
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".idata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
++{ COFF_SECTION_NAME_PARTIAL_MATCH (".didat"), \
++  COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_EXACT_MATCH (".pdata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".debug"), \
+diff --git a/bfd/pei-i386.c b/bfd/pei-i386.c
+index 676a824877b..a26f1702b3b 100644
+--- a/bfd/pei-i386.c
++++ b/bfd/pei-i386.c
+@@ -35,6 +35,8 @@
+ #define COFF_SECTION_ALIGNMENT_ENTRIES \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".idata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
++{ COFF_SECTION_NAME_PARTIAL_MATCH (".didat"), \
++  COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_EXACT_MATCH (".pdata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".debug"), \
+diff --git a/bfd/pei-loongarch64.c b/bfd/pei-loongarch64.c
+index 4b3a30d4ddc..f22498cab21 100644
+--- a/bfd/pei-loongarch64.c
++++ b/bfd/pei-loongarch64.c
+@@ -49,6 +49,8 @@
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".idata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
++{ COFF_SECTION_NAME_PARTIAL_MATCH (".didat"), \
++  COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_EXACT_MATCH (".pdata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".debug"), \
+diff --git a/bfd/pei-riscv64.c b/bfd/pei-riscv64.c
+index e87aa429350..c4ae7bfb89a 100644
+--- a/bfd/pei-riscv64.c
++++ b/bfd/pei-riscv64.c
+@@ -49,6 +49,8 @@
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".idata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
++{ COFF_SECTION_NAME_PARTIAL_MATCH (".didat"), \
++  COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_EXACT_MATCH (".pdata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".debug"), \
+diff --git a/bfd/pei-x86_64.c b/bfd/pei-x86_64.c
+index 3f8f255af33..a5c2fd85f06 100644
+--- a/bfd/pei-x86_64.c
++++ b/bfd/pei-x86_64.c
+@@ -51,6 +51,8 @@
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 4 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".idata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
++{ COFF_SECTION_NAME_PARTIAL_MATCH (".didat"), \
++  COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_EXACT_MATCH (".pdata"), \
+   COFF_ALIGNMENT_FIELD_EMPTY, COFF_ALIGNMENT_FIELD_EMPTY, 2 }, \
+ { COFF_SECTION_NAME_PARTIAL_MATCH (".debug"), \
+diff --git a/bfd/syms.c b/bfd/syms.c
+index 95017ba4f11..df2229b3fa3 100644
+--- a/bfd/syms.c
++++ b/bfd/syms.c
+@@ -594,6 +594,7 @@ struct section_to_type
+    adding entries.  Since it is so short, a linear search is used.  */
+ static const struct section_to_type stt[] =
+ {
++  {".didat", 'i'},		/* MSVC's .didat (delay import) section */
+   {".drectve", 'i'},		/* MSVC's .drective section */
+   {".edata", 'e'},		/* MSVC's .edata (export) section */
+   {".idata", 'i'},		/* MSVC's .idata (import) section */
+diff --git a/binutils/dlltool.c b/binutils/dlltool.c
+index d32bf2062b4..371d61fc484 100644
+--- a/binutils/dlltool.c
++++ b/binutils/dlltool.c
+@@ -2268,7 +2268,7 @@ typedef struct
+ #define DATA_SEC_FLAGS   (SEC_ALLOC | SEC_LOAD | SEC_DATA)
+ #define BSS_SEC_FLAGS     SEC_ALLOC
+ 
+-static sinfo secdata[NSECS] =
++static sinfo secdata_plain[NSECS] =
+ {
+   INIT_SEC_DATA (TEXT,   ".text",    TEXT_SEC_FLAGS,   2),
+   INIT_SEC_DATA (DATA,   ".data",    DATA_SEC_FLAGS,   2),
+@@ -2279,6 +2279,17 @@ static sinfo secdata[NSECS] =
+   INIT_SEC_DATA (IDATA6, ".idata$6", SEC_HAS_CONTENTS, 1)
+ };
+ 
++static sinfo secdata_delay[NSECS] =
++{
++  INIT_SEC_DATA (TEXT,   ".text",    TEXT_SEC_FLAGS,   2),
++  INIT_SEC_DATA (DATA,   ".data",    DATA_SEC_FLAGS,   2),
++  INIT_SEC_DATA (BSS,    ".bss",     BSS_SEC_FLAGS,    2),
++  INIT_SEC_DATA (IDATA7, ".didat$7", SEC_HAS_CONTENTS, 2),
++  INIT_SEC_DATA (IDATA5, ".didat$5", SEC_HAS_CONTENTS, 2),
++  INIT_SEC_DATA (IDATA4, ".didat$4", SEC_HAS_CONTENTS, 2),
++  INIT_SEC_DATA (IDATA6, ".didat$6", SEC_HAS_CONTENTS, 1)
++};
++
+ /* This is what we're trying to make.  We generate the imp symbols with
+    both single and double underscores, for compatibility.
+ 
+@@ -2341,6 +2352,7 @@ make_imp_label (const char *prefix, const char *name)
+ static bfd *
+ make_one_lib_file (export_type *exp, int i, int delay)
+ {
++  sinfo *const secdata = delay ? secdata_delay : secdata_plain;
+   char *outname = TMP_STUB;
+   size_t name_len = strlen (outname);
+   sprintf (outname + name_len - 7, "%05d.o", i);
+@@ -2835,7 +2847,7 @@ make_delay_head (void)
+ 
+   if (!no_idata5)
+     {
+-      fprintf (f, "\t.section\t.idata$5\n");
++      fprintf (f, "\t.section\t.didat$5\n");
+       /* NULL terminating list.  */
+       if (create_for_pep)
+ 	fprintf (f, "\t%s\t0\n\t%s\t0\n", ASM_LONG, ASM_LONG);
+@@ -2846,15 +2858,15 @@ make_delay_head (void)
+ 
+   if (!no_idata4)
+     {
+-      fprintf (f, "\t.section\t.idata$4\n");
++      fprintf (f, "\t.section\t.didat$4\n");
+       fprintf (f, "\t%s\t0\n", ASM_LONG);
+       if (create_for_pep)
+ 	fprintf (f, "\t%s\t0\n", ASM_LONG);
+-      fprintf (f, "\t.section\t.idata$4\n");
++      fprintf (f, "\t.section\t.didat$4\n");
+       fprintf (f, "__INT_%s:\n", imp_name_lab);
+     }
+ 
+-  fprintf (f, "\t.section\t.idata$2\n");
++  fprintf (f, "\t.section\t.didat$2\n");
+ 
+   fclose (f);
+ 
+@@ -2921,6 +2933,57 @@ make_tail (void)
+   return abfd;
+ }
+ 
++static bfd *
++make_delay_tail (void)
++{
++  FILE *f = fopen (TMP_TAIL_S, FOPEN_WT);
++  bfd *abfd;
++
++  if (f == NULL)
++    {
++      fatal (_("failed to open temporary tail file: %s"), TMP_TAIL_S);
++      return NULL;
++    }
++
++  temp_file_to_remove[TEMP_TAIL_FILE] = TMP_TAIL_S;
++
++  if (!no_idata4)
++    {
++      fprintf (f, "\t.section\t.didat$4\n");
++      if (create_for_pep)
++	fprintf (f, "\t%s\t0\n\t%s\t0\n", ASM_LONG, ASM_LONG);
++      else
++	fprintf (f, "\t%s\t0\n", ASM_LONG); /* NULL terminating list.  */
++    }
++
++  if (!no_idata5)
++    {
++      fprintf (f, "\t.section\t.didat$5\n");
++      if (create_for_pep)
++	fprintf (f, "\t%s\t0\n\t%s\t0\n", ASM_LONG, ASM_LONG);
++      else
++	fprintf (f, "\t%s\t0\n", ASM_LONG); /* NULL terminating list.  */
++    }
++
++  fprintf (f, "\t.section\t.didat$7\n");
++  fprintf (f, "\t%s\t__%s_iname\n", ASM_GLOBAL, imp_name_lab);
++  fprintf (f, "__%s_iname:\t%s\t\"%s\"\n",
++	   imp_name_lab, ASM_TEXT, dll_name);
++
++  fclose (f);
++
++  assemble_file (TMP_TAIL_S, TMP_TAIL_O);
++
++  abfd = bfd_openr (TMP_TAIL_O, HOW_BFD_READ_TARGET);
++  if (abfd == NULL)
++    /* xgettext:c-format */
++    fatal (_("failed to open temporary tail file: %s: %s"),
++	   TMP_TAIL_O, bfd_get_errmsg ());
++
++  temp_file_to_remove[TEMP_TAIL_O_FILE] = TMP_TAIL_O;
++  return abfd;
++}
++
+ static void
+ gen_lib_file (int delay)
+ {
+@@ -2956,12 +3019,13 @@ gen_lib_file (int delay)
+   if (delay)
+     {
+       ar_head = make_delay_head ();
++      ar_tail = make_delay_tail();
+     }
+   else
+     {
+       ar_head = make_head ();
++      ar_tail = make_tail();
+     }
+-  ar_tail = make_tail();
+ 
+   if (ar_head == NULL || ar_tail == NULL)
+     return;
+diff --git a/ld/scripttempl/pe.sc b/ld/scripttempl/pe.sc
+index 96a47515444..108c6fb2cdf 100644
+--- a/ld/scripttempl/pe.sc
++++ b/ld/scripttempl/pe.sc
+@@ -14,7 +14,7 @@ fi
+ # substitution, so we do this instead.
+ # Sorting of the .foo$* sections is required by the definition of
+ # grouped sections in PE.
+-# Sorting of the file names in R_IDATA is required by the
++# Sorting of the file names in R_IDATA and R_DIDAT is required by the
+ # current implementation of dlltool (this could probably be changed to
+ # use grouped sections instead).
+ if test "${RELOCATING}"; then
+@@ -39,6 +39,18 @@ if test "${RELOCATING}"; then
+   R_IDATA67='
+     KEEP (SORT(*)(.idata$6))
+     KEEP (SORT(*)(.idata$7))'
++  R_DIDAT234='
++    __DELAY_IMPORT_DIRECTORY_start__ = .;
++    KEEP (SORT(*)(.didat$2))
++    KEEP (SORT(*)(.didat$3))
++    __DELAY_IMPORT_DIRECTORY_end__ = .;
++    /* These zeroes mark the end of the import list.  */
++    . += (__DELAY_IMPORT_DIRECTORY_end__ - __DELAY_IMPORT_DIRECTORY_start__) ? 8*4 : 0;
++    KEEP (SORT(*)(.didat$4))'
++  R_DIDAT5='KEEP (SORT(*)(.didat$5))'
++  R_DIDAT67='
++    KEEP (SORT(*)(.didat$6))
++    KEEP (SORT(*)(.didat$7))'
+   R_CRT_XC='KEEP (*(SORT(.CRT$XC*)))  /* C initialization */'
+   R_CRT_XI='KEEP (*(SORT(.CRT$XI*)))  /* C++ initialization */'
+   R_CRT_XL='KEEP (*(SORT(.CRT$XL*)))  /* TLS callbacks */'
+@@ -61,6 +73,9 @@ else
+   R_IDATA234=
+   R_IDATA5=
+   R_IDATA67=
++  R_DIDAT234=
++  R_DIDAT5=
++  R_DIDAT67=
+   R_CRT_XC=
+   R_CRT_XI=
+   R_CRT_XL=
+@@ -244,6 +259,15 @@ SECTIONS
+     ${R_IDATA67}
+   }
+ 
++  .didat ${RELOCATING+BLOCK(__section_alignment__)} :
++  {
++    /* This cannot currently be handled with grouped sections.
++	See pe.em:sort_sections.  */
++    ${R_DIDAT234}
++    ${R_DIDAT5}
++    ${R_DIDAT67}
++  }
++
+   /* Windows TLS expects .tls\$AAA to be at the start and .tls\$ZZZ to be
+      at the end of section.  This is important because _tls_start MUST
+      be at the beginning of the section to enable SECREL32 relocations with TLS
+diff --git a/ld/scripttempl/pep.sc b/ld/scripttempl/pep.sc
+index e2c6c2cedd2..f508ebe5585 100644
+--- a/ld/scripttempl/pep.sc
++++ b/ld/scripttempl/pep.sc
+@@ -14,7 +14,7 @@ fi
+ # substitution, so we do this instead.
+ # Sorting of the .foo$* sections is required by the definition of
+ # grouped sections in PE.
+-# Sorting of the file names in R_IDATA is required by the
++# Sorting of the file names in R_IDATA and R_DIDAT is required by the
+ # current implementation of dlltool (this could probably be changed to
+ # use grouped sections instead).
+ if test "${RELOCATING}"; then
+@@ -40,6 +40,19 @@ if test "${RELOCATING}"; then
+   R_IDATA67='
+     KEEP (SORT(*)(.idata$6))
+     KEEP (SORT(*)(.idata$7))'
++  R_DIDAT234='
++    __DELAY_IMPORT_DIRECTORY_start__ = .;
++    KEEP (SORT(*)(.didat$2))
++    KEEP (SORT(*)(.didat$3))
++    __DELAY_IMPORT_DIRECTORY_end__ = .;
++    /* These zeroes mark the end of the import list.  */
++    . += (__DELAY_IMPORT_DIRECTORY_end__ - __DELAY_IMPORT_DIRECTORY_start__) ? 8*4 : 0;
++    . = ALIGN(8);
++    KEEP (SORT(*)(.didat$4))'
++  R_DIDAT5='SORT(*)(.didat$5)'
++  R_DIDAT67='
++    KEEP (SORT(*)(.didat$6))
++    KEEP (SORT(*)(.didat$7))'
+   R_CRT_XC='KEEP (*(SORT(.CRT$XC*)))  /* C initialization */'
+   R_CRT_XI='KEEP (*(SORT(.CRT$XI*)))  /* C++ initialization */'
+   R_CRT_XL='KEEP (*(SORT(.CRT$XL*)))  /* TLS callbacks */'
+@@ -62,6 +75,9 @@ else
+   R_IDATA234=
+   R_IDATA5=
+   R_IDATA67=
++  R_DIDAT234=
++  R_DIDAT5=
++  R_DIDAT67=
+   R_CRT_XC=
+   R_CRT_XI=
+   R_CRT_XL=
+@@ -251,6 +267,15 @@ SECTIONS
+     ${R_IDATA67}
+   }
+ 
++  .didat ${RELOCATING+BLOCK(__section_alignment__)} :
++  {
++    /* This cannot currently be handled with grouped sections.
++	See pep.em:sort_sections.  */
++    ${R_DIDAT234}
++    ${R_DIDAT5}
++    ${R_DIDAT67}
++  }
++
+   /* Windows TLS expects .tls\$AAA to be at the start and .tls\$ZZZ to be
+      at the end of the .tls section.  This is important because _tls_start MUST
+      be at the beginning of the section to enable SECREL32 relocations with TLS
+-- 
+2.49.0.windows.1
+
