@@ -453,6 +453,7 @@ if(CMAKE_COMPILER_IS_GNUCC)
   set(CMAKE_C_FLAGS_RELEASE          "${GCC_EXTRA_FLAGS_RELEASE} ${CMAKE_C_FLAGS_RELEASE}")
   set(CMAKE_C_FLAGS_RELWITHDEBINFO   "${GCC_EXTRA_FLAGS_RELEASE} ${CMAKE_C_FLAGS_RELWITHDEBINFO}")
   set(CMAKE_CXX_FLAGS_RELEASE        "${GCC_EXTRA_FLAGS_RELEASE} ${CMAKE_CXX_FLAGS_RELEASE}")
+  set(CMAKE_C_FLAGS_DEBUG            "-DXXH_NO_INLINE_HINTS=1")
   string(PREPEND CMAKE_CXX_FLAGS_RELWITHDEBINFO "${GCC_EXTRA_FLAGS_RELEASE} ")
   unset(GCC_EXTRA_FLAGS_RELEASE)
   
@@ -473,7 +474,7 @@ if(CMAKE_COMPILER_IS_GNUCC)
 
 # CLang is the same as GCC for now.
 elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
-  set(PLATFORM_CFLAGS "-pipe -fPIC -funsigned-char -fno-strict-aliasing -ffp-contract=off")
+  set(PLATFORM_CFLAGS "-pipe -fPIC -funsigned-char -fno-strict-aliasing -ffp-contract=off -D_USE_MATH_DEFINES")
   
   if(WITH_LINKER_LLD AND _IS_LINKER_DEFAULT)
     find_program(LLD_BIN "ld.lld")
@@ -496,6 +497,9 @@ elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
     unset(LLD_BIN)
   endif()
 endif()
+
+string(APPEND CMAKE_C_FLAGS_DEBUG " -D_DEBUG")
+string(APPEND CMAKE_CXX_FLAGS_DEBUG " -D_DEBUG")
 
 # Don't use position independent executable for portable install since file
 # browsers can't properly detect blender as an executable then. Still enabled
