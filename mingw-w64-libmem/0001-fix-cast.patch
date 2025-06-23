@@ -1,0 +1,153 @@
+diff --git a/src/win/memory.c b/src/win/memory.c
+index 07a4024..ab3868c 100644
+--- a/src/win/memory.c
++++ b/src/win/memory.c
+@@ -50,8 +50,13 @@ LM_ReadMemoryEx(const lm_process_t *process,
+ 	if (!hproc)
+ 		return 0;
+ 
++	#if defined(__MINGW32__) || defined(__clang__)
++	if (!ReadProcessMemory(hproc, (LPCVOID)source, dest, size, &bytes_read))
++		bytes_read = 0;
++	#else
+ 	if (!ReadProcessMemory(hproc, source, dest, size, &bytes_read))
+ 		bytes_read = 0;
++	#endif
+ 
+ 	close_handle(hproc);
+ 	return (lm_size_t)bytes_read;
+@@ -75,8 +80,13 @@ LM_WriteMemoryEx(const lm_process_t *process,
+ 	if (!hproc)
+ 		return 0;
+ 
++	#if defined(__MINGW32__) || defined(__clang__)
++	if (!WriteProcessMemory(hproc, (LPVOID)dest, source, size, &bytes_written))
++		bytes_written = 0;
++	#else
+ 	if (!WriteProcessMemory(hproc, dest, source, size, &bytes_written))
+ 		bytes_written = 0;
++	#endif
+ 
+ 	close_handle(hproc);
+ 	return (lm_size_t)bytes_written;
+@@ -100,8 +110,13 @@ LM_ProtMemory(lm_address_t address,
+ 		size = get_page_size();
+ 
+ 	osprot = get_os_prot(prot);
++	#if defined(__MINGW32__) || defined(__clang__)
++	if (!VirtualProtect((LPVOID)address, size, osprot, &old_osprot))
++		return LM_FALSE;
++	#else
+ 	if (!VirtualProtect(address, size, osprot, &old_osprot))
+ 		return LM_FALSE;
++	#endif
+ 
+ 	if (oldprot_out)
+ 		*oldprot_out = get_prot(old_osprot);
+@@ -134,8 +149,13 @@ LM_ProtMemoryEx(const lm_process_t *process,
+ 		return result;
+ 
+ 	osprot = get_os_prot(prot);
++	#if defined(__MINGW32__) || defined(__clang__)
++	if (!VirtualProtectEx(hproc, (LPVOID)address, size, osprot, &old_osprot))
++		goto CLOSE_EXIT;
++	#else
+ 	if (!VirtualProtectEx(hproc, address, size, osprot, &old_osprot))
+ 		goto CLOSE_EXIT;
++	#endif
+ 
+ 	if (oldprot_out)
+ 		*oldprot_out = get_prot(old_osprot);
+@@ -212,7 +232,11 @@ LM_FreeMemory(lm_address_t alloc,
+ 	 */
+ 
+ 	size = 0;
++	#if defined(__MINGW32__) || defined(__clang__)
++	return VirtualFree((LPVOID)alloc, size, MEM_RELEASE) ? LM_TRUE : LM_FALSE;
++	#else
+ 	return VirtualFree(alloc, size, MEM_RELEASE) ? LM_TRUE : LM_FALSE;
++	#endif
+ }
+ 
+ /********************************/
+@@ -233,7 +257,11 @@ LM_FreeMemoryEx(const lm_process_t *process,
+ 		return LM_FALSE;
+ 
+ 	size = 0;
++	#if defined(__MINGW32__) || defined(__clang__)
++	ret = VirtualFreeEx(hproc, (LPVOID)alloc, size, MEM_RELEASE);
++	#else
+ 	ret = VirtualFreeEx(hproc, alloc, size, MEM_RELEASE);
++	#endif
+ 
+ 	close_handle(hproc);
+ 
+diff --git a/src/win/module.c b/src/win/module.c
+index 013b03d..07ba91b 100644
+--- a/src/win/module.c
++++ b/src/win/module.c
+@@ -123,14 +123,23 @@ LM_LoadModuleEx(const lm_process_t *process,
+ 	if (modpath_addr == LM_ADDRESS_BAD)
+ 		return result;
+ 
++	#if defined(__MINGW32__) || defined(__clang__)
++	if (!LM_WriteMemoryEx(process, modpath_addr, (lm_bytearray_t)wpath, sizeof(wpath)))
++		goto FREE_EXIT;
++	#else
+ 	if (!LM_WriteMemoryEx(process, modpath_addr, wpath, sizeof(wpath)))
+ 		goto FREE_EXIT;
++	#endif
+ 
+ 	hproc = open_process(process->pid, PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ);
+ 	if (!hproc)
+ 		goto FREE_EXIT;
+ 
++	#if defined(__MINGW32__) || defined(__clang__)
++	hthread = (HANDLE)CreateRemoteThread(hproc, NULL, 0, (LPTHREAD_START_ROUTINE)LoadLibraryW, (LPVOID)modpath_addr, 0, NULL);
++	#else
+ 	hthread = (HANDLE)CreateRemoteThread(hproc, NULL, 0, (LPTHREAD_START_ROUTINE)LoadLibraryW, modpath_addr, 0, NULL);
++	#endif
+ 
+ 	close_handle(&hproc);
+ 
+@@ -194,7 +203,11 @@ LM_UnloadModuleEx(const lm_process_t *process,
+ 	if (!hproc)
+ 		return LM_FALSE;
+ 
++	#if defined(__MINGW32__) || defined(__clang__)
++	hthread = (HANDLE)CreateRemoteThread(hproc, NULL, 0, (LPTHREAD_START_ROUTINE)FreeLibrary, (LPVOID)module->base, 0, NULL);
++	#else
+ 	hthread = (HANDLE)CreateRemoteThread(hproc, NULL, 0, (LPTHREAD_START_ROUTINE)FreeLibrary, module->base, 0, NULL);
++	#endif
+ 
+ 	close_handle(&hproc);
+ 
+diff --git a/src/win/segment.c b/src/win/segment.c
+index bed38e0..fc9af97 100644
+--- a/src/win/segment.c
++++ b/src/win/segment.c
+@@ -39,7 +39,11 @@ LM_EnumSegments(lm_bool_t (LM_CALL *callback)(lm_segment_t *segment,
+ 		return result;
+ 
+ 	for (address = 0;
+-	     VirtualQuery(address, &meminfo, sizeof(meminfo)) > 0;
++	     #if defined(__MINGW32__) || defined(__clang__)
++     	 VirtualQuery((LPCVOID)address, &meminfo, sizeof(meminfo)) > 0;
++		 #else
++     	 VirtualQuery(address, &meminfo, sizeof(meminfo)) > 0;
++		 #endif
+ 	     address += meminfo.RegionSize) {
+ 		/* Skip unallocated regions */
+ 		if (meminfo.State == MEM_FREE)
+@@ -82,7 +86,11 @@ LM_EnumSegmentsEx(const lm_process_t *process,
+ 
+ 	/* TODO: Add fix for 32 bit processes enumerating 64 bit target processes (avoid address overflow) */
+ 	for (address = 0;
++	     #if defined(__MINGW32__) || defined(__clang__)
++		 VirtualQueryEx(hproc, (LPCVOID)address, &meminfo, sizeof(meminfo)) > 0;
++		 #else
+ 	     VirtualQueryEx(hproc, address, &meminfo, sizeof(meminfo)) > 0;
++		 #endif
+ 	     address += meminfo.RegionSize) {
+ 		/* Skip unallocated regions */
+ 		if (meminfo.State == MEM_FREE)
