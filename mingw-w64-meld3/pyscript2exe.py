@@ -7,7 +7,11 @@ import sys
 import re
 import os
 import shutil
-from setuptools.command.easy_install import get_win_launcher
+try:
+    from setuptools.command.easy_install import get_win_launcher
+except ImportError:
+    # v80+
+    from setuptools._scripts import get_win_launcher
 
 path = sys.argv[1]
 root, ext = os.path.splitext(path)
