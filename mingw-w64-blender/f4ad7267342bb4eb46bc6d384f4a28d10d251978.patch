@@ -1,0 +1,85 @@
+From f4ad7267342bb4eb46bc6d384f4a28d10d251978 Mon Sep 17 00:00:00 2001
+From: Nathan Vegdahl <cessen@cessen.com>
+Date: Tue, 22 Apr 2025 10:42:20 +0200
+Subject: [PATCH] Fix: non-trivial memcpy compiler warnings on animrig copy
+ constructors
+
+The copy constructors for `animrig::Strip`, `animrig::Slot`, and
+`animrig::StripKeyframeData` used a `memcpy` call as part of the copy
+implementation. However, this produced warnings on clang 20.  For example:
+
+```
+warning: first argument in call to 'memcpy' is a pointer to
+non-trivially copyable type 'blender::animrig::Strip'
+[-Wnontrivial-memcall]`
+```
+
+These warnings did not reflect any actual bugs, because the underlying DNA
+structs that those types wrap are in fact trivial. Nevertheless, it's worth
+fixing the warnings.
+
+This fixes the warnings by replacing the uses of `memcpy` with equivalents that
+amount to a `memcpy` anyway, but which the compiler understands are valid for
+the types.
+
+There was also one additional use of `memcpy` in `Strip::create()` that did not
+trigger a warning because it operated directly on the underlying DNA struct, but
+was also unnecessary. This PR also replaces that with a simple assignment.
+
+Pull Request: https://projects.blender.org/blender/blender/pulls/137467
+---
+ source/blender/animrig/ANIM_action.hh   | 5 +----
+ source/blender/animrig/intern/action.cc | 8 +++-----
+ 2 files changed, 4 insertions(+), 9 deletions(-)
+
+diff --git a/source/blender/animrig/ANIM_action.hh b/source/blender/animrig/ANIM_action.hh
+index e0a28616736..e942f58df0c 100644
+--- a/source/blender/animrig/ANIM_action.hh
++++ b/source/blender/animrig/ANIM_action.hh
+@@ -570,10 +570,7 @@ class Strip : public ::ActionStrip {
+    *
+    * Does *not* make a copy of the strip's data, which is stored in an array on
+    * the owning action. */
+-  explicit Strip(const Strip &other)
+-  {
+-    memcpy(this, &other, sizeof(*this));
+-  }
++  explicit Strip(const Strip &other) = default;
+ 
+   /**
+    * Creates a new strip of type `type` for `owning_action`, with the strip's
+diff --git a/source/blender/animrig/intern/action.cc b/source/blender/animrig/intern/action.cc
+index b7baa75207a..9307643f981 100644
+--- a/source/blender/animrig/intern/action.cc
++++ b/source/blender/animrig/intern/action.cc
+@@ -1023,9 +1023,8 @@ Slot::Slot()
+   this->runtime = MEM_new<SlotRuntime>(__func__);
+ }
+ 
+-Slot::Slot(const Slot &other)
++Slot::Slot(const Slot &other) : ActionSlot(other)
+ {
+-  memcpy(this, &other, sizeof(*this));
+   this->runtime = MEM_new<SlotRuntime>(__func__);
+ }
+ 
+@@ -1633,7 +1632,7 @@ Strip &Strip::create(Action &owning_action, const Strip::Type type)
+ {
+   /* Create the strip. */
+   ActionStrip *strip = MEM_cnew<ActionStrip>(__func__);
+-  memcpy(strip, DNA_struct_default_get(ActionStrip), sizeof(*strip));
++  *strip = *DNA_struct_default_get(ActionStrip);
+   strip->strip_type = int8_t(type);
+ 
+   /* Create the strip's data on the owning Action. */
+@@ -1707,9 +1706,8 @@ void Strip::slot_data_remove(Action &owning_action, const slot_handle_t slot_han
+ /* ----- ActionStripKeyframeData implementation ----------- */
+ 
+ StripKeyframeData::StripKeyframeData(const StripKeyframeData &other)
++    : ActionStripKeyframeData(other)
+ {
+-  memcpy(this, &other, sizeof(*this));
+-
+   this->channelbag_array = MEM_cnew_array<ActionChannelbag *>(other.channelbag_array_num,
+                                                               __func__);
+   Span<const Channelbag *> channelbags_src = other.channelbags();
