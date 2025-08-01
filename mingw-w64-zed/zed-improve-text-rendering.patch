@@ -1,0 +1,2816 @@
+From da83011fda8891ee83dc0d53e70993c9e4324243 Mon Sep 17 00:00:00 2001
+From: Kate <kate@zed.dev>
+Date: Wed, 30 Jul 2025 17:07:23 -0700
+Subject: [PATCH 01/16] Rasterize glyphs without D2D
+
+Co-authored-by: Max Brunsfeld <maxbrunsfeld@gmail.com>
+Co-authored-by: Julia <julia@zed.dev>
+---
+ crates/gpui/build.rs                          |  12 +
+ crates/gpui/examples/text.rs                  |   2 +-
+ crates/gpui/src/color.rs                      |   1 +
+ .../platform/windows/color_text_raster.hlsl   |  39 +
+ .../gpui/src/platform/windows/direct_write.rs | 853 +++++++++++++-----
+ .../src/platform/windows/directx_atlas.rs     |   4 +-
+ .../src/platform/windows/directx_renderer.rs  |  40 +-
+ crates/gpui/src/platform/windows/platform.rs  |  10 +-
+ crates/gpui/src/platform/windows/shaders.hlsl |  27 +-
+ crates/gpui/src/platform/windows/window.rs    |   3 +-
+ 10 files changed, 725 insertions(+), 266 deletions(-)
+ create mode 100644 crates/gpui/src/platform/windows/color_text_raster.hlsl
+
+diff --git a/crates/gpui/build.rs b/crates/gpui/build.rs
+index 2b574ebdd83c95..93a1c15c41dd17 100644
+--- a/crates/gpui/build.rs
++++ b/crates/gpui/build.rs
+@@ -310,6 +310,18 @@ mod windows {
+                 &rust_binding_path,
+             );
+         }
++
++        {
++            let shader_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
++                .join("src/platform/windows/color_text_raster.hlsl");
++            compile_shader_for_module(
++                "emoji_rasterization",
++                &out_dir,
++                &fxc_path,
++                shader_path.to_str().unwrap(),
++                &rust_binding_path,
++            );
++        }
+     }
+ 
+     /// You can set the `GPUI_FXC_PATH` environment variable to specify the path to the fxc.exe compiler.
+diff --git a/crates/gpui/examples/text.rs b/crates/gpui/examples/text.rs
+index 19214aebdefccb..1166bb279541c8 100644
+--- a/crates/gpui/examples/text.rs
++++ b/crates/gpui/examples/text.rs
+@@ -198,7 +198,7 @@ impl RenderOnce for CharacterGrid {
+             "χ", "ψ", "∂", "а", "в", "Ж", "ж", "З", "з", "К", "к", "л", "м", "Н", "н", "Р", "р",
+             "У", "у", "ф", "ч", "ь", "ы", "Э", "э", "Я", "я", "ij", "öẋ", ".,", "⣝⣑", "~", "*",
+             "_", "^", "`", "'", "(", "{", "«", "#", "&", "@", "$", "¢", "%", "|", "?", "¶", "µ",
+-            "❮", "<=", "!=", "==", "--", "++", "=>", "->",
++            "❮", "<=", "!=", "==", "--", "++", "=>", "->", "🏀", "🎊", "😍", "❤️", "👍", "👎",
+         ];
+ 
+         let columns = 11;
+diff --git a/crates/gpui/src/color.rs b/crates/gpui/src/color.rs
+index a16c8f46bef283..639c84c1014431 100644
+--- a/crates/gpui/src/color.rs
++++ b/crates/gpui/src/color.rs
+@@ -35,6 +35,7 @@ pub(crate) fn swap_rgba_pa_to_bgra(color: &mut [u8]) {
+ 
+ /// An RGBA color
+ #[derive(PartialEq, Clone, Copy, Default)]
++#[repr(C)]
+ pub struct Rgba {
+     /// The red component of the color, in the range 0.0 to 1.0
+     pub r: f32,
+diff --git a/crates/gpui/src/platform/windows/color_text_raster.hlsl b/crates/gpui/src/platform/windows/color_text_raster.hlsl
+new file mode 100644
+index 00000000000000..ccc5fa26f00d57
+--- /dev/null
++++ b/crates/gpui/src/platform/windows/color_text_raster.hlsl
+@@ -0,0 +1,39 @@
++struct RasterVertexOutput {
++    float4 position : SV_Position;
++    float2 texcoord : TEXCOORD0;
++};
++
++RasterVertexOutput emoji_rasterization_vertex(uint vertexID : SV_VERTEXID)
++{
++    RasterVertexOutput output;
++    output.texcoord = float2((vertexID << 1) & 2, vertexID & 2);
++    output.position = float4(output.texcoord * 2.0f - 1.0f, 0.0f, 1.0f);
++    output.position.y = -output.position.y;
++
++    return output;
++}
++
++struct PixelInput {
++    float4 position: SV_Position;
++    float2 texcoord : TEXCOORD0;
++};
++
++struct Bounds {
++    int2 origin;
++    int2 size;
++};
++
++Texture2D<float4> t_layer : register(t0);
++SamplerState s_layer : register(s0);
++
++cbuffer GlyphLayerTextureParams : register(b0) {
++    Bounds bounds;
++    float4 run_color;
++};
++
++float4 emoji_rasterization_fragment(PixelInput input): SV_Target {
++    float3 sampled = t_layer.Sample(s_layer, input.texcoord.xy).rgb;
++    float alpha = (sampled.r + sampled.g + sampled.b) / 3;
++
++    return float4(run_color.rgb, alpha);
++}
+diff --git a/crates/gpui/src/platform/windows/direct_write.rs b/crates/gpui/src/platform/windows/direct_write.rs
+index ada306c15c187e..cd49c5fa798a2e 100644
+--- a/crates/gpui/src/platform/windows/direct_write.rs
++++ b/crates/gpui/src/platform/windows/direct_write.rs
+@@ -1,4 +1,4 @@
+-use std::{borrow::Cow, sync::Arc};
++use std::{borrow::Cow, mem::ManuallyDrop, sync::Arc};
+ 
+ use ::util::ResultExt;
+ use anyhow::Result;
+@@ -10,11 +10,8 @@ use windows::{
+         Foundation::*,
+         Globalization::GetUserDefaultLocaleName,
+         Graphics::{
+-            Direct2D::{Common::*, *},
+-            DirectWrite::*,
+-            Dxgi::Common::*,
+-            Gdi::LOGFONTW,
+-            Imaging::*,
++            Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP, Direct3D11::*, DirectWrite::*,
++            Dxgi::Common::*, Gdi::LOGFONTW, Imaging::*,
+         },
+         System::SystemServices::LOCALE_NAME_MAX_LENGTH,
+         UI::WindowsAndMessaging::*,
+@@ -40,16 +37,21 @@ struct DirectWriteComponent {
+     locale: String,
+     factory: IDWriteFactory5,
+     bitmap_factory: AgileReference<IWICImagingFactory>,
+-    d2d1_factory: ID2D1Factory,
+     in_memory_loader: IDWriteInMemoryFontFileLoader,
+     builder: IDWriteFontSetBuilder1,
+     text_renderer: Arc<TextRendererWrapper>,
+-    render_context: GlyphRenderContext,
++
++    render_params: IDWriteRenderingParams3,
++    gpu_state: GPUState,
+ }
+ 
+-struct GlyphRenderContext {
+-    params: IDWriteRenderingParams3,
+-    dc_target: ID2D1DeviceContext4,
++struct GPUState {
++    device: ID3D11Device,
++    device_context: ID3D11DeviceContext,
++    sampler: [Option<ID3D11SamplerState>; 1],
++    blend_state: ID3D11BlendState,
++    vertex_shader: ID3D11VertexShader,
++    pixel_shader: ID3D11PixelShader,
+ }
+ 
+ struct DirectWriteState {
+@@ -70,12 +72,11 @@ struct FontIdentifier {
+ }
+ 
+ impl DirectWriteComponent {
+-    pub fn new(bitmap_factory: &IWICImagingFactory) -> Result<Self> {
++    pub fn new(bitmap_factory: &IWICImagingFactory, gpu_context: &DirectXDevices) -> Result<Self> {
++        // todo: ideally this would not be a large unsafe block but smaller isolated ones for easier auditing
+         unsafe {
+             let factory: IDWriteFactory5 = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+             let bitmap_factory = AgileReference::new(bitmap_factory)?;
+-            let d2d1_factory: ID2D1Factory =
+-                D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED, None)?;
+             // The `IDWriteInMemoryFontFileLoader` here is supported starting from
+             // Windows 10 Creators Update, which consequently requires the entire
+             // `DirectWriteTextSystem` to run on `win10 1703`+.
+@@ -86,60 +87,132 @@ impl DirectWriteComponent {
+             GetUserDefaultLocaleName(&mut locale_vec);
+             let locale = String::from_utf16_lossy(&locale_vec);
+             let text_renderer = Arc::new(TextRendererWrapper::new(&locale));
+-            let render_context = GlyphRenderContext::new(&factory, &d2d1_factory)?;
++
++            let render_params = {
++                let default_params: IDWriteRenderingParams3 =
++                    factory.CreateRenderingParams()?.cast()?;
++                let gamma = default_params.GetGamma();
++                let enhanced_contrast = default_params.GetEnhancedContrast();
++                let gray_contrast = default_params.GetGrayscaleEnhancedContrast();
++                let cleartype_level = default_params.GetClearTypeLevel();
++                let grid_fit_mode = default_params.GetGridFitMode();
++
++                factory.CreateCustomRenderingParams(
++                    gamma,
++                    enhanced_contrast,
++                    gray_contrast,
++                    cleartype_level,
++                    DWRITE_PIXEL_GEOMETRY_RGB,
++                    DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
++                    grid_fit_mode,
++                )?
++            };
++
++            let gpu_state = GPUState::new(gpu_context)?;
+ 
+             Ok(DirectWriteComponent {
+                 locale,
+                 factory,
+                 bitmap_factory,
+-                d2d1_factory,
+                 in_memory_loader,
+                 builder,
+                 text_renderer,
+-                render_context,
++                render_params,
++                gpu_state,
+             })
+         }
+     }
+ }
+ 
+-impl GlyphRenderContext {
+-    pub fn new(factory: &IDWriteFactory5, d2d1_factory: &ID2D1Factory) -> Result<Self> {
+-        unsafe {
+-            let default_params: IDWriteRenderingParams3 =
+-                factory.CreateRenderingParams()?.cast()?;
+-            let gamma = default_params.GetGamma();
+-            let enhanced_contrast = default_params.GetEnhancedContrast();
+-            let gray_contrast = default_params.GetGrayscaleEnhancedContrast();
+-            let cleartype_level = default_params.GetClearTypeLevel();
+-            let grid_fit_mode = default_params.GetGridFitMode();
+-
+-            let params = factory.CreateCustomRenderingParams(
+-                gamma,
+-                enhanced_contrast,
+-                gray_contrast,
+-                cleartype_level,
+-                DWRITE_PIXEL_GEOMETRY_RGB,
+-                DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+-                grid_fit_mode,
+-            )?;
+-            let dc_target = {
+-                let target = d2d1_factory.CreateDCRenderTarget(&get_render_target_property(
+-                    DXGI_FORMAT_B8G8R8A8_UNORM,
+-                    D2D1_ALPHA_MODE_PREMULTIPLIED,
+-                ))?;
+-                let target = target.cast::<ID2D1DeviceContext4>()?;
+-                target.SetTextRenderingParams(&params);
+-                target
++impl GPUState {
++    fn new(gpu_context: &DirectXDevices) -> Result<Self> {
++        let device = gpu_context.device.clone();
++        let device_context = gpu_context.device_context.clone();
++
++        let blend_state = {
++            let mut blend_state = None;
++            let desc = D3D11_BLEND_DESC {
++                AlphaToCoverageEnable: false.into(),
++                IndependentBlendEnable: false.into(),
++                RenderTarget: [
++                    D3D11_RENDER_TARGET_BLEND_DESC {
++                        BlendEnable: true.into(),
++                        SrcBlend: D3D11_BLEND_SRC_ALPHA,
++                        DestBlend: D3D11_BLEND_INV_SRC_ALPHA,
++                        BlendOp: D3D11_BLEND_OP_ADD,
++                        SrcBlendAlpha: D3D11_BLEND_SRC_ALPHA,
++                        DestBlendAlpha: D3D11_BLEND_INV_SRC_ALPHA,
++                        BlendOpAlpha: D3D11_BLEND_OP_ADD,
++                        RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
++                    },
++                    Default::default(),
++                    Default::default(),
++                    Default::default(),
++                    Default::default(),
++                    Default::default(),
++                    Default::default(),
++                    Default::default(),
++                ],
+             };
++            unsafe { device.CreateBlendState(&desc, Some(&mut blend_state)) }?;
++            blend_state.unwrap()
++        };
+ 
+-            Ok(Self { params, dc_target })
+-        }
++        let sampler = {
++            let mut sampler = None;
++            let desc = D3D11_SAMPLER_DESC {
++                Filter: D3D11_FILTER_MIN_MAG_MIP_POINT,
++                AddressU: D3D11_TEXTURE_ADDRESS_BORDER,
++                AddressV: D3D11_TEXTURE_ADDRESS_BORDER,
++                AddressW: D3D11_TEXTURE_ADDRESS_BORDER,
++                MipLODBias: 0.0,
++                MaxAnisotropy: 1,
++                ComparisonFunc: D3D11_COMPARISON_ALWAYS,
++                BorderColor: [0.0, 0.0, 0.0, 0.0],
++                MinLOD: 0.0,
++                MaxLOD: 0.0,
++            };
++            unsafe { device.CreateSamplerState(&desc, Some(&mut sampler)) }?;
++            [sampler]
++        };
++
++        let vertex_shader = {
++            let source = shader_resources::RawShaderBytes::new(
++                shader_resources::ShaderModule::EmojiRasterization,
++                shader_resources::ShaderTarget::Vertex,
++            )?;
++            let mut shader = None;
++            unsafe { device.CreateVertexShader(source.as_bytes(), None, Some(&mut shader)) }?;
++            shader.unwrap()
++        };
++
++        let pixel_shader = {
++            let source = shader_resources::RawShaderBytes::new(
++                shader_resources::ShaderModule::EmojiRasterization,
++                shader_resources::ShaderTarget::Fragment,
++            )?;
++            let mut shader = None;
++            unsafe { device.CreatePixelShader(source.as_bytes(), None, Some(&mut shader)) }?;
++            shader.unwrap()
++        };
++
++        Ok(Self {
++            device,
++            device_context,
++            sampler,
++            blend_state,
++            vertex_shader,
++            pixel_shader,
++        })
+     }
+ }
+ 
+ impl DirectWriteTextSystem {
+-    pub(crate) fn new(bitmap_factory: &IWICImagingFactory) -> Result<Self> {
+-        let components = DirectWriteComponent::new(bitmap_factory)?;
++    pub(crate) fn new(
++        gpu_context: &DirectXDevices,
++        bitmap_factory: &IWICImagingFactory,
++    ) -> Result<Self> {
++        let components = DirectWriteComponent::new(bitmap_factory, gpu_context)?;
+         let system_font_collection = unsafe {
+             let mut result = std::mem::zeroed();
+             components
+@@ -649,11 +722,6 @@ impl DirectWriteState {
+     }
+ 
+     fn raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
+-        let render_target = &self.components.render_context.dc_target;
+-        unsafe {
+-            render_target.SetUnitMode(D2D1_UNIT_MODE_DIPS);
+-            render_target.SetDpi(96.0 * params.scale_factor, 96.0 * params.scale_factor);
+-        }
+         let font = &self.fonts[params.font_id.0];
+         let glyph_id = [params.glyph_id.0 as u16];
+         let advance = [0.0f32];
+@@ -668,25 +736,36 @@ impl DirectWriteState {
+             isSideways: BOOL(0),
+             bidiLevel: 0,
+         };
+-        let bounds = unsafe {
+-            render_target.GetGlyphRunWorldBounds(
+-                Vector2 { X: 0.0, Y: 0.0 },
++
++        let rendering_mode = DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC;
++        let measuring_mode = DWRITE_MEASURING_MODE_NATURAL;
++        let baseline_origin_x = 0.0;
++        let baseline_origin_y = 0.0;
++
++        let transform = DWRITE_MATRIX {
++            m11: params.scale_factor,
++            m12: 0.0,
++            m21: 0.0,
++            m22: params.scale_factor,
++            dx: 0.0,
++            dy: 0.0,
++        };
++
++        let glyph_analysis = unsafe {
++            self.components.factory.CreateGlyphRunAnalysis(
+                 &glyph_run,
+-                DWRITE_MEASURING_MODE_NATURAL,
++                Some(&transform),
++                rendering_mode,
++                measuring_mode,
++                DWRITE_GRID_FIT_MODE_DEFAULT,
++                DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
++                baseline_origin_x,
++                baseline_origin_y,
+             )?
+         };
+-        // todo(windows)
+-        // This is a walkaround, deleted when figured out.
+-        let y_offset;
+-        let extra_height;
+-        if params.is_emoji {
+-            y_offset = 0;
+-            extra_height = 0;
+-        } else {
+-            // make some room for scaler.
+-            y_offset = -1;
+-            extra_height = 2;
+-        }
++
++        let texture_type = DWRITE_TEXTURE_CLEARTYPE_3x1;
++        let bounds = unsafe { glyph_analysis.GetAlphaTextureBounds(texture_type)? };
+ 
+         if bounds.right < bounds.left {
+             Ok(Bounds {
+@@ -695,15 +774,10 @@ impl DirectWriteState {
+             })
+         } else {
+             Ok(Bounds {
+-                origin: point(
+-                    ((bounds.left * params.scale_factor).ceil() as i32).into(),
+-                    ((bounds.top * params.scale_factor).ceil() as i32 + y_offset).into(),
+-                ),
++                origin: point((bounds.left as i32).into(), (bounds.top as i32).into()),
+                 size: size(
+-                    (((bounds.right - bounds.left) * params.scale_factor).ceil() as i32).into(),
+-                    (((bounds.bottom - bounds.top) * params.scale_factor).ceil() as i32
+-                        + extra_height)
+-                        .into(),
++                    (bounds.right - bounds.left).into(),
++                    (bounds.bottom - bounds.top).into(),
+                 ),
+             })
+         }
+@@ -739,7 +813,7 @@ impl DirectWriteState {
+             ascenderOffset: glyph_bounds.origin.y.0 as f32 / params.scale_factor,
+         }];
+         let glyph_run = DWRITE_GLYPH_RUN {
+-            fontFace: unsafe { std::mem::transmute_copy(&font_info.font_face) },
++            fontFace: ManuallyDrop::new(Some(font_info.font_face.cast()?)),
+             fontEmSize: params.font_size.0,
+             glyphCount: 1,
+             glyphIndices: glyph_id.as_ptr(),
+@@ -759,150 +833,398 @@ impl DirectWriteState {
+         }
+         let bitmap_size = bitmap_size;
+ 
+-        let total_bytes;
+-        let bitmap_format;
+-        let render_target_property;
+-        let bitmap_width;
+-        let bitmap_height;
+-        let bitmap_stride;
+-        let bitmap_dpi;
++        let subpixel_shift = params
++            .subpixel_variant
++            .map(|v| v as f32 / SUBPIXEL_VARIANTS as f32);
++        let baseline_origin_x = subpixel_shift.x / params.scale_factor;
++        let baseline_origin_y = subpixel_shift.y / params.scale_factor;
++
++        let transform = DWRITE_MATRIX {
++            m11: params.scale_factor,
++            m12: 0.0,
++            m21: 0.0,
++            m22: params.scale_factor,
++            dx: 0.0,
++            dy: 0.0,
++        };
++
++        let rendering_mode = if params.is_emoji {
++            DWRITE_RENDERING_MODE1_NATURAL
++        } else {
++            DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC
++        };
++
++        let measuring_mode = DWRITE_MEASURING_MODE_NATURAL;
++
++        let glyph_analysis = unsafe {
++            self.components.factory.CreateGlyphRunAnalysis(
++                &glyph_run,
++                Some(&transform),
++                rendering_mode,
++                measuring_mode,
++                DWRITE_GRID_FIT_MODE_DEFAULT,
++                DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
++                baseline_origin_x,
++                baseline_origin_y,
++            )?
++        };
++
++        let texture_type = DWRITE_TEXTURE_CLEARTYPE_3x1;
++        let texture_bounds = unsafe { glyph_analysis.GetAlphaTextureBounds(texture_type)? };
++        let texture_width = (texture_bounds.right - texture_bounds.left) as u32;
++        let texture_height = (texture_bounds.bottom - texture_bounds.top) as u32;
++
++        if texture_width == 0 || texture_height == 0 {
++            return Ok((
++                bitmap_size,
++                vec![
++                    0u8;
++                    bitmap_size.width.0 as usize
++                        * bitmap_size.height.0 as usize
++                        * if params.is_emoji { 4 } else { 1 }
++                ],
++            ));
++        }
++
++        let mut bitmap_data: Vec<u8>;
+         if params.is_emoji {
+-            total_bytes = bitmap_size.height.0 as usize * bitmap_size.width.0 as usize * 4;
+-            bitmap_format = &GUID_WICPixelFormat32bppPBGRA;
+-            render_target_property = get_render_target_property(
+-                DXGI_FORMAT_B8G8R8A8_UNORM,
+-                D2D1_ALPHA_MODE_PREMULTIPLIED,
+-            );
+-            bitmap_width = bitmap_size.width.0 as u32;
+-            bitmap_height = bitmap_size.height.0 as u32;
+-            bitmap_stride = bitmap_size.width.0 as u32 * 4;
+-            bitmap_dpi = 96.0;
++            if let Ok(color) = self.rasterize_color(
++                &glyph_run,
++                rendering_mode,
++                measuring_mode,
++                &transform,
++                point(baseline_origin_x, baseline_origin_y),
++                bitmap_size,
++            ) {
++                bitmap_data = color;
++            } else {
++                let monochrome = Self::rasterize_monochrome(
++                    &glyph_analysis,
++                    bitmap_size,
++                    size(texture_width, texture_height),
++                    &texture_bounds,
++                )?;
++                bitmap_data = monochrome
++                    .into_iter()
++                    .flat_map(|pixel| [0, 0, 0, pixel])
++                    .collect::<Vec<_>>();
++            }
+         } else {
+-            total_bytes = bitmap_size.height.0 as usize * bitmap_size.width.0 as usize;
+-            bitmap_format = &GUID_WICPixelFormat8bppAlpha;
+-            render_target_property =
+-                get_render_target_property(DXGI_FORMAT_A8_UNORM, D2D1_ALPHA_MODE_STRAIGHT);
+-            bitmap_width = bitmap_size.width.0 as u32 * 2;
+-            bitmap_height = bitmap_size.height.0 as u32 * 2;
+-            bitmap_stride = bitmap_size.width.0 as u32;
+-            bitmap_dpi = 192.0;
++            bitmap_data = Self::rasterize_monochrome(
++                &glyph_analysis,
++                bitmap_size,
++                size(texture_width, texture_height),
++                &texture_bounds,
++            )?;
+         }
+ 
+-        let bitmap_factory = self.components.bitmap_factory.resolve()?;
++        Ok((bitmap_size, bitmap_data))
++    }
++
++    fn rasterize_monochrome(
++        glyph_analysis: &IDWriteGlyphRunAnalysis,
++        bitmap_size: Size<DevicePixels>,
++        texture_size: Size<u32>,
++        texture_bounds: &RECT,
++    ) -> Result<Vec<u8>> {
++        let mut bitmap_data =
++            vec![0u8; bitmap_size.width.0 as usize * bitmap_size.height.0 as usize];
++
++        let mut alpha_data = vec![0u8; (texture_size.width * texture_size.height * 3) as usize];
++
+         unsafe {
+-            let bitmap = bitmap_factory.CreateBitmap(
+-                bitmap_width,
+-                bitmap_height,
+-                bitmap_format,
+-                WICBitmapCacheOnLoad,
++            glyph_analysis.CreateAlphaTexture(
++                DWRITE_TEXTURE_CLEARTYPE_3x1,
++                texture_bounds,
++                &mut alpha_data,
+             )?;
+-            let render_target = self
+-                .components
+-                .d2d1_factory
+-                .CreateWicBitmapRenderTarget(&bitmap, &render_target_property)?;
+-            let brush = render_target.CreateSolidColorBrush(&BRUSH_COLOR, None)?;
+-            let subpixel_shift = params
+-                .subpixel_variant
+-                .map(|v| v as f32 / SUBPIXEL_VARIANTS as f32);
+-            let baseline_origin = Vector2 {
+-                X: subpixel_shift.x / params.scale_factor,
+-                Y: subpixel_shift.y / params.scale_factor,
+-            };
++        }
+ 
+-            // This `cast()` action here should never fail since we are running on Win10+, and
+-            // ID2D1DeviceContext4 requires Win8+
+-            let render_target = render_target.cast::<ID2D1DeviceContext4>().unwrap();
+-            render_target.SetUnitMode(D2D1_UNIT_MODE_DIPS);
+-            render_target.SetDpi(
+-                bitmap_dpi * params.scale_factor,
+-                bitmap_dpi * params.scale_factor,
+-            );
+-            render_target.SetTextRenderingParams(&self.components.render_context.params);
+-            render_target.BeginDraw();
+-
+-            if params.is_emoji {
+-                // WARN: only DWRITE_GLYPH_IMAGE_FORMATS_COLR has been tested
+-                let enumerator = self.components.factory.TranslateColorGlyphRun(
+-                    baseline_origin,
+-                    &glyph_run as _,
+-                    None,
+-                    DWRITE_GLYPH_IMAGE_FORMATS_COLR
+-                        | DWRITE_GLYPH_IMAGE_FORMATS_SVG
+-                        | DWRITE_GLYPH_IMAGE_FORMATS_PNG
+-                        | DWRITE_GLYPH_IMAGE_FORMATS_JPEG
+-                        | DWRITE_GLYPH_IMAGE_FORMATS_PREMULTIPLIED_B8G8R8A8,
+-                    DWRITE_MEASURING_MODE_NATURAL,
+-                    None,
+-                    0,
+-                )?;
+-                while enumerator.MoveNext().is_ok() {
+-                    let Ok(color_glyph) = enumerator.GetCurrentRun() else {
+-                        break;
+-                    };
+-                    let color_glyph = &*color_glyph;
+-                    let brush_color = translate_color(&color_glyph.Base.runColor);
+-                    brush.SetColor(&brush_color);
+-                    match color_glyph.glyphImageFormat {
+-                        DWRITE_GLYPH_IMAGE_FORMATS_PNG
+-                        | DWRITE_GLYPH_IMAGE_FORMATS_JPEG
+-                        | DWRITE_GLYPH_IMAGE_FORMATS_PREMULTIPLIED_B8G8R8A8 => render_target
+-                            .DrawColorBitmapGlyphRun(
+-                                color_glyph.glyphImageFormat,
+-                                baseline_origin,
+-                                &color_glyph.Base.glyphRun,
+-                                color_glyph.measuringMode,
+-                                D2D1_COLOR_BITMAP_GLYPH_SNAP_OPTION_DEFAULT,
+-                            ),
+-                        DWRITE_GLYPH_IMAGE_FORMATS_SVG => render_target.DrawSvgGlyphRun(
+-                            baseline_origin,
+-                            &color_glyph.Base.glyphRun,
+-                            &brush,
+-                            None,
+-                            color_glyph.Base.paletteIndex as u32,
+-                            color_glyph.measuringMode,
+-                        ),
+-                        _ => render_target.DrawGlyphRun(
+-                            baseline_origin,
+-                            &color_glyph.Base.glyphRun,
+-                            Some(color_glyph.Base.glyphRunDescription as *const _),
+-                            &brush,
+-                            color_glyph.measuringMode,
+-                        ),
++        // Convert ClearType RGB data to grayscale and place in bitmap
++        let offset_x = texture_bounds.left.max(0) as usize;
++        let offset_y = texture_bounds.top.max(0) as usize;
++
++        for y in 0..texture_size.height as usize {
++            for x in 0..texture_size.width as usize {
++                let bitmap_x = offset_x + x;
++                let bitmap_y = offset_y + y;
++
++                if bitmap_x < bitmap_size.width.0 as usize
++                    && bitmap_y < bitmap_size.height.0 as usize
++                {
++                    let texture_idx = (y * texture_size.width as usize + x) * 3;
++                    let bitmap_idx = bitmap_y * bitmap_size.width.0 as usize + bitmap_x;
++
++                    if texture_idx + 2 < alpha_data.len() && bitmap_idx < bitmap_data.len() {
++                        let max_value = alpha_data[texture_idx]
++                            .max(alpha_data[texture_idx + 1])
++                            .max(alpha_data[texture_idx + 2]);
++                        bitmap_data[bitmap_idx] = max_value;
+                     }
+                 }
+-            } else {
+-                render_target.DrawGlyphRun(
+-                    baseline_origin,
+-                    &glyph_run,
+-                    None,
+-                    &brush,
+-                    DWRITE_MEASURING_MODE_NATURAL,
+-                );
+             }
+-            render_target.EndDraw(None, None)?;
+-
+-            let mut raw_data = vec![0u8; total_bytes];
+-            if params.is_emoji {
+-                bitmap.CopyPixels(std::ptr::null() as _, bitmap_stride, &mut raw_data)?;
+-                // Convert from BGRA with premultiplied alpha to BGRA with straight alpha.
+-                for pixel in raw_data.chunks_exact_mut(4) {
+-                    let a = pixel[3] as f32 / 255.;
+-                    pixel[0] = (pixel[0] as f32 / a) as u8;
+-                    pixel[1] = (pixel[1] as f32 / a) as u8;
+-                    pixel[2] = (pixel[2] as f32 / a) as u8;
++        }
++
++        Ok(bitmap_data)
++    }
++
++    fn rasterize_color(
++        &self,
++        glyph_run: &DWRITE_GLYPH_RUN,
++        rendering_mode: DWRITE_RENDERING_MODE1,
++        measuring_mode: DWRITE_MEASURING_MODE,
++        transform: &DWRITE_MATRIX,
++        baseline_origin: Point<f32>,
++        bitmap_size: Size<DevicePixels>,
++    ) -> Result<Vec<u8>> {
++        // todo: support formats other than COLR
++        let color_enumerator = unsafe {
++            self.components.factory.TranslateColorGlyphRun(
++                Vector2::new(baseline_origin.x, baseline_origin.y),
++                glyph_run,
++                None,
++                DWRITE_GLYPH_IMAGE_FORMATS_COLR,
++                measuring_mode,
++                Some(transform),
++                0,
++            )
++        }?;
++
++        let mut glyph_layers = Vec::new();
++        loop {
++            let color_run = unsafe { color_enumerator.GetCurrentRun() }?;
++            let color_run = unsafe { &*color_run };
++            let image_format = color_run.glyphImageFormat & !DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE;
++            if image_format == DWRITE_GLYPH_IMAGE_FORMATS_COLR {
++                let color_analysis = unsafe {
++                    self.components.factory.CreateGlyphRunAnalysis(
++                        &color_run.Base.glyphRun as *const _,
++                        Some(transform),
++                        rendering_mode,
++                        measuring_mode,
++                        DWRITE_GRID_FIT_MODE_DEFAULT,
++                        DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
++                        baseline_origin.x,
++                        baseline_origin.y,
++                    )
++                }?;
++
++                let color_bounds =
++                    unsafe { color_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1) }?;
++
++                let color_size = size(
++                    color_bounds.right - color_bounds.left,
++                    color_bounds.bottom - color_bounds.top,
++                );
++                if color_size.width > 0 && color_size.height > 0 {
++                    let mut alpha_data =
++                        vec![0u8; (color_size.width * color_size.height * 3) as usize];
++                    unsafe {
++                        color_analysis.CreateAlphaTexture(
++                            DWRITE_TEXTURE_CLEARTYPE_3x1,
++                            &color_bounds,
++                            &mut alpha_data,
++                        )
++                    }?;
++
++                    let run_color = {
++                        let run_color = color_run.Base.runColor;
++                        Rgba {
++                            r: run_color.r,
++                            g: run_color.g,
++                            b: run_color.b,
++                            a: run_color.a,
++                        }
++                    };
++                    let bounds = bounds(point(color_bounds.left, color_bounds.top), color_size);
++                    let alpha_data = alpha_data
++                        .chunks_exact(3)
++                        .flat_map(|chunk| [chunk[0], chunk[1], chunk[2], 255])
++                        .collect::<Vec<_>>();
++                    glyph_layers.push(GlyphLayerTexture::new(
++                        &self.components.gpu_state,
++                        run_color,
++                        bounds,
++                        &alpha_data,
++                    )?);
+                 }
+-            } else {
+-                let scaler = bitmap_factory.CreateBitmapScaler()?;
+-                scaler.Initialize(
+-                    &bitmap,
+-                    bitmap_size.width.0 as u32,
+-                    bitmap_size.height.0 as u32,
+-                    WICBitmapInterpolationModeHighQualityCubic,
+-                )?;
+-                scaler.CopyPixels(std::ptr::null() as _, bitmap_stride, &mut raw_data)?;
+             }
+-            Ok((bitmap_size, raw_data))
++
++            let has_next = unsafe { color_enumerator.MoveNext() }
++                .map(|e| e.as_bool())
++                .unwrap_or(false);
++            if !has_next {
++                break;
++            }
++        }
++
++        let gpu_state = &self.components.gpu_state;
++        let params_buffer = {
++            let desc = D3D11_BUFFER_DESC {
++                ByteWidth: std::mem::size_of::<GlyphLayerTextureParams>() as u32,
++                Usage: D3D11_USAGE_DYNAMIC,
++                BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
++                CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
++                MiscFlags: 0,
++                StructureByteStride: 0,
++            };
++
++            let mut buffer = None;
++            unsafe {
++                gpu_state
++                    .device
++                    .CreateBuffer(&desc, None, Some(&mut buffer))
++            }?;
++            [buffer]
++        };
++
++        let render_target_texture = {
++            let mut texture = None;
++            let desc = D3D11_TEXTURE2D_DESC {
++                Width: bitmap_size.width.0 as u32,
++                Height: bitmap_size.height.0 as u32,
++                MipLevels: 1,
++                ArraySize: 1,
++                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
++                SampleDesc: DXGI_SAMPLE_DESC {
++                    Count: 1,
++                    Quality: 0,
++                },
++                Usage: D3D11_USAGE_DEFAULT,
++                BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
++                CPUAccessFlags: 0,
++                MiscFlags: 0,
++            };
++            unsafe {
++                gpu_state
++                    .device
++                    .CreateTexture2D(&desc, None, Some(&mut texture))
++            }?;
++            texture.unwrap()
++        };
++
++        let render_target_view = {
++            let desc = D3D11_RENDER_TARGET_VIEW_DESC {
++                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
++                ViewDimension: D3D11_RTV_DIMENSION_TEXTURE2D,
++                Anonymous: D3D11_RENDER_TARGET_VIEW_DESC_0 {
++                    Texture2D: D3D11_TEX2D_RTV { MipSlice: 0 },
++                },
++            };
++            let mut rtv = None;
++            unsafe {
++                gpu_state.device.CreateRenderTargetView(
++                    &render_target_texture,
++                    Some(&desc),
++                    Some(&mut rtv),
++                )
++            }?;
++            [rtv]
++        };
++
++        let staging_texture = {
++            let mut texture = None;
++            let desc = D3D11_TEXTURE2D_DESC {
++                Width: bitmap_size.width.0 as u32,
++                Height: bitmap_size.height.0 as u32,
++                MipLevels: 1,
++                ArraySize: 1,
++                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
++                SampleDesc: DXGI_SAMPLE_DESC {
++                    Count: 1,
++                    Quality: 0,
++                },
++                Usage: D3D11_USAGE_STAGING,
++                BindFlags: 0,
++                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
++                MiscFlags: 0,
++            };
++            unsafe {
++                gpu_state
++                    .device
++                    .CreateTexture2D(&desc, None, Some(&mut texture))
++            }?;
++            texture.unwrap()
++        };
++
++        let device_context = &gpu_state.device_context;
++        unsafe { device_context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP) };
++        unsafe { device_context.VSSetShader(&gpu_state.vertex_shader, None) };
++        unsafe { device_context.PSSetShader(&gpu_state.pixel_shader, None) };
++        unsafe { device_context.VSSetConstantBuffers(0, Some(&params_buffer)) };
++        unsafe { device_context.PSSetConstantBuffers(0, Some(&params_buffer)) };
++        unsafe { device_context.OMSetRenderTargets(Some(&render_target_view), None) };
++        unsafe { device_context.PSSetSamplers(0, Some(&gpu_state.sampler)) };
++        unsafe { device_context.OMSetBlendState(&gpu_state.blend_state, None, 0xffffffff) };
++
++        for layer in glyph_layers {
++            let params = GlyphLayerTextureParams {
++                run_color: layer.run_color,
++                bounds: layer.bounds,
++            };
++            unsafe {
++                let mut dest = std::mem::zeroed();
++                gpu_state.device_context.Map(
++                    params_buffer[0].as_ref().unwrap(),
++                    0,
++                    D3D11_MAP_WRITE_DISCARD,
++                    0,
++                    Some(&mut dest),
++                )?;
++                std::ptr::copy_nonoverlapping(&params as *const _, dest.pData as *mut _, 1);
++                gpu_state
++                    .device_context
++                    .Unmap(params_buffer[0].as_ref().unwrap(), 0);
++            };
++
++            let texture = [Some(layer.texture_view)];
++            unsafe { device_context.PSSetShaderResources(0, Some(&texture)) };
++
++            let viewport = [D3D11_VIEWPORT {
++                TopLeftX: layer.bounds.origin.x as f32,
++                TopLeftY: layer.bounds.origin.y as f32,
++                Width: layer.bounds.size.width as f32,
++                Height: layer.bounds.size.height as f32,
++                MinDepth: 0.0,
++                MaxDepth: 1.0,
++            }];
++            unsafe { device_context.RSSetViewports(Some(&viewport)) };
++
++            unsafe { device_context.Draw(4, 0) };
++        }
++
++        unsafe { device_context.CopyResource(&staging_texture, &render_target_texture) };
++
++        let mapped_data = {
++            let mut mapped_data = D3D11_MAPPED_SUBRESOURCE::default();
++            unsafe {
++                device_context.Map(
++                    &staging_texture,
++                    0,
++                    D3D11_MAP_READ,
++                    0,
++                    Some(&mut mapped_data),
++                )
++            }?;
++            mapped_data
++        };
++        let mut rasterized =
++            vec![0u8; (bitmap_size.width.0 as u32 * bitmap_size.height.0 as u32 * 4) as usize];
++
++        for y in 0..bitmap_size.height.0 as usize {
++            let width = bitmap_size.width.0 as usize;
++            unsafe {
++                std::ptr::copy_nonoverlapping::<u8>(
++                    (mapped_data.pData as *const u8).byte_add(mapped_data.RowPitch as usize * y),
++                    rasterized
++                        .as_mut_ptr()
++                        .byte_add(width * y * std::mem::size_of::<u32>()),
++                    width * std::mem::size_of::<u32>(),
++                )
++            };
+         }
++
++        Ok(rasterized)
+     }
+ 
+     fn get_typographic_bounds(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Bounds<f32>> {
+@@ -976,6 +1298,83 @@ impl Drop for DirectWriteState {
+     }
+ }
+ 
++struct GlyphLayerTexture {
++    run_color: Rgba,
++    bounds: Bounds<i32>,
++    texture: ID3D11Texture2D,
++    texture_view: ID3D11ShaderResourceView,
++}
++
++impl GlyphLayerTexture {
++    pub fn new(
++        gpu_state: &GPUState,
++        run_color: Rgba,
++        bounds: Bounds<i32>,
++        alpha_data: &[u8],
++    ) -> Result<Self> {
++        let texture_size = bounds.size;
++
++        let desc = D3D11_TEXTURE2D_DESC {
++            Width: texture_size.width as u32,
++            Height: texture_size.height as u32,
++            MipLevels: 1,
++            ArraySize: 1,
++            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
++            SampleDesc: DXGI_SAMPLE_DESC {
++                Count: 1,
++                Quality: 0,
++            },
++            Usage: D3D11_USAGE_DEFAULT,
++            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
++            CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
++            MiscFlags: 0,
++        };
++
++        let texture = {
++            let mut texture: Option<ID3D11Texture2D> = None;
++            unsafe {
++                gpu_state
++                    .device
++                    .CreateTexture2D(&desc, None, Some(&mut texture))?
++            };
++            texture.unwrap()
++        };
++        let texture_view = {
++            let mut view: Option<ID3D11ShaderResourceView> = None;
++            unsafe {
++                gpu_state
++                    .device
++                    .CreateShaderResourceView(&texture, None, Some(&mut view))?
++            };
++            view.unwrap()
++        };
++
++        unsafe {
++            gpu_state.device_context.UpdateSubresource(
++                &texture,
++                0,
++                None,
++                alpha_data.as_ptr() as _,
++                (texture_size.width * 4) as u32,
++                0,
++            )
++        };
++
++        Ok(GlyphLayerTexture {
++            run_color,
++            bounds,
++            texture,
++            texture_view,
++        })
++    }
++}
++
++#[repr(C)]
++struct GlyphLayerTextureParams {
++    bounds: Bounds<i32>,
++    run_color: Rgba,
++}
++
+ struct TextRendererWrapper(pub IDWriteTextRenderer);
+ 
+ impl TextRendererWrapper {
+@@ -1470,16 +1869,6 @@ fn get_name(string: IDWriteLocalizedStrings, locale: &str) -> Result<String> {
+     Ok(String::from_utf16_lossy(&name_vec[..name_length]))
+ }
+ 
+-#[inline]
+-fn translate_color(color: &DWRITE_COLOR_F) -> D2D1_COLOR_F {
+-    D2D1_COLOR_F {
+-        r: color.r,
+-        g: color.g,
+-        b: color.b,
+-        a: color.a,
+-    }
+-}
+-
+ fn get_system_ui_font_name() -> SharedString {
+     unsafe {
+         let mut info: LOGFONTW = std::mem::zeroed();
+@@ -1504,24 +1893,6 @@ fn get_system_ui_font_name() -> SharedString {
+     }
+ }
+ 
+-#[inline]
+-fn get_render_target_property(
+-    pixel_format: DXGI_FORMAT,
+-    alpha_mode: D2D1_ALPHA_MODE,
+-) -> D2D1_RENDER_TARGET_PROPERTIES {
+-    D2D1_RENDER_TARGET_PROPERTIES {
+-        r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+-        pixelFormat: D2D1_PIXEL_FORMAT {
+-            format: pixel_format,
+-            alphaMode: alpha_mode,
+-        },
+-        dpiX: 96.0,
+-        dpiY: 96.0,
+-        usage: D2D1_RENDER_TARGET_USAGE_NONE,
+-        minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
+-    }
+-}
+-
+ // One would think that with newer DirectWrite method: IDWriteFontFace4::GetGlyphImageFormats
+ // but that doesn't seem to work for some glyphs, say ❤
+ fn is_color_glyph(
+@@ -1561,12 +1932,6 @@ fn is_color_glyph(
+ }
+ 
+ const DEFAULT_LOCALE_NAME: PCWSTR = windows::core::w!("en-US");
+-const BRUSH_COLOR: D2D1_COLOR_F = D2D1_COLOR_F {
+-    r: 1.0,
+-    g: 1.0,
+-    b: 1.0,
+-    a: 1.0,
+-};
+ 
+ #[cfg(test)]
+ mod tests {
+diff --git a/crates/gpui/src/platform/windows/directx_atlas.rs b/crates/gpui/src/platform/windows/directx_atlas.rs
+index 988943c766e782..6bced4c11d922e 100644
+--- a/crates/gpui/src/platform/windows/directx_atlas.rs
++++ b/crates/gpui/src/platform/windows/directx_atlas.rs
+@@ -7,7 +7,7 @@ use windows::Win32::Graphics::{
+         D3D11_USAGE_DEFAULT, ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView,
+         ID3D11Texture2D,
+     },
+-    Dxgi::Common::{DXGI_FORMAT_A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
++    Dxgi::Common::*,
+ };
+ 
+ use crate::{
+@@ -167,7 +167,7 @@ impl DirectXAtlasState {
+         let bytes_per_pixel;
+         match kind {
+             AtlasTextureKind::Monochrome => {
+-                pixel_format = DXGI_FORMAT_A8_UNORM;
++                pixel_format = DXGI_FORMAT_R8_UNORM;
+                 bind_flag = D3D11_BIND_SHADER_RESOURCE;
+                 bytes_per_pixel = 1;
+             }
+diff --git a/crates/gpui/src/platform/windows/directx_renderer.rs b/crates/gpui/src/platform/windows/directx_renderer.rs
+index 3698f108145f2d..b8a544d3d378cb 100644
+--- a/crates/gpui/src/platform/windows/directx_renderer.rs
++++ b/crates/gpui/src/platform/windows/directx_renderer.rs
+@@ -42,8 +42,8 @@ pub(crate) struct DirectXRenderer {
+ pub(crate) struct DirectXDevices {
+     adapter: IDXGIAdapter1,
+     dxgi_factory: IDXGIFactory6,
+-    device: ID3D11Device,
+-    device_context: ID3D11DeviceContext,
++    pub(crate) device: ID3D11Device,
++    pub(crate) device_context: ID3D11DeviceContext,
+     dxgi_device: Option<IDXGIDevice>,
+ }
+ 
+@@ -175,6 +175,8 @@ impl DirectXRenderer {
+     }
+ 
+     fn pre_draw(&self) -> Result<()> {
++        let premultiplied_alpha = 1;
++
+         update_buffer(
+             &self.devices.device_context,
+             self.globals.global_params_buffer[0].as_ref().unwrap(),
+@@ -183,6 +185,7 @@ impl DirectXRenderer {
+                     self.resources.viewport[0].Width,
+                     self.resources.viewport[0].Height,
+                 ],
++                premultiplied_alpha,
+                 ..Default::default()
+             }],
+         )?;
+@@ -819,7 +822,8 @@ impl DirectXGlobalElements {
+ #[repr(C)]
+ struct GlobalParams {
+     viewport_size: [f32; 2],
+-    _pad: u64,
++    premultiplied_alpha: u32,
++    _pad: u32,
+ }
+ 
+ struct PipelineState<T> {
+@@ -1073,7 +1077,7 @@ fn create_swap_chain_for_composition(
+         // Composition SwapChains only support the DXGI_SCALING_STRETCH Scaling.
+         Scaling: DXGI_SCALING_STRETCH,
+         SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+-        AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
++        AlphaMode: DXGI_ALPHA_MODE_IGNORE,
+         Flags: 0,
+     };
+     Ok(unsafe { dxgi_factory.CreateSwapChainForComposition(device, &desc, None)? })
+@@ -1277,7 +1281,7 @@ fn create_blend_state(device: &ID3D11Device) -> Result<ID3D11BlendState> {
+     desc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+     desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+     desc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+-    desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
++    desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+     desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8;
+     unsafe {
+         let mut state = None;
+@@ -1423,7 +1427,7 @@ fn report_live_objects(device: &ID3D11Device) -> Result<()> {
+ 
+ const BUFFER_COUNT: usize = 3;
+ 
+-mod shader_resources {
++pub(crate) mod shader_resources {
+     use anyhow::Result;
+ 
+     #[cfg(debug_assertions)]
+@@ -1436,7 +1440,7 @@ mod shader_resources {
+     };
+ 
+     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+-    pub(super) enum ShaderModule {
++    pub(crate) enum ShaderModule {
+         Quad,
+         Shadow,
+         Underline,
+@@ -1444,15 +1448,16 @@ mod shader_resources {
+         PathSprite,
+         MonochromeSprite,
+         PolychromeSprite,
++        EmojiRasterization,
+     }
+ 
+     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+-    pub(super) enum ShaderTarget {
++    pub(crate) enum ShaderTarget {
+         Vertex,
+         Fragment,
+     }
+ 
+-    pub(super) struct RawShaderBytes<'t> {
++    pub(crate) struct RawShaderBytes<'t> {
+         inner: &'t [u8],
+ 
+         #[cfg(debug_assertions)]
+@@ -1460,7 +1465,7 @@ mod shader_resources {
+     }
+ 
+     impl<'t> RawShaderBytes<'t> {
+-        pub(super) fn new(module: ShaderModule, target: ShaderTarget) -> Result<Self> {
++        pub(crate) fn new(module: ShaderModule, target: ShaderTarget) -> Result<Self> {
+             #[cfg(not(debug_assertions))]
+             {
+                 Ok(Self::from_bytes(module, target))
+@@ -1478,7 +1483,7 @@ mod shader_resources {
+             }
+         }
+ 
+-        pub(super) fn as_bytes(&'t self) -> &'t [u8] {
++        pub(crate) fn as_bytes(&'t self) -> &'t [u8] {
+             self.inner
+         }
+ 
+@@ -1513,6 +1518,10 @@ mod shader_resources {
+                     ShaderTarget::Vertex => POLYCHROME_SPRITE_VERTEX_BYTES,
+                     ShaderTarget::Fragment => POLYCHROME_SPRITE_FRAGMENT_BYTES,
+                 },
++                ShaderModule::EmojiRasterization => match target {
++                    ShaderTarget::Vertex => EMOJI_RASTERIZATION_VERTEX_BYTES,
++                    ShaderTarget::Fragment => EMOJI_RASTERIZATION_FRAGMENT_BYTES,
++                },
+             };
+             Self { inner: bytes }
+         }
+@@ -1521,6 +1530,12 @@ mod shader_resources {
+     #[cfg(debug_assertions)]
+     pub(super) fn build_shader_blob(entry: ShaderModule, target: ShaderTarget) -> Result<ID3DBlob> {
+         unsafe {
++            let shader_name = if matches!(entry, ShaderModule::EmojiRasterization) {
++                "color_text_raster.hlsl"
++            } else {
++                "shaders.hlsl"
++            };
++
+             let entry = format!(
+                 "{}_{}\0",
+                 entry.as_str(),
+@@ -1537,7 +1552,7 @@ mod shader_resources {
+             let mut compile_blob = None;
+             let mut error_blob = None;
+             let shader_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+-                .join("src/platform/windows/shaders.hlsl")
++                .join(&format!("src/platform/windows/{}", shader_name))
+                 .canonicalize()?;
+ 
+             let entry_point = PCSTR::from_raw(entry.as_ptr());
+@@ -1583,6 +1598,7 @@ mod shader_resources {
+                 ShaderModule::PathSprite => "path_sprite",
+                 ShaderModule::MonochromeSprite => "monochrome_sprite",
+                 ShaderModule::PolychromeSprite => "polychrome_sprite",
++                ShaderModule::EmojiRasterization => "emoji_rasterization",
+             }
+         }
+     }
+diff --git a/crates/gpui/src/platform/windows/platform.rs b/crates/gpui/src/platform/windows/platform.rs
+index 8433e29c6d73f9..bc09cc199d7fb0 100644
+--- a/crates/gpui/src/platform/windows/platform.rs
++++ b/crates/gpui/src/platform/windows/platform.rs
+@@ -44,6 +44,7 @@ pub(crate) struct WindowsPlatform {
+     drop_target_helper: IDropTargetHelper,
+     validation_number: usize,
+     main_thread_id_win32: u32,
++    disable_direct_composition: bool,
+ }
+ 
+ pub(crate) struct WindowsPlatformState {
+@@ -93,14 +94,18 @@ impl WindowsPlatform {
+             main_thread_id_win32,
+             validation_number,
+         ));
++        let disable_direct_composition = std::env::var(DISABLE_DIRECT_COMPOSITION)
++            .is_ok_and(|value| value == "true" || value == "1");
+         let background_executor = BackgroundExecutor::new(dispatcher.clone());
+         let foreground_executor = ForegroundExecutor::new(dispatcher);
++        let directx_devices = DirectXDevices::new(disable_direct_composition)
++            .context("Unable to init directx devices.")?;
+         let bitmap_factory = ManuallyDrop::new(unsafe {
+             CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
+                 .context("Error creating bitmap factory.")?
+         });
+         let text_system = Arc::new(
+-            DirectWriteTextSystem::new(&bitmap_factory)
++            DirectWriteTextSystem::new(&directx_devices, &bitmap_factory)
+                 .context("Error creating DirectWriteTextSystem")?,
+         );
+         let drop_target_helper: IDropTargetHelper = unsafe {
+@@ -120,6 +125,7 @@ impl WindowsPlatform {
+             background_executor,
+             foreground_executor,
+             text_system,
++            disable_direct_composition,
+             windows_version,
+             bitmap_factory,
+             drop_target_helper,
+@@ -184,6 +190,7 @@ impl WindowsPlatform {
+             validation_number: self.validation_number,
+             main_receiver: self.main_receiver.clone(),
+             main_thread_id_win32: self.main_thread_id_win32,
++            disable_direct_composition: self.disable_direct_composition,
+         }
+     }
+ 
+@@ -715,6 +722,7 @@ pub(crate) struct WindowCreationInfo {
+     pub(crate) validation_number: usize,
+     pub(crate) main_receiver: flume::Receiver<Runnable>,
+     pub(crate) main_thread_id_win32: u32,
++    pub(crate) disable_direct_composition: bool,
+ }
+ 
+ fn open_target(target: &str) {
+diff --git a/crates/gpui/src/platform/windows/shaders.hlsl b/crates/gpui/src/platform/windows/shaders.hlsl
+index 954040c4c3950f..daef05059b5703 100644
+--- a/crates/gpui/src/platform/windows/shaders.hlsl
++++ b/crates/gpui/src/platform/windows/shaders.hlsl
+@@ -1,6 +1,7 @@
+ cbuffer GlobalParams: register(b0) {
+     float2 global_viewport_size;
+-    uint2 _global_pad;
++    uint premultiplied_alpha;
++    uint _pad;
+ };
+ 
+ Texture2D<float4> t_sprite: register(t0);
+@@ -1069,6 +1070,7 @@ struct MonochromeSpriteFragmentInput {
+     float4 position: SV_Position;
+     float2 tile_position: POSITION;
+     nointerpolation float4 color: COLOR;
++    float4 clip_distance: SV_ClipDistance;
+ };
+ 
+ StructuredBuffer<MonochromeSprite> mono_sprites: register(t1);
+@@ -1090,11 +1092,28 @@ MonochromeSpriteVertexOutput monochrome_sprite_vertex(uint vertex_id: SV_VertexI
+     return output;
+ }
+ 
++float4 blend_color(float4 color, float alpha_factor) {
++    float alpha = color.a * alpha_factor;
++    float multiplier = premultiplied_alpha != 0 ? alpha : 1.0;
++    return float4(color.rgb * multiplier, alpha);
++}
++
++float3 linear_to_srgbee(float3 l) {
++    bool cutoff = l < float3(0.0031308, 0.0031308, 0.0031308);
++    float3 higher = float3(1.055, 1.055, 1.055) * pow(l, float3(1.0 / 2.4, 1.0 / 2.4, 1.0 / 2.4)) - float3(0.055, 0.055, 0.055);
++    float3 lower = l * float3(12.92, 12.92, 12.92);
++    return cutoff ? lower : higher;
++}
++
+ float4 monochrome_sprite_fragment(MonochromeSpriteFragmentInput input): SV_Target {
+-    float4 sample = t_sprite.Sample(s_sprite, input.tile_position);
++    float sample = t_sprite.Sample(s_sprite, input.tile_position).r;
+     float4 color = input.color;
+-    color.a *= sample.a;
+-    return color;
++    // color.a *= sample;
++    // return float4(color.rgb, color.a);
++    if (any(input.clip_distance < 0.0)) {
++        return float4(0.0, 0.0, 0.0, 0.0);
++    }
++    return blend_color(input.color, sample);
+ }
+ 
+ /*
+diff --git a/crates/gpui/src/platform/windows/window.rs b/crates/gpui/src/platform/windows/window.rs
+index 1141e93565b5af..68b667569baaf0 100644
+--- a/crates/gpui/src/platform/windows/window.rs
++++ b/crates/gpui/src/platform/windows/window.rs
+@@ -360,6 +360,7 @@ impl WindowsWindow {
+             validation_number,
+             main_receiver,
+             main_thread_id_win32,
++            disable_direct_composition,
+         } = creation_info;
+         let classname = register_wnd_class(icon);
+         let hide_title_bar = params
+@@ -375,8 +376,6 @@ impl WindowsWindow {
+                 .map(|title| title.as_ref())
+                 .unwrap_or(""),
+         );
+-        let disable_direct_composition = std::env::var(DISABLE_DIRECT_COMPOSITION)
+-            .is_ok_and(|value| value == "true" || value == "1");
+ 
+         let (mut dwexstyle, dwstyle) = if params.kind == WindowKind::PopUp {
+             (WS_EX_TOOLWINDOW, WINDOW_STYLE(0x0))
+
+From a1001079ba1c450cf8604fc25b67c982ebd83ada Mon Sep 17 00:00:00 2001
+From: Junkui Zhang <364772080@qq.com>
+Date: Thu, 31 Jul 2025 16:20:58 +0800
+Subject: [PATCH 02/16] properly calculate bounds
+
+---
+ .../gpui/src/platform/windows/direct_write.rs | 79 ++++++++++++-------
+ 1 file changed, 50 insertions(+), 29 deletions(-)
+
+diff --git a/crates/gpui/src/platform/windows/direct_write.rs b/crates/gpui/src/platform/windows/direct_write.rs
+index cd49c5fa798a2e..96c4b7771c47c5 100644
+--- a/crates/gpui/src/platform/windows/direct_write.rs
++++ b/crates/gpui/src/platform/windows/direct_write.rs
+@@ -10,8 +10,12 @@ use windows::{
+         Foundation::*,
+         Globalization::GetUserDefaultLocaleName,
+         Graphics::{
+-            Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP, Direct3D11::*, DirectWrite::*,
+-            Dxgi::Common::*, Gdi::LOGFONTW, Imaging::*,
++            Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
++            Direct3D11::*,
++            DirectWrite::*,
++            Dxgi::Common::*,
++            Gdi::{IsRectEmpty, LOGFONTW},
++            Imaging::*,
+         },
+         System::SystemServices::LOCALE_NAME_MAX_LENGTH,
+         UI::WindowsAndMessaging::*,
+@@ -41,7 +45,7 @@ struct DirectWriteComponent {
+     builder: IDWriteFontSetBuilder1,
+     text_renderer: Arc<TextRendererWrapper>,
+ 
+-    render_params: IDWriteRenderingParams3,
++    render_params: IDWriteRenderingParams,
+     gpu_state: GPUState,
+ }
+ 
+@@ -88,25 +92,7 @@ impl DirectWriteComponent {
+             let locale = String::from_utf16_lossy(&locale_vec);
+             let text_renderer = Arc::new(TextRendererWrapper::new(&locale));
+ 
+-            let render_params = {
+-                let default_params: IDWriteRenderingParams3 =
+-                    factory.CreateRenderingParams()?.cast()?;
+-                let gamma = default_params.GetGamma();
+-                let enhanced_contrast = default_params.GetEnhancedContrast();
+-                let gray_contrast = default_params.GetGrayscaleEnhancedContrast();
+-                let cleartype_level = default_params.GetClearTypeLevel();
+-                let grid_fit_mode = default_params.GetGridFitMode();
+-
+-                factory.CreateCustomRenderingParams(
+-                    gamma,
+-                    enhanced_contrast,
+-                    gray_contrast,
+-                    cleartype_level,
+-                    DWRITE_PIXEL_GEOMETRY_RGB,
+-                    DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+-                    grid_fit_mode,
+-                )?
+-            };
++            let render_params = factory.CreateRenderingParams()?;
+ 
+             let gpu_state = GPUState::new(gpu_context)?;
+ 
+@@ -737,8 +723,6 @@ impl DirectWriteState {
+             bidiLevel: 0,
+         };
+ 
+-        let rendering_mode = DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC;
+-        let measuring_mode = DWRITE_MEASURING_MODE_NATURAL;
+         let baseline_origin_x = 0.0;
+         let baseline_origin_y = 0.0;
+ 
+@@ -751,21 +735,58 @@ impl DirectWriteState {
+             dy: 0.0,
+         };
+ 
++        let mut rendering_mode = DWRITE_RENDERING_MODE1::default();
++        let mut grid_fit_mode = DWRITE_GRID_FIT_MODE::default();
++        unsafe {
++            font.font_face.GetRecommendedRenderingMode(
++                params.font_size.0,
++                // Is this correct?
++                1.0,
++                1.0,
++                Some(&transform),
++                false,
++                DWRITE_OUTLINE_THRESHOLD_ANTIALIASED,
++                DWRITE_MEASURING_MODE_NATURAL,
++                &self.components.render_params,
++                &mut rendering_mode,
++                &mut grid_fit_mode,
++            )?;
++        }
++
++        let antialias_mode = if params.is_emoji {
++            DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
++        } else {
++            DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE
++        };
++
+         let glyph_analysis = unsafe {
+             self.components.factory.CreateGlyphRunAnalysis(
+                 &glyph_run,
+                 Some(&transform),
+                 rendering_mode,
+-                measuring_mode,
+-                DWRITE_GRID_FIT_MODE_DEFAULT,
+-                DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
++                DWRITE_MEASURING_MODE_NATURAL,
++                grid_fit_mode,
++                antialias_mode,
+                 baseline_origin_x,
+                 baseline_origin_y,
+             )?
+         };
+ 
+-        let texture_type = DWRITE_TEXTURE_CLEARTYPE_3x1;
+-        let bounds = unsafe { glyph_analysis.GetAlphaTextureBounds(texture_type)? };
++        if params.is_emoji {
++            let bounds =
++                unsafe { glyph_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1)? };
++            if !unsafe { IsRectEmpty(&bounds) }.as_bool() {
++                return Ok(Bounds {
++                    origin: point((bounds.left as i32).into(), (bounds.top as i32).into()),
++                    size: size(
++                        (bounds.right - bounds.left).into(),
++                        (bounds.bottom - bounds.top).into(),
++                    ),
++                });
++            }
++        }
++
++        let bounds = unsafe { glyph_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1)? };
+ 
+         if bounds.right < bounds.left {
+             Ok(Bounds {
+
+From 30f6699b56af32f09677c0dc16ab2578d1f04672 Mon Sep 17 00:00:00 2001
+From: Junkui Zhang <364772080@qq.com>
+Date: Thu, 31 Jul 2025 17:27:06 +0800
+Subject: [PATCH 03/16] checkpoint
+
+---
+ .../gpui/src/platform/windows/direct_write.rs | 184 ++++++------------
+ 1 file changed, 64 insertions(+), 120 deletions(-)
+
+diff --git a/crates/gpui/src/platform/windows/direct_write.rs b/crates/gpui/src/platform/windows/direct_write.rs
+index 96c4b7771c47c5..4fddd466f1b91f 100644
+--- a/crates/gpui/src/platform/windows/direct_write.rs
++++ b/crates/gpui/src/platform/windows/direct_write.rs
+@@ -707,11 +707,18 @@ impl DirectWriteState {
+         }
+     }
+ 
+-    fn raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
++    fn create_glyph_run_analysis(
++        &self,
++        params: &RenderGlyphParams,
++        advance: f32,
++        offset: DWRITE_GLYPH_OFFSET,
++        baseline_origin_x: f32,
++        baseline_origin_y: f32,
++    ) -> Result<IDWriteGlyphRunAnalysis> {
+         let font = &self.fonts[params.font_id.0];
+         let glyph_id = [params.glyph_id.0 as u16];
+-        let advance = [0.0f32];
+-        let offset = [DWRITE_GLYPH_OFFSET::default()];
++        let advance = [advance];
++        let offset = [offset];
+         let glyph_run = DWRITE_GLYPH_RUN {
+             fontFace: unsafe { std::mem::transmute_copy(&font.font_face) },
+             fontEmSize: params.font_size.0,
+@@ -722,10 +729,6 @@ impl DirectWriteState {
+             isSideways: BOOL(0),
+             bidiLevel: 0,
+         };
+-
+-        let baseline_origin_x = 0.0;
+-        let baseline_origin_y = 0.0;
+-
+         let transform = DWRITE_MATRIX {
+             m11: params.scale_factor,
+             m12: 0.0,
+@@ -740,10 +743,10 @@ impl DirectWriteState {
+         unsafe {
+             font.font_face.GetRecommendedRenderingMode(
+                 params.font_size.0,
+-                // Is this correct?
+-                1.0,
+-                1.0,
+-                Some(&transform),
++                // The dpi here seems that it has the same effect with `Some(&transform)`
++                params.scale_factor,
++                params.scale_factor,
++                None,
+                 false,
+                 DWRITE_OUTLINE_THRESHOLD_ANTIALIASED,
+                 DWRITE_MEASURING_MODE_NATURAL,
+@@ -769,12 +772,19 @@ impl DirectWriteState {
+                 antialias_mode,
+                 baseline_origin_x,
+                 baseline_origin_y,
+-            )?
+-        };
++            )
++        }?;
++        Ok(glyph_analysis)
++    }
++
++    fn raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
++        let glyph_analysis =
++            self.create_glyph_run_analysis(params, 0.0, DWRITE_GLYPH_OFFSET::default(), 0.0, 0.0)?;
+ 
+         if params.is_emoji {
+             let bounds =
+                 unsafe { glyph_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1)? };
++            // If it's empty, retry with grayscale AA.
+             if !unsafe { IsRectEmpty(&bounds) }.as_bool() {
+                 return Ok(Bounds {
+                     origin: point((bounds.left as i32).into(), (bounds.top as i32).into()),
+@@ -826,24 +836,6 @@ impl DirectWriteState {
+             anyhow::bail!("glyph bounds are empty");
+         }
+ 
+-        let font_info = &self.fonts[params.font_id.0];
+-        let glyph_id = [params.glyph_id.0 as u16];
+-        let advance = [glyph_bounds.size.width.0 as f32];
+-        let offset = [DWRITE_GLYPH_OFFSET {
+-            advanceOffset: -glyph_bounds.origin.x.0 as f32 / params.scale_factor,
+-            ascenderOffset: glyph_bounds.origin.y.0 as f32 / params.scale_factor,
+-        }];
+-        let glyph_run = DWRITE_GLYPH_RUN {
+-            fontFace: ManuallyDrop::new(Some(font_info.font_face.cast()?)),
+-            fontEmSize: params.font_size.0,
+-            glyphCount: 1,
+-            glyphIndices: glyph_id.as_ptr(),
+-            glyphAdvances: advance.as_ptr(),
+-            glyphOffsets: offset.as_ptr(),
+-            isSideways: BOOL(0),
+-            bidiLevel: 0,
+-        };
+-
+         // Add an extra pixel when the subpixel variant isn't zero to make room for anti-aliasing.
+         let mut bitmap_size = glyph_bounds.size;
+         if params.subpixel_variant.x > 0 {
+@@ -860,6 +852,31 @@ impl DirectWriteState {
+         let baseline_origin_x = subpixel_shift.x / params.scale_factor;
+         let baseline_origin_y = subpixel_shift.y / params.scale_factor;
+ 
++        let glyph_analysis = self.create_glyph_run_analysis(
++            params,
++            glyph_bounds.size.width.0 as f32,
++            DWRITE_GLYPH_OFFSET::default(),
++            baseline_origin_x,
++            baseline_origin_y,
++        )?;
++
++        let font = &self.fonts[params.font_id.0];
++        let glyph_id = [params.glyph_id.0 as u16];
++        let advance = [glyph_bounds.size.width.0 as f32];
++        let offset = [DWRITE_GLYPH_OFFSET {
++            advanceOffset: -glyph_bounds.origin.x.0 as f32 / params.scale_factor,
++            ascenderOffset: glyph_bounds.origin.y.0 as f32 / params.scale_factor,
++        }];
++        let glyph_run = DWRITE_GLYPH_RUN {
++            fontFace: unsafe { std::mem::transmute_copy(&font.font_face) },
++            fontEmSize: params.font_size.0,
++            glyphCount: 1,
++            glyphIndices: glyph_id.as_ptr(),
++            glyphAdvances: advance.as_ptr(),
++            glyphOffsets: offset.as_ptr(),
++            isSideways: BOOL(0),
++            bidiLevel: 0,
++        };
+         let transform = DWRITE_MATRIX {
+             m11: params.scale_factor,
+             m12: 0.0,
+@@ -869,74 +886,26 @@ impl DirectWriteState {
+             dy: 0.0,
+         };
+ 
+-        let rendering_mode = if params.is_emoji {
+-            DWRITE_RENDERING_MODE1_NATURAL
+-        } else {
+-            DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC
+-        };
+-
+-        let measuring_mode = DWRITE_MEASURING_MODE_NATURAL;
+-
+-        let glyph_analysis = unsafe {
+-            self.components.factory.CreateGlyphRunAnalysis(
+-                &glyph_run,
+-                Some(&transform),
+-                rendering_mode,
+-                measuring_mode,
+-                DWRITE_GRID_FIT_MODE_DEFAULT,
+-                DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
+-                baseline_origin_x,
+-                baseline_origin_y,
+-            )?
+-        };
+-
+-        let texture_type = DWRITE_TEXTURE_CLEARTYPE_3x1;
+-        let texture_bounds = unsafe { glyph_analysis.GetAlphaTextureBounds(texture_type)? };
+-        let texture_width = (texture_bounds.right - texture_bounds.left) as u32;
+-        let texture_height = (texture_bounds.bottom - texture_bounds.top) as u32;
+-
+-        if texture_width == 0 || texture_height == 0 {
+-            return Ok((
+-                bitmap_size,
+-                vec![
+-                    0u8;
+-                    bitmap_size.width.0 as usize
+-                        * bitmap_size.height.0 as usize
+-                        * if params.is_emoji { 4 } else { 1 }
+-                ],
+-            ));
+-        }
+-
+         let mut bitmap_data: Vec<u8>;
+         if params.is_emoji {
+             if let Ok(color) = self.rasterize_color(
+                 &glyph_run,
+-                rendering_mode,
+-                measuring_mode,
+                 &transform,
+                 point(baseline_origin_x, baseline_origin_y),
+                 bitmap_size,
+             ) {
+                 bitmap_data = color;
+             } else {
+-                let monochrome = Self::rasterize_monochrome(
+-                    &glyph_analysis,
+-                    bitmap_size,
+-                    size(texture_width, texture_height),
+-                    &texture_bounds,
+-                )?;
++                let monochrome =
++                    Self::rasterize_monochrome(&glyph_analysis, glyph_bounds.origin, bitmap_size)?;
+                 bitmap_data = monochrome
+                     .into_iter()
+                     .flat_map(|pixel| [0, 0, 0, pixel])
+                     .collect::<Vec<_>>();
+             }
+         } else {
+-            bitmap_data = Self::rasterize_monochrome(
+-                &glyph_analysis,
+-                bitmap_size,
+-                size(texture_width, texture_height),
+-                &texture_bounds,
+-            )?;
++            bitmap_data =
++                Self::rasterize_monochrome(&glyph_analysis, glyph_bounds.origin, bitmap_size)?;
+         }
+ 
+         Ok((bitmap_size, bitmap_data))
+@@ -944,56 +913,31 @@ impl DirectWriteState {
+ 
+     fn rasterize_monochrome(
+         glyph_analysis: &IDWriteGlyphRunAnalysis,
++        origin: Point<DevicePixels>,
+         bitmap_size: Size<DevicePixels>,
+-        texture_size: Size<u32>,
+-        texture_bounds: &RECT,
+     ) -> Result<Vec<u8>> {
+         let mut bitmap_data =
+             vec![0u8; bitmap_size.width.0 as usize * bitmap_size.height.0 as usize];
+ 
+-        let mut alpha_data = vec![0u8; (texture_size.width * texture_size.height * 3) as usize];
+-
+         unsafe {
+             glyph_analysis.CreateAlphaTexture(
+-                DWRITE_TEXTURE_CLEARTYPE_3x1,
+-                texture_bounds,
+-                &mut alpha_data,
++                DWRITE_TEXTURE_ALIASED_1x1,
++                &RECT {
++                    left: origin.x.0,
++                    top: origin.y.0,
++                    right: bitmap_size.width.0 + origin.x.0,
++                    bottom: bitmap_size.height.0 + origin.y.0,
++                },
++                &mut bitmap_data,
+             )?;
+         }
+ 
+-        // Convert ClearType RGB data to grayscale and place in bitmap
+-        let offset_x = texture_bounds.left.max(0) as usize;
+-        let offset_y = texture_bounds.top.max(0) as usize;
+-
+-        for y in 0..texture_size.height as usize {
+-            for x in 0..texture_size.width as usize {
+-                let bitmap_x = offset_x + x;
+-                let bitmap_y = offset_y + y;
+-
+-                if bitmap_x < bitmap_size.width.0 as usize
+-                    && bitmap_y < bitmap_size.height.0 as usize
+-                {
+-                    let texture_idx = (y * texture_size.width as usize + x) * 3;
+-                    let bitmap_idx = bitmap_y * bitmap_size.width.0 as usize + bitmap_x;
+-
+-                    if texture_idx + 2 < alpha_data.len() && bitmap_idx < bitmap_data.len() {
+-                        let max_value = alpha_data[texture_idx]
+-                            .max(alpha_data[texture_idx + 1])
+-                            .max(alpha_data[texture_idx + 2]);
+-                        bitmap_data[bitmap_idx] = max_value;
+-                    }
+-                }
+-            }
+-        }
+-
+         Ok(bitmap_data)
+     }
+ 
+     fn rasterize_color(
+         &self,
+         glyph_run: &DWRITE_GLYPH_RUN,
+-        rendering_mode: DWRITE_RENDERING_MODE1,
+-        measuring_mode: DWRITE_MEASURING_MODE,
+         transform: &DWRITE_MATRIX,
+         baseline_origin: Point<f32>,
+         bitmap_size: Size<DevicePixels>,
+@@ -1005,7 +949,7 @@ impl DirectWriteState {
+                 glyph_run,
+                 None,
+                 DWRITE_GLYPH_IMAGE_FORMATS_COLR,
+-                measuring_mode,
++                DWRITE_MEASURING_MODE_NATURAL,
+                 Some(transform),
+                 0,
+             )
+@@ -1021,8 +965,8 @@ impl DirectWriteState {
+                     self.components.factory.CreateGlyphRunAnalysis(
+                         &color_run.Base.glyphRun as *const _,
+                         Some(transform),
+-                        rendering_mode,
+-                        measuring_mode,
++                        DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
++                        DWRITE_MEASURING_MODE_NATURAL,
+                         DWRITE_GRID_FIT_MODE_DEFAULT,
+                         DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
+                         baseline_origin.x,
+
+From fe096ad205eb25b4688f6591c3b12a79d675269f Mon Sep 17 00:00:00 2001
+From: Junkui Zhang <364772080@qq.com>
+Date: Thu, 31 Jul 2025 17:48:09 +0800
+Subject: [PATCH 04/16] fix monochrome
+
+---
+ .../gpui/src/platform/windows/direct_write.rs | 58 +++++++------------
+ 1 file changed, 21 insertions(+), 37 deletions(-)
+
+diff --git a/crates/gpui/src/platform/windows/direct_write.rs b/crates/gpui/src/platform/windows/direct_write.rs
+index 4fddd466f1b91f..1e007d464e98da 100644
+--- a/crates/gpui/src/platform/windows/direct_write.rs
++++ b/crates/gpui/src/platform/windows/direct_write.rs
+@@ -710,15 +710,11 @@ impl DirectWriteState {
+     fn create_glyph_run_analysis(
+         &self,
+         params: &RenderGlyphParams,
+-        advance: f32,
+-        offset: DWRITE_GLYPH_OFFSET,
+-        baseline_origin_x: f32,
+-        baseline_origin_y: f32,
+     ) -> Result<IDWriteGlyphRunAnalysis> {
+         let font = &self.fonts[params.font_id.0];
+         let glyph_id = [params.glyph_id.0 as u16];
+-        let advance = [advance];
+-        let offset = [offset];
++        let advance = [0.0];
++        let offset = [DWRITE_GLYPH_OFFSET::default()];
+         let glyph_run = DWRITE_GLYPH_RUN {
+             fontFace: unsafe { std::mem::transmute_copy(&font.font_face) },
+             fontEmSize: params.font_size.0,
+@@ -737,6 +733,11 @@ impl DirectWriteState {
+             dx: 0.0,
+             dy: 0.0,
+         };
++        let subpixel_shift = params
++            .subpixel_variant
++            .map(|v| v as f32 / SUBPIXEL_VARIANTS as f32);
++        let baseline_origin_x = subpixel_shift.x / params.scale_factor;
++        let baseline_origin_y = subpixel_shift.y / params.scale_factor;
+ 
+         let mut rendering_mode = DWRITE_RENDERING_MODE1::default();
+         let mut grid_fit_mode = DWRITE_GRID_FIT_MODE::default();
+@@ -744,9 +745,9 @@ impl DirectWriteState {
+             font.font_face.GetRecommendedRenderingMode(
+                 params.font_size.0,
+                 // The dpi here seems that it has the same effect with `Some(&transform)`
+-                params.scale_factor,
+-                params.scale_factor,
+-                None,
++                1.0,
++                1.0,
++                Some(&transform),
+                 false,
+                 DWRITE_OUTLINE_THRESHOLD_ANTIALIASED,
+                 DWRITE_MEASURING_MODE_NATURAL,
+@@ -778,8 +779,7 @@ impl DirectWriteState {
+     }
+ 
+     fn raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
+-        let glyph_analysis =
+-            self.create_glyph_run_analysis(params, 0.0, DWRITE_GLYPH_OFFSET::default(), 0.0, 0.0)?;
++        let glyph_analysis = self.create_glyph_run_analysis(params)?;
+ 
+         if params.is_emoji {
+             let bounds =
+@@ -837,14 +837,7 @@ impl DirectWriteState {
+         }
+ 
+         // Add an extra pixel when the subpixel variant isn't zero to make room for anti-aliasing.
+-        let mut bitmap_size = glyph_bounds.size;
+-        if params.subpixel_variant.x > 0 {
+-            bitmap_size.width += DevicePixels(1);
+-        }
+-        if params.subpixel_variant.y > 0 {
+-            bitmap_size.height += DevicePixels(1);
+-        }
+-        let bitmap_size = bitmap_size;
++        let bitmap_size = glyph_bounds.size;
+ 
+         let subpixel_shift = params
+             .subpixel_variant
+@@ -852,13 +845,7 @@ impl DirectWriteState {
+         let baseline_origin_x = subpixel_shift.x / params.scale_factor;
+         let baseline_origin_y = subpixel_shift.y / params.scale_factor;
+ 
+-        let glyph_analysis = self.create_glyph_run_analysis(
+-            params,
+-            glyph_bounds.size.width.0 as f32,
+-            DWRITE_GLYPH_OFFSET::default(),
+-            baseline_origin_x,
+-            baseline_origin_y,
+-        )?;
++        let glyph_analysis = self.create_glyph_run_analysis(params)?;
+ 
+         let font = &self.fonts[params.font_id.0];
+         let glyph_id = [params.glyph_id.0 as u16];
+@@ -896,16 +883,14 @@ impl DirectWriteState {
+             ) {
+                 bitmap_data = color;
+             } else {
+-                let monochrome =
+-                    Self::rasterize_monochrome(&glyph_analysis, glyph_bounds.origin, bitmap_size)?;
++                let monochrome = Self::rasterize_monochrome(&glyph_analysis, glyph_bounds)?;
+                 bitmap_data = monochrome
+                     .into_iter()
+                     .flat_map(|pixel| [0, 0, 0, pixel])
+                     .collect::<Vec<_>>();
+             }
+         } else {
+-            bitmap_data =
+-                Self::rasterize_monochrome(&glyph_analysis, glyph_bounds.origin, bitmap_size)?;
++            bitmap_data = Self::rasterize_monochrome(&glyph_analysis, glyph_bounds)?;
+         }
+ 
+         Ok((bitmap_size, bitmap_data))
+@@ -913,20 +898,19 @@ impl DirectWriteState {
+ 
+     fn rasterize_monochrome(
+         glyph_analysis: &IDWriteGlyphRunAnalysis,
+-        origin: Point<DevicePixels>,
+-        bitmap_size: Size<DevicePixels>,
++        glyph_bounds: Bounds<DevicePixels>,
+     ) -> Result<Vec<u8>> {
+         let mut bitmap_data =
+-            vec![0u8; bitmap_size.width.0 as usize * bitmap_size.height.0 as usize];
++            vec![0u8; glyph_bounds.size.width.0 as usize * glyph_bounds.size.height.0 as usize];
+ 
+         unsafe {
+             glyph_analysis.CreateAlphaTexture(
+                 DWRITE_TEXTURE_ALIASED_1x1,
+                 &RECT {
+-                    left: origin.x.0,
+-                    top: origin.y.0,
+-                    right: bitmap_size.width.0 + origin.x.0,
+-                    bottom: bitmap_size.height.0 + origin.y.0,
++                    left: glyph_bounds.origin.x.0,
++                    top: glyph_bounds.origin.y.0,
++                    right: glyph_bounds.size.width.0 + glyph_bounds.origin.x.0,
++                    bottom: glyph_bounds.size.height.0 + glyph_bounds.origin.y.0,
+                 },
+                 &mut bitmap_data,
+             )?;
+
+From a8d3e5530bfbaadd949c87624031837d28f09019 Mon Sep 17 00:00:00 2001
+From: Junkui Zhang <364772080@qq.com>
+Date: Thu, 31 Jul 2025 17:53:40 +0800
+Subject: [PATCH 05/16] DXGI_ALPHA_MODE_PREMULTIPLIED
+
+---
+ crates/gpui/src/platform/windows/directx_renderer.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/crates/gpui/src/platform/windows/directx_renderer.rs b/crates/gpui/src/platform/windows/directx_renderer.rs
+index b8a544d3d378cb..2dbec7e6749092 100644
+--- a/crates/gpui/src/platform/windows/directx_renderer.rs
++++ b/crates/gpui/src/platform/windows/directx_renderer.rs
+@@ -1077,7 +1077,7 @@ fn create_swap_chain_for_composition(
+         // Composition SwapChains only support the DXGI_SCALING_STRETCH Scaling.
+         Scaling: DXGI_SCALING_STRETCH,
+         SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+-        AlphaMode: DXGI_ALPHA_MODE_IGNORE,
++        AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
+         Flags: 0,
+     };
+     Ok(unsafe { dxgi_factory.CreateSwapChainForComposition(device, &desc, None)? })
+
+From d50b3e172e5b61fe0be7f947e6e9c522126e3bac Mon Sep 17 00:00:00 2001
+From: Junkui Zhang <364772080@qq.com>
+Date: Thu, 31 Jul 2025 18:16:20 +0800
+Subject: [PATCH 06/16] cleanup
+
+---
+ .../gpui/src/platform/windows/direct_write.rs | 92 +++++++++----------
+ 1 file changed, 43 insertions(+), 49 deletions(-)
+
+diff --git a/crates/gpui/src/platform/windows/direct_write.rs b/crates/gpui/src/platform/windows/direct_write.rs
+index 1e007d464e98da..a94f60b822c360 100644
+--- a/crates/gpui/src/platform/windows/direct_write.rs
++++ b/crates/gpui/src/platform/windows/direct_write.rs
+@@ -836,51 +836,13 @@ impl DirectWriteState {
+             anyhow::bail!("glyph bounds are empty");
+         }
+ 
+-        // Add an extra pixel when the subpixel variant isn't zero to make room for anti-aliasing.
+         let bitmap_size = glyph_bounds.size;
+ 
+-        let subpixel_shift = params
+-            .subpixel_variant
+-            .map(|v| v as f32 / SUBPIXEL_VARIANTS as f32);
+-        let baseline_origin_x = subpixel_shift.x / params.scale_factor;
+-        let baseline_origin_y = subpixel_shift.y / params.scale_factor;
+-
+         let glyph_analysis = self.create_glyph_run_analysis(params)?;
+ 
+-        let font = &self.fonts[params.font_id.0];
+-        let glyph_id = [params.glyph_id.0 as u16];
+-        let advance = [glyph_bounds.size.width.0 as f32];
+-        let offset = [DWRITE_GLYPH_OFFSET {
+-            advanceOffset: -glyph_bounds.origin.x.0 as f32 / params.scale_factor,
+-            ascenderOffset: glyph_bounds.origin.y.0 as f32 / params.scale_factor,
+-        }];
+-        let glyph_run = DWRITE_GLYPH_RUN {
+-            fontFace: unsafe { std::mem::transmute_copy(&font.font_face) },
+-            fontEmSize: params.font_size.0,
+-            glyphCount: 1,
+-            glyphIndices: glyph_id.as_ptr(),
+-            glyphAdvances: advance.as_ptr(),
+-            glyphOffsets: offset.as_ptr(),
+-            isSideways: BOOL(0),
+-            bidiLevel: 0,
+-        };
+-        let transform = DWRITE_MATRIX {
+-            m11: params.scale_factor,
+-            m12: 0.0,
+-            m21: 0.0,
+-            m22: params.scale_factor,
+-            dx: 0.0,
+-            dy: 0.0,
+-        };
+-
+         let mut bitmap_data: Vec<u8>;
+         if params.is_emoji {
+-            if let Ok(color) = self.rasterize_color(
+-                &glyph_run,
+-                &transform,
+-                point(baseline_origin_x, baseline_origin_y),
+-                bitmap_size,
+-            ) {
++            if let Ok(color) = self.rasterize_color(&params, glyph_bounds) {
+                 bitmap_data = color;
+             } else {
+                 let monochrome = Self::rasterize_monochrome(&glyph_analysis, glyph_bounds)?;
+@@ -921,20 +883,52 @@ impl DirectWriteState {
+ 
+     fn rasterize_color(
+         &self,
+-        glyph_run: &DWRITE_GLYPH_RUN,
+-        transform: &DWRITE_MATRIX,
+-        baseline_origin: Point<f32>,
+-        bitmap_size: Size<DevicePixels>,
++        params: &RenderGlyphParams,
++        glyph_bounds: Bounds<DevicePixels>,
+     ) -> Result<Vec<u8>> {
++        let bitmap_size = glyph_bounds.size;
++        let subpixel_shift = params
++            .subpixel_variant
++            .map(|v| v as f32 / SUBPIXEL_VARIANTS as f32);
++        let baseline_origin_x = subpixel_shift.x / params.scale_factor;
++        let baseline_origin_y = subpixel_shift.y / params.scale_factor;
++
++        let transform = DWRITE_MATRIX {
++            m11: params.scale_factor,
++            m12: 0.0,
++            m21: 0.0,
++            m22: params.scale_factor,
++            dx: 0.0,
++            dy: 0.0,
++        };
++
++        let font = &self.fonts[params.font_id.0];
++        let glyph_id = [params.glyph_id.0 as u16];
++        let advance = [glyph_bounds.size.width.0 as f32];
++        let offset = [DWRITE_GLYPH_OFFSET {
++            advanceOffset: -glyph_bounds.origin.x.0 as f32 / params.scale_factor,
++            ascenderOffset: glyph_bounds.origin.y.0 as f32 / params.scale_factor,
++        }];
++        let glyph_run = DWRITE_GLYPH_RUN {
++            fontFace: unsafe { std::mem::transmute_copy(&font.font_face) },
++            fontEmSize: params.font_size.0,
++            glyphCount: 1,
++            glyphIndices: glyph_id.as_ptr(),
++            glyphAdvances: advance.as_ptr(),
++            glyphOffsets: offset.as_ptr(),
++            isSideways: BOOL(0),
++            bidiLevel: 0,
++        };
++
+         // todo: support formats other than COLR
+         let color_enumerator = unsafe {
+             self.components.factory.TranslateColorGlyphRun(
+-                Vector2::new(baseline_origin.x, baseline_origin.y),
+-                glyph_run,
++                Vector2::new(baseline_origin_x, baseline_origin_y),
++                &glyph_run,
+                 None,
+                 DWRITE_GLYPH_IMAGE_FORMATS_COLR,
+                 DWRITE_MEASURING_MODE_NATURAL,
+-                Some(transform),
++                Some(&transform),
+                 0,
+             )
+         }?;
+@@ -948,13 +942,13 @@ impl DirectWriteState {
+                 let color_analysis = unsafe {
+                     self.components.factory.CreateGlyphRunAnalysis(
+                         &color_run.Base.glyphRun as *const _,
+-                        Some(transform),
++                        Some(&transform),
+                         DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+                         DWRITE_MEASURING_MODE_NATURAL,
+                         DWRITE_GRID_FIT_MODE_DEFAULT,
+                         DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
+-                        baseline_origin.x,
+-                        baseline_origin.y,
++                        baseline_origin_x,
++                        baseline_origin_y,
+                     )
+                 }?;
+ 
+
+From fad7aa6643fba937019d431fdae25b62d78767cb Mon Sep 17 00:00:00 2001
+From: Junkui Zhang <364772080@qq.com>
+Date: Thu, 31 Jul 2025 18:41:25 +0800
+Subject: [PATCH 07/16] fix
+
+---
+ crates/gpui/src/platform/windows/shaders.hlsl | 21 +------------------
+ 1 file changed, 1 insertion(+), 20 deletions(-)
+
+diff --git a/crates/gpui/src/platform/windows/shaders.hlsl b/crates/gpui/src/platform/windows/shaders.hlsl
+index daef05059b5703..32d85f7690432b 100644
+--- a/crates/gpui/src/platform/windows/shaders.hlsl
++++ b/crates/gpui/src/platform/windows/shaders.hlsl
+@@ -1092,28 +1092,9 @@ MonochromeSpriteVertexOutput monochrome_sprite_vertex(uint vertex_id: SV_VertexI
+     return output;
+ }
+ 
+-float4 blend_color(float4 color, float alpha_factor) {
+-    float alpha = color.a * alpha_factor;
+-    float multiplier = premultiplied_alpha != 0 ? alpha : 1.0;
+-    return float4(color.rgb * multiplier, alpha);
+-}
+-
+-float3 linear_to_srgbee(float3 l) {
+-    bool cutoff = l < float3(0.0031308, 0.0031308, 0.0031308);
+-    float3 higher = float3(1.055, 1.055, 1.055) * pow(l, float3(1.0 / 2.4, 1.0 / 2.4, 1.0 / 2.4)) - float3(0.055, 0.055, 0.055);
+-    float3 lower = l * float3(12.92, 12.92, 12.92);
+-    return cutoff ? lower : higher;
+-}
+-
+ float4 monochrome_sprite_fragment(MonochromeSpriteFragmentInput input): SV_Target {
+     float sample = t_sprite.Sample(s_sprite, input.tile_position).r;
+-    float4 color = input.color;
+-    // color.a *= sample;
+-    // return float4(color.rgb, color.a);
+-    if (any(input.clip_distance < 0.0)) {
+-        return float4(0.0, 0.0, 0.0, 0.0);
+-    }
+-    return blend_color(input.color, sample);
++    return float4(input.color.rgb, input.color.a * sample);
+ }
+ 
+ /*
+
+From aa68b3e8ef3048e9fba43c32029a160acc647bfd Mon Sep 17 00:00:00 2001
+From: Junkui Zhang <364772080@qq.com>
+Date: Thu, 31 Jul 2025 19:46:17 +0800
+Subject: [PATCH 08/16] revert wrong blend state change
+
+---
+ crates/gpui/src/platform/windows/directx_renderer.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/crates/gpui/src/platform/windows/directx_renderer.rs b/crates/gpui/src/platform/windows/directx_renderer.rs
+index 2dbec7e6749092..e4e515cdb6a9ea 100644
+--- a/crates/gpui/src/platform/windows/directx_renderer.rs
++++ b/crates/gpui/src/platform/windows/directx_renderer.rs
+@@ -1281,7 +1281,7 @@ fn create_blend_state(device: &ID3D11Device) -> Result<ID3D11BlendState> {
+     desc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+     desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+     desc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+-    desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
++    desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+     desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8;
+     unsafe {
+         let mut state = None;
+
+From d84cf7ef038580bc18134bd725945023a20e4dc4 Mon Sep 17 00:00:00 2001
+From: Junkui Zhang <364772080@qq.com>
+Date: Thu, 31 Jul 2025 21:30:44 +0800
+Subject: [PATCH 09/16] update rendering quality of small fonts
+
+---
+ .../gpui/src/platform/windows/direct_write.rs | 24 ++++++++++++++++---
+ 1 file changed, 21 insertions(+), 3 deletions(-)
+
+diff --git a/crates/gpui/src/platform/windows/direct_write.rs b/crates/gpui/src/platform/windows/direct_write.rs
+index a94f60b822c360..009e43f5223017 100644
+--- a/crates/gpui/src/platform/windows/direct_write.rs
++++ b/crates/gpui/src/platform/windows/direct_write.rs
+@@ -1,4 +1,4 @@
+-use std::{borrow::Cow, mem::ManuallyDrop, sync::Arc};
++use std::{borrow::Cow, sync::Arc};
+ 
+ use ::util::ResultExt;
+ use anyhow::Result;
+@@ -45,7 +45,7 @@ struct DirectWriteComponent {
+     builder: IDWriteFontSetBuilder1,
+     text_renderer: Arc<TextRendererWrapper>,
+ 
+-    render_params: IDWriteRenderingParams,
++    render_params: IDWriteRenderingParams3,
+     gpu_state: GPUState,
+ }
+ 
+@@ -92,7 +92,25 @@ impl DirectWriteComponent {
+             let locale = String::from_utf16_lossy(&locale_vec);
+             let text_renderer = Arc::new(TextRendererWrapper::new(&locale));
+ 
+-            let render_params = factory.CreateRenderingParams()?;
++            let render_params = {
++                let default_params: IDWriteRenderingParams3 =
++                    factory.CreateRenderingParams()?.cast()?;
++                let gamma = default_params.GetGamma();
++                let enhanced_contrast = default_params.GetEnhancedContrast();
++                let gray_contrast = default_params.GetGrayscaleEnhancedContrast();
++                let cleartype_level = default_params.GetClearTypeLevel();
++                let grid_fit_mode = default_params.GetGridFitMode();
++
++                factory.CreateCustomRenderingParams(
++                    gamma,
++                    enhanced_contrast,
++                    gray_contrast,
++                    cleartype_level,
++                    DWRITE_PIXEL_GEOMETRY_RGB,
++                    DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
++                    grid_fit_mode,
++                )?
++            };
+ 
+             let gpu_state = GPUState::new(gpu_context)?;
+ 
+
+From c3f210eb5e66b7445be6d19623aa97b22d6c5670 Mon Sep 17 00:00:00 2001
+From: Kate <kate@zed.dev>
+Date: Thu, 31 Jul 2025 17:24:47 +0200
+Subject: [PATCH 10/16] improve rendering (i think)
+
+---
+ .../gpui/src/platform/windows/direct_write.rs | 66 +++++++++++++++----
+ 1 file changed, 52 insertions(+), 14 deletions(-)
+
+diff --git a/crates/gpui/src/platform/windows/direct_write.rs b/crates/gpui/src/platform/windows/direct_write.rs
+index 009e43f5223017..8d92eb2189966e 100644
+--- a/crates/gpui/src/platform/windows/direct_write.rs
++++ b/crates/gpui/src/platform/windows/direct_write.rs
+@@ -778,7 +778,7 @@ impl DirectWriteState {
+         let antialias_mode = if params.is_emoji {
+             DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
+         } else {
+-            DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE
++            DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
+         };
+ 
+         let glyph_analysis = unsafe {
+@@ -814,7 +814,7 @@ impl DirectWriteState {
+             }
+         }
+ 
+-        let bounds = unsafe { glyph_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1)? };
++        let bounds = unsafe { glyph_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1)? };
+ 
+         if bounds.right < bounds.left {
+             Ok(Bounds {
+@@ -856,46 +856,84 @@ impl DirectWriteState {
+ 
+         let bitmap_size = glyph_bounds.size;
+ 
+-        let glyph_analysis = self.create_glyph_run_analysis(params)?;
+-
+         let mut bitmap_data: Vec<u8>;
+         if params.is_emoji {
++            let glyph_analysis = self.create_glyph_run_analysis(params)?;
++
+             if let Ok(color) = self.rasterize_color(&params, glyph_bounds) {
+                 bitmap_data = color;
+             } else {
+-                let monochrome = Self::rasterize_monochrome(&glyph_analysis, glyph_bounds)?;
++                let monochrome = self.rasterize_monochrome(&glyph_analysis, glyph_bounds)?;
+                 bitmap_data = monochrome
+                     .into_iter()
+                     .flat_map(|pixel| [0, 0, 0, pixel])
+                     .collect::<Vec<_>>();
+             }
+         } else {
+-            bitmap_data = Self::rasterize_monochrome(&glyph_analysis, glyph_bounds)?;
++            let glyph_analysis = self.create_glyph_run_analysis(params)?;
++            bitmap_data = self.rasterize_monochrome(&glyph_analysis, glyph_bounds)?;
+         }
+ 
+         Ok((bitmap_size, bitmap_data))
+     }
+ 
+     fn rasterize_monochrome(
++        &self,
+         glyph_analysis: &IDWriteGlyphRunAnalysis,
+         glyph_bounds: Bounds<DevicePixels>,
+     ) -> Result<Vec<u8>> {
++        let multisampled_bounds =
++            unsafe { glyph_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1)? };
++        let multisampled_size = size(
++            multisampled_bounds.right - multisampled_bounds.left,
++            multisampled_bounds.bottom - multisampled_bounds.top,
++        );
++
+         let mut bitmap_data =
+-            vec![0u8; glyph_bounds.size.width.0 as usize * glyph_bounds.size.height.0 as usize];
++            vec![0u8; multisampled_size.width as usize * multisampled_size.height as usize * 3];
+ 
+         unsafe {
+             glyph_analysis.CreateAlphaTexture(
+-                DWRITE_TEXTURE_ALIASED_1x1,
+-                &RECT {
+-                    left: glyph_bounds.origin.x.0,
+-                    top: glyph_bounds.origin.y.0,
+-                    right: glyph_bounds.size.width.0 + glyph_bounds.origin.x.0,
+-                    bottom: glyph_bounds.size.height.0 + glyph_bounds.origin.y.0,
+-                },
++                DWRITE_TEXTURE_CLEARTYPE_3x1,
++                &multisampled_bounds,
+                 &mut bitmap_data,
+             )?;
+         }
+ 
++        let bitmap_factory = self.components.bitmap_factory.resolve()?;
++        let bitmap = unsafe {
++            bitmap_factory.CreateBitmapFromMemory(
++                multisampled_size.width as u32,
++                multisampled_size.height as u32,
++                &GUID_WICPixelFormat24bppRGB,
++                multisampled_size.width as u32 * 3,
++                &bitmap_data,
++            )
++        }?;
++
++        let grayscale_bitmap =
++            unsafe { WICConvertBitmapSource(&GUID_WICPixelFormat8bppGray, &bitmap) }?;
++
++        let scaler = unsafe { bitmap_factory.CreateBitmapScaler() }?;
++        unsafe {
++            scaler.Initialize(
++                &grayscale_bitmap,
++                glyph_bounds.size.width.0 as u32,
++                glyph_bounds.size.height.0 as u32,
++                WICBitmapInterpolationModeHighQualityCubic,
++            )
++        }?;
++
++        let mut bitmap_data =
++            vec![0u8; glyph_bounds.size.width.0 as usize * glyph_bounds.size.height.0 as usize];
++        unsafe {
++            scaler.CopyPixels(
++                std::ptr::null() as _,
++                glyph_bounds.size.width.0 as u32,
++                &mut bitmap_data,
++            )
++        }?;
++
+         Ok(bitmap_data)
+     }
+ 
+
+From e599352fc259f403bb663a76a6f2e35ec18c3291 Mon Sep 17 00:00:00 2001
+From: Junkui Zhang <364772080@qq.com>
+Date: Fri, 1 Aug 2025 16:48:36 +0800
+Subject: [PATCH 11/16] remove the use of bitmap scaler
+
+---
+ .../gpui/src/platform/windows/direct_write.rs | 67 ++++++-------------
+ 1 file changed, 22 insertions(+), 45 deletions(-)
+
+diff --git a/crates/gpui/src/platform/windows/direct_write.rs b/crates/gpui/src/platform/windows/direct_write.rs
+index 8d92eb2189966e..cdbc88859d5c7d 100644
+--- a/crates/gpui/src/platform/windows/direct_write.rs
++++ b/crates/gpui/src/platform/windows/direct_write.rs
+@@ -775,12 +775,6 @@ impl DirectWriteState {
+             )?;
+         }
+ 
+-        let antialias_mode = if params.is_emoji {
+-            DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
+-        } else {
+-            DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE
+-        };
+-
+         let glyph_analysis = unsafe {
+             self.components.factory.CreateGlyphRunAnalysis(
+                 &glyph_run,
+@@ -788,7 +782,7 @@ impl DirectWriteState {
+                 rendering_mode,
+                 DWRITE_MEASURING_MODE_NATURAL,
+                 grid_fit_mode,
+-                antialias_mode,
++                DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
+                 baseline_origin_x,
+                 baseline_origin_y,
+             )
+@@ -854,48 +848,41 @@ impl DirectWriteState {
+             anyhow::bail!("glyph bounds are empty");
+         }
+ 
+-        let bitmap_size = glyph_bounds.size;
+-
+-        let mut bitmap_data: Vec<u8>;
+-        if params.is_emoji {
+-            let glyph_analysis = self.create_glyph_run_analysis(params)?;
+-
++        let bitmap_data = if params.is_emoji {
+             if let Ok(color) = self.rasterize_color(&params, glyph_bounds) {
+-                bitmap_data = color;
++                color
+             } else {
+-                let monochrome = self.rasterize_monochrome(&glyph_analysis, glyph_bounds)?;
+-                bitmap_data = monochrome
++                let monochrome = self.rasterize_monochrome(params, glyph_bounds)?;
++                monochrome
+                     .into_iter()
+                     .flat_map(|pixel| [0, 0, 0, pixel])
+-                    .collect::<Vec<_>>();
++                    .collect::<Vec<_>>()
+             }
+         } else {
+-            let glyph_analysis = self.create_glyph_run_analysis(params)?;
+-            bitmap_data = self.rasterize_monochrome(&glyph_analysis, glyph_bounds)?;
+-        }
++            self.rasterize_monochrome(params, glyph_bounds)?
++        };
+ 
+-        Ok((bitmap_size, bitmap_data))
++        Ok((glyph_bounds.size, bitmap_data))
+     }
+ 
+     fn rasterize_monochrome(
+         &self,
+-        glyph_analysis: &IDWriteGlyphRunAnalysis,
++        params: &RenderGlyphParams,
+         glyph_bounds: Bounds<DevicePixels>,
+     ) -> Result<Vec<u8>> {
+-        let multisampled_bounds =
+-            unsafe { glyph_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1)? };
+-        let multisampled_size = size(
+-            multisampled_bounds.right - multisampled_bounds.left,
+-            multisampled_bounds.bottom - multisampled_bounds.top,
+-        );
+-
+         let mut bitmap_data =
+-            vec![0u8; multisampled_size.width as usize * multisampled_size.height as usize * 3];
++            vec![0u8; glyph_bounds.size.width.0 as usize * glyph_bounds.size.height.0 as usize * 3];
+ 
++        let glyph_analysis = self.create_glyph_run_analysis(params)?;
+         unsafe {
+             glyph_analysis.CreateAlphaTexture(
+                 DWRITE_TEXTURE_CLEARTYPE_3x1,
+-                &multisampled_bounds,
++                &RECT {
++                    left: glyph_bounds.origin.x.0,
++                    top: glyph_bounds.origin.y.0,
++                    right: glyph_bounds.size.width.0 + glyph_bounds.origin.x.0,
++                    bottom: glyph_bounds.size.height.0 + glyph_bounds.origin.y.0,
++                },
+                 &mut bitmap_data,
+             )?;
+         }
+@@ -903,10 +890,10 @@ impl DirectWriteState {
+         let bitmap_factory = self.components.bitmap_factory.resolve()?;
+         let bitmap = unsafe {
+             bitmap_factory.CreateBitmapFromMemory(
+-                multisampled_size.width as u32,
+-                multisampled_size.height as u32,
++                glyph_bounds.size.width.0 as u32,
++                glyph_bounds.size.height.0 as u32,
+                 &GUID_WICPixelFormat24bppRGB,
+-                multisampled_size.width as u32 * 3,
++                glyph_bounds.size.width.0 as u32 * 3,
+                 &bitmap_data,
+             )
+         }?;
+@@ -914,20 +901,10 @@ impl DirectWriteState {
+         let grayscale_bitmap =
+             unsafe { WICConvertBitmapSource(&GUID_WICPixelFormat8bppGray, &bitmap) }?;
+ 
+-        let scaler = unsafe { bitmap_factory.CreateBitmapScaler() }?;
+-        unsafe {
+-            scaler.Initialize(
+-                &grayscale_bitmap,
+-                glyph_bounds.size.width.0 as u32,
+-                glyph_bounds.size.height.0 as u32,
+-                WICBitmapInterpolationModeHighQualityCubic,
+-            )
+-        }?;
+-
+         let mut bitmap_data =
+             vec![0u8; glyph_bounds.size.width.0 as usize * glyph_bounds.size.height.0 as usize];
+         unsafe {
+-            scaler.CopyPixels(
++            grayscale_bitmap.CopyPixels(
+                 std::ptr::null() as _,
+                 glyph_bounds.size.width.0 as u32,
+                 &mut bitmap_data,
+
+From 88b01e5e31ca18010a3b4bec4c67025011ba20fb Mon Sep 17 00:00:00 2001
+From: Junkui Zhang <364772080@qq.com>
+Date: Fri, 1 Aug 2025 16:55:12 +0800
+Subject: [PATCH 12/16] fix `raster_bounds`
+
+---
+ .../gpui/src/platform/windows/direct_write.rs | 45 ++++++++++---------
+ 1 file changed, 23 insertions(+), 22 deletions(-)
+
+diff --git a/crates/gpui/src/platform/windows/direct_write.rs b/crates/gpui/src/platform/windows/direct_write.rs
+index cdbc88859d5c7d..6c3b4a40df894a 100644
+--- a/crates/gpui/src/platform/windows/direct_write.rs
++++ b/crates/gpui/src/platform/windows/direct_write.rs
+@@ -782,6 +782,7 @@ impl DirectWriteState {
+                 rendering_mode,
+                 DWRITE_MEASURING_MODE_NATURAL,
+                 grid_fit_mode,
++                // We're using cleartype not grayscale for monchrome is because it provides better quality
+                 DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
+                 baseline_origin_x,
+                 baseline_origin_y,
+@@ -793,29 +794,10 @@ impl DirectWriteState {
+     fn raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
+         let glyph_analysis = self.create_glyph_run_analysis(params)?;
+ 
+-        if params.is_emoji {
+-            let bounds =
+-                unsafe { glyph_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1)? };
+-            // If it's empty, retry with grayscale AA.
+-            if !unsafe { IsRectEmpty(&bounds) }.as_bool() {
+-                return Ok(Bounds {
+-                    origin: point((bounds.left as i32).into(), (bounds.top as i32).into()),
+-                    size: size(
+-                        (bounds.right - bounds.left).into(),
+-                        (bounds.bottom - bounds.top).into(),
+-                    ),
+-                });
+-            }
+-        }
+-
+         let bounds = unsafe { glyph_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1)? };
+-
+-        if bounds.right < bounds.left {
+-            Ok(Bounds {
+-                origin: point(0.into(), 0.into()),
+-                size: size(0.into(), 0.into()),
+-            })
+-        } else {
++        // Some glyphs cannot be drawn with ClearType, such as bitmap fonts. In that case
++        // GetAlphaTextureBounds() supposedly returns an empty RECT, but I haven't tested that yet.
++        if !unsafe { IsRectEmpty(&bounds) }.as_bool() {
+             Ok(Bounds {
+                 origin: point((bounds.left as i32).into(), (bounds.top as i32).into()),
+                 size: size(
+@@ -823,6 +805,25 @@ impl DirectWriteState {
+                     (bounds.bottom - bounds.top).into(),
+                 ),
+             })
++        } else {
++            // If it's empty, retry with grayscale AA.
++            let bounds =
++                unsafe { glyph_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1)? };
++
++            if bounds.right < bounds.left {
++                Ok(Bounds {
++                    origin: point(0.into(), 0.into()),
++                    size: size(0.into(), 0.into()),
++                })
++            } else {
++                Ok(Bounds {
++                    origin: point((bounds.left as i32).into(), (bounds.top as i32).into()),
++                    size: size(
++                        (bounds.right - bounds.left).into(),
++                        (bounds.bottom - bounds.top).into(),
++                    ),
++                })
++            }
+         }
+     }
+ 
+
+From 7984e05d358077570384549364370bb4ad004933 Mon Sep 17 00:00:00 2001
+From: Junkui Zhang <364772080@qq.com>
+Date: Fri, 1 Aug 2025 16:59:37 +0800
+Subject: [PATCH 13/16] add comments
+
+---
+ crates/gpui/src/platform/windows/direct_write.rs | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/crates/gpui/src/platform/windows/direct_write.rs b/crates/gpui/src/platform/windows/direct_write.rs
+index 6c3b4a40df894a..395e9ff09e6b99 100644
+--- a/crates/gpui/src/platform/windows/direct_write.rs
++++ b/crates/gpui/src/platform/windows/direct_write.rs
+@@ -782,7 +782,7 @@ impl DirectWriteState {
+                 rendering_mode,
+                 DWRITE_MEASURING_MODE_NATURAL,
+                 grid_fit_mode,
+-                // We're using cleartype not grayscale for monchrome is because it provides better quality
++                // We're using cleartype not grayscale for monochrome is because it provides better quality
+                 DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
+                 baseline_origin_x,
+                 baseline_origin_y,
+@@ -877,6 +877,7 @@ impl DirectWriteState {
+         let glyph_analysis = self.create_glyph_run_analysis(params)?;
+         unsafe {
+             glyph_analysis.CreateAlphaTexture(
++                // We're using cleartype not grayscale for monochrome is because it provides better quality
+                 DWRITE_TEXTURE_CLEARTYPE_3x1,
+                 &RECT {
+                     left: glyph_bounds.origin.x.0,
+
+From 3be48a9813574e4706314ee10390d22dbcc172a8 Mon Sep 17 00:00:00 2001
+From: Junkui Zhang <364772080@qq.com>
+Date: Fri, 1 Aug 2025 17:32:48 +0800
+Subject: [PATCH 14/16] remove unneeded change
+
+---
+ crates/gpui/src/platform/windows/directx_renderer.rs | 8 ++------
+ crates/gpui/src/platform/windows/shaders.hlsl        | 3 +--
+ 2 files changed, 3 insertions(+), 8 deletions(-)
+
+diff --git a/crates/gpui/src/platform/windows/directx_renderer.rs b/crates/gpui/src/platform/windows/directx_renderer.rs
+index e4e515cdb6a9ea..a03b966ef794ea 100644
+--- a/crates/gpui/src/platform/windows/directx_renderer.rs
++++ b/crates/gpui/src/platform/windows/directx_renderer.rs
+@@ -175,8 +175,6 @@ impl DirectXRenderer {
+     }
+ 
+     fn pre_draw(&self) -> Result<()> {
+-        let premultiplied_alpha = 1;
+-
+         update_buffer(
+             &self.devices.device_context,
+             self.globals.global_params_buffer[0].as_ref().unwrap(),
+@@ -185,8 +183,7 @@ impl DirectXRenderer {
+                     self.resources.viewport[0].Width,
+                     self.resources.viewport[0].Height,
+                 ],
+-                premultiplied_alpha,
+-                ..Default::default()
++                _pad: 0,
+             }],
+         )?;
+         unsafe {
+@@ -822,8 +819,7 @@ impl DirectXGlobalElements {
+ #[repr(C)]
+ struct GlobalParams {
+     viewport_size: [f32; 2],
+-    premultiplied_alpha: u32,
+-    _pad: u32,
++    _pad: u64,
+ }
+ 
+ struct PipelineState<T> {
+diff --git a/crates/gpui/src/platform/windows/shaders.hlsl b/crates/gpui/src/platform/windows/shaders.hlsl
+index 32d85f7690432b..25830e4b6c3183 100644
+--- a/crates/gpui/src/platform/windows/shaders.hlsl
++++ b/crates/gpui/src/platform/windows/shaders.hlsl
+@@ -1,7 +1,6 @@
+ cbuffer GlobalParams: register(b0) {
+     float2 global_viewport_size;
+-    uint premultiplied_alpha;
+-    uint _pad;
++    uint2 _pad;
+ };
+ 
+ Texture2D<float4> t_sprite: register(t0);
+
+From f490d4d33ca67d0f8588136b0ee4e73afb492661 Mon Sep 17 00:00:00 2001
+From: Junkui Zhang <364772080@qq.com>
+Date: Fri, 1 Aug 2025 20:40:27 +0800
+Subject: [PATCH 15/16] remove some deps
+
+---
+ Cargo.toml | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/Cargo.toml b/Cargo.toml
+index 9a05d89e537c1b..93fa9644a1a9f9 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -678,8 +678,6 @@ features = [
+     "UI_ViewManagement",
+     "Wdk_System_SystemServices",
+     "Win32_Globalization",
+-    "Win32_Graphics_Direct2D",
+-    "Win32_Graphics_Direct2D_Common",
+     "Win32_Graphics_Direct3D",
+     "Win32_Graphics_Direct3D11",
+     "Win32_Graphics_Direct3D_Fxc",
+@@ -690,7 +688,6 @@ features = [
+     "Win32_Graphics_Dxgi_Common",
+     "Win32_Graphics_Gdi",
+     "Win32_Graphics_Imaging",
+-    "Win32_Graphics_Imaging_D2D",
+     "Win32_Networking_WinSock",
+     "Win32_Security",
+     "Win32_Security_Credentials",
+
+From 441c6c20d8d8dd6faa4e359c423aabdb21e47c0e Mon Sep 17 00:00:00 2001
+From: Kate <kate@zed.dev>
+Date: Fri, 1 Aug 2025 18:33:54 +0200
+Subject: [PATCH 16/16] fix clippy warnings
+
+---
+ crates/gpui/src/platform/windows/direct_write.rs | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/crates/gpui/src/platform/windows/direct_write.rs b/crates/gpui/src/platform/windows/direct_write.rs
+index 395e9ff09e6b99..587cb7b4a6c18a 100644
+--- a/crates/gpui/src/platform/windows/direct_write.rs
++++ b/crates/gpui/src/platform/windows/direct_write.rs
+@@ -799,7 +799,7 @@ impl DirectWriteState {
+         // GetAlphaTextureBounds() supposedly returns an empty RECT, but I haven't tested that yet.
+         if !unsafe { IsRectEmpty(&bounds) }.as_bool() {
+             Ok(Bounds {
+-                origin: point((bounds.left as i32).into(), (bounds.top as i32).into()),
++                origin: point(bounds.left.into(), bounds.top.into()),
+                 size: size(
+                     (bounds.right - bounds.left).into(),
+                     (bounds.bottom - bounds.top).into(),
+@@ -817,7 +817,7 @@ impl DirectWriteState {
+                 })
+             } else {
+                 Ok(Bounds {
+-                    origin: point((bounds.left as i32).into(), (bounds.top as i32).into()),
++                    origin: point(bounds.left.into(), bounds.top.into()),
+                     size: size(
+                         (bounds.right - bounds.left).into(),
+                         (bounds.bottom - bounds.top).into(),
+@@ -1279,8 +1279,9 @@ impl Drop for DirectWriteState {
+ struct GlyphLayerTexture {
+     run_color: Rgba,
+     bounds: Bounds<i32>,
+-    texture: ID3D11Texture2D,
+     texture_view: ID3D11ShaderResourceView,
++    // holding on to the texture to not RAII drop it
++    _texture: ID3D11Texture2D,
+ }
+ 
+ impl GlyphLayerTexture {
+@@ -1341,8 +1342,8 @@ impl GlyphLayerTexture {
+         Ok(GlyphLayerTexture {
+             run_color,
+             bounds,
+-            texture,
+             texture_view,
++            _texture: texture,
+         })
+     }
+ }
