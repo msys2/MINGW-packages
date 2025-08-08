@@ -3,11 +3,11 @@
 _realname=gnuradio
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-pkgver=3.10.11.0
-pkgrel=8
+pkgver=3.10.12.0
+pkgrel=2
 pkgdesc="General purpose DSP and SDR toolkit (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw64' 'ucrt64')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url='https://gnuradio.org/'
 msys2_repository_url="https://github.com/gnuradio/gnuradio"
 msys2_references=(
@@ -16,7 +16,7 @@ msys2_references=(
 license=(spdx:GPL-3.0-or-later)
 depends=("${MINGW_PACKAGE_PREFIX}-codec2"
   "${MINGW_PACKAGE_PREFIX}-boost-libs"
-  "${MINGW_PACKAGE_PREFIX}-gcc-libs"
+  "${MINGW_PACKAGE_PREFIX}-cc-libs"
   "${MINGW_PACKAGE_PREFIX}-gmp"
   "${MINGW_PACKAGE_PREFIX}-gsl"
   "${MINGW_PACKAGE_PREFIX}-gsm"
@@ -71,7 +71,6 @@ options=('!strip')
 source=("https://github.com/${_realname}/${_realname}/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz"
         "https://github.com/gnuradio/gnuradio/releases/download/v${pkgver}/${_realname}-${pkgver}.tar.gz.asc"
         0001-cmake-Install-python-wrapper-exe-for-scripts-on-Wind.patch
-        numpy-2.0.patch
         gnuradio-blocks-and-examples-path.hook.in
         gnuradio-blocks-and-examples-path.script.in
         LICENSE.txt)
@@ -80,10 +79,9 @@ validpgpkeys=(
   'D74F9F146E7F755783583158B343B2BA293E5174'  # Marcus Müller (GNU Radio Maintainer) <mmueller@gnuradio.org>
   '723EC3A2B90533C6B93DFBC8ED797743F7951435'  # GNU Radio (Software Signing Key) <info@gnuradio.org>
 )
-sha256sums=('9ca658e6c4af9cfe144770757b34ab0edd23f6dcfaa6c5c46a7546233e5ecd29'
+sha256sums=('fe78ad9f74c8ebf93d5c8ad6fa2c13236af330f3c67149d91a0647b3dc6f3958'
             'SKIP'
             'aa9c79f6ab923c566f57d90117fa7e82549c26230538ffb3a2b1c0246fc31c19'
-            'e3a2d9f63318b56f87829d224232724d9c815b46c6c7086ac3c5b6ae8980bc7b'
             'b2f014a69b32afcb207e4d2e8e163fc04968594d7d4c3184b9ea5c8cf2a29329'
             'caa9a6cc253d508abcd01545f26b46df0d708d24f69b7dc59183d631872721ed'
             '86dc4bc79c9fa4d5dc3ae5558441d5bb8b8736403e70997cf9ae8f671ab5d0ca')
@@ -94,7 +92,6 @@ prepare() {
   # Patch number 0001 is credited to Ryan Volz <ryan.volz@gmail.com> and licensed under the 
   # BSD-3-Clause license
   patch -Np1 -i "${srcdir}/0001-cmake-Install-python-wrapper-exe-for-scripts-on-Wind.patch"
-  patch -Np1 -i "${srcdir}/numpy-2.0.patch"
 }
 
 build() {
@@ -117,8 +114,6 @@ build() {
       -DBoost_CHRONO_LIBRARY_RELEASE="${MINGW_PREFIX}/bin/libboost_chrono-mt.dll" \
       -DBoost_DATE_TIME_LIBRARY_RELEASE="${MINGW_PREFIX}/bin/libboost_date_time-mt.dll" \
       -DBoost_PROGRAM_OPTIONS_LIBRARY_RELEASE="${MINGW_PREFIX}/bin/libboost_program_options-mt.dll" \
-      -DBoost_REGEX_LIBRARY_RELEASE="${MINGW_PREFIX}/bin/libboost_regex-mt.dll" \
-      -DBoost_SYSTEM_LIBRARY_RELEASE="${MINGW_PREFIX}/bin/libboost_system-mt.dll" \
       -DBoost_THREAD_LIBRARY_RELEASE="${MINGW_PREFIX}/bin/libboost_thread-mt.dll" \
       -DBoost_UNIT_TEST_FRAMEWORK_LIBRARY_RELEASE="${MINGW_PREFIX}/bin/libboost_unit_test_framework-mt.dll" \
       -DENABLE_CTRLPORT_THRIFT=OFF \
@@ -130,7 +125,24 @@ build() {
 }
 
 check() {
-  "${MINGW_PREFIX}"/bin/cmake.exe --build "build-${MSYSTEM}" --target test || warning "Tests failed"
+  cd "${srcdir}/build-${MSYSTEM}"
+
+  #copy all dlls to a directory
+  if [ ! -d temp_lib ]; then
+    mkdir temp_lib
+    find . -name "*.dll" ! -path '*temp_lib*' -exec cp {} temp_lib \;
+  fi
+
+  #add a call to os.add_dll_directory() to load python dlls
+  python_dll_prefix=`cygpath.exe -m -a .`
+  python_dll_suffix="/gnuradio-runtime/python/gnuradio/gr/bindings"
+
+  #run the sed regex
+  find . -name "*_test.bat" -exec sed.exe -i 's|^\(.*python3.exe\)|\1 -c "import os; os.add_dll_directory('\'${python_dll_prefix}${python_dll_suffix}\'');"|g' {} \;
+
+  #run tests with dll directory added to the path
+  PATH=$PWD/temp_lib:$PATH \
+    "${MINGW_PREFIX}"/bin/ctest.exe --timeout 90 --output-on-failure || warning "Tests failed"
 }
 
 package() {
@@ -138,7 +150,7 @@ package() {
   DESTDIR="${pkgdir}" "${MINGW_PREFIX}"/bin/cmake.exe --install "build-${MSYSTEM}"
 
   #install hook and script for setting global_blocks_path and examples_path in grc.conf
-  hook_path=${srcdir}/${MINGW_PACKAGE_PREFIX}-gnuradio-blocks-and-examples-path.hook
+  hook_path="${srcdir}"/${MINGW_PACKAGE_PREFIX}-gnuradio-blocks-and-examples-path.hook
   cp "${srcdir}/gnuradio-blocks-and-examples-path.hook.in" "${hook_path}"
   sed -s "s|@MINGW_PACKAGE_PREFIX@|${MINGW_PACKAGE_PREFIX}|g" -i "${hook_path}"
   install -Dt "$pkgdir/usr/share/libalpm/hooks" -m644 "${hook_path}"

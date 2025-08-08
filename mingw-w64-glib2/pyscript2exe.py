@@ -6,7 +6,11 @@ foobar.py -> foobar.exe + foobar-script.py
 import sys
 import re
 import os
-from setuptools.command.easy_install import get_win_launcher
+try:
+    from setuptools.command.easy_install import get_win_launcher
+except ImportError:
+    # v80+
+    from setuptools._scripts import get_win_launcher
 
 path = sys.argv[1]
 with open(path, "rb") as f:

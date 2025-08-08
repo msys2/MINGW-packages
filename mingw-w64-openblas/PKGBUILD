@@ -5,8 +5,8 @@ _realname=OpenBLAS
 pkgbase=mingw-w64-openblas
 pkgname=("${MINGW_PACKAGE_PREFIX}-openblas"
          $([[ "${CARCH}" == "i686" ]] || echo "${MINGW_PACKAGE_PREFIX}-openblas64"))
-pkgver=0.3.28
-pkgrel=1
+pkgver=0.3.30
+pkgrel=2
 pkgdesc="An optimized BLAS library based on GotoBLAS2 1.13 BSD, providing optimized blas, lapack, and cblas (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
@@ -17,24 +17,29 @@ msys2_references=(
   "cpe: cpe:/a:openblas_project:openblas"
 )
 license=('spdx:BSD-3-Clause')
-depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
-         "${MINGW_PACKAGE_PREFIX}-libwinpthread"
+depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
          $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran")
          "${MINGW_PACKAGE_PREFIX}-omp")
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-cmake"
              "${MINGW_PACKAGE_PREFIX}-ninja"
-             $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-fc")
+             "${MINGW_PACKAGE_PREFIX}-fc"
              "dos2unix")
 options=('!buildflags')
 source=(https://github.com/OpenMathLib/OpenBLAS/releases/download/v${pkgver}/${_realname}-${pkgver}.tar.gz
+        001-enable-openmp-with-lapack.patch
         002-lgfortran-requires-lquadmath.patch
+        003-disable-renaming-symbols-on-mingw.patch
         004-aarch64-detection.patch
-        005-fix-pkgconfig-files.patch)
-sha256sums=('f1003466ad074e9b0c8d421a204121100b0751c96fc6fcf3d1456bd12f8a00a1'
+        005-fix-pkgconfig-files.patch
+        006-find-openmp-before-usage.patch)
+sha256sums=('27342cff518646afb4c2b976d809102e368957974c250a25ccc965e53063c95d'
+            '358e0425015e3c51598d8e6658648f0ffd45e44325ccf6bb8c3d9108ed3b522b'
             'c147ec053bdf0387d499372472365aa829db0d8200b6828b0ebce5209e8603fd'
+            '40a52c7b6f927b09eeffce37d543613dfdfebe9da9e2eb19b6f4aef7d2a0330d'
             '70ce007ff4f6c2a127f9835ce9cd85081707cf3bcccddcfaa06817b06f69c941'
-            'a5c94f3c089a85c691ce67f0ad2e090d7d4ef951beee040248a5eaf0ee12b33d')
+            'a5c94f3c089a85c691ce67f0ad2e090d7d4ef951beee040248a5eaf0ee12b33d'
+            '576dbb8fe18292a78668a2d48c2483dc44ae7cb14050593ed1a0103bdb4d7960')
 
 # Helper macros to help make tasks easier #
 apply_patch_with_msg() {
@@ -49,9 +54,12 @@ prepare() {
   cd "${srcdir}"/${_realname}-${pkgver}
 
   apply_patch_with_msg \
+    001-enable-openmp-with-lapack.patch \
     002-lgfortran-requires-lquadmath.patch \
+    003-disable-renaming-symbols-on-mingw.patch \
     004-aarch64-detection.patch \
-    005-fix-pkgconfig-files.patch
+    005-fix-pkgconfig-files.patch \
+    006-find-openmp-before-usage.patch
 }
 
 _build_openblas() {
@@ -64,14 +72,10 @@ _build_openblas() {
     _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
   fi
 
-  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
-    _extra_config+=("-DC_LAPACK=ON")
-  fi
-
   if [[ ${CARCH} == aarch64 ]]; then
     # Clang wasn't able to compile all the kernels inside the arm64 folder,
-    # Enable only the cores known to run Windows on ARM
-    _extra_config+=("-DTARGET=CORTEXA53" "-DDYNAMIC_LIST=\"ARMV8 CORTEXA53 CORTEXA55 CORTEXA57 CORTEXA72 CORTEXA73 CORTEXA510 CORTEXA710 CORTEXX1 CORTEXX2\"")
+    # Enable only the cores known to build on Windows on ARM
+    _extra_config+=("-DTARGET=CORTEXA53" "-DDYNAMIC_ARCH=ON" "-DDYNAMIC_LIST='CORTEXA53;CORTEXA57;CORTEXA72;CORTEXA73;CORTEXA76;CORTEXX1;THUNDERX;TSV110;EMAG8180'")
   else
     _extra_config+=("-DTARGET=CORE2" "-DDYNAMIC_ARCH=ON")
   fi
@@ -82,6 +86,7 @@ _build_openblas() {
     -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
     -DBUILD_SHARED_LIBS=ON \
     -DBUILD_STATIC_LIBS=ON \
+    -DBUILD_TESTING=OFF \
     -DUSE_THREAD=ON \
     -DNUM_THREADS=64 \
     -DUSE_OPENMP=ON \
@@ -108,11 +113,15 @@ build() {
 
 check() {
   cd "${srcdir}"/build-${MSYSTEM}-32
-  ctest
+  ${MINGW_PREFIX}/bin/cmake -DBUILD_TESTING=ON ../${_realname}-${pkgver}
+  ${MINGW_PREFIX}/bin/cmake --build .
+  ${MINGW_PREFIX}/bin/ctest
 
   if [ "${CARCH}" != "i686" ]; then
-    cd "${srcdir}"/build-${MSYSTEM}-64
-    ctest
+    cd "${srcdir}/build-${MSYSTEM}-64"
+    ${MINGW_PREFIX}/bin/cmake -DBUILD_TESTING=ON ../${_realname}-${pkgver}
+    ${MINGW_PREFIX}/bin/cmake --build .
+    ${MINGW_PREFIX}/bin/ctest
   fi
 }
 
@@ -121,7 +130,12 @@ package_openblas() {
 
   cd "${srcdir}"/build-${MSYSTEM}-32
 
-  DESTDIR=${pkgdir} ${MINGW_PREFIX}/bin/cmake --install .
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
+
+  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
+  for _f in "${pkgdir}${MINGW_PREFIX}"/lib/cmake/OpenBLAS/*.cmake; do
+    sed -e "s|${PREFIX_WIN}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
+  done
 
   # Install License
   install -Dm0644 "${srcdir}"/${_realname}-${pkgver}/LICENSE "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
@@ -136,7 +150,12 @@ package_openblas64() {
 
   cd "${srcdir}"/build-${MSYSTEM}-64
 
-  DESTDIR=${pkgdir} ${MINGW_PREFIX}/bin/cmake --install .
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
+
+  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
+  for _f in "${pkgdir}${MINGW_PREFIX}"/lib/cmake/OpenBLAS64/*.cmake; do
+    sed -e "s|${PREFIX_WIN}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
+  done
 
   # Install License
   install -Dm0644 "${srcdir}"/${_realname}-${pkgver}/LICENSE "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}64/LICENSE
