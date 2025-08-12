@@ -1,0 +1,142 @@
+diff -Naur ispc-1.27.0-orig/CMakeLists.txt ispc-1.27.0/CMakeLists.txt
+--- ispc-1.27.0-orig/CMakeLists.txt	2025-05-16 01:24:52.000000000 +0300
++++ ispc-1.27.0/CMakeLists.txt	2025-06-10 15:33:13.821883100 +0300
+@@ -387,7 +387,7 @@
+     message(FATAL_ERROR "ISPC requires LLVM 17.0.0 or later")
+ endif()
+ 
+-set(CLANG_LIBRARY_LIST clangFrontend clangBasic clangEdit clangLex clangSupport clangASTMatchers)
++set(CLANG_LIBRARY_LIST clangFrontend clangEdit clangLex clangBasic clangSupport clangASTMatchers)
+ 
+ set(LLVM_COMPONENTS engine ipo bitreader bitwriter instrumentation linker option frontendopenmp passes)
+ 
+@@ -723,6 +723,9 @@
+ list(APPEND LINK_OPTIONS_PUBLIC)
+ # Link options
+ if (WIN32)
++    if (MINGW)
++    list(APPEND LINK_OPTIONS_PRIVATE -Wl,--dynamicbase)
++    else()
+     list(APPEND LINK_OPTIONS_PRIVATE /DYNAMICBASE)
+     # Control flow guard
+     list(APPEND LINK_OPTIONS_PRIVATE /GUARD:CF)
+@@ -732,6 +735,7 @@
+     if (MSVC AND NOT CMAKE_BUILD_TYPE STREQUAL "DEBUG" )
+         list(APPEND LINK_OPTIONS_PUBLIC /OPT:REF /OPT:ICF)
+     endif()
++    endif()
+ elseif (APPLE)
+     if(CMAKE_BUILD_TYPE MATCHES Release)
+         list(APPEND LINK_OPTIONS_PUBLIC "SHELL: -Wl,-dead_strip")
+@@ -802,14 +806,14 @@
+ 
+ # System libraries, our own and transitive dependencies from LLVM libs.
+ if (WIN32)
+-    list(APPEND LINK_LIBRARIES version.lib shlwapi.lib odbc32.lib odbccp32.lib)
++    list(APPEND LINK_LIBRARIES version shlwapi odbc32 odbccp32)
+     # Required after LLVM commit a5ffabc
+     if (${LLVM_VERSION_NUMBER} VERSION_GREATER_EQUAL "18.1.0")
+-        list(APPEND LINK_LIBRARIES ws2_32.lib)
++        list(APPEND LINK_LIBRARIES ws2_32)
+     endif()
+     # Required after LLVM commit cb7690a
+     if (${LLVM_VERSION_NUMBER} VERSION_GREATER_EQUAL "19.1.0")
+-        list(APPEND LINK_LIBRARIES ntdll.lib)
++        list(APPEND LINK_LIBRARIES ntdll)
+     endif()
+ else()
+     run_llvm_config(LLVM_SYSTEM_LIBS "--system-libs")
+diff -Naur ispc-1.27.0-orig/builtins/builtins-c-cpu.cpp ispc-1.27.0/builtins/builtins-c-cpu.cpp
+--- ispc-1.27.0-orig/builtins/builtins-c-cpu.cpp	2025-05-16 01:24:52.000000000 +0300
++++ ispc-1.27.0/builtins/builtins-c-cpu.cpp	2025-06-10 15:33:13.821883100 +0300
+@@ -24,7 +24,7 @@
+   */
+ #ifndef WASM
+ 
+-#ifdef _MSC_VER
++#ifdef _WIN32
+ // We do want old school sprintf and don't want secure Microsoft extensions.
+ // And we also don't want warnings about it, so the define.
+ #define _CRT_SECURE_NO_WARNINGS
+diff -Naur ispc-1.27.0-orig/ispcrt/CMakeLists.txt ispc-1.27.0/ispcrt/CMakeLists.txt
+--- ispc-1.27.0-orig/ispcrt/CMakeLists.txt	2025-05-16 01:24:52.000000000 +0300
++++ ispc-1.27.0/ispcrt/CMakeLists.txt	2025-06-10 15:33:13.829848200 +0300
+@@ -111,7 +111,7 @@
+                            -fstack-protector-strong -fno-delete-null-pointer-checks -fwrapv)
+     target_compile_options(ispcrt_interface_lib INTERFACE -Wall -Wextra -Wno-unused-private-field)
+     target_compile_definitions(ispcrt_interface_lib INTERFACE "_FORTIFY_SOURCE=2")
+-    if (NOT APPLE)
++    if (NOT APPLE AND NOT MINGW)
+         target_link_options(ispcrt_interface_lib INTERFACE
+                    "SHELL: -z noexecstack"
+                    "SHELL: -z relro"
+diff -Naur ispc-1.27.0-orig/ispcrt/detail/cpu/CPUDevice.cpp ispc-1.27.0/ispcrt/detail/cpu/CPUDevice.cpp
+--- ispc-1.27.0-orig/ispcrt/detail/cpu/CPUDevice.cpp	2025-05-16 01:24:52.000000000 +0300
++++ ispc-1.27.0/ispcrt/detail/cpu/CPUDevice.cpp	2025-06-10 15:33:13.839623300 +0300
+@@ -175,7 +175,7 @@
+         void *fptr = nullptr;
+         for (auto lib : m_libs) {
+ #if defined(_WIN32) || defined(_WIN64)
+-            fptr = GetProcAddress((HMODULE)lib, name);
++            fptr = (void*)GetProcAddress((HMODULE)lib, name);
+ #else
+             fptr = dlsym(lib ? lib : RTLD_DEFAULT, name);
+ #endif
+diff -Naur ispc-1.27.0-orig/ispcrt/detail/cpu/ispc_tasking.cpp ispc-1.27.0/ispcrt/detail/cpu/ispc_tasking.cpp
+--- ispc-1.27.0-orig/ispcrt/detail/cpu/ispc_tasking.cpp	2025-05-16 01:24:52.000000000 +0300
++++ ispc-1.27.0/ispcrt/detail/cpu/ispc_tasking.cpp	2025-06-10 15:33:13.847644600 +0300
+@@ -55,9 +55,9 @@
+       defined ISPC_USE_TBB_PARALLEL_FOR || defined ISPC_USE_OMP || defined ISPC_USE_HPX)
+ 
+ // If no task model chosen from the compiler cmdline, pick a reasonable default
+-#if defined(_WIN32) || defined(_WIN64)
++#if defined(_MSC_VER)
+ #define ISPC_USE_CONCRT
+-#elif defined(__linux__) || defined(__FreeBSD__)
++#elif defined(__linux__) || defined(__FreeBSD__) || defined(__MINGW32__)
+ #define ISPC_USE_PTHREADS
+ #elif defined(__APPLE__)
+ #define ISPC_USE_GCD
+@@ -136,6 +136,28 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
++#ifdef __MINGW32__
++#include <windows.h>
++#define _SC_PAGESIZE 1
++#define _SC_NPROCESSORS_ONLN 2
++long sysconf(int tp) {
++    switch (tp) {
++        case _SC_PAGESIZE: {
++            SYSTEM_INFO inf;
++            GetSystemInfo(&inf);
++            return (long)inf.dwPageSize;
++        }
++        case _SC_NPROCESSORS_ONLN: {
++            SYSTEM_INFO inf;
++            GetSystemInfo(&inf);
++            return (long)inf.dwNumberOfProcessors;
++        }
++        default:
++            return -1L;
++    }
++}
++
++#endif
+ // Signature of ispc-generated 'task' functions
+ typedef void (*TaskFuncType)(void *data, int threadIndex, int threadCount, int taskIndex, int taskCount, int taskIndex0,
+                              int taskIndex1, int taskIndex2, int taskCount0, int taskCount1, int taskCount2);
+diff -Naur ispc-1.27.0-orig/src/main.cpp ispc-1.27.0/src/main.cpp
+--- ispc-1.27.0-orig/src/main.cpp	2025-05-16 01:24:52.000000000 +0300
++++ ispc-1.27.0/src/main.cpp	2025-06-10 15:45:17.325604100 +0300
+@@ -42,7 +42,9 @@
+ #ifndef BUILD_DATE
+ #define BUILD_DATE __DATE__
+ #endif
+-#if _MSC_VER >= 1900
++#if defined(__MINGW32__)
++#define ISPC_VS_VERSION "Mingw-w64"
++#elif _MSC_VER >= 1900
+ #define ISPC_VS_VERSION "Visual Studio 2015 and later"
+ #else
+ #define ISPC_VS_VERSION "Visual Studio 2013 and earlier"

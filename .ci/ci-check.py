@@ -24,7 +24,7 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__file__)
 
-TEMP_REPO_PATH = ARTIFACTS_LOCATION = Path("C:/_/artifacts")
+TEMP_REPO_PATH = ARTIFACTS_LOCATION = None
 RDEPS_REGEX = re.compile(r"Repository\s*: \s*[\n\S\s]*\nRequired By\s*:\s*(?P<rdeps>[\s\S]*)Optional For\s*:\s*")
 OPTIONS_REGEX = re.compile(r"options=\((?P<options>[\S ]*)\)")
 REPO_ROOT = Path(__file__).parent.parent
@@ -321,7 +321,14 @@ if __name__ == "__main__":
         dest="run",
         action="store_true",
     )
+    parser.add_argument(
+        "directory",
+        help="Directory containing the artifacts.",
+        type=Path,
+    )
     args = parser.parse_args()
+    TEMP_REPO_PATH = ARTIFACTS_LOCATION = args.directory.resolve()
+
     if args.run:
         res = check_whether_we_should_run()
 

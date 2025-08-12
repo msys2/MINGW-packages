@@ -3,11 +3,11 @@
 _realname=gnutls
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=3.8.8
+pkgver=3.8.10
 pkgrel=1
 pkgdesc="A library which provides a secure layer over a reliable transport layer (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clang32' 'clangarm64')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
 license=('spdx:GPL-3.0-or-later' 'spdx:LGPL-2.1-or-later')
 url="https://www.gnutls.org/"
 msys2_repository_url="https://gitlab.com/gnutls/gnutls"
@@ -16,7 +16,7 @@ msys2_references=(
   "cpe: cpe:2.3:a:gnutls:gnutls"
 )
 options=('!zipman')
-depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
+depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
          "${MINGW_PACKAGE_PREFIX}-gettext-runtime"
          "${MINGW_PACKAGE_PREFIX}-gmp"
          "${MINGW_PACKAGE_PREFIX}-brotli"
@@ -25,7 +25,7 @@ depends=("${MINGW_PACKAGE_PREFIX}-gcc-libs"
          "${MINGW_PACKAGE_PREFIX}-nettle>=3.6"
          "${MINGW_PACKAGE_PREFIX}-p11-kit>=0.23.1"
          "${MINGW_PACKAGE_PREFIX}-libunistring"
-         "${MINGW_PACKAGE_PREFIX}-libwinpthread-git"
+         "${MINGW_PACKAGE_PREFIX}-libwinpthread"
          "${MINGW_PACKAGE_PREFIX}-zlib"
          "${MINGW_PACKAGE_PREFIX}-zstd"
          #"${MINGW_PACKAGE_PREFIX}-unbound"
@@ -36,11 +36,13 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-autotools")
 # Need remove "autogen" package before building.
 source=(https://www.gnupg.org/ftp/gcrypt/gnutls/v${pkgver%.*}/${_realname}-${pkgver}.tar.xz{,.sig}
+        0001-fix-build-with-mingw-w64-clang.patch
         0003-gnutls-fix-external-libtasn1-detection.patch
         0004-disable-broken-examples.patch
         0005-remove-coverage-rules.patch)
-sha256sums=('ac4f020e583880b51380ed226e59033244bc536cad2623f2e26f5afa2939d8fb'
+sha256sums=('db7fab7cce791e7727ebbef2334301c821d79a550ec55c9ef096b610b03eb6b7'
             'SKIP'
+            '7941d0a98b46b48cc85985a2edf6576a699f854d9147e794c713465ec07958ab'
             '6493f69e782d60fe04de4b0040987e99851c522d0baf2fe25d10b85b63e97863'
             'cbf9e59fb2432d4ac1edcb70734023e074b8058fa4c010a036a40de8449f67fb'
             '10ea5a84459af8d848788cc8871decd3b3cdd542b829883ebe4f6ec28d60578f')
@@ -49,11 +51,21 @@ validpgpkeys+=('1F42418905D8206AA754CCDC29EE58B996865171') # "Nikos Mavrogiannop
 validpgpkeys+=('462225C3B46F34879FC8496CD605848ED7E69871') # "Daiki Ueno <ueno@unixuser.org>"
 validpgpkeys+=('5D46CB0F763405A7053556F47A75A648B3F9220C') # Zoltan Fridrich <zfridric at redhat.com>
 
+apply_patch_with_msg() {
+  for _fname in "$@"
+  do
+    msg2 "Applying ${_fname}"
+    patch -Nbp1 -i "${srcdir}"/${_fname}
+  done
+}
+
 prepare() {
   cd "${srcdir}/${_realname}-${pkgver}"
-  patch -p1 -i ${srcdir}/0003-gnutls-fix-external-libtasn1-detection.patch
-  patch -p1 -i ${srcdir}/0004-disable-broken-examples.patch
-  patch -p1 -i ${srcdir}/0005-remove-coverage-rules.patch
+  apply_patch_with_msg \
+    0001-fix-build-with-mingw-w64-clang.patch \
+    0003-gnutls-fix-external-libtasn1-detection.patch \
+    0004-disable-broken-examples.patch \
+    0005-remove-coverage-rules.patch
 
   WANT_AUTOMAKE=latest autoreconf -fiv -I m4
 }
@@ -76,7 +88,6 @@ build() {
   # https://github.com/msys2/MINGW-packages/issues/11743
   export gl_cv_have_weak=no
 
-  [[ -d "${srcdir}/build-${MSYSTEM}-static" ]] && rm -rf "${srcdir}/build-${MSYSTEM}-static"
   mkdir -p "${srcdir}/build-${MSYSTEM}-static" && cd "${srcdir}/build-${MSYSTEM}-static"
 
   CPPFLAGS+=" -DIN_LIBUNISTRING" \
@@ -93,14 +104,15 @@ build() {
     --disable-rpath \
     --disable-gtk-doc \
     --with-libiconv-prefix=${MINGW_PREFIX} \
+    --without-libintl-prefix \
     --disable-libdane \
     --disable-tests \
+    --without-p11-kit \
     "${extra_config[@]}" \
     gl_cv_double_slash_root=yes
 
   make
 
-  [[ -d "${srcdir}/build-${MSYSTEM}-shared" ]] && rm -rf "${srcdir}/build-${MSYSTEM}-shared"
   mkdir -p "${srcdir}/build-${MSYSTEM}-shared" && cd "${srcdir}/build-${MSYSTEM}-shared"
 
   ../${_realname}-${pkgver}/configure \
@@ -116,6 +128,7 @@ build() {
     --disable-rpath \
     --disable-gtk-doc \
     --with-libiconv-prefix=${MINGW_PREFIX} \
+    --without-libintl-prefix \
     --disable-libdane \
     --disable-tests \
     "${extra_config[@]}" \
@@ -139,7 +152,11 @@ package() {
   cd "${srcdir}/build-${MSYSTEM}-shared"
   make DESTDIR="${pkgdir}" install
 
+  # Since we use --without-p11-kit for the static build
+  # use the static .pc which doesn't have p11-kit in Requires.private
+  cp "${srcdir}/build-${MSYSTEM}-static/lib/gnutls.pc" "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/gnutls.pc"
+
   find "${pkgdir}${MINGW_PREFIX}" -name '*.def' -o -name '*.exp' | xargs -rtl1 rm
   local PREFIX_DEPS=$(cygpath -am ${MINGW_PREFIX})
-  find ${pkgdir}${MINGW_PREFIX}/lib/pkgconfig -name *.pc -exec sed -i -e"s|${PREFIX_DEPS}|${MINGW_PREFIX}|g" {} \;
+  find "${pkgdir}"${MINGW_PREFIX}/lib/pkgconfig -name *.pc -exec sed -i -e"s|${PREFIX_DEPS}|${MINGW_PREFIX}|g" {} \;
 }
