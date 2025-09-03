@@ -50,8 +50,8 @@ git -c core.abbrev=7 \
 		--suffix=.patch \
 		--subject-prefix=PATCH \
 		--output-directory .. \
-			$base_tag..$msys2_branch ||
-			-- ':(exclude).github/' ||
+		$base_tag..$msys2_branch \
+		-- ':(exclude).github/' ||
 die "Could not generate new patch set"
 
 patches="$(ls -1 0*.patch)" &&
