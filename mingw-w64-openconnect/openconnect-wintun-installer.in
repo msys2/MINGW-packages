@@ -2,10 +2,10 @@
 #
 #   Wintun installer for use with openconnect on MSYS environments
 #
-#   This script performs a system-wide installation of wintun digitally 
+#   This script performs a system-wide installation of wintun digitally
 #   signed DLL, by downloading it from the official binary distribution.
 #
-#   Copyright (c) 2024 Marios Paouris <mspaourh@gmail.com>
+#   Copyright (c) 2024-2025 Marios Paouris <mspaourh@gmail.com>
 #
 #   This program is free software; you can redistribute it and/or modify
 #   it under the terms of the GNU General Public License as published by
@@ -28,36 +28,23 @@
 # These variables are defined in PKGBUILD during package creation
 #
 
-# What to download and from where (PKGBUILD format) 
+# What to download and from where (PKGBUILD format)
 source="@_wintun_source@"
 # SHA256 checksum for downloaded ZIP file
 sha256sums="@_wintun_sha256sum@"
 # Wintun architecture interested in; specifies the subdirectory to look for the
 # DLL in the downloaded zip
 WINTUN_ARCH="@WINTUN_ARCH@"
-# ZIP filename
-_wintun_zip="@_wintun_zip@"
 # SHA256 checksum for the DLL
 wintundll_sha256="@wintundll_sha256@"
 # destination location for the DLL
 wintundll_dest="@wintundll_dest@"
-# destination localtion for the license file
+# destination location for the license file
 wintun_license_dest="@wintun_license_dest@"
 # installer version
 installer_version="@pkgver@-@pkgrel@"
 # installer script name
 installer_script="@installer_script@"
-
-# don't extract the whole zip; will grab only the file of interest.
-noextract=("@_wintun_zip@")
-
-#
-# pull in handy stuff from makepkg
-#
-
-# gettext initialization
-export TEXTDOMAIN='pacman-scripts'
-export TEXTDOMAINDIR='/usr/share/locale'
 
 # file -i does not work on Mac OSX unless legacy mode is set
 export COMMAND_MODE='legacy'
@@ -66,141 +53,438 @@ unset CDPATH
 # Ensure GREP_OPTIONS doesn't screw with our grep calls
 unset GREP_OPTIONS
 
-MAKEPKG_LIBRARY=${MAKEPKG_LIBRARY:-'/usr/share/makepkg'}
+E_OK=0
+E_FAIL=1 # Generic error
+E_INVALID_OPTION=3
+E_FS_PERMISSIONS=11
 
-# Import libmakepkg
-for lib in "$MAKEPKG_LIBRARY"/*.sh; do
-  source "$lib"
-done
+colorize() {
+	# prefer terminal safe colored and bold text when tput is supported
+	if tput setaf 0 &>/dev/null; then
+		ALL_OFF="$(tput sgr0)"
+		BOLD="$(tput bold)"
+		BLUE="${BOLD}$(tput setaf 4)"
+		GREEN="${BOLD}$(tput setaf 2)"
+		RED="${BOLD}$(tput setaf 1)"
+		YELLOW="${BOLD}$(tput setaf 3)"
+	else
+		ALL_OFF="\e[0m"
+		BOLD="\e[1m"
+		BLUE="${BOLD}\e[34m"
+		GREEN="${BOLD}\e[32m"
+		RED="${BOLD}\e[31m"
+		YELLOW="${BOLD}\e[33m"
+	fi
+	readonly ALL_OFF BOLD BLUE GREEN RED YELLOW
+}
+
+plain() {
+	((QUIET)) && return
+	local mesg=$1
+	shift
+	printf "${BOLD}    ${mesg}${ALL_OFF}\n" "$@"
+}
+
+plainerr() {
+	plain "$@" >&2
+}
+
+msg() {
+	((QUIET)) && return
+	local mesg=$1
+	shift
+	printf "${GREEN}==>${ALL_OFF}${BOLD} ${mesg}${ALL_OFF}\n" "$@"
+}
+
+msg2() {
+	((QUIET)) && return
+	local mesg=$1
+	shift
+	printf "${BLUE}  ->${ALL_OFF}${BOLD} ${mesg}${ALL_OFF}\n" "$@"
+}
+
+ask() {
+	local mesg=$1
+	shift
+	printf "${BLUE}::${ALL_OFF}${BOLD} ${mesg}${ALL_OFF}" "$@"
+}
+
+warning() {
+	local mesg=$1
+	shift
+	printf "${YELLOW}==> $(gettext "WARNING:")${ALL_OFF}${BOLD} ${mesg}${ALL_OFF}\n" "$@" >&2
+}
+
+error() {
+	local mesg=$1
+	shift
+	printf "${RED}==> $(gettext "ERROR:")${ALL_OFF}${BOLD} ${mesg}${ALL_OFF}\n" "$@" >&2
+}
+
+# Canonicalize a directory path if it exists
+canonicalize_path() {
+	local path="$1"
+
+	if [[ -d $path ]]; then
+		(
+			cd_safe "$path"
+			pwd -P
+		)
+	else
+		printf "%s\n" "$path"
+	fi
+}
+
+cd_safe() {
+	if ! cd "$1"; then
+		error "$(gettext "Failed to change to directory %s")" "$1"
+		plainerr "$(gettext "Aborting...")"
+		exit 1
+	fi
+}
+
+# Try to create directory if one does not yet exist. Fails if the directory
+# exists but has no write permissions, or if there is an existing file with
+# the same name.
+ensure_writable_dir() {
+	local dirtype="$1" dirpath="$2"
+
+	if ! mkdir -p "$dirpath" 2>/dev/null; then
+		error "$(gettext "Failed to create the directory \$%s (%s).")" "$dirtype" "$dirpath"
+		return 1
+	elif [[ ! -w $dirpath ]]; then
+		error "$(gettext "You do not have write permission for the directory \$%s (%s).")" "$dirtype" "$dirpath"
+		return 1
+	fi
+
+	return 0
+}
+
+get_downloadclient() {
+	local proto=$1
+	local DLAGENTS=('https::/usr/bin/curl -gqb "" -fLC - --retry 3 --retry-delay 3 -o %o %u')
+
+	# loop through DOWNLOAD_AGENTS variable looking for protocol
+	local i
+	for i in "${DLAGENTS[@]}"; do
+		local handler="${i%%::*}"
+		if [[ $proto = "$handler" ]]; then
+			local agent="${i#*::}"
+			break
+		fi
+	done
+
+	# if we didn't find an agent, return an error
+	if [[ -z $agent ]]; then
+		error "$(gettext "Unknown download protocol: %s")" "$proto"
+		plainerr "$(gettext "Aborting...")"
+		exit 1 # $E_CONFIG_ERROR
+	fi
+
+	# ensure specified program is installed
+	local program="${agent%% *}"
+	if [[ ! -x $program ]]; then
+		local baseprog="${program##*/}"
+		error "$(gettext "The download program %s is not installed.")" "$baseprog"
+		plainerr "$(gettext "Aborting...")"
+		exit 1 # $E_MISSING_PROGRAM
+	fi
+
+	printf "%s\n" "$agent"
+}
+
+# a source entry can have two forms :
+# 1) "filename::http://path/to/file"
+# 2) "http://path/to/file"
+
+# extract the URL from a source entry
+get_url() {
+	# strip an eventual filename
+	printf "%s\n" "${1#*::}"
+}
+
+# extract the protocol from a source entry - return "local" for local sources
+get_protocol() {
+	if [[ $1 = *://* ]]; then
+		# strip leading filename
+		local proto="${1#*::}"
+		proto="${proto%%://*}"
+		# strip proto+uri://
+		printf "%s\n" "${proto%%+*}"
+	elif [[ $1 = *lp:* ]]; then
+		local proto="${1#*::}"
+		printf "%s\n" "${proto%%+lp:*}"
+	else
+		printf "%s\n" local
+	fi
+}
+
+# extract the filename from a source entry
+get_filename() {
+	local netfile=$1
+
+	# if a filename is specified, use it
+	if [[ $netfile = *::* ]]; then
+		printf "%s\n" "${netfile%%::*}"
+		return
+	fi
+
+	# if it is just an URL, we only keep the last component
+	filename="${netfile##*/}"
+	printf "%s\n" "${filename}"
+}
+
+# Return the absolute filename of a source entry
+get_filepath() {
+	local file="$(get_filename "$1")"
+
+	if [[ -f "$startdir/$file" ]]; then
+		file="$startdir/$file"
+	elif [[ -f "$SRCDEST/$file" ]]; then
+		file="$SRCDEST/$file"
+	else
+		return 1
+	fi
+
+	printf "%s\n" "$file"
+}
+
+download_file() {
+	local netfile=$1
+
+	local filepath=$(get_filepath "$netfile")
+	if [[ -n "$filepath" ]]; then
+		msg2 "$(gettext "Found %s")" "${filepath##*/}"
+		return
+	fi
+
+	local proto=$(get_protocol "$netfile")
+
+	# find the client we should use for this URL
+	local -a cmdline
+	IFS=' ' read -a cmdline < <(get_downloadclient "$proto")
+	wait $! || exit
+
+	local filename=$(get_filename "$netfile")
+	local url=$(get_url "$netfile")
+
+	if [[ $proto = "scp" ]]; then
+		# scp downloads should not pass the protocol in the url
+		url="${url##*://}"
+	fi
+
+	msg2 "$(gettext "Downloading %s...")" "$filename"
+
+	# temporary download file, default to last component of the URL
+	local dlfile="${url##*/}"
+
+	# replace %o by the temporary dlfile if it exists
+	if [[ ${cmdline[*]} = *%o* ]]; then
+		dlfile=$filename.part
+		cmdline=("${cmdline[@]//%o/"$dlfile"}")
+	fi
+	# add the URL, either in place of %u or at the end
+	if [[ ${cmdline[*]} = *%u* ]]; then
+		cmdline=("${cmdline[@]//%u/"$url"}")
+	else
+		cmdline+=("$url")
+	fi
+
+	if ! command -- "${cmdline[@]}" >&2; then
+		[[ ! -s $dlfile ]] && rm -f -- "$dlfile"
+		error "$(gettext "Failure while downloading %s")" "$url"
+		plainerr "$(gettext "Aborting...")"
+		exit 1
+	fi
+
+	# rename the temporary download file to the final destination
+	if [[ $dlfile != "$filename" ]]; then
+		mv -f "$SRCDEST/$dlfile" "$SRCDEST/$filename"
+	fi
+}
+
+download_sources() {
+	local netfile
+
+	msg "$(gettext "Retrieving sources...")"
+
+	for netfile in "${source[@]}"; do
+		pushd "$SRCDEST" &>/dev/null
+
+		download_file "$netfile"
+
+		popd &>/dev/null
+	done
+}
+
+verify_integrity_one() {
+	local source_name=$1 integ=$2 expectedsum=$3 file filepath realsum
+
+	file="$(get_filename "$source_name")"
+	printf '    %s ... ' "$file" >&2
+
+	if ! filepath="$(get_filepath "$source_name")"; then
+		printf '%s\n' "$(gettext "NOT FOUND")" >&2
+		return 1
+	fi
+
+	if [[ $expectedsum = 'SKIP' ]]; then
+		printf '%s\n' "$(gettext "Skipped")" >&2
+		return
+	fi
+
+	realsum=$(calc_checksum_file "$filepath" "$integ") || return 1
+
+	if [[ ${expectedsum,,} != "$realsum" ]]; then
+		printf '%s\n' "$(gettext "FAILED")" >&2
+		return 1
+	fi
+	printf '%s\n' "$(gettext "Passed")" >&2
+	return 0
+}
+
+verify_integrity_sums() {
+	local integ="sha256"
+
+	msg "$(gettext "Validating source files with %s...")" "${integ}sums"
+	local idx errors=0
+	for ((idx = 0; idx < ${#source[*]}; idx++)); do
+		verify_integrity_one "${source[idx]}" "$integ" "${sha256sums[idx]}" || errors=1
+	done
+
+	if ((errors)); then
+		error "$(gettext "One or more files did not pass the validity check!")"
+		exit $E_FAIL
+	fi
+}
+
+calc_checksum_file() {
+	local file=$1 integ=$2 ret=0 sum
+
+	if [ ! -f $file ]; then
+		return 1
+	fi
+
+	sum="$("${integ}sum" "$file")" || ret=1
+	sum="${sum%% *}"
+
+	printf '%s' "$sum"
+	return $ret
+}
 
 cleanup() {
-  if [ -d $startdir ]; then
-    #msg2 "cleaning up ${startdir}"
-    rm -rf ${startdir}
-  fi
+	if [ -d $startdir ]; then
+		#msg2 "cleaning up ${startdir}"
+		rm -rf ${startdir}
+	fi
 }
 
 write_info_file() {
-  local file=${wintundll_dest}/wintun.info
-  msg2 "Installing ${file}"
-  echo "${wintundll_sha256} *${installer_version}" > $file
+	local file=${wintundll_dest}/wintun.info
+	msg2 "Installing ${file}"
+	echo "${wintundll_sha256} *${installer_version}" >$file
 }
 
 get_info_file_sum() {
-  if [ -f ${wintundll_dest}/wintun.info ]; then
-    sum=$(cat $wintundll_dest/wintun.info)
-    sum="${sum%% *}"
-    printf '%s' "$sum"
-  fi
-}
-
-calc_checksum_file_local() {
-  local file=$1 integ=$2 ret=0 sum
-
-  if [ ! -f $file ]; then
-    return 1
-  fi
-
-  sum="$("${integ}sum" "$file")" || ret=1
-  sum="${sum%% *}"
-
-  printf '%s' "$sum"
-
-  return $ret
+	if [ -f ${wintundll_dest}/wintun.info ]; then
+		sum=$(cat $wintundll_dest/wintun.info)
+		sum="${sum%% *}"
+		printf '%s' "$sum"
+	fi
 }
 
 verify_installed_wintun() {
-  local actual_sum installed_sum output_var=$1
+	local actual_sum installed_sum output_var=$1
 
-  #check presence of info file
-  if [ ! -f ${wintundll_dest}/wintun.info ]; then
-    error "Wintun was not installed as part of openconnect"
-    return 1
-  fi
+	#check presence of info file
+	if [ ! -f ${wintundll_dest}/wintun.info ]; then
+		error "Wintun was not installed as part of openconnect"
+		return 1
+	fi
 
-  #verify that actual wintun.dll is the one installed by the installer
-  actual_sum=$(calc_checksum_file_local $wintundll_dest/wintun.dll sha256) || exit 1
-  installed_sum=$(get_info_file_sum) || exit 1
+	#verify that actual wintun.dll is the one installed by the installer
+	actual_sum=$(calc_checksum_file $wintundll_dest/wintun.dll sha256) || exit 1
+	installed_sum=$(get_info_file_sum) || exit 1
 
-  #printf 'actual    sum %s\n' $actual_sum
-  #printf 'installed sum %s\n' $installed_sum
+	#printf 'actual    sum %s\n' $actual_sum
+	#printf 'installed sum %s\n' $installed_sum
 
-  if [ "x${actual_sum}" != "x${installed_sum}" ]; then
-    error "Wintun was found but it was not installed as part of openconnect"
-    return 1
-  fi
+	if [ "x${actual_sum}" != "x${installed_sum}" ]; then
+		error "Wintun was found but it was not installed as part of openconnect"
+		return 1
+	fi
 
-  if [ "x$output_var" != "x" ]; then
-    eval "$output_var"='$actual_sum'
-  fi
+	if [ "x$output_var" != "x" ]; then
+		eval "$output_var"='$actual_sum'
+	fi
 
-  return 0
+	return 0
 }
 
 remove_file() {
-  local file=$1
+	local file=$1
 
-  msg2 "Removing $file"
+	msg2 "Removing $file"
 
-  rm $file
+	rm $file
 
-  if [ $? -ne 0 ]; then
-    error "Failed"
-    return 1
-  fi
+	if [ $? -ne 0 ]; then
+		error "Failed"
+		return 1
+	fi
 
-  return 0
+	return 0
 }
 
 copy_file() {
-  local source=$1 dest=$2
-  msg2 "Installing $dest"
-  cp -f $source $dest
+	local source=$1 dest=$2
+	msg2 "Installing $dest"
+	cp -f $source $dest
 
-  if [ $? -ne 0 ]; then
-    error "Failed"
-    return 1
-  fi
+	if [ $? -ne 0 ]; then
+		error "Failed"
+		return 1
+	fi
 
-  return 0
+	return 0
 }
 
 accept_yes_no() {
-  local message="$1"
-  local answer
-  local ret=1
+	local message="$1"
+	local answer
+	local ret=1
 
-  message="$message [Yy/Nn]? "
+	message="$message [Yy/Nn]? "
 
-  ask "$message"
+	ask "$message"
 
-  if [[ $NOCONFIRM -eq 1 ]]; then
-    printf " (automatically confirmed)\n"
-    answer=y
-  else
-    read answer
-  fi
+	if [[ $NOCONFIRM -eq 1 ]]; then
+		printf " (automatically confirmed)\n"
+		answer=y
+	else
+		read answer
+	fi
 
-  if [[ $answer == [Yy] ]]; then
-    ret=0
-  fi
+	if [[ $answer == [Yy] ]]; then
+		ret=0
+	fi
 
-  return $ret
+	return $ret
 }
 
 show_and_accept() {
-  local file=$1
-  local confirm
-  local lessret
-  local autotext
-  local ret
+	local file=$1
+	local confirm
+	local lessret
+	local autotext
+	local ret
 
-  if [[ $NOCONFIRM -eq 1 ]]; then
-    autotext=" (automatically confirmed)"
-    lessret=77
-  else
-    # create a lesskey source file with custom commands
-    cat > $startdir/lesskey.src <<_EOF
+	if [[ $NOCONFIRM -eq 1 ]]; then
+		autotext=" (automatically confirmed)"
+		lessret=77
+	else
+		# create a lesskey source file with custom commands
+		cat >$startdir/lesskey.src <<_EOF
 #command
 y quit M #ascii 7 for M
 Y quit M #ascii 7 for M
@@ -208,21 +492,21 @@ n quit
 N quit
 _EOF
 
-    # show the license and prompt the user to accept
-    less --lesskey-src="$startdir/lesskey.src" --prompt="%F\: Do you accepth the license [Yy/Nn]?" $file
-    lessret=$?
-  fi
+		# show the license and prompt the user to accept
+		less --lesskey-src="$startdir/lesskey.src" --prompt="%F\: Do you accepth the license [Yy/Nn]?" $file
+		lessret=$?
+	fi
 
-  if [ "x$lessret" = "x77" ]; then
-    printf '    %s%s.\n' "License accepted" "$autotext"
-    ret=0
-  else
-    confirm="n"
-    printf '    %s.\n' "License rejected"
-    ret=1
-  fi
+	if [ "x$lessret" = "x77" ]; then
+		printf '    %s%s.\n' "License accepted" "$autotext"
+		ret=0
+	else
+		confirm="n"
+		printf '    %s.\n' "License rejected"
+		ret=1
+	fi
 
-  return $ret
+	return $ret
 }
 
 usage() {
@@ -237,13 +521,14 @@ usage() {
 	printf -- "$(gettext "  -r, --remove     Remove wintun.dll, if already installed by this script")\n"
 	printf -- "$(gettext "  -u, --upgrade    Upgrade wintun.dll, if already installed by this script")\n"
 	printf -- "$(gettext "      --noconfirm  Bypass any and all confirmation messages. It’s not a good idea to do this unless you want to run $installer_script from a script")\n"
+	printf -- "$(gettext "  -m, --nocolor    Disable colorized output messages")\n"
 	printf -- "$(gettext "  -V, --version    Show version information and exit")\n"
 	echo
 }
 
 version() {
 	printf "%s %s\n" "$installer_script" "$installer_version"
-	printf -- "Copyright (c) 2024 Marios Paouris <mspaourh@gmail.com>.\n"
+	printf -- "Copyright (c) 2024-2025 Marios Paouris <mspaourh@gmail.com>.\n"
 	printf '\n'
 	printf "Inspired by makepkg (pacman), which is:\n"
 	printf -- "Copyright (c) 2006-2024 Pacman Development Team <pacman-dev@lists.archlinux.org>.\n"
@@ -259,79 +544,72 @@ There is NO WARRANTY, to the extent permitted by law.\n")"
 # ensure we have a sane umask set
 umask 0022
 
-# determine whether we have gettext; make it a no-op if we do not
-if ! type -p gettext >/dev/null; then
-	gettext() {
-		printf "%s\n" "$@"
-	}
-else
-	gettext() {
-		/usr/bin/gettext "$@"
-	}
-fi
-
-ARGLIST=("$@")
+# Provide a version that calls /usr/bin/gettext if support for i18n is ever needed
+gettext() {
+	printf "%s\n" "$@"
+}
 
 # Parse Command Line Options.
 OPT_SHORT="hmruVn"
-OPT_LONG=('help' 'nocolor', 'remove' 'upgrade' 'version' 'noconfirm')
+OPT_LONG=('help' 'nocolor' 'remove' 'upgrade' 'version' 'noconfirm')
+OPTS=$(IFS="," getopt -o ${OPT_SHORT} --long "${OPT_LONG[*]}" -n "${installer_script}" -- "$@")
 
-if ! parseopts "$OPT_SHORT" "${OPT_LONG[@]}" -- "$@"; then
+if [ $? -ne 0 ]; then
 	exit $E_INVALID_OPTION
 fi
-set -- "${OPTRET[@]}"
-unset OPT_SHORT OPT_LONG OPTRET
+
+#Reset positional parameters
+eval set -- "$OPTS"
+
+unset OPT_SHORT OPT_LONG OPTS
 
 while true; do
 	case "$1" in
-		-m|--nocolor)     USE_COLOR='n';;#; PACMAN_OPTS+=("--color" "never") ;;
-		-r|--remove)      RM=1;;
-		-u|--upgrade)     UPG=1;;
-		   --noconfirm)   NOCONFIRM=1;;
+	-m | --nocolor) USE_COLOR='n' ;; #; PACMAN_OPTS+=("--color" "never") ;;
+	-r | --remove) RM=1 ;;
+	-u | --upgrade) UPG=1 ;;
+	--noconfirm) NOCONFIRM=1 ;;
 
-		-h|--help)        usage; exit $E_OK ;;
-		-V|--version)     version; exit $E_OK ;;
+	-h | --help)
+		usage
+		exit $E_OK
+		;;
+	-V | --version)
+		version
+		exit $E_OK
+		;;
 
-		--)               shift; break ;;
+	--)
+		shift
+		break
+		;;
 	esac
 	shift
 done
-
 
 declare -r startdir="$(mktemp -dp ${TEMP:-/tmp} wintun.XXXXXXXXXX)"
 
 trap cleanup EXIT
 
-load_makepkg_config
-
 # canonicalize paths and provide defaults if anything is still undefined
-for var in PKGDEST SRCDEST SRCPKGDEST LOGDEST BUILDDIR; do
-  printf -v "$var" '%s' "$(canonicalize_path "${!var:-$startdir}")"
+SRCDEST=${SRCDEST:=$startdir/src}
+BUILDDIR=${startdir}
+for var in SRCDEST BUILDDIR; do
+	printf -v "$var" '%s' "$(canonicalize_path "${!var:-$startdir}")"
 done
 unset var
 
 # check if messages are to be printed using color
-if [[ -t 2 && $USE_COLOR != "n" ]] && check_buildenv "color" "y"; then
+if [[ -t 2 && $USE_COLOR != "n" ]]; then
 	colorize
 else
 	unset ALL_OFF BOLD BLUE GREEN RED YELLOW
 fi
 
-# check makepkg.conf for some basic requirements
-lint_config || exit $E_CONFIG_ERROR
-
-# check that all settings directories are user-writable
-if ! ensure_writable_dir "BUILDDIR" "$BUILDDIR"; then
-  plainerr "$(gettext "Aborting...")"
-  exit $E_FS_PERMISSIONS
-fi
-
-if [[ $BUILDDIR -ef "$startdir" ]]; then
-  srcdir="$BUILDDIR/src"
-  pkgdirbase="$BUILDDIR/pkg"
-else
-  srcdir="$BUILDDIR/$pkgbase/src"
-  pkgdirbase="$BUILDDIR/$pkgbase/pkg"
+# check that SRCDEST directory is user-writable
+if ! ensure_writable_dir "SRCDEST" "$SRCDEST"; then
+	plainerr "$(gettext "Aborting...")"
+	exit $E_FS_PERMISSIONS
 fi
 
 #
@@ -340,8 +618,8 @@ fi
 
 # verify existence of the license directory
 if [ ! -d "${wintun_license_dest}" ]; then
-  error "Openconnect license directory not found"
-  exit 1
+	error "Openconnect license directory not found"
+	exit 1
 fi
 
 RM=${RM:-0}
@@ -351,92 +629,90 @@ NOCONFIRM=${NOCONFIRM:-0}
 action="Installing"
 
 if [ $RM -eq 1 ]; then
-  msg "Removing Wintun"
-  #do remove
+	msg "Removing Wintun"
+	#do remove
 
-  #check presence of wintun.dll
-  if [ ! -f ${wintundll_dest}/wintun.dll ]; then
-    msg "Wintun is not installed"
-    exit 0
-  fi
+	#check presence of wintun.dll
+	if [ ! -f ${wintundll_dest}/wintun.dll ]; then
+		msg "Wintun is not installed"
+		exit 0
+	fi
 
-  verify_installed_wintun || exit 1
+	verify_installed_wintun || exit 1
 
-  remove_file "${wintun_license_dest}/LICENSE.wintun"
-  remove_file "${wintundll_dest}/wintun.dll"
-  remove_file "${wintundll_dest}/wintun.info"
+	remove_file "${wintun_license_dest}/LICENSE.wintun"
+	remove_file "${wintundll_dest}/wintun.dll"
+	remove_file "${wintundll_dest}/wintun.info"
 
-  exit 0
+	exit 0
 fi
 
 if [ $UPG -eq 1 ]; then
-  #do upgrade
-  action="Upgrading"
+	#do upgrade
+	action="Upgrading"
 
-  #check presence of wintun.dll
-  if [ ! -f ${wintundll_dest}/wintun.dll ]; then
-    warning "Wintun is not installed"
-  else
-    verify_installed_wintun "ret_installed_sum"
-    ret=$?
-    if [ $ret -eq 0 ]; then
-      #wintun is installed. Is it the one we want to install?
-      if [ "x${ret_installed_sum}" = "x$wintundll_sha256" ]; then
-        msg "Installed wintun doesn't need upgrade"
-	INS=0
-      fi
-    fi
-  fi
+	#check presence of wintun.dll
+	if [ ! -f ${wintundll_dest}/wintun.dll ]; then
+		warning "Wintun is not installed"
+	else
+		verify_installed_wintun "ret_installed_sum"
+		ret=$?
+		if [ $ret -eq 0 ]; then
+			#wintun is installed. Is it the one we want to install?
+			if [ "x${ret_installed_sum}" = "x$wintundll_sha256" ]; then
+				msg "Installed wintun doesn't need upgrade"
+				INS=0
+			fi
+		fi
+	fi
 else
-  #check that wintun.dll is not installed
-  if [ -f ${wintundll_dest}/wintun.dll ]; then
-    error "Wintun is already installed"
-    exit 1
-  fi
+	#check that wintun.dll is not installed
+	if [ -f ${wintundll_dest}/wintun.dll ]; then
+		error "Wintun is already installed"
+		exit 1
+	fi
 fi
 
 if [ $INS -eq 0 ]; then
-  exit 0
+	exit 0
 fi
 
-
-# ensure existence of our src directory so we can begin with sources
-if [ ! -d "$srcdir" ]; then
-  mkdir -p "$srcdir"
-  chmod a-s "$srcdir"
+_url=$(get_url $source)
+_zip=$(get_filename $source)
+_action=download
+if _localzip="$(get_filepath "$source")"; then
+	_action=use
+	_url=$_localzip
 fi
 
 # show message that we are going to download wintun and from where
-msg "This script will download wintun binary distribution from"
-printf "    ${BOLD}URL      : ${ALL_OFF}%s\n" "$(get_url $source)"
-printf "    ${BOLD}Filename : ${ALL_OFF}%s\n" "$(get_filename $source)"
+msg "This script will ${_action} wintun binary distribution from"
+printf "    ${BOLD}URL      : ${ALL_OFF}%s\n" "${_url}"
+printf "    ${BOLD}Filename : ${ALL_OFF}%s\n" "${_zip}"
+printf "    ${BOLD}and install it in into the system directory ${wintundll_dest}${ALL_OFF}\n"
 accept_yes_no "Do you want to proceed" || {
-  printf '    %s\n' "Download rejected."
-  exit 1
+	printf '    %s\n' "Download rejected."
+	exit 1
 }
 
 download_sources
-check_source_integrity
-cd_safe "$srcdir"
-extract_sources
+verify_integrity_sums
 
+cd_safe "$BUILDDIR"
 # extract LICENSE.txt
 msg "Extracting License"
-bsdtar --strip-components=1 -xf ${_wintun_zip} "wintun/LICENSE.txt" || exit 1
+bsdtar --strip-components=1 -xf ${SRCDEST}/${_zip} "wintun/LICENSE.txt" || exit 1
 
 # show the license and prompt the user to accept it
 show_and_accept LICENSE.txt || exit 1
 
 # extract wintun.dll for the specified architecture
 msg "Extracting wintun.dll for ${WINTUN_ARCH}"
-bsdtar --strip-components=3 -xf ${_wintun_zip} "wintun/bin/${WINTUN_ARCH}/wintun.dll" || exit 1
-
-# place it to SRCDEST so its integrity can be verified
-cp -f wintun.dll $SRCDEST/
+bsdtar --strip-components=3 -xf ${SRCDEST}/${_zip} "wintun/bin/${WINTUN_ARCH}/wintun.dll" || exit 1
 
 #verify the integrity of the actual wintun.dll
 msg "Validating wintun.dll"
-verify_integrity_one "wintun.dll" "sha256" $wintundll_sha256
+verify_integrity_one "wintun.dll" "sha256" $wintundll_sha256 || exit 1
 
 msg "$action Wintun"
 copy_file LICENSE.txt "${wintun_license_dest}/LICENSE.wintun" || exit 1
@@ -444,4 +720,3 @@ copy_file wintun.dll "${wintundll_dest}/wintun.dll" || exit 1
 write_info_file || exit 1
 
 exit 0
-
