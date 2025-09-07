@@ -1,0 +1,331 @@
+From 29fc072fdba3abfe1c1d763af3ae84509276bef0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Martin=20Li=C5=A1ka?= <martin.liska@hey.com>
+Date: Sat, 23 Nov 2024 13:17:18 +0100
+Subject: [PATCH] Port to latest LLVM 20 (drop LLVM 14 and older) (#154)
+
+---
+ .github/workflows/build.yml             |  2 +-
+ clang_delta/ExpressionDetector.cpp      | 10 +---
+ clang_delta/RemoveNamespace.cpp         |  4 --
+ clang_delta/RemoveNestedFunction.cpp    |  4 --
+ clang_delta/RewriteUtils.cpp            |  6 --
+ clang_delta/TemplateNonTypeArgToInt.cpp |  4 --
+ clang_delta/Transformation.cpp          |  8 +--
+ clang_delta/TransformationManager.cpp   | 77 ++++---------------------
+ cvise/passes/lines.py                   |  7 ++-
+ 9 files changed, 18 insertions(+), 104 deletions(-)
+
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+index b1c3b56c..81f468b3 100644
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -16,7 +16,7 @@ jobs:
+ 
+     strategy:
+       matrix:
+-        llvm: [13, 14, 15, 16, 17, 18, 19]
++        llvm: [15, 16, 17, 18, 19]
+         build-type: [DEBUG]
+         include:
+           - llvm: 19
+diff --git a/clang_delta/ExpressionDetector.cpp b/clang_delta/ExpressionDetector.cpp
+index 7acbb494..a244b40a 100644
+--- a/clang_delta/ExpressionDetector.cpp
++++ b/clang_delta/ExpressionDetector.cpp
+@@ -16,9 +16,7 @@
+ 
+ #include "clang/AST/RecursiveASTVisitor.h"
+ #include "clang/AST/ASTContext.h"
+-#if LLVM_VERSION_MAJOR >= 15
+ #include "clang/Basic/FileEntry.h"
+-#endif
+ #include "clang/Basic/SourceManager.h"
+ #include "clang/Lex/Preprocessor.h"
+ 
+@@ -66,9 +64,7 @@ class IncludesPPCallbacks : public PPCallbacks {
+                           const Token &IncludeTok,
+                           StringRef FileName, bool IsAngled,
+                           CharSourceRange FilenameRange,
+-#if LLVM_VERSION_MAJOR < 15
+-                          const FileEntry *File,
+-#elif LLVM_VERSION_MAJOR < 16
++#if LLVM_VERSION_MAJOR < 16
+                           Optional<FileEntryRef> File,
+ #else
+                           OptionalFileEntryRef File,
+@@ -96,9 +92,7 @@ void IncludesPPCallbacks::InclusionDirective(SourceLocation HashLoc,
+                                              StringRef FileName,
+                                              bool /*IsAngled*/,
+                                              CharSourceRange /*FilenameRange*/,
+-#if LLVM_VERSION_MAJOR < 15
+-                                             const FileEntry * /*File*/,
+-#elif LLVM_VERSION_MAJOR < 16
++#if LLVM_VERSION_MAJOR < 16
+                                              Optional<FileEntryRef> /*File*/,
+ #else
+                                              OptionalFileEntryRef /*File*/,
+diff --git a/clang_delta/RemoveNamespace.cpp b/clang_delta/RemoveNamespace.cpp
+index f405bab3..20d234ee 100644
+--- a/clang_delta/RemoveNamespace.cpp
++++ b/clang_delta/RemoveNamespace.cpp
+@@ -770,11 +770,7 @@ void RemoveNamespace::handleOneUsingShadowDecl(const UsingShadowDecl *UD,
+     return;
+ 
+   std::string NewName;
+-#if LLVM_VERSION_MAJOR < 13
+-  UsingDecl *D = UD->getUsingDecl();
+-#else
+   UsingDecl *D = dyn_cast<UsingDecl>(UD->getIntroducer());
+-#endif
+ 
+   NestedNameSpecifierLoc QualifierLoc = D->getQualifierLoc();
+   NestedNameSpecifier *NNS = QualifierLoc.getNestedNameSpecifier();
+diff --git a/clang_delta/RemoveNestedFunction.cpp b/clang_delta/RemoveNestedFunction.cpp
+index ecb9a08c..2fb1b3d5 100644
+--- a/clang_delta/RemoveNestedFunction.cpp
++++ b/clang_delta/RemoveNestedFunction.cpp
+@@ -191,18 +191,14 @@ void RemoveNestedFunction::getVarStrForTemplateSpecialization(
+   std::string ArgStr;
+   llvm::raw_string_ostream Stream(ArgStr);
+   TST->template_arguments()[0].print(getPrintingPolicy(), Stream
+-#if LLVM_VERSION_MAJOR >= 13
+       , false
+-#endif
+       );
+ 
+   for (unsigned I = 1; I < NumArgs; ++I) {
+     const TemplateArgument Arg = TST->template_arguments()[I];
+     Stream << ", ";
+     Arg.print(getPrintingPolicy(), Stream
+-#if LLVM_VERSION_MAJOR >= 13
+       , false
+-#endif
+     );
+   }
+   size_t BeginPos = VarStr.find_first_of('<');
+diff --git a/clang_delta/RewriteUtils.cpp b/clang_delta/RewriteUtils.cpp
+index d6ed297c..40722c10 100644
+--- a/clang_delta/RewriteUtils.cpp
++++ b/clang_delta/RewriteUtils.cpp
+@@ -775,15 +775,9 @@ std::string RewriteUtils::getStmtIndentString(Stmt *S,
+   StringRef MB = SrcManager->getBufferData(FID);
+  
+   unsigned lineNo = SrcManager->getLineNumber(FID, StartOffset) - 1;
+-#if LLVM_VERSION_MAJOR >= 12
+   const SrcMgr::ContentCache&
+       Content = SrcManager->getSLocEntry(FID).getFile().getContentCache();
+   unsigned lineOffs = Content.SourceLineCache[lineNo];
+-#else
+-  const SrcMgr::ContentCache *
+-      Content = SrcManager->getSLocEntry(FID).getFile().getContentCache();
+-  unsigned lineOffs = Content->SourceLineCache[lineNo];
+-#endif
+  
+   // Find the whitespace at the start of the line.
+   StringRef indentSpace;
+diff --git a/clang_delta/TemplateNonTypeArgToInt.cpp b/clang_delta/TemplateNonTypeArgToInt.cpp
+index 7d840704..94f9928c 100644
+--- a/clang_delta/TemplateNonTypeArgToInt.cpp
++++ b/clang_delta/TemplateNonTypeArgToInt.cpp
+@@ -168,11 +168,7 @@ void TemplateNonTypeArgToInt::handleOneTemplateArgumentLoc(
+     if (!TheExpr->isValueDependent() &&
+         TheExpr->EvaluateAsInt(Result, *Context)) {
+       llvm::APSInt IVal = Result.Val.getInt();
+-#if LLVM_VERSION_MAJOR >= 13
+       IntString = toString(IVal, 10);
+-#else
+-      IntString = IVal.toString(10);
+-#endif
+     }
+   }
+ }
+diff --git a/clang_delta/Transformation.cpp b/clang_delta/Transformation.cpp
+index 78cd99ff..d4896cb9 100644
+--- a/clang_delta/Transformation.cpp
++++ b/clang_delta/Transformation.cpp
+@@ -117,11 +117,9 @@ void Transformation::outputOriginalSource(llvm::raw_ostream &OutStream)
+ #if LLVM_VERSION_MAJOR >= 16
+   std::optional<llvm::MemoryBufferRef> MainBuf =
+       SrcManager->getBufferOrNone(MainFileID);
+-#elif LLVM_VERSION_MAJOR >= 12
++#else
+   llvm::Optional<llvm::MemoryBufferRef> MainBuf =
+       SrcManager->getBufferOrNone(MainFileID);
+-#else
+-  const llvm::MemoryBuffer *MainBuf = SrcManager->getBuffer(MainFileID);
+ #endif
+   TransAssert(MainBuf && "Empty MainBuf!");
+   OutStream << MainBuf->getBufferStart();
+@@ -439,11 +437,7 @@ const Expr *Transformation::getBaseExprAndIdxs(const Expr *E,
+       // If we cannot have an integeral index, use 0.
+       if (IdxE && IdxE->EvaluateAsInt(Result, *Context)) {
+         llvm::APSInt IVal = Result.Val.getInt();
+-#if LLVM_VERSION_MAJOR >= 13
+         std::string IntStr = toString(IVal, 10);
+-#else
+-        std::string IntStr = IVal.toString(10);
+-#endif
+         std::stringstream TmpSS(IntStr);
+         if (!(TmpSS >> Idx))
+           TransAssert(0 && "Non-integer value!");
+diff --git a/clang_delta/TransformationManager.cpp b/clang_delta/TransformationManager.cpp
+index 1b37f229..d985bd51 100644
+--- a/clang_delta/TransformationManager.cpp
++++ b/clang_delta/TransformationManager.cpp
+@@ -20,15 +20,17 @@
+ #include "clang/Basic/Builtins.h"
+ #include "clang/Basic/Diagnostic.h"
+ #include "clang/Basic/FileManager.h"
+-#if LLVM_VERSION_MAJOR >= 15
+ #include "clang/Basic/LangOptions.h"
+ #include "clang/Basic/LangStandard.h"
+-#endif
+ #include "clang/Basic/TargetInfo.h"
+ #include "clang/Lex/Preprocessor.h"
+ #include "clang/Frontend/CompilerInstance.h"
+ #include "clang/Parse/ParseAST.h"
+ 
++#if LLVM_VERSION_MAJOR >= 20
++#include "llvm/Support/VirtualFileSystem.h"
++#endif
++
+ #include "Transformation.h"
+ 
+ using namespace std;
+@@ -96,12 +98,13 @@ bool TransformationManager::initializeCompilerInstance(std::string &ErrorMsg)
+   ClangInstance = new CompilerInstance();
+   assert(ClangInstance);
+   
+-  ClangInstance->createDiagnostics();
++  ClangInstance->createDiagnostics(
++#if LLVM_VERSION_MAJOR >= 20
++    *llvm::vfs::getRealFileSystem()
++#endif
++  );
+ 
+   TargetOptions &TargetOpts = ClangInstance->getTargetOpts();
+-#if LLVM_VERSION_MAJOR < 12
+-  PreprocessorOptions &PPOpts = ClangInstance->getPreprocessorOpts();
+-#endif
+   if (const char *env = getenv("CVISE_TARGET_TRIPLE")) {
+     TargetOpts.Triple = std::string(env);
+   } else {
+@@ -122,17 +125,13 @@ bool TransformationManager::initializeCompilerInstance(std::string &ErrorMsg)
+     else if (!CXXStandard.compare("c++17"))
+       LSTD = LangStandard::Kind::lang_cxx17;
+     else if (!CXXStandard.compare("c++20"))
+-#if LLVM_VERSION_MAJOR < 10
+-      LSTD = LangStandard::Kind::lang_cxx2a;
+-#else
+       LSTD = LangStandard::Kind::lang_cxx20;
+-#endif
+ 
+ // TODO: simplify and use c++23 and c++26
+ #if LLVM_VERSION_MAJOR >= 17
+     else if (!CXXStandard.compare("c++2b"))
+       LSTD = LangStandard::Kind::lang_cxx23;
+-#elif LLVM_VERSION_MAJOR >= 14
++#else
+     else if (!CXXStandard.compare("c++2b"))
+       LSTD = LangStandard::Kind::lang_cxx2b;
+ #endif
+@@ -142,41 +141,6 @@ bool TransformationManager::initializeCompilerInstance(std::string &ErrorMsg)
+     }
+   }
+ 
+-#if LLVM_VERSION_MAJOR < 10
+-  if (IK.getLanguage() == InputKind::C) {
+-    Invocation.setLangDefaults(ClangInstance->getLangOpts(), InputKind::C, T, PPOpts);
+-  }
+-  else if (IK.getLanguage() == InputKind::CXX) {
+-    // ISSUE: it might cause some problems when building AST
+-    // for a function which has a non-declared callee, e.g.,
+-    // It results an empty AST for the caller.
+-    Invocation.setLangDefaults(ClangInstance->getLangOpts(), InputKind::CXX, T, PPOpts, LSTD);
+-  }
+-  else if(IK.getLanguage() == InputKind::OpenCL) {
+-#elif LLVM_VERSION_MAJOR < 12
+-  if (IK.getLanguage() == Language::C) {
+-    Invocation.setLangDefaults(ClangInstance->getLangOpts(), InputKind(Language::C), T, PPOpts);
+-  }
+-  else if (IK.getLanguage() == Language::CXX) {
+-    // ISSUE: it might cause some problems when building AST
+-    // for a function which has a non-declared callee, e.g.,
+-    // It results an empty AST for the caller.
+-    Invocation.setLangDefaults(ClangInstance->getLangOpts(), InputKind(Language::CXX), T, PPOpts, LSTD);
+-  }
+-  else if(IK.getLanguage() == Language::OpenCL) {
+-#elif LLVM_VERSION_MAJOR < 15
+-  vector<string> includes;
+-  if (IK.getLanguage() == Language::C) {
+-    Invocation.setLangDefaults(ClangInstance->getLangOpts(), InputKind(Language::C), T, includes);
+-  }
+-  else if (IK.getLanguage() == Language::CXX) {
+-    // ISSUE: it might cause some problems when building AST
+-    // for a function which has a non-declared callee, e.g.,
+-    // It results an empty AST for the caller.
+-    Invocation.setLangDefaults(ClangInstance->getLangOpts(), InputKind(Language::CXX), T, includes, LSTD);
+-  }
+-  else if(IK.getLanguage() == Language::OpenCL) {
+-#else
+   vector<string> includes;
+   if (IK.getLanguage() == Language::C) {
+     LangOptions::setLangDefaults(ClangInstance->getLangOpts(), Language::C, T, includes);
+@@ -188,7 +152,6 @@ bool TransformationManager::initializeCompilerInstance(std::string &ErrorMsg)
+     LangOptions::setLangDefaults(ClangInstance->getLangOpts(), Language::CXX, T, includes, LSTD);
+   }
+   else if(IK.getLanguage() == Language::OpenCL) {
+-#endif
+     //Commandline parameters
+     std::vector<const char*> Args;
+     Args.push_back("-x");
+@@ -210,31 +173,11 @@ bool TransformationManager::initializeCompilerInstance(std::string &ErrorMsg)
+     Args.push_back("-fno-builtin");
+ 
+     CompilerInvocation::CreateFromArgs(Invocation,
+-#if LLVM_VERSION_MAJOR >= 10
+                                        Args,
+-#else
+-                                       &Args[0], &Args[0] + Args.size(),
+-#endif
+                                        ClangInstance->getDiagnostics());
+-#if LLVM_VERSION_MAJOR < 15
+-    Invocation.setLangDefaults(ClangInstance->getLangOpts(),
+-#else
+     LangOptions::setLangDefaults(ClangInstance->getLangOpts(),
+-#endif
+-
+-#if LLVM_VERSION_MAJOR < 10
+-                               InputKind::OpenCL,
+-#elif LLVM_VERSION_MAJOR < 15
+-                               InputKind(Language::OpenCL),
+-#else
+                                Language::OpenCL,
+-#endif
+-
+-#if LLVM_VERSION_MAJOR < 12
+-			       T, PPOpts);
+-#else
+ 			       T, includes);
+-#endif
+   }
+   else {
+     ErrorMsg = "Unsupported file type!";
+diff --git a/cvise/passes/lines.py b/cvise/passes/lines.py
+index 15beb42a..fc3848be 100644
+--- a/cvise/passes/lines.py
++++ b/cvise/passes/lines.py
+@@ -16,9 +16,10 @@ def check_prerequisites(self):
+     def __format(self, test_case, check_sanity):
+         tmp = os.path.dirname(test_case)
+ 
+-        with CloseableTemporaryFile(mode='w+', dir=tmp) as backup, CloseableTemporaryFile(
+-            mode='w+', dir=tmp
+-        ) as tmp_file:
++        with (
++            CloseableTemporaryFile(mode='w+', dir=tmp) as backup,
++            CloseableTemporaryFile(mode='w+', dir=tmp) as tmp_file,
++        ):
+             backup.close()
+             with open(test_case) as in_file:
+                 try:
