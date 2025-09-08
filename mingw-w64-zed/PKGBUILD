@@ -4,11 +4,11 @@ _realname=zed
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
          "${MINGW_PACKAGE_PREFIX}-${_realname}-docs")
-pkgver=0.183.11
+pkgver=0.202.7
 pkgrel=1
 pkgdesc="A high-performance, multiplayer code editor (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw64' 'ucrt64' 'clang64') # clangarm64 crashes at startup https://github.com/kvark/blade/issues/222
+mingw_arch=('ucrt64' 'clang64' 'clangarm64')
 url='https://zed.dev'
 msys2_repository_url='https://github.com/zed-industries/zed'
 msys2_documentation_url='https://zed.dev/docs'
@@ -29,57 +29,47 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-rust"
              "${MINGW_PACKAGE_PREFIX}-protobuf"
              #"${MINGW_PACKAGE_PREFIX}-sqlite3"
              "${MINGW_PACKAGE_PREFIX}-cargo-about"
-             "${MINGW_PACKAGE_PREFIX}-lld"
              "${MINGW_PACKAGE_PREFIX}-mdbook"
              "${MINGW_PACKAGE_PREFIX}-rust-bindgen"
              "${MINGW_PACKAGE_PREFIX}-nasm"
+             "${MINGW_PACKAGE_PREFIX}-efxc2"
              'git')
 optdepends=("${MINGW_PACKAGE_PREFIX}-clang-tools-extra: for a better C/C++ language support"
             "${MINGW_PACKAGE_PREFIX}-eslint: for a better JavaScript language support"
             "${MINGW_PACKAGE_PREFIX}-ollama: provides LLMs for assistance panel"
             "${MINGW_PACKAGE_PREFIX}-pyright: for a better Python language support"
             "${MINGW_PACKAGE_PREFIX}-rust-analyzer: for a better Rust language support"
-            'git: for a better Git integration')
+            'git: for a better Git integration'
+            'openssh: for a SSH remote')
 source=("git+${msys2_repository_url}.git#tag=v${pkgver}"
-        "git+https://github.com/aws/aws-lc-rs.git#tag=aws-lc-sys/v0.28.0"
-        "git+https://github.com/aws/aws-lc.git"
         "zstd-sys.tar.gz::https://crates.io/api/v1/crates/zstd-sys/2.0.15+zstd.1.5.7/download"
-        "aws-lc-clang-build.patch"
-        "zstd-sys-remove-statik.patch")
-sha256sums=('42a694fdfda302655de608feab456773d8005fbae5a379c7fdfaaa4bfb75e020'
-            '9262e298d58ea2eb7921c62ec94f5b0e9528cb6341b437c143559fa1cca2a4cc'
-            'SKIP'
+        "zstd-sys-remove-statik.patch"
+        "zed-fix-docs-build.patch"
+        "zed-bump-cargo-about.patch")
+sha256sums=('33c7d5a6fab322471166fa434192023eca948ee2395a6a723ee082b0877a76b0'
             'eb81183ddd97d0c74cedf1d50d85c8d08c1b8b68ee863bdee9e706eedba1a237'
-            '2e3d7ef6fdb3ef8a2ec11207e8120ea34553888116ea8a032cb425a8a6261c39'
-            '48f4900ceb02d3aaf9a1020f33d56629156e96759f456c0e7ca18bfcf910767b')
+            '48f4900ceb02d3aaf9a1020f33d56629156e96759f456c0e7ca18bfcf910767b'
+            'acaf155e37120a1af8918854a457939cad71e59bca2ced866f89795ed6b0a7b2'
+            '6970aa7f737ca5418ea63922b1dc9fa855c9e92d172859423cad29b4f2ad7436')
 
 prepare() {
-  (cd aws-lc-rs
-  git config submodule."aws-lc-sys/aws-lc".url "${srcdir}/aws-lc"
-  git config submodule."aws-lc-fips-sys/aws-lc".url "${srcdir}/aws-lc"
-  git -c protocol.file.allow=always submodule update --init --recursive)
-
   cd "${_realname}"
   rm rust-toolchain.toml
 
+  patch -p1 -i ../zed-bump-cargo-about.patch
+  patch -p1 -i ../zed-fix-docs-build.patch
   # link system deps dynamically
-  patch -d "../zstd-sys-2.0.15+zstd.1.5.7" -i "../zstd-sys-remove-statik.patch"
-  # do not use pthread for clang
-  if [[ ${CC} == clang ]]; then
-    patch -d "../aws-lc-rs/aws-lc-sys/aws-lc" -p1 -i "${srcdir}/aws-lc-clang-build.patch"
-  fi
+  patch -d ../zstd-sys-2.0.15+zstd.1.5.7 -i ../zstd-sys-remove-statik.patch
   # use patched *-sys crates
-  sed -i '/\[patch\.crates-io\]/a zstd-sys = { path = "../zstd-sys-2.0.15+zstd.1.5.7" }\naws-lc-sys = { path = "../aws-lc-rs/aws-lc-sys" }' Cargo.toml
+  sed -i '/\[patch\.crates-io\]/a zstd-sys = { path = "../zstd-sys-2.0.15+zstd.1.5.7" }' Cargo.toml
 
-  # change git config so `pet*` crates would be fetched without error. requires Windows registry
-  # changes, see
-  # https://github.com/zed-industries/zed/blob/main/docs/src/development/windows.md#build-fails-path-too-long
-  # for details
+  # change git config so `pet*` crates would be fetched without error; requires Windows registry
+  # changes, see https://zed.dev/docs/development/windows#build-fails-path-too-long for details
   if test true != "$(git config core.longpaths)"; then
     git config --global core.longpaths true
   fi
 
-  cargo update -p aws-lc-sys -p zstd-sys
+  cargo update -p zstd-sys
   cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
   # generate license for whole Zed contents
   sh script/generate-licenses
@@ -92,18 +82,19 @@ build() {
   export PROTOC_INCLUDE="${MINGW_PREFIX}/include"
   export OPENSSL_NO_VENDOR=1
   export LIBGIT2_NO_VENDOR=1
-  export PKG_CONFIG_ALL_DYNAMIC=1
   export ZSTD_SYS_USE_PKG_CONFIG=1
   export WINAPI_NO_BUNDLED_LIBRARIES=1
   # see https://github.com/zed-industries/zed/issues/17695
   #export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
   export ZED_UPDATE_EXPLANATION='Updates are handled by pacman'
   export CARGO_PROFILE_RELEASE_DEBUG=0
+  export RELEASE_CHANNEL="stable"
   export RELEASE_VERSION="${pkgver} (Rev${pkgrel}, Built by MSYS2 project)"
-  # should be synced with .cargo/config.toml. use lld linker to fix keyboard shortcuts
-  # https://github.com/msys2/MINGW-packages/issues/22071
-  export RUSTFLAGS="$RUSTFLAGS -C link-arg=-fuse-ld=lld -C symbol-mangling-version=v0
-    -C target-feature=-crt-static --cfg tokio_unstable --cfg windows_slim_errors"
+  # set path to our fxc compiler
+  export GPUI_FXC_PATH="${MINGW_PREFIX}/bin/fxc.exe"
+  # should be synced with .cargo/config.toml
+  export RUSTFLAGS="${RUSTFLAGS/+crt-static/-crt-static} -C symbol-mangling-version=v0
+    --cfg tokio_unstable --cfg windows_slim_errors"
 
   cargo build --release --frozen -p zed -p cli
 
