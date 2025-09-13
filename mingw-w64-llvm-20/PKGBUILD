@@ -1,0 +1,264 @@
+# Maintainer: Martell Malone <martellmalone@gmail.com>
+# Maintainer: Alexey Pavlov <alexpux@gmail.com>
+# Contributor: Ray Donnelly <mingw.android@gmail.com>
+# Contributor: Mateusz Mikuła <mati865@gmail.com>
+# Contributor: wirx6 <wirx654@gmail.com>
+# Contributor: Yuui Tanabe <yuuitanabe@163.com>
+# Contributor: Oscar Fuentes <ofv@wanadoo.es>
+# Contributor: Adrian Pop <adrian.pop@liu.se>
+
+if [[ $MINGW_PACKAGE_PREFIX == *-clang-* ]]; then
+  _clangprefix=1
+fi
+
+_realname=llvm
+pkgbase=mingw-w64-${_realname}-20
+pkgname=("${MINGW_PACKAGE_PREFIX}-llvm-20"
+         "${MINGW_PACKAGE_PREFIX}-clang-20"
+         "${MINGW_PACKAGE_PREFIX}-compiler-rt-20")
+_pkgver=20.1.8
+pkgver=${_pkgver/-/}
+pkgrel=1
+pkgdesc="C language family frontend for LLVM (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url="https://llvm.org/"
+msys2_repository_url="https://github.com/llvm/llvm-project"
+license=("spdx:Apache-2.0 WITH LLVM-exception")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-libunwind"
+             "${MINGW_PACKAGE_PREFIX}-libffi"
+             "${MINGW_PACKAGE_PREFIX}-z3"
+             "${MINGW_PACKAGE_PREFIX}-python"
+             "git"
+             )
+_url=https://github.com/llvm/llvm-project/releases/download/llvmorg-${_pkgver}
+source=("${_url}/llvm-${_pkgver}.src.tar.xz"{,.sig}
+        "${_url}/clang-${_pkgver}.src.tar.xz"{,.sig}
+        "${_url}/compiler-rt-${_pkgver}.src.tar.xz"{,.sig}
+        "${_url}/cmake-${_pkgver}.src.tar.xz"{,.sig}
+        # 0001-0099 -> llvm
+        "0001-Fix-GetHostTriple-for-mingw-w64-in-msys.patch"
+        "0002-Fix-Findzstd-on-MINGW.patch"
+        "0003-add-pthread-as-system-lib-for-mingw.patch"
+        "0004-enable-emutls-for-mingw.patch"
+        # 0101-0199 -> clang
+        "0101-link-pthread-with-mingw.patch"
+        # 0201-0299 -> rt
+        )
+sha256sums=('e1363888216b455184dbb8a74a347bf5612f56a3f982369e1cba6c7e0726cde1'
+            'SKIP'
+            'b7a1b7b0af7b9c7596af6bd46e36d11321926eaa66a7a7dc957ab0a1375ee4b0'
+            'SKIP'
+            '15277402f6fd63397c0917a5c7171cda82d16d226094b828c1ed0f58f73b9c69'
+            'SKIP'
+            '3319203cfd1172bbac50f06fa68e318af84dcb5d65353310c0586354069d6634'
+            'SKIP'
+            'eb03df53671df6627768141b3aaa76abe176a14e5e47911c97bec544387c4aff'
+            '7cdf15c7e9c13ab99c42b4fafb15d871b22558f751729bb7173ce3edeffc8db8'
+            '790eb0fccb4ef29c3795bceb8a62c8f4ecd0bdd6c49b2812352b04cfbc552342'
+            '76d2a88733cebb1f01b766ff2ab91a9e095bae1d2e4cc18c1ffcf21fd095efc4'
+            '715cb8862753854b2d9256e0b70003e2d1f57083d83eaeaf5a095fc72b8a4e26')
+validpgpkeys=('B6C8F98282B944E3B0D5C2530FC3042E345AD05D'  # Hans Wennborg, Google.
+              '474E22316ABF4785A88C6E8EA2C794A986419D8A'  # Tom Stellard
+              'D574BD5D1D0E98895E3BF90044F2485E45D59042') # Tobias Hieta
+noextract=(clang-${_pkgver}.src.tar.xz)
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+
+prepare() {
+  cd "${srcdir}"
+  plain "Extracting clang-${_pkgver}.src.tar.xz due to symlink(s) without pre-existing target(s)"
+  tar -xJf "${srcdir}"/clang-${_pkgver}.src.tar.xz -C "${srcdir}" || true
+
+  # Rename Directories
+  for pkg in llvm clang compiler-rt cmake; do
+    mv ${pkg}-${_pkgver}.src ${pkg}
+  done
+
+  # Patch llvm
+  cd "${srcdir}"/llvm
+  apply_patch_with_msg \
+    "0001-Fix-GetHostTriple-for-mingw-w64-in-msys.patch" \
+    "0002-Fix-Findzstd-on-MINGW.patch"
+
+  if (( ! _clangprefix )); then
+    apply_patch_with_msg \
+      "0003-add-pthread-as-system-lib-for-mingw.patch" \
+      "0004-enable-emutls-for-mingw.patch"
+  fi
+
+  # Patch clang
+  cd "${srcdir}"/clang
+
+  if (( ! _clangprefix )); then
+    apply_patch_with_msg \
+      "0101-link-pthread-with-mingw.patch"
+  fi
+
+  # Patch compiler-rt
+  cd "${srcdir}"/compiler-rt
+
+  # Patch whole tree
+  cd "${srcdir}"
+}
+
+build() {
+  local -a platform_config
+  local -a common_cmake_args
+
+  # Include location of libffi headers in CPPFLAGS
+  FFI_INCLUDE_DIR="$(pkg-config --cflags libffi)"
+  FFI_INCLUDE_DIR=$(echo $FFI_INCLUDE_DIR | sed 's|-I||g')
+
+  if check_option "debug" "y"; then
+    common_cmake_args+=(-DCMAKE_BUILD_TYPE=Debug
+                        -DLLVM_ENABLE_ASSERTIONS=ON)
+    VERBOSE="VERBOSE=1"
+  else
+    common_cmake_args+=(-DCMAKE_BUILD_TYPE=Release
+                        -DLLVM_ENABLE_ASSERTIONS=OFF
+                        -DLLVM_ENABLE_DUMP=ON)
+  fi
+  common_cmake_args+=(-Wno-dev
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX}/opt/llvm-20
+    -DCMAKE_SYSTEM_IGNORE_PATH=/usr/lib
+    -DLLVM_HOST_TRIPLE="${CARCH}-w64-windows-gnu"
+    -DLLVM_BUILD_STATIC=ON
+    -DLLVM_BUILD_LLVM_DYLIB=OFF
+    -DLLVM_LINK_LLVM_DYLIB=OFF
+    -DLLVM_ENABLE_FFI=ON
+    -DLLVM_ENABLE_THREADS=ON
+    -DLLVM_INCLUDE_EXAMPLES=OFF
+    -DLLVM_INCLUDE_BENCHMARKS=OFF
+    -DLLVM_INCLUDE_TESTS=OFF
+    -DPython3_EXECUTABLE=${MINGW_PREFIX}/bin/python.exe
+    -DFFI_INCLUDE_DIR="${FFI_INCLUDE_DIR}")
+
+  if (( _clangprefix )); then
+    platform_config+=(
+      -DLLVM_ENABLE_LIBCXX=ON
+      -DLLVM_ENABLE_LLD=ON
+      -DCLANG_DEFAULT_LINKER=lld
+      -DCLANG_DEFAULT_RTLIB=compiler-rt
+      -DCLANG_DEFAULT_UNWINDLIB=libunwind
+      -DCLANG_DEFAULT_CXX_STDLIB=libc++
+      -DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON
+    )
+  fi
+
+  local _projects="clang;compiler-rt"
+
+  case "${CARCH}" in
+    x86_64|i?86)
+      platform_config+=(-DCOMPILER_RT_BUILD_SANITIZERS=$( (( _clangprefix )) && echo "ON" || echo "OFF"))
+      ;;
+    armv7|aarch64)
+      platform_config+=(
+        -DCOMPILER_RT_BUILD_MEMPROF=OFF
+        -DCOMPILER_RT_BUILD_SANITIZERS=OFF
+        -DCOMPILER_RT_BUILD_XRAY=OFF
+      )
+      ;;
+  esac
+
+  platform_config+=(-DLLVM_TARGETS_TO_BUILD="AArch64;ARM;RISCV;X86")
+
+  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake.exe \
+    -GNinja \
+    -DLLVM_ENABLE_PROJECTS="${_projects}" \
+    -DLLVM_ENABLE_RTTI=ON \
+    -DLLVM_INSTALL_UTILS=ON \
+    -DLIBCLANG_BUILD_STATIC=ON \
+    -DLLD_DEFAULT_LD_LLD_IS_MINGW=ON \
+    "${common_cmake_args[@]}" \
+    "${platform_config[@]}" \
+    ../llvm
+
+  ${MINGW_PREFIX}/bin/cmake.exe --build .
+}
+
+package_clang-20() {
+  pkgdesc="C language family frontend for LLVM - 20 (mingw-w64)"
+  url="https://clang.llvm.org/"
+  depends=("${MINGW_PACKAGE_PREFIX}-llvm-20"
+           "${MINGW_PACKAGE_PREFIX}-compiler-rt-20" \
+           "${MINGW_PACKAGE_PREFIX}-zstd" \
+           $( ((_clangprefix)) && echo \
+             "${MINGW_PACKAGE_PREFIX}-crt" \
+             "${MINGW_PACKAGE_PREFIX}-headers" \
+             "${MINGW_PACKAGE_PREFIX}-lld" \
+             "${MINGW_PACKAGE_PREFIX}-winpthreads" \
+             || echo "${MINGW_PACKAGE_PREFIX}-gcc"))
+
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install "${srcdir}"/build-${MSYSTEM}/tools/clang
+
+  install -Dm644 "${srcdir}"/clang/LICENSE.TXT \
+    "${pkgdir}"${MINGW_PREFIX}/opt/llvm-20/share/licenses/clang/LICENSE
+}
+
+package_compiler-rt-20() {
+  pkgdesc="Runtime libraries for Clang and LLVM -20 (mingw-w64)"
+  url="https://compiler-rt.llvm.org/"
+  depends=("${MINGW_PACKAGE_PREFIX}-cc-libs")
+
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install "${srcdir}"/build-${MSYSTEM}/projects/compiler-rt
+  mkdir -p "${pkgdir}"${MINGW_PREFIX}/opt/llvm-20/bin/
+  find "${pkgdir}"${MINGW_PREFIX}/opt/llvm-20/lib/clang/${pkgver%.[0-9].*}/lib/windows/ \
+    -name '*.dll' -exec mv '{}' "${pkgdir}"${MINGW_PREFIX}/opt/llvm-20/bin/ \;
+  # remove bin dir we created if it is still empty
+  rmdir "${pkgdir}"${MINGW_PREFIX}/opt/llvm-20/bin/ 2>/dev/null || true
+
+  install -Dm644 "${srcdir}"/compiler-rt/LICENSE.TXT \
+    "${pkgdir}"${MINGW_PREFIX}/opt/llvm-20/share/licenses/compiler-rt/LICENSE
+}
+
+package_llvm-20() {
+  pkgdesc="Low Level Virtual Machine -20 (mingw-w64)"
+  depends=("${MINGW_PACKAGE_PREFIX}-zstd")
+
+  # Disable automatic installation of components that go into subpackages
+  # -i.orig to check what has been removed in-case it starts dropping more than it should
+  sed -i.orig '/clang\/cmake_install.cmake/d' build-${MSYSTEM}/tools/cmake_install.cmake
+  sed -i.orig '/compiler-rt\/cmake_install.cmake/d' build-${MSYSTEM}/projects/cmake_install.cmake
+
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install build-${MSYSTEM}
+
+  install -Dm644 "${srcdir}"/llvm/LICENSE.TXT \
+    "${pkgdir}"${MINGW_PREFIX}/opt/llvm-20/share/licenses/llvm/LICENSE
+
+  # Install CMake stuff
+  install -d "${pkgdir}"${MINGW_PREFIX}/opt/llvm-20/share/llvm/cmake/{modules,platforms}
+  install -Dm644 "${srcdir}"/llvm/cmake/modules/*.cmake \
+    "${pkgdir}"${MINGW_PREFIX}/opt/llvm-20/share/llvm/cmake/modules/
+  install -Dm644 "${srcdir}"/llvm/cmake/platforms/*.cmake \
+    "${pkgdir}"${MINGW_PREFIX}/opt/llvm-20/share/llvm/cmake/platforms/
+
+  # fix cmake files.
+  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
+  sed -e "s|${PREFIX_WIN}|${MINGW_PREFIX}|g" \
+    -i "${pkgdir}"/${MINGW_PREFIX}/opt/llvm-20/lib/cmake/llvm/LLVMExports.cmake
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;
