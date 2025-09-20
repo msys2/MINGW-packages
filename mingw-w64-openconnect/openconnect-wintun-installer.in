@@ -55,7 +55,9 @@ unset GREP_OPTIONS
 
 E_OK=0
 E_FAIL=1 # Generic error
+E_NEED_UPGRADE=2
 E_INVALID_OPTION=3
+E_NOT_INSTALLED=4
 E_FS_PERMISSIONS=11
 
 colorize() {
@@ -139,7 +141,7 @@ cd_safe() {
 	if ! cd "$1"; then
 		error "$(gettext "Failed to change to directory %s")" "$1"
 		plainerr "$(gettext "Aborting...")"
-		exit 1
+		exit $E_FAIL
 	fi
 }
 
@@ -178,7 +180,7 @@ get_downloadclient() {
 	if [[ -z $agent ]]; then
 		error "$(gettext "Unknown download protocol: %s")" "$proto"
 		plainerr "$(gettext "Aborting...")"
-		exit 1 # $E_CONFIG_ERROR
+		exit $E_FAIL # $E_CONFIG_ERROR
 	fi
 
 	# ensure specified program is installed
@@ -187,7 +189,7 @@ get_downloadclient() {
 		local baseprog="${program##*/}"
 		error "$(gettext "The download program %s is not installed.")" "$baseprog"
 		plainerr "$(gettext "Aborting...")"
-		exit 1 # $E_MISSING_PROGRAM
+		exit $E_FAIL # $E_MISSING_PROGRAM
 	fi
 
 	printf "%s\n" "$agent"
@@ -294,7 +296,7 @@ download_file() {
 		[[ ! -s $dlfile ]] && rm -f -- "$dlfile"
 		error "$(gettext "Failure while downloading %s")" "$url"
 		plainerr "$(gettext "Aborting...")"
-		exit 1
+		exit $E_FAIL
 	fi
 
 	# rename the temporary download file to the final destination
@@ -403,8 +405,8 @@ verify_installed_wintun() {
 	fi
 
 	#verify that actual wintun.dll is the one installed by the installer
-	actual_sum=$(calc_checksum_file $wintundll_dest/wintun.dll sha256) || exit 1
-	installed_sum=$(get_info_file_sum) || exit 1
+	actual_sum=$(calc_checksum_file $wintundll_dest/wintun.dll sha256) || exit $E_FAIL
+	installed_sum=$(get_info_file_sum) || exit $E_FAIL
 
 	#printf 'actual    sum %s\n' $actual_sum
 	#printf 'installed sum %s\n' $installed_sum
@@ -517,12 +519,13 @@ usage() {
 	printf -- "$(gettext "Usage: %s [options]")\n" "$0"
 	echo
 	printf -- "$(gettext "Options:")\n"
-	printf -- "$(gettext "  -h, --help       Show this help message and exit")\n"
-	printf -- "$(gettext "  -r, --remove     Remove wintun.dll, if already installed by this script")\n"
-	printf -- "$(gettext "  -u, --upgrade    Upgrade wintun.dll, if already installed by this script")\n"
-	printf -- "$(gettext "      --noconfirm  Bypass any and all confirmation messages. It’s not a good idea to do this unless you want to run $installer_script from a script")\n"
-	printf -- "$(gettext "  -m, --nocolor    Disable colorized output messages")\n"
-	printf -- "$(gettext "  -V, --version    Show version information and exit")\n"
+	printf -- "$(gettext "  -h, --help          Show this help message and exit")\n"
+	printf -- "$(gettext "  -r, --remove        Remove wintun.dll, if already installed by this script")\n"
+	printf -- "$(gettext "  -u, --upgrade       Upgrade wintun.dll, if already installed by this script")\n"
+	printf -- "$(gettext "  -c, --check-upgrade Check if wintun.dll needs upgrade, if already installed by this script")\n"
+	printf -- "$(gettext "      --noconfirm     Bypass any and all confirmation messages. It’s not a good idea to do this unless you want to run $installer_script from a script")\n"
+	printf -- "$(gettext "  -m, --nocolor       Disable colorized output messages")\n"
+	printf -- "$(gettext "  -V, --version       Show version information and exit")\n"
 	echo
 }
 
@@ -550,8 +553,8 @@ gettext() {
 }
 
 # Parse Command Line Options.
-OPT_SHORT="hmruVn"
-OPT_LONG=('help' 'nocolor' 'remove' 'upgrade' 'version' 'noconfirm')
+OPT_SHORT="hmrucVn"
+OPT_LONG=('help' 'nocolor' 'remove' 'upgrade' 'check-upgrade' 'version' 'noconfirm')
 OPTS=$(IFS="," getopt -o ${OPT_SHORT} --long "${OPT_LONG[*]}" -n "${installer_script}" -- "$@")
 
 if [ $? -ne 0 ]; then
@@ -567,7 +570,8 @@ while true; do
 	case "$1" in
 	-m | --nocolor) USE_COLOR='n' ;; #; PACMAN_OPTS+=("--color" "never") ;;
 	-r | --remove) RM=1 ;;
-	-u | --upgrade) UPG=1 ;;
+	-u | --upgrade) UPG=1 CHKUPG=0 ;;
+	-c | --check-upgrade) UPG=1 CHKUPG=1 ;;
 	--noconfirm) NOCONFIRM=1 ;;
 
 	-h | --help)
@@ -619,11 +623,12 @@ fi
 # verify existence of the license directory
 if [ ! -d "${wintun_license_dest}" ]; then
 	error "Openconnect license directory not found"
-	exit 1
+	exit $E_FAIL
 fi
 
 RM=${RM:-0}
 UPG=${UPG:-0}
+CKHUPG=${CHKUPG:-0}
 INS=1
 NOCONFIRM=${NOCONFIRM:-0}
 action="Installing"
@@ -635,16 +640,16 @@ if [ $RM -eq 1 ]; then
 	#check presence of wintun.dll
 	if [ ! -f ${wintundll_dest}/wintun.dll ]; then
 		msg "Wintun is not installed"
-		exit 0
+		exit $E_NOT_INSTALLED
 	fi
 
-	verify_installed_wintun || exit 1
+	verify_installed_wintun || exit $E_FAIL
 
 	remove_file "${wintun_license_dest}/LICENSE.wintun"
 	remove_file "${wintundll_dest}/wintun.dll"
 	remove_file "${wintundll_dest}/wintun.info"
 
-	exit 0
+	exit $E_OK
 fi
 
 if [ $UPG -eq 1 ]; then
@@ -654,6 +659,9 @@ if [ $UPG -eq 1 ]; then
 	#check presence of wintun.dll
 	if [ ! -f ${wintundll_dest}/wintun.dll ]; then
 		warning "Wintun is not installed"
+		if [ $CHKUPG -eq 1 ]; then
+			exit $E_NOT_INSTALLED
+		fi
 	else
 		verify_installed_wintun "ret_installed_sum"
 		ret=$?
@@ -664,17 +672,21 @@ if [ $UPG -eq 1 ]; then
 				INS=0
 			fi
 		fi
+
+		if [ $CHKUPG -eq 1 ]; then
+			exit $(( $INS == 0 ? $E_OK : $E_NEED_UPGRADE )) 
+		fi
 	fi
 else
 	#check that wintun.dll is not installed
 	if [ -f ${wintundll_dest}/wintun.dll ]; then
 		error "Wintun is already installed"
-		exit 1
+		exit $E_FAIL
 	fi
 fi
 
 if [ $INS -eq 0 ]; then
-	exit 0
+	exit $E_OK
 fi
 
 _url=$(get_url $source)
@@ -692,7 +704,7 @@ printf "    ${BOLD}Filename : ${ALL_OFF}%s\n" "${_zip}"
 printf "    ${BOLD}and install it in into the system directory ${wintundll_dest}${ALL_OFF}\n"
 accept_yes_no "Do you want to proceed" || {
 	printf '    %s\n' "Download rejected."
-	exit 1
+	exit $E_FAIL
 }
 
 download_sources
@@ -701,22 +713,22 @@ verify_integrity_sums
 cd_safe "$BUILDDIR"
 # extract LICENSE.txt
 msg "Extracting License"
-bsdtar --strip-components=1 -xf ${SRCDEST}/${_zip} "wintun/LICENSE.txt" || exit 1
+bsdtar --strip-components=1 -xf ${SRCDEST}/${_zip} "wintun/LICENSE.txt" || exit $E_FAIL
 
 # show the license and prompt the user to accept it
-show_and_accept LICENSE.txt || exit 1
+show_and_accept LICENSE.txt || exit $E_FAIL
 
 # extract wintun.dll for the specified architecture
 msg "Extracting wintun.dll for ${WINTUN_ARCH}"
-bsdtar --strip-components=3 -xf ${SRCDEST}/${_zip} "wintun/bin/${WINTUN_ARCH}/wintun.dll" || exit 1
+bsdtar --strip-components=3 -xf ${SRCDEST}/${_zip} "wintun/bin/${WINTUN_ARCH}/wintun.dll" || exit $E_FAIL
 
 #verify the integrity of the actual wintun.dll
 msg "Validating wintun.dll"
-verify_integrity_one "wintun.dll" "sha256" $wintundll_sha256 || exit 1
+verify_integrity_one "wintun.dll" "sha256" $wintundll_sha256 || exit $E_FAIL
 
 msg "$action Wintun"
-copy_file LICENSE.txt "${wintun_license_dest}/LICENSE.wintun" || exit 1
-copy_file wintun.dll "${wintundll_dest}/wintun.dll" || exit 1
-write_info_file || exit 1
+copy_file LICENSE.txt "${wintun_license_dest}/LICENSE.wintun" || exit $E_FAIL
+copy_file wintun.dll "${wintundll_dest}/wintun.dll" || exit $E_FAIL
+write_info_file || exit $E_FAIL
 
-exit 0
+exit $E_OK
