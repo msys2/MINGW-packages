@@ -1,0 +1,257 @@
+From ca5a77efbb71a37c6b035955107d60becd99a013 Mon Sep 17 00:00:00 2001
+From: Mike <rans@email.com>
+Date: Wed, 17 Sep 2025 20:04:37 +1200
+Subject: [PATCH 1/2] Fixes for MINGW64 Windows
+
+---
+ Makefile.am     | 19 ++++++++++++-------
+ README.md       |  9 +++++++++
+ configure.ac    | 29 +++++++++++++++++++++++++++++
+ src/windows.c   |  2 +-
+ src/xaudio2.cpp |  2 +-
+ 5 files changed, 52 insertions(+), 9 deletions(-)
+
+diff --git a/Makefile.am b/Makefile.am
+index b04ba53..32de095 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -57,7 +57,8 @@ src_libpcaudio_la_LDFLAGS = -version-info $(LIBPCAUDIO_VERSION) \
+ 	${ALSA_LIBS} \
+ 	${PULSEAUDIO_LIBS} \
+ 	${QSA_LIBS} \
+-	${COREAUDIO_LIBS}
++	${COREAUDIO_LIBS} \
++	${XAUDIO2_LIBS}
+ 
+ src_libpcaudio_la_CFLAGS = ${AM_CFLAGS} \
+ 	${ALSA_CFLAGS} \
+@@ -65,18 +66,15 @@ src_libpcaudio_la_CFLAGS = ${AM_CFLAGS} \
+ 	${COREAUDIO_CFLAGS}
+ 
+ src_libpcaudio_la_SOURCES = \
+-	src/alsa.c \
+-	src/qsa.c \
+-	src/oss.c \
+-	src/pulseaudio.c \
+ 	src/audio_priv.h \
+ 	src/audio.c
+ 
+ # Windows audio support
+-EXTRA_DIST += \
++if HAVE_XAUDIO2
++src_libpcaudio_la_SOURCES += \
+ 	src/windows.c \
+ 	src/xaudio2.cpp
+-
++else
+ # Mac OSX audio support
+ if HAVE_COREAUDIO
+ src_libpcaudio_la_SOURCES += \
+@@ -89,4 +87,11 @@ src_libpcaudio_la_SOURCES += \
+ EXTRA_DIST += \
+ 	src/TPCircularBuffer/README.markdown \
+ 	src/TPCircularBuffer/TPCircularBuffer.podspec
++else
++src_libpcaudio_la_SOURCES += \
++	src/alsa.c \
++	src/qsa.c \
++	src/oss.c \
++	src/pulseaudio.c
++endif
+ endif
+diff --git a/README.md b/README.md
+index 96fbb2b..bd5a52a 100644
+--- a/README.md
++++ b/README.md
+@@ -78,6 +78,15 @@ and install it using:
+ 
+ 	sudo make install
+ 
++### Windows MinGW64
++
++You can build on Windows MinGW64 like this:
++
++    ./autogen.sh
++    ./configure --prefix=/mingw64
++    sed -i.bak -e "s/\(allow_undefined=\)yes/\1no/" libtool
++    make LIBTOOLFLAGS=-v
++
+ ## Bugs
+ 
+ Report bugs to the [pcaudiolib issues](https://github.com/espeak-ng/pcaudiolib/issues)
+diff --git a/configure.ac b/configure.ac
+index 22f762b..268e23b 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -15,6 +15,7 @@ dnl Program checks.
+ dnl ================================================================
+ 
+ AC_PROG_CC
++AC_PROG_CXX
+ AC_PROG_MAKE_SET
+ AC_PROG_LIBTOOL
+ 
+@@ -92,6 +93,33 @@ fi
+ 
+ AC_SUBST(QSA_LIBS)
+ 
++dnl ================================================================
++dnl xaudio2 checks.
++dnl ================================================================
++
++AC_ARG_WITH([xaudio2],
++    [AS_HELP_STRING([--with-xaudio2], [support for xaudio2 audio output on Windows @<:@default=yes@:>@])],
++    [])
++
++if test "$with_xaudio2" = "no";then
++    echo "Disabling xaudio2 audio output support"
++    have_xaudio2=no
++else
++    case "$host" in
++      *-*-mingw*)
++        have_xaudio2=yes
++        XAUDIO2_LIBS="-lole32 -lxaudio2_9"
++        AC_DEFINE(HAVE_XAUDIO2_H, [], [Do we have xaudio?])
++        ;;
++    *)
++        have_xaudio2=no
++        ;;
++    esac
++fi
++
++AC_SUBST(XAUDIO2_LIBS)
++AM_CONDITIONAL([HAVE_XAUDIO2], [test "x${have_xaudio2}" = "xyes"])
++
+ dnl ================================================================
+ dnl coreaudio checks.
+ dnl ================================================================
+@@ -160,6 +188,7 @@ AC_MSG_NOTICE([
+ 	PulseAudio support:            ${have_pulseaudio}
+ 	ALSA support:                  ${have_alsa}
+ 	QSA support:                   ${have_qsa}
++	Xaudio2 support:               ${have_xaudio2}
+ 	Coreaudio support:             ${have_coreaudio}
+ 	OSS support:                   ${have_oss}
+ ])
+diff --git a/src/windows.c b/src/windows.c
+index e3b37e6..7a0f219 100644
+--- a/src/windows.c
++++ b/src/windows.c
+@@ -84,7 +84,7 @@ windows_hresult_strerror(struct audio_object *object,
+ {
+ 	char *msg = NULL;
+ 	DWORD result = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+-		NULL, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), &msg, 256, NULL);
++		NULL, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), msg, 256, NULL);
+ 	if (!result)
+ 		return NULL;
+ 
+diff --git a/src/xaudio2.cpp b/src/xaudio2.cpp
+index bb9d5be..9bafc47 100644
+--- a/src/xaudio2.cpp
++++ b/src/xaudio2.cpp
+@@ -199,7 +199,7 @@ create_xaudio2_object(const char *device,
+                       const char *application_name,
+                       const char *description)
+ {
+-	CoInitialize(NULL);
++	CoInitializeEx(NULL, COINIT_MULTITHREADED);
+ 
+ 	IXAudio2 *audio = NULL;
+ 	HRESULT hr = XAudio2Create(&audio, 0, XAUDIO2_DEFAULT_PROCESSOR);
+
+From f4878366a16601244a497e07f88178ba16445b84 Mon Sep 17 00:00:00 2001
+From: Mike <rans@email.com>
+Date: Fri, 19 Sep 2025 17:52:32 +1200
+Subject: [PATCH 2/2] add missing flush code to xaudio2.cpp libtool fix for
+ mingw64
+
+---
+ README.md       |  1 -
+ configure.ac    | 15 +++++++++++++++
+ src/xaudio2.cpp | 18 +++++++++++++-----
+ 3 files changed, 28 insertions(+), 6 deletions(-)
+
+diff --git a/README.md b/README.md
+index bd5a52a..1b49287 100644
+--- a/README.md
++++ b/README.md
+@@ -84,7 +84,6 @@ You can build on Windows MinGW64 like this:
+ 
+     ./autogen.sh
+     ./configure --prefix=/mingw64
+-    sed -i.bak -e "s/\(allow_undefined=\)yes/\1no/" libtool
+     make LIBTOOLFLAGS=-v
+ 
+ ## Bugs
+diff --git a/configure.ac b/configure.ac
+index 268e23b..57951e8 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -169,6 +169,21 @@ else
+     ])
+ fi
+ 
++dnl ================================================================
++dnl Patch libtool if mingw64
++dnl ================================================================
++
++AC_CONFIG_COMMANDS([fix-libtool], [
++  case "$host_os" in
++    mingw32*)
++      if test -f libtool; then
++        echo "Patching libtool for mingw64: setting allow_undefined=no"
++        sed -i.bak -e 's/\(allow_undefined=\)yes/\1no/' libtool
++      fi
++      ;;
++  esac
++])
++
+ dnl ================================================================
+ dnl Generate output.
+ dnl ================================================================
+diff --git a/src/xaudio2.cpp b/src/xaudio2.cpp
+index 9bafc47..491189a 100644
+--- a/src/xaudio2.cpp
++++ b/src/xaudio2.cpp
+@@ -147,6 +147,12 @@ xaudio2_object_flush(struct audio_object *object)
+ {
+ 	struct xaudio2_object *self = to_xaudio2_object(object);
+ 
++	if (self->source != NULL)
++	{
++		self->source->Stop(0);                // Stop playback
++		self->source->FlushSourceBuffers();   // Clear queued buffers
++	}
++
+ 	return S_OK;
+ }
+ 
+@@ -165,9 +171,8 @@ xaudio2_object_write(struct audio_object *object,
+ 	buffer.pAudioData = buf_data;
+ 	buffer.pContext = buf_data;
+ 
+-	HRESULT hr = S_OK;
+-	if (SUCCEEDED(hr))
+-		hr = self->source->SubmitSourceBuffer(&buffer);
++	HRESULT hr;
++	hr = self->source->SubmitSourceBuffer(&buffer);
+ 
+ 	XAUDIO2_VOICE_STATE state = { 0 };
+ 	self->source->GetState(&state);
+@@ -199,10 +204,13 @@ create_xaudio2_object(const char *device,
+                       const char *application_name,
+                       const char *description)
+ {
+-	CoInitializeEx(NULL, COINIT_MULTITHREADED);
++	HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
++	if (FAILED(hr)) {
++		return NULL;
++	}
+ 
+ 	IXAudio2 *audio = NULL;
+-	HRESULT hr = XAudio2Create(&audio, 0, XAUDIO2_DEFAULT_PROCESSOR);
++	hr = XAudio2Create(&audio, 0, XAUDIO2_DEFAULT_PROCESSOR);
+ 	if (FAILED(hr) || audio == NULL) {
+ 		if (audio != NULL)
+ 			audio->Release();
