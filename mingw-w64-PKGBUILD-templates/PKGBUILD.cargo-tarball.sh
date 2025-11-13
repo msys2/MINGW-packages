@@ -25,7 +25,7 @@ prepare() {
   patch -Np1 -i "${srcdir}"/0002-A-less-important-fix.patch
 
   # if cargo wants to make an http request at build stage, use `cargo fetch --locked` instead
-  cargo fetch --locked --target "$(rustc --print host-tuple)"
+  cargo fetch --locked --target "${RUST_CHOST}"
 }
 
 build() {
