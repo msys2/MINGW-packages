@@ -4,4 +4,4 @@
 set -e
 
 RUSTC_SYSROOT=$(${MINGW_PREFIX}/bin/rustc --print sysroot)
-exec /usr/bin/sh "$RUSTC_SYSROOT/bin/rust-gdb"
+exec /usr/bin/sh "$RUSTC_SYSROOT/bin/rust-gdb" "$@"
