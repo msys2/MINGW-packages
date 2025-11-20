@@ -48,6 +48,21 @@ install-perl-module:
 	$(INSTALL) -d -m 755 '$(DESTDIR_SQ)$(perllibdir_SQ)'
 	(cd perl/build/lib && $(TAR) cf - .) | \
 	(cd '$(DESTDIR_SQ)$(perllibdir_SQ)' && umask 022 && $(TAR) xof -)
+	find '$(DESTDIR_SQ)$(perllibdir_SQ)' -type f -path "*/Git/SVN*" -delete
+	find '$(DESTDIR_SQ)$(perllibdir_SQ)' -type d -empty -delete
+
+install-perl-svn-module:
+	$(INSTALL) -d -m 755 '$(DESTDIR_SQ)$(perllibdir_SQ)'
+	(cd perl/build/lib && $(TAR) cf - .) | \
+	(cd '$(DESTDIR_SQ)$(perllibdir_SQ)' && umask 022 && $(TAR) xof -)
+	find '$(DESTDIR_SQ)$(perllibdir_SQ)' -type f ! -path "*/Git/SVN*" -delete
+	find '$(DESTDIR_SQ)$(perllibdir_SQ)' -type d -empty -delete
+
+uninstall-perl-modules:
+	rm $(patsubst perl/%.pm,'$(DESTDIR_SQ)$(perllibdir_SQ)/%.pm',$(LIB_CPAN))
+	rm '$(DESTDIR_SQ)$(perllibdir_SQ)/Git.pm'
+	rm -r '$(DESTDIR_SQ)$(perllibdir_SQ)/Git'
+	find '$(DESTDIR_SQ)$(perllibdir_SQ)' -type d -empty -delete
 endif
 
 install-pdbs:
