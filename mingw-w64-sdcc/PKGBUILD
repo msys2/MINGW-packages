@@ -1,0 +1,124 @@
+# Maintainer: Joel Holdsworth <jholdsworth@nvidia.com>
+
+_realname=sdcc
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=4.5.0
+pkgrel=1
+pkgdesc="Retargettable ANSI C compiler (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64')
+url="https://sdcc.sourceforge.net/"
+msys2_repository_url='https://sourceforge.net/p/sdcc/code/HEAD/tree/trunk/sdcc/'
+msys2_documentation_url='https://sdcc.sourceforge.net/doc/sdccman.pdf'
+msys2_references=(
+  'anitya: 227271'
+  'archlinux: sdcc'
+  'gentoo: dev-embedded/sdcc'
+)
+license=("spdx:GPL-2.0-or-later")
+depends=("${MINGW_PACKAGE_PREFIX}-gputils")
+makedepends=("${MINGW_PACKAGE_PREFIX}-boost"
+             "${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-treedec")
+_patches=("0001-Resolved-conflict-between-define-B-and-system-header.patch"
+          "0002-Added-missing-include-of-string.h.patch"
+          "0003-Assemble-without-copying-input-sources.patch"
+          "0004-support-cpp-Imported-missing-xm-mingw32.h.patch")
+source=("$_realname-$pkgver.tar.bz2::https://sourceforge.net/projects/sdcc/files/sdcc/$pkgver/$_realname-src-$pkgver.tar.bz2"
+        "${_patches[@]}")
+sha256sums=("d5030437fb436bb1d93a8dbdbfb46baaa60613318f4fb3f5871d72815d1eed80"
+            "bfeb161105124d445885d44560a58b32d8dad928e861f92623eeb0c9cbc840c4"
+            "b0428324f3cc910d0375b8eee78d04daf1448aa23b8c3df6679ecd47e8f504d8"
+            "b516c8bfc8ba342870b0591e1e8af7030b2b57ad21333bae41eefdbd2bfdc960"
+            "c0d79f8f61efab3ff533bea3352d8ad86880dd3489da0a96147debe33bc67293")
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+  apply_patch_with_msg "${_patches[@]}"
+}
+
+build() {
+  mkdir "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
+
+  # Avoid C23 problems:
+  #   - "typedef short bool;" fails because "bool" is a reserved work on C23.
+  CFLAGS+=" -std=gnu17"
+
+  # SDCC uses the GCC Pre-processor as its front-end. During the configuration
+  # process, the configure scripts create shell-script wrappers: bin/sdcpp as
+  # well as bin/sdar, bin/sdcc, bin/sdnm, bin/sdobjcopy and bin/sdranlib. These
+  # are intermediate stand-ins that are used temporarily during the build until
+  # the final executable binaries are created. The sdcpp script, for example,
+  # is a wrapper around support/cpp/gcc/cpp.exe, the GCC cpp executable.
+  #
+  # In general, the shell-script wrappers function correctly in MSYS2. However,
+  # bin/sdcpp is uniquely problematic.
+  #
+  # During the build, after the pre-processor has been built, the sdcc.exe
+  # compiler is built, and then the architecture libraries are built using
+  # sdcc.exe.
+  #
+  # Internally, sdcc.exe uses the Windows _popen() function in sdcc_popen() to
+  # spawn bin/sdcpp. On UNIX systems this works as expected; bin/sdcpp is an
+  # executable shell script. However, on MinGW, _popen() fails, because
+  # bin/sdcpp is a shell script rather than a PE executable.
+  #
+  # To work around this issue, we first build support/cpp/gcc/cpp.exe, then
+  # delete the bin/sdcpp wrapper script, and copy the executable (and the
+  # cc1.exe support executable) into bin/.
+  #
+  # The remainder of the build process can then completed as usual with the
+  # path to cc1 added to the PATH.
+
+  # On clang, checking for a working Ada compiler takes a long time and
+  # ultimately fails.
+  "../${_realname}-${pkgver}/configure" \
+    --prefix=${MINGW_PREFIX} \
+    --includedir=${MINGW_PREFIX}/include/sdcc \
+    --disable-werror \
+    acx_cv_cc_gcc_supports_ada=no \
+    sdccconf_h_dir_separator=\\\\
+
+  # Replace gpasm path with a Windows path (with the file extension removed).
+  # This is necessary because otherwise the native sdcc executable is given a
+  # UNIX path to gpasm in the --asm argument by the Makefile.
+  local gpasm=$(cygpath -m ${MINGW_PREFIX}/bin/gpasm)
+  find device -name Makefile | \
+    xargs sed -i "s#\(CCAS\) = '.*gpasm'#\1 = ${gpasm%.*}#"
+
+  make -C support/sdbinutils
+  make -C support/cpp
+  rm bin/sdcpp
+  cp support/cpp/gcc/cpp.exe bin/sdcpp.exe
+
+  PATH="$PATH:$PWD/support/cpp/gcc" make
+}
+
+package() {
+  # It is still necessary to keep cc1.exe in PATH, because make incorrectly
+  # identifies that certain files require a rebuild. This affects files in the
+  # following directories:
+  #   - device/lib/pic14/libc
+  #   - device/lib/pic14/libsdcc/regular
+  #   - device/lib/pic14/libsdcc/enhanced
+  PATH="$PATH:${srcdir}/build-${MSYSTEM}/support/cpp/gcc" \
+    make -C "${srcdir}/build-${MSYSTEM}" DESTDIR="$pkgdir" install
+
+  cd "$pkgdir/${MINGW_PREFIX}"
+
+  # Remove spurious binutils from the package.
+  rm \
+    bin/dlltool.exe \
+    bin/dllwrap.exe \
+    bin/windmc.exe \
+    bin/windres.exe
+}
