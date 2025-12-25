@@ -5,9 +5,7 @@
 # Contributor: Philippe Renon <philippe_renon@yahoo.fr>
 
 _bootstrapping=yes
-if [[ $CARCH != i686 ]]; then
-  _pgo=1
-fi
+_pgo=1
 if [[ ${CARCH} != i686 && ${MSYSTEM} != MINGW64 ]]; then
   _wasm=1
 fi
@@ -18,15 +16,15 @@ rust_dist_server=https://static.rust-lang.org/dist
 _realname=rust
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
-         $([[ ${CARCH} == i686 ]] || echo "${MINGW_PACKAGE_PREFIX}-rust-src")
+         "${MINGW_PACKAGE_PREFIX}-rust-src"
          $((( _wasm )) && echo \
            "${MINGW_PACKAGE_PREFIX}-rust-wasm" \
            "${MINGW_PACKAGE_PREFIX}-rust-emscripten"))
 pkgver=1.92.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Systems programming language focused on safety, speed and concurrency (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url="https://www.rust-lang.org/"
 msys2_repository_url="https://github.com/rust-lang/rust"
 msys2_references=(
@@ -39,6 +37,7 @@ license=('spdx:Apache-2.0 AND MIT')
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-clang"
              "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-compiler-rt"
              "${MINGW_PACKAGE_PREFIX}-curl"
              "${MINGW_PACKAGE_PREFIX}-libffi"
              "${MINGW_PACKAGE_PREFIX}-libgit2"
@@ -57,9 +56,7 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
                "${MINGW_PACKAGE_PREFIX}-emscripten" \
                "${MINGW_PACKAGE_PREFIX}-wasi-libc" \
                "${MINGW_PACKAGE_PREFIX}-wasm-component-ld")
-             $((( _pgo )) && echo \
-               "${MINGW_PACKAGE_PREFIX}-compiler-rt" \
-               "${MINGW_PACKAGE_PREFIX}-lld"))
+             $((( _pgo )) && echo "${MINGW_PACKAGE_PREFIX}-lld"))
 source=("${rust_dist_server}/${_realname}c-${pkgver}-src.tar.xz"{,.asc}
         "bootstrap.toml"
         "bootstrap-wasm.toml"
@@ -73,7 +70,7 @@ source=("${rust_dist_server}/${_realname}c-${pkgver}-src.tar.xz"{,.asc}
 noextract=(${_realname}c-${pkgver}-src.tar.xz)
 sha256sums=('ebee170bfe4c4dfc59521a101de651e5534f4dae889756a5c97ca9ea40d0c307'
             'SKIP'
-            '575e47859d2ff5dbc73291a2f976bc682338e323b6e6c5858bc40955bbbb7005'
+            'e4e1a997f955c5dc5611e8dbfa8879c22fb9640cf328d45a462ebc4472ee70a4'
             'd693577fabe39a3046cd44fd002adf9557de6883eaea9007eae7f8372295ea0e'
             '7cb1773c288ffb1c1e751edc49b1890c84bf9c362742bc5225d19d474edb73a0'
             '56882f1a0f1404c10c7726d6cc37444f2b343e72b969badfcb43760f80db0f32'
@@ -149,6 +146,8 @@ build() {
   export MSYS2_ENV_CONV_EXCL='INSTALL_PREFIX'
   export INSTALL_PREFIX="${MINGW_PREFIX}"
   export PKGREL="${pkgrel}"
+  # use our compiler-rt for host target
+  export COMPILER_RT_PATH="$(clang -print-resource-dir)/lib/windows/libclang_rt.builtins-${CARCH}.a"
   envsubst < ../bootstrap.toml > bootstrap.toml
   envsubst < ../bootstrap-wasm.toml > bootstrap-wasm.toml
 
@@ -156,15 +155,8 @@ build() {
     sed -i '/^\[build\]/,/^$/ s|^#||g' bootstrap{,-wasm}.toml
   fi
   # generate debuginfo only for non-i686 targets
-  if check_option "debug" "y" && [ "${CARCH}" != i686 ]; then
+  if check_option "debug" "y"; then
     sed -i 's/^#debug/debug/g' bootstrap{,-wasm}.toml
-  fi
-
-  # Add tools and enable LTO for non-i686
-  if [[ ${CARCH} != i686 ]]; then
-    sed -i -e '/tools = \[/a\  "clippy", "rustdoc", "rustfmt", "rust-analyzer-proc-macro-srv", "analysis", "src",' \
-           -e 's/#lto/lto/' \
-           -e 's/#link-shared/link-shared/' bootstrap.toml
   fi
 
   if (( _pgo )); then
@@ -207,12 +199,11 @@ build() {
     mv build-${MSYSTEM}/dest-wasm${MINGW_PREFIX}/lib/rustlib/wasm32-unknown-emscripten \
       build-${MSYSTEM}/dest-emscripten${MINGW_PREFIX}/lib/rustlib
   fi
-  if [[ ${CARCH} != i686 ]]; then
-    # move src out of the way for splitting
-    mkdir -p build-${MSYSTEM}/dest-src${MINGW_PREFIX}/lib/rustlib
-    mv build-${MSYSTEM}/dest-rust${MINGW_PREFIX}/lib/rustlib/src \
-      build-${MSYSTEM}/dest-src${MINGW_PREFIX}/lib/rustlib
-  fi
+
+  # move src out of the way for splitting
+  mkdir -p build-${MSYSTEM}/dest-src${MINGW_PREFIX}/lib/rustlib
+  mv build-${MSYSTEM}/dest-rust${MINGW_PREFIX}/lib/rustlib/src \
+    build-${MSYSTEM}/dest-src${MINGW_PREFIX}/lib/rustlib
 
   rm -f build-${MSYSTEM}/dest-rust${MINGW_PREFIX}/lib/rustlib/$OSTYPE/lib/self-contained/*
 }
@@ -226,19 +217,13 @@ package_rust() {
   depends=("${MINGW_PACKAGE_PREFIX}-cc"
            "${MINGW_PACKAGE_PREFIX}-libgit2"
            "${MINGW_PACKAGE_PREFIX}-libssh2"
+           "${MINGW_PACKAGE_PREFIX}-llvm-libs"
            "${MINGW_PACKAGE_PREFIX}-sqlite3"
            "${MINGW_PACKAGE_PREFIX}-zlib")
-  # these dependencies are linked with our LLVM library, which has more features enabled
-  if (( _pgo )); then
-    depends+=("${MINGW_PACKAGE_PREFIX}-llvm-libs")
-  else
-    depends+=("${MINGW_PACKAGE_PREFIX}-libxml2"
-              "${MINGW_PACKAGE_PREFIX}-zstd")
-  fi
-  if [[ ${CARCH} != i686 ]]; then
-    optdepends=("${MINGW_PACKAGE_PREFIX}-gdb: for rust-gdb script"
-                "${MINGW_PACKAGE_PREFIX}-lldb: for rust-lldb script")
-  fi
+
+  optdepends=("${MINGW_PACKAGE_PREFIX}-gdb: for rust-gdb script"
+              "${MINGW_PACKAGE_PREFIX}-lldb: for rust-lldb script")
+
   conflicts=("${MINGW_PACKAGE_PREFIX}-rust-docs")
   replaces=("${MINGW_PACKAGE_PREFIX}-rust-docs")
 
@@ -247,13 +232,9 @@ package_rust() {
   cp -a dest-rust/* "${pkgdir}"
 
   # delete unnecessary files, e.g. components and manifest files only used for the uninstall script
-  # and rust-{gdb{,gui},lldb} for i686
   cd "${pkgdir}${MINGW_PREFIX}/lib/rustlib"
   rm components install.log manifest-* rust-installer-version uninstall.sh
   rm "${pkgdir}${MINGW_PREFIX}/etc/target-spec-json-schema.json"
-  if [[ ${CARCH} == i686 ]]; then
-    rm "${pkgdir}${MINGW_PREFIX}"/bin/rust-{gdb{,gui},lldb}
-  fi
 
   install -d "${pkgdir}${MINGW_PREFIX}/share/bash-completion/completions"
   mv "${pkgdir}${MINGW_PREFIX}/etc/bash_completion.d/cargo" \
