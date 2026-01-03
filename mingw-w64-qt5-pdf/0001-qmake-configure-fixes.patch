@@ -1,0 +1,521 @@
+diff --git a/configure.pri b/configure.pri
+index cb53c93..cf5cbfd 100644
+--- a/configure.pri
++++ b/configure.pri
+@@ -24,7 +24,7 @@ defineTest(qtConfTest_detectJumboBuild) {
+     mergeLimit = $$eval(config.input.merge_limit)
+     mergeLimit = $$find(mergeLimit, "\\d")
+     isEmpty(mergeLimit) {
+-       win32: mergeLimit = 0
++       msvc: mergeLimit = 0
+        else: mergeLimit = 8
+     }
+     qtLog("Setting jumbo build merge batch limit to $${mergeLimit}.")
+@@ -90,7 +90,7 @@ defineTest(qtConfTest_detectPython2) {
+ }
+ 
+ defineReplace(qtConfFindGnuTool) {
+-    equals(QMAKE_HOST.os, Windows) {
++    msvc {
+         gnuwin32bindir = $$absolute_path($$QTWEBENGINE_SOURCE_TREE/../gnuwin32/bin)
+         gnuwin32toolpath = "$$gnuwin32bindir/$${1}"
+         exists($$gnuwin32toolpath): \
+@@ -128,16 +128,16 @@ defineTest(qtConfTest_detectPlatform) {
+     QT_FOR_CONFIG += gui-private
+ 
+     linux:qtwebengine_isLinuxPlatformSupported() {
+-        $${1}.platform = "linux"
++        $${1}.platformSupport = "linux"
+     }
+     win32:qtwebengine_isWindowsPlatformSupported() {
+-        $${1}.platform = "windows"
++        $${1}.platformSupport = "windows"
+     }
+     macos:qtwebengine_isMacOsPlatformSupported() {
+-        $${1}.platform = "macos"
++        $${1}.platformSupport = "macos"
+     }
+     ios:qtwebengine_isMacOsPlatformSupported() {
+-        $${1}.platform = "ios"
++        $${1}.platformSupport = "ios"
+     }
+ 
+     !isEmpty(platformError) {
+@@ -231,15 +231,15 @@ defineTest(qtConfTest_detectEmbedded) {
+ }
+ 
+ defineTest(qtConfTest_detectHostPkgConfig) {
+-   PKG_CONFIG = $$qtConfPkgConfig(true)
++   PKG_CONFIG = $$qtConfFindInPath("pkg-config$$EXE_SUFFIX")
+    isEmpty(PKG_CONFIG) {
+        qtLog("Could not find host pkg-config")
+        return(false)
+    }
+    qtLog("Found host pkg-config: $$PKG_CONFIG")
+-   $${1}.path = $$PKG_CONFIG
+-   export($${1}.path)
+-   $${1}.cache += path
++   $${1}.location = $$clean_path($$PKG_CONFIG)
++   export($${1}.location)
++   $${1}.cache += location
+    export($${1}.cache)
+    return(true)
+ }
+@@ -443,11 +443,24 @@ defineTest(qtwebengine_isWindowsPlatformSupported) {
+         qtwebengine_platformError("must be built on a 64-bit machine.")
+         return(false)
+     }
+-    !msvc|intel_icl {
+-        qtwebengine_platformError("requires MSVC or Clang (MSVC mode).")
+-        return(false)
++    !msvc {
++        intel_icl {
++            qtwebengine_platformError("requires MSVC or Clang (MSVC mode).")
++            return(false)
++        }
++        !gcc {
++            qtwebengine_platformError("requires GCC or Clang.")
++            return(false)
++        }
+     }
+-    !qtwebengine_isMinWinSDKVersion(10, 19041): {
++    gcc {
++        !clang:!qtwebengine_isGCCVersionSupported(): return(false)
++        !qtConfig(c++14) {
++            qtwebengine_platformError("requires c++14 support.")
++            return(false)
++        }
++    }
++    msvc:!qtwebengine_isMinWinSDKVersion(10, 19041): {
+         qtwebengine_platformError("requires a Windows SDK version 10.0.19041 or newer.")
+         return(false)
+     }
+@@ -552,18 +565,20 @@ defineTest(qtwebengine_isMinWinSDKVersion) {
+     requested_minor = $$2
+     WIN_SDK_VERSION = $$(WindowsSDKVersion)
+ 
+-    isEmpty(WIN_SDK_VERSION)|equals(WIN_SDK_VERSION, "\\") {
++    msvc:isEmpty(WIN_SDK_VERSION)|equals(WIN_SDK_VERSION, "\\") {
+         qtwebengine_platformError("requires Windows SDK version, but could not detect it (\'WindowsSDKVersion\' environment variable is not set).")
+         return(false)
+     }
+ 
+-    # major.0.minor
+-    major_version = $$section(WIN_SDK_VERSION, ., 0, 0)
+-    minor_version = $$section(WIN_SDK_VERSION, ., 2, 2)
++    msvc {
++        # major.0.minor
++        major_version = $$section(WIN_SDK_VERSION, ., 0, 0)
++        minor_version = $$section(WIN_SDK_VERSION, ., 2, 2)
+ 
+-    greaterThan(major_version, $$requested_major):return(true)
+-    equals(major_version, $$requested_major):greaterThan(minor_version, $$requested_minor):return(true)
+-    equals(major_version, $$requested_major):equals(minor_version, $$requested_minor)::return(true)
++        greaterThan(major_version, $$requested_major):return(true)
++        equals(major_version, $$requested_major):greaterThan(minor_version, $$requested_minor):return(true)
++        equals(major_version, $$requested_major):equals(minor_version, $$requested_minor)::return(true)
+ 
+-    return(false)
++        return(false)
++    }
+ }
+diff --git a/mkspecs/features/gn_generator.prf b/mkspecs/features/gn_generator.prf
+index 306e58d..fc8845e 100644
+--- a/mkspecs/features/gn_generator.prf
++++ b/mkspecs/features/gn_generator.prf
+@@ -230,7 +230,7 @@ win32 {
+     CONFIG(rtti_off): GN_CONTENTS += "  configs += [\"//build/config/compiler:no_rtti\"]"
+     CONFIG(rtti): GN_CONTENTS += "  configs += [\"//build/config/compiler:rtti\"]"
+ }
+-gcc:!qtConfig(reduce_exports) {
++!win32:gcc:!qtConfig(reduce_exports) {
+     GN_CONTENTS += "  configs -= [\"//build/config/gcc:symbol_visibility_hidden\"]"
+ }
+ 
+diff --git a/src/buildtools/config/linking.pri b/src/buildtools/config/linking.pri
+index f295e2c..cc7f699 100644
+--- a/src/buildtools/config/linking.pri
++++ b/src/buildtools/config/linking.pri
+@@ -10,10 +10,12 @@ linking_pri = $$OUT_PWD/$$getConfigDir()/$${TARGET}.pri
+ # Do not precompile any headers. We are only interested in the linker step.
+ PRECOMPILED_HEADER =
+ 
+-isEmpty(NINJA_OBJECTS): error("Missing object files from linking pri.")
+-isEmpty(NINJA_LFLAGS): error("Missing linker flags from linking pri")
+-isEmpty(NINJA_ARCHIVES): error("Missing archive files from linking pri")
+-isEmpty(NINJA_LIBS): error("Missing library files from linking pri")
++webenginecore {
++    isEmpty(NINJA_OBJECTS): error("Missing object files from linking pri.")
++    isEmpty(NINJA_LFLAGS): error("Missing linker flags from linking pri")
++    isEmpty(NINJA_ARCHIVES): error("Missing archive files from linking pri")
++    isEmpty(NINJA_LIBS): error("Missing library files from linking pri")
++}
+ NINJA_OBJECTS = $$eval($$list($$NINJA_OBJECTS))
+ # Do manual response file linking for macOS and Linux
+ 
+diff --git a/src/buildtools/config/support.pri b/src/buildtools/config/support.pri
+index a9df3d2..c255472 100644
+--- a/src/buildtools/config/support.pri
++++ b/src/buildtools/config/support.pri
+@@ -24,8 +24,8 @@ defineReplace(qtwebengine_checkWebEngineCoreError) {
+     !qtwebengine_checkForPython(QtWebEngine):return(false)
+     !qtwebengine_checkForNodejs(QtWebEngine):return(false)
+     !qtwebengine_checkForSanitizer(QtWebEngine):return(false)
+-    linux:!qtwebengine_checkForPkgCfg(QtWebEngine):return(false)
+-    linux:!qtwebengine_checkForHostPkgCfg(QtWebEngine):return(false)
++    linux:win32:!qtwebengine_checkForPkgCfg(QtWebEngine):return(false)
++    linux:win32:!qtwebengine_checkForHostPkgCfg(QtWebEngine):return(false)
+     linux:!qtwebengine_checkForGlibc(QtWebEngine):return(false)
+     linux:!qtwebengine_checkForKhronos(QtWebEngine):return(false)
+     linux:!qtwebengine_checkForPackage(QtWebEngine,nss):return(false)
+@@ -53,8 +53,8 @@ defineReplace(qtwebengine_checkPdfError) {
+     !qtwebengine_checkForFlex(QtPdf):return(false)
+     !qtwebengine_checkForPython(QtPdf):return(false)
+     !qtwebengine_checkForSanitizer(QtPdf):return(false)
+-    linux:!qtwebengine_checkForPkgCfg(QtPdf):return(false)
+-    linux:!qtwebengine_checkForHostPkgCfg(QtPdf):return(false)
++    linux:win32:!qtwebengine_checkForPkgCfg(QtPdf):return(false)
++    linux:win32:!qtwebengine_checkForHostPkgCfg(QtPdf):return(false)
+     win32:!qtwebengine_checkForWinVersion(QtPdf):return(false)
+     return(true)
+ }
+diff --git a/src/buildtools/config/windows.pri b/src/buildtools/config/windows.pri
+index f7b80e6..36be59e 100644
+--- a/src/buildtools/config/windows.pri
++++ b/src/buildtools/config/windows.pri
+@@ -20,7 +20,53 @@ clang_cl {
+         clang_use_chrome_plugins=false \
+         clang_base_path=\"$$system_path($$clean_path($$clang_prefix))\"
+ } else {
+-    gn_args += is_clang=false use_lld=false
++    clang {
++        gn_args += is_clang=true use_lld=false clang_use_chrome_plugins=false
++    } else {
++        gn_args += is_clang=false use_lld=false
++    }
++}
++
++gcc {
++    gn_args += \
++        angle_enable_vulkan=false \
++        angle_shared_libvulkan=false \
++        dcheck_always_on=false \
++        enable_ipc_fuzzer=false \
++        enable_java_templates=false \
++        enable_openscreen=false \
++        enable_perfetto_ipc=false \
++        enable_vulkan=false \
++        fatal_linker_warnings=false \
++        icu_use_data_file=false \
++        is_debug=false \
++        is_official_build=true \
++        optional_trace_events_enabled=false \
++        pdfium_use_system_libpng=true \
++        pdfium_use_system_zlib=true \
++        skia_use_dawn=false \
++        use_dawn=false \
++        use_glib=false \
++        use_partition_alloc=true \
++        use_perfetto_client_library=false \
++        use_static_angle=true \
++        use_system_ffmpeg=true \
++        use_system_freetype=true \
++        use_system_harfbuzz=true \
++        use_system_icu=true \
++        use_system_lcms2=true \
++        use_system_libjpeg=true \
++        use_system_libopenjpeg2=true \
++        use_system_libpng=true \
++        use_system_libvpx=true \
++        use_system_libwebp=true \
++        use_system_libxml=true \
++        use_system_libxslt=true \
++        use_system_minizip=true \
++        use_system_opus=true \
++        use_system_snappy=true \
++        use_system_zlib=true \
++        use_thin_lto=false
+ }
+ 
+ qtConfig(webengine-developer-build) {
+@@ -85,7 +131,8 @@ msvc {
+     gn_args += windows_sdk_path=\"$$clean_path($$SDK_PATH)\"
+ 
+     GN_TARGET_CPU = $$gnArch($$QT_ARCH)
+-    gn_args += target_cpu=\"$$GN_TARGET_CPU\"
++    gn_args += target_cpu=\"$$GN_TARGET_CPU\" is_msvc=true
+ } else {
+-    error("Microsoft Visual Studio C++ compatible compiler is required by gn.")
++    GN_TARGET_CPU = $$gnArch($$QT_ARCH)
++    gn_args += target_cpu=\"$$GN_TARGET_CPU\" is_mingw=true
+ }
+diff --git a/src/buildtools/configure.json b/src/buildtools/configure.json
+index 5e5d9d7..f62d461 100644
+--- a/src/buildtools/configure.json
++++ b/src/buildtools/configure.json
+@@ -197,7 +197,7 @@
+             "type": "compile",
+             "test": {
+                 "tail": [
+-                    "#if !defined(LIBXML_ICU_ENABLED)",
++                    "#if !defined(LIBXML_ICU_ENABLED) && !defined(_WIN32)",
+                     "#error libxml icu not enabled",
+                     "#endif"
+                 ]
+@@ -224,7 +224,7 @@
+                     "}"
+                 ],
+                 "main": [
+-                    "#if LIBAVFORMAT_VERSION_MAJOR >= 59",
++                    "#if LIBAVFORMAT_VERSION_MAJOR < 61",
+                         "AVStream stream;",
+                         "auto first_dts = av_stream_get_first_dts(&stream);",
+                     "#endif"
+@@ -327,7 +327,7 @@
+             "type": "compile",
+             "test": {
+                  "head" : [
+-                    "#if !defined(__clang__) && _MSC_FULL_VER < 191426428",
++                    "#if !defined(__clang__) && defined(_MSC_VER) && _MSC_FULL_VER < 191426428",
+                     "#error unsupported Visual Studio version",
+                     "#endif"
+                  ]
+@@ -336,7 +336,7 @@
+         "webengine-host-pkg-config": {
+                    "label": "host pkg-config",
+                    "type": "detectHostPkgConfig",
+-                   "log": "path"
++                   "log": "location"
+         },
+         "webengine-jumbo-build": {
+             "label": "jumbo build merge limit",
+@@ -536,7 +536,7 @@
+         },
+         "webengine-system-nss": {
+             "label": "nss",
+-            "condition": "config.unix && !config.darwin && libs.webengine-nss",
++            "condition": "(config.unix || config.win32) && !config.darwin && libs.webengine-nss",
+             "output": [ "privateFeature" ]
+         },
+         "webengine-system-glibc": {
+@@ -556,10 +556,10 @@
+         },
+         "webengine-host-pkg-config": {
+             "label": "host-pkg-config",
+-            "condition": "config.unix && tests.webengine-host-pkg-config",
++            "condition": "(config.unix || config.win32) && tests.webengine-host-pkg-config",
+             "output": [
+                 "privateFeature",
+-                { "type": "varAssign", "name": "QMAKE_PKG_CONFIG_HOST", "value": "tests.webengine-host-pkg-config.path" }
++                { "type": "varAssign", "name": "QMAKE_PKG_CONFIG_HOST", "value": "tests.webengine-host-pkg-config.location" }
+             ]
+         },
+         "webengine-ozone-x11" : {
+@@ -585,7 +585,7 @@
+         },
+         "webengine-system-harfbuzz": {
+             "label": "harfbuzz",
+-            "condition": "config.unix && features.system-harfbuzz && libs.webengine-harfbuzz",
++            "condition": "(config.unix || config.win32) && features.system-harfbuzz && libs.webengine-harfbuzz",
+             "output": [ "privateFeature" ]
+         },
+         "webengine-qt-harfbuzz" : {
+@@ -600,12 +600,12 @@
+         },
+         "webengine-system-minizip" : {
+             "label": "minizip",
+-            "condition": "config.unix && libs.webengine-minizip",
++            "condition": "(config.unix || config.win32) && libs.webengine-minizip",
+             "output": [ "privateFeature" ]
+         },
+         "webengine-system-zlib" : {
+             "label": "zlib",
+-            "condition": "config.unix && features.system-zlib && libs.webengine-zlib",
++            "condition": "(config.unix || config.win32) && features.system-zlib && libs.webengine-zlib",
+             "output": [ "privateFeature" ]
+         },
+         "webengine-qt-zlib" : {
+@@ -615,12 +615,12 @@
+         },
+         "webengine-system-libevent" : {
+             "label": "libevent",
+-            "condition": "config.unix && libs.webengine-libevent",
++            "condition": "(config.unix || config.win32) && libs.webengine-libevent",
+             "output": [ "privateFeature" ]
+         },
+         "webengine-system-png" : {
+             "label": "png",
+-            "condition": "config.unix && features.system-png && libs.webengine-png",
++            "condition": "(config.unix || config.win32) && features.system-png && libs.webengine-png",
+             "output": [ "privateFeature" ]
+         },
+         "webengine-qt-png" : {
+@@ -630,7 +630,7 @@
+         },
+         "webengine-system-jpeg" : {
+             "label": "JPEG",
+-            "condition": "config.unix && features.system-jpeg && libs.webengine-jpeglib",
++            "condition": "(config.unix || config.win32) && features.system-jpeg && libs.webengine-jpeglib",
+             "output": [ "privateFeature" ]
+         },
+         "webengine-qt-jpeg" : {
+@@ -640,7 +640,7 @@
+         },
+         "webengine-system-re2": {
+             "label": "re2",
+-            "condition": "config.unix && libs.webengine-re2",
++            "condition": "(config.unix || config.win32) && libs.webengine-re2",
+             "output": [ "privateFeature" ]
+         },
+         "webengine-system-icu": {
+@@ -651,12 +651,12 @@
+         },
+         "webengine-system-libwebp": {
+             "label": "libwebp, libwebpmux and libwebpdemux",
+-            "condition": "config.unix && libs.webengine-webp",
++            "condition": "(config.unix || config.win32) && libs.webengine-webp",
+             "output": [ "privateFeature" ]
+         },
+         "webengine-system-opus": {
+             "label": "opus",
+-            "condition": "config.unix && libs.webengine-opus",
++            "condition": "(config.unix || config.win32) && libs.webengine-opus",
+             "output": [ "privateFeature" ]
+         },
+         "webengine-system-ffmpeg": {
+@@ -667,17 +667,17 @@
+         },
+         "webengine-system-libxml2": {
+             "label": "libxml2 and libxslt",
+-            "condition": "config.unix && libs.webengine-libxml2",
++            "condition": "(config.unix || config.win32) && libs.webengine-libxml2",
+             "output": [ "privateFeature" ]
+         },
+         "webengine-system-lcms2" : {
+             "label": "lcms2",
+-            "condition": "config.unix && libs.webengine-lcms2",
++            "condition": "(config.unix || config.win32) && libs.webengine-lcms2",
+             "output": [ "privateFeature" ]
+         },
+         "webengine-system-freetype" : {
+             "label": "freetype",
+-            "condition": "config.unix && features.system-freetype && libs.webengine-freetype",
++            "condition": "(config.unix || config.win32) && features.system-freetype && libs.webengine-freetype",
+             "output": [ "privateFeature" ]
+         },
+         "webengine-qt-freetype" : {
+@@ -687,12 +687,12 @@
+         },
+         "webengine-system-libvpx" : {
+             "label": "libvpx",
+-            "condition": "config.unix && libs.webengine-libvpx",
++            "condition": "(config.unix || config.win32) && libs.webengine-libvpx",
+             "output": [ "privateFeature" ]
+         },
+         "webengine-system-snappy" : {
+             "label": "snappy",
+-            "condition": "config.unix && libs.webengine-snappy",
++            "condition": "(config.unix || config.win32) && libs.webengine-snappy",
+             "output": [ "privateFeature" ]
+         },
+         "webengine-winversion" : {
+@@ -829,7 +829,7 @@
+                 },
+                 {
+                     "section": "Optional system libraries used",
+-                    "condition": "config.unix",
++                    "condition": "config.unix || config.win32",
+                     "entries": [
+                         "webengine-system-re2",
+                         "webengine-system-icu",
+diff --git a/src/core/core_gn_config.pri b/src/core/core_gn_config.pri
+index 379bbac..5b7567e 100644
+--- a/src/core/core_gn_config.pri
++++ b/src/core/core_gn_config.pri
+@@ -7,8 +7,8 @@ isUniversal() {
+ } else {
+     GN_FILES = $$OUT_PWD/$$getConfigDir()/BUILD.gn
+ }
+-GN_FIND_MOCABLES_SCRIPT = $$shell_path($$QTWEBENGINE_ROOT/tools/scripts/gn_find_mocables.py)
+-GN_RUN_BINARY_SCRIPT = $$shell_path($$QTWEBENGINE_ROOT/tools/scripts/gn_run_binary.py)
++GN_FIND_MOCABLES_SCRIPT = $$QTWEBENGINE_ROOT/tools/scripts/gn_find_mocables.py
++GN_RUN_BINARY_SCRIPT = $$QTWEBENGINE_ROOT/tools/scripts/gn_run_binary.py
+ GN_IMPORTS =  $$PWD/qtwebengine.gni
+ qtConfig(webengine-extensions) {
+   GN_INCLUDES += $$PWD/qtwebengine_sources.gni $$PWD/qtwebengine_resources.gni $$PWD/common/extensions/api/qtwebengine_extensions_features.gni
+diff --git a/src/core/gn_run.pro b/src/core/gn_run.pro
+index 9f6e645..06d1f6a 100644
+--- a/src/core/gn_run.pro
++++ b/src/core/gn_run.pro
+@@ -13,7 +13,7 @@ qtConfig(webengine-system-ninja) {
+     QT_TOOL.ninja.binary = $$shell_quote($$shell_path($$ninjaPath()))
+ }
+ 
+-win32 {
++msvc {
+     # Add the gnuwin32/bin subdir of qt5.git to PATH. Needed for calling bison and friends.
+     gnuwin32path.name = PATH
+     gnuwin32path.value = $$shell_path($$clean_path($$QTWEBENGINE_ROOT/../gnuwin32/bin))
+@@ -45,7 +45,7 @@ build_pass|!debug_and_release {
+     isEmpty(enableThreads):macos {
+         gn_threads = "--threads=1"
+     }
+-    isEmpty(ninjaflags):!silent: ninjaflags = "-v"
++    isEmpty(ninjaflags):!win32:!silent: ninjaflags = "-v"
+     build_pass:build_all: default_target.target = all
+     else: default_target.target = first
+     default_target.depends = runninja
+diff --git a/src/pdf/config/common.pri b/src/pdf/config/common.pri
+index ec65b7b..9f24d74 100644
+--- a/src/pdf/config/common.pri
++++ b/src/pdf/config/common.pri
+@@ -24,7 +24,7 @@ qtConfig(webengine-qt-freetype) {
+ }
+ 
+ qtConfig(webengine-qt-zlib) {
+-    win32 {
++    msvc {
+       CONFIG(debug, debug|release) {
+           qtzlib = Qt5Cored.lib
+       } else {
+diff --git a/src/pdf/gn_run.pro b/src/pdf/gn_run.pro
+index 0e55947..0632282 100644
+--- a/src/pdf/gn_run.pro
++++ b/src/pdf/gn_run.pro
+@@ -12,7 +12,7 @@ qtConfig(webengine-system-ninja) {
+     QT_TOOL.ninja.binary = $$shell_quote($$shell_path($$ninjaPath()))
+ }
+ 
+-win32 {
++msvc {
+     # Add the gnuwin32/bin subdir of qt5.git to PATH. Needed for calling bison and friends.
+     gnuwin32path.name = PATH
+     gnuwin32path.value = $$shell_path($$clean_path($$QTWEBENGINE_ROOT/../gnuwin32/bin))
+diff --git a/src/pdf/pdfcore_generator.pro b/src/pdf/pdfcore_generator.pro
+index 0930256..1d845bf 100644
+--- a/src/pdf/pdfcore_generator.pro
++++ b/src/pdf/pdfcore_generator.pro
+@@ -12,8 +12,8 @@ isUniversal() {
+ } else {
+     GN_FILES = $$OUT_PWD/$$getConfigDir()/BUILD.gn
+ }
+-GN_FIND_MOCABLES_SCRIPT = $$shell_path($$QTWEBENGINE_ROOT/tools/scripts/gn_find_mocables.py)
+-GN_RUN_BINARY_SCRIPT = $$shell_path($$QTWEBENGINE_ROOT/tools/scripts/gn_run_binary.py)
++GN_FIND_MOCABLES_SCRIPT = $$QTWEBENGINE_ROOT/tools/scripts/gn_find_mocables.py
++GN_RUN_BINARY_SCRIPT = $$QTWEBENGINE_ROOT/tools/scripts/gn_run_binary.py
+ GN_IMPORTS =  $$PWD/qtpdf.gni
+ GN_CREATE_PRI = true
+ QMAKE_INTERNAL_INCLUDED_FILES = $$GN_IMPORTS $$GN_INCLUDES $$GN_FILE
+diff --git a/tools/scripts/gn_find_mocables.py b/tools/scripts/gn_find_mocables.py
+index 4dc2576..6a2e10c 100644
+--- a/tools/scripts/gn_find_mocables.py
++++ b/tools/scripts/gn_find_mocables.py
+@@ -53,7 +53,7 @@ for f in filter(os.path.isfile, files):
+             line = line.partition("//")[0]
+         if re.match(".*Q_OBJECT", line):
+             mocables.add(f)
+-        im = re.search('#include "(moc_\w+.cpp)"', line)
++        im = re.search('#include "(moc_\\w+.cpp)"', line)
+         if im:
+             includedMocs.add(im.group(1))
+ 

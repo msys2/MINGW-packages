@@ -1,0 +1,101 @@
+From be37df6ff673aacc2f5848f8ae22c8c25709bb5e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bj=C3=B6rn=20Sch=C3=A4pers?= <bjoern@hazardy.de>
+Date: Sat, 26 Jul 2025 17:46:08 +0200
+Subject: [PATCH] Capnp: Add ADD_IMPORT_PATH_FROM_BINARY build flag
+
+So that for the Msys2 package (and maybe other Windows installations) it
+can find the c++ scheme.
+
+Fixes #1062
+---
+ c++/CMakeLists.txt               |  1 +
+ c++/src/capnp/CMakeLists.txt     |  4 ++++
+ c++/src/capnp/compiler/capnp.c++ | 37 ++++++++++++++++++++++++++------
+ 3 files changed, 36 insertions(+), 6 deletions(-)
+
+diff --git a/c++/CMakeLists.txt b/c++/CMakeLists.txt
+index 934ea767..b5e6aecf 100644
+--- a/c++/CMakeLists.txt
++++ b/c++/CMakeLists.txt
+@@ -30,6 +30,7 @@ set(INSTALL_TARGETS_DEFAULT_ARGS
+ 
+ option(EXTERNAL_CAPNP "Use the system capnp binary, or the one specified in $CAPNP, instead of using the compiled one." OFF)
+ option(CAPNP_LITE "Compile Cap'n Proto in 'lite mode', in which all reflection APIs (schema.h, dynamic.h, etc.) are not included. Produces a smaller library at the cost of features. All programs built against the library must be compiled with -DCAPNP_LITE. Requires EXTERNAL_CAPNP." OFF)
++option(ADD_IMPORT_PATH_FROM_BINARY "If the Cap'n Proto binaries are in a directory called 'bin', add '../include' to the standard import paths, otherwise add the directory of the binaries to the import paths." OFF)
+ 
+ # Check for invalid combinations of build options
+ if(CAPNP_LITE AND BUILD_TESTING AND NOT EXTERNAL_CAPNP)
+diff --git a/c++/src/capnp/CMakeLists.txt b/c++/src/capnp/CMakeLists.txt
+index 9980fde6..11db0b3c 100644
+--- a/c++/src/capnp/CMakeLists.txt
++++ b/c++/src/capnp/CMakeLists.txt
+@@ -222,6 +222,10 @@ if(NOT CAPNP_LITE)
+   endif()
+ endif()  # NOT CAPNP_LITE
+ 
++if (ADD_IMPORT_PATH_FROM_BINARY)
++  add_compile_definitions(ADD_IMPORT_PATH_FROM_BINARY)
++endif()
++
+ # Tests ========================================================================
+ 
+ if(BUILD_TESTING)
+diff --git a/c++/src/capnp/compiler/capnp.c++ b/c++/src/capnp/compiler/capnp.c++
+index 9e41f1f9..a9b746ff 100644
+--- a/c++/src/capnp/compiler/capnp.c++
++++ b/c++/src/capnp/compiler/capnp.c++
+@@ -348,6 +348,34 @@ public:
+     }
+ 
+     if (addStandardImportPaths) {
++      auto add = [this](kj::StringPtr path) {
++        KJ_IF_MAYBE(dir, getSourceDirectory(path, false)) {
++          loader.addImportPath(*dir);
++        } else {
++          // ignore standard path that doesn't exist
++        }
++      };
++#if _WIN32
++#ifdef CAPNP_INCLUDE_DIR
++      add(KJ_CONCAT(CAPNP_INCLUDE_DIR, _kj));
++#endif
++#ifdef ADD_IMPORT_PATH_FROM_BINARY
++      char exePath[MAX_PATH + 1] = {};
++      KJ_SYSCALL(GetModuleFileNameA(nullptr, exePath, kj::size(exePath)));
++      kj::ArrayPtr path = exePath;
++      KJ_IF_MAYBE(slashPos, path.findLast('\\')) {
++        path = path.slice(0, *slashPos);
++        if (path.endsWith("bin"_kj)) {
++          KJ_IF_MAYBE(slashPos, path.findLast('\\')) {
++            path = path.slice(0, *slashPos + 1);
++            add(kj::str(path, "include\\"));
++          }
++        } else {
++          add(kj::str(path));
++        }
++      }
++#endif
++#else // _WIN32
+       static constexpr kj::StringPtr STANDARD_IMPORT_PATHS[] = {
+         "/usr/local/include"_kj,
+         "/usr/include"_kj,
+@@ -355,13 +383,10 @@ public:
+         KJ_CONCAT(CAPNP_INCLUDE_DIR, _kj),
+ #endif
+       };
+-      for (auto path: STANDARD_IMPORT_PATHS) {
+-        KJ_IF_MAYBE(dir, getSourceDirectory(path, false)) {
+-          loader.addImportPath(*dir);
+-        } else {
+-          // ignore standard path that doesn't exist
+-        }
++      for (auto path : STANDARD_IMPORT_PATHS) {
++          add(path);
+       }
++#endif // !_WIN32
+ 
+       addStandardImportPaths = false;
+     }
+-- 
+2.51.0
+

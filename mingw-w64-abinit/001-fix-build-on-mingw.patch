@@ -9,6 +9,20 @@
  
    set_target_properties(abinit::wannier PROPERTIES
      INTERFACE_INCLUDE_DIRECTORIES "${WANNIER_INCLUDE_DIR}"
+--- a/cmake/generate_config_h.cmake
++++ b/cmake/generate_config_h.cmake
+@@ -210,8 +210,10 @@
+ 
+ # check async
+ try_compile(HAVE_FC_ASYNC_BOOL ${CMAKE_BINARY_DIR}/try_compile ${CMAKE_SOURCE_DIR}/cmake/try_compile/have_fc_async.F90)
+-if (HAVE_FC_ASYNC_BOOL)
++if (HAVE_FC_ASYNC_BOOL AND NOT MINGW)
+   set(HAVE_FC_ASYNC 1)
++else()
++  set(HAVE_FC_ASYNC 0)
+ endif()
+ 
+ # check backtrace
 --- a/shared/common/src/CMakeLists.txt
 +++ b/shared/common/src/CMakeLists.txt
 @@ -25,6 +25,6 @@
@@ -21,7 +35,7 @@
  add_subdirectory(39_libpaw)
 --- a/shared/common/src/02_clib/CMakeLists.txt
 +++ b/shared/common/src/02_clib/CMakeLists.txt
-@@ -11,12 +11,14 @@
+@@ -11,13 +11,15 @@
    mallinfo.c
    md5.c
    md5.h
@@ -30,14 +44,15 @@
    xmalloc.c
    xmalloc.h
    m_fsockets.F90
-   m_clib.F90)
+   m_clib.F90
+ )
 +if(NOT WIN32)
 +  target_sources(02_lib rlimit.c)
 +endif()
  
  set_target_properties(02_clib
    PROPERTIES
-@@ -43,5 +45,13 @@
+@@ -44,5 +46,13 @@
      PUBLIC
      abinit::levmar)
  endif()
@@ -53,8 +68,8 @@
  add_library(abinit::02_clib ALIAS 02_clib)
 --- a/shared/common/src/02_clib/fsi_posix.c
 +++ b/shared/common/src/02_clib/fsi_posix.c
-@@ -21,6 +21,10 @@
- #include <sys/stat.h>
+@@ -25,6 +25,10 @@
+ #include <errno.h>
  #include "abi_clib.h"
  #include "xmalloc.h"
 +#ifdef _WIN32
@@ -62,21 +77,25 @@
 +#define mkdir(a,b) mkdir (a)
 +#endif
  
- 
- void c_mkdir(char *path, int *ierr)
+ /* Return 0 if dirpath is not an existent directory */
+ int _directory_exist(const char *dirpath) {
 --- a/shared/common/src/02_clib/m_clib.F90
 +++ b/shared/common/src/02_clib/m_clib.F90
-@@ -31,7 +31,9 @@
+@@ -31,10 +31,12 @@
   public :: clib_etime
   public :: clib_mtrace
   public :: clib_print_mallinfo
 +#ifndef _WIN32
   public :: clib_ulimit_stack    ! Set stack size limit to maximum allowed value.
++ public :: clib_setenv
 +#endif
   public :: clib_getpid
-  !public :: clib_usleep         ! Suspend calling thread for microseconds of clock time
+  public :: clib_sleep           ! Sleep for a certain number of seconds.
+- public :: clib_setenv
+  public :: clib_mkdir_if_needed
  
-@@ -116,7 +118,7 @@
+ 
+@@ -125,7 +127,7 @@
       integer(c_int),intent(out) :: ierr
     end subroutine
   end interface
@@ -85,15 +104,31 @@
   interface
     ! Set stack size limit to maximum allowed value. Return soft and hard limit and exit status.
     subroutine clib_ulimit_stack(rlim_cur, rlim_max, ierr) bind(C, name="ulimit_stack")
-@@ -125,7 +127,7 @@
-      integer(c_int),intent(out) :: ierr
-    end subroutine
+@@ -142,6 +144,7 @@
+      integer(c_int),intent(in) :: overwrite
+    end function
   end interface
++#endif
+ 
+ ! ==========================================
+ ! ==== Fortran-bindings for file_lock.c ====
+@@ -260,7 +263,7 @@
+ !!       value (by contrast with putenv(3)).
+ !!
+ !! SOURCE
+-
++#ifndef _WIN32
+ integer function clib_setenv(name, value, overwrite) result(ierr)
+ 
+ !Arguments ------------------------------------
+@@ -272,6 +275,6 @@
+ 
+ end function clib_setenv
+ !!***
 -
 +#endif
-   !interface
-   !  ! suspend calling thread for microseconds of clock time
-   !  ! uses unistd.h for Fortran standard compliant sleep.
+ END MODULE m_clib
+ !!***
 --- a/shared/common/src/02_clib/sockets.c
 +++ b/shared/common/src/02_clib/sockets.c
 @@ -53,10 +53,16 @@
@@ -115,7 +150,7 @@
  /* Opens a socket.
 --- a/shared/common/src/12_hide_mpi/CMakeLists.txt
 +++ b/shared/common/src/12_hide_mpi/CMakeLists.txt
-@@ -51,6 +51,12 @@
+@@ -53,6 +53,12 @@
    PRIVATE
    HAVE_CONFIG_H)
  
@@ -130,17 +165,7 @@
    abinit::02_clib
 --- a/shared/common/src/12_hide_mpi/m_xmpi.F90
 +++ b/shared/common/src/12_hide_mpi/m_xmpi.F90
-@@ -38,7 +38,9 @@
- #ifdef FC_NAG
-  use f90_unix_proc
- #endif
-+#ifndef _WIN32
-  use m_clib, only : clib_ulimit_stack !, clib_getpid !, clib_usleep
-+#endif
- 
-  implicit none
- 
-@@ -815,8 +817,10 @@
+@@ -818,8 +818,10 @@
   end if
  #endif
  
@@ -151,6 +176,20 @@
  
   if (xmpi_comm_rank(xmpi_world) == 0) then
  
+@@ -875,12 +877,7 @@
+ 
+  ! If OMP_NUM_THREADS is not defined (ierr != 0), set it to 1
+  if (ierr /= 0) then
+-   ierr = clib_setenv('OMP_NUM_THREADS', '1', 1)
+-   if (ierr == 0) then
+-     write(std_out,"(a)")'- OMP_NUM_THREADS was not defined. It has been set to 1.'
+-   else
+-     write(std_out,"(a)")'- WARNING: Failed to set OMP_NUM_THREADS.'
+-   end if
++   write(std_out,"(a)")'- WARNING: Failed to set OMP_NUM_THREADS.'
+  else
+    !write(std_out,*)'- OMP_NUM_THREADS is already set to: ', trim(omp_num_threads)
+  end if
 --- a/src/57_iopsp_parser/CMakeLists.txt
 +++ b/src/57_iopsp_parser/CMakeLists.txt
 @@ -37,6 +37,7 @@

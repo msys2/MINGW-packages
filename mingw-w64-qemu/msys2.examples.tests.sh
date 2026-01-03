@@ -1488,8 +1488,7 @@ function qemu2018day10 {
 	download https://www.qemu-advent-calendar.org/2018/download/day10.tar.xz
 	tar -xf day10.tar.xz
 	cat day10/readme.txt
-	execute qemu-system-i386 -net none -M $(qemuMinVersion 8 0 90 && echo "pc-q35-8.0" || echo "q35") \
-		$(accel) -cdrom day10/gamebro.iso
+	execute qemu-system-i386 $(accel) -cdrom day10/gamebro.iso
 	removeDir day10
 }
 
@@ -1772,7 +1771,7 @@ function qemu2016day15 {
 	download https://www.qemu-advent-calendar.org/2016/download/day15.tar.xz
 	tar -xf day15.tar.xz
 	cat ofpong/readme.txt
-	execute qemu-system-ppc64 -M pseries-2.1 -boot order=d,strict=on -cdrom ofpong/ofpong.iso
+	execute qemu-system-ppc64 -boot order=d,strict=on -cdrom ofpong/ofpong.iso
 	removeDir ofpong
 }
 
