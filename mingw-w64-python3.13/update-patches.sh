@@ -8,7 +8,7 @@ die () {
 }
 
 cd "$(dirname "$0")" ||
-die "Could not cd to mingw-w64-python3.12/"
+die "Could not cd to mingw-w64-python3.13/"
 
 git rev-parse --verify HEAD >/dev/null &&
 git update-index -q --ignore-submodules --refresh &&
