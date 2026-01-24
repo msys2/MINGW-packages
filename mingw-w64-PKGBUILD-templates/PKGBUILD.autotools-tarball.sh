@@ -20,7 +20,7 @@ sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 prepare() {
   cd "${_realname}-${pkgver}"
 
-  patch -p1 -i "${srcdir}/0001-A-fix.patch"
+  patch -p1 -i ../0001-A-fix.patch
 }
 
 build() {
@@ -48,5 +48,5 @@ package() {
 
   make install DESTDIR="${pkgdir}"
 
-  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+  install -Dm644 "../${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }

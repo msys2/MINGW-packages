@@ -21,8 +21,8 @@ sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 prepare() {
   cd "${_realname}-${pkgver}"
 
-  patch -Np1 -i "${srcdir}"/0001-A-really-important-fix.patch
-  patch -Np1 -i "${srcdir}"/0002-A-less-important-fix.patch
+  patch -Np1 -i ../0001-A-really-important-fix.patch
+  patch -Np1 -i ../0002-A-less-important-fix.patch
 
   # if cargo wants to make an http request at build stage, use `cargo fetch --locked` instead
   cargo fetch --locked --target "${RUST_CHOST}"
