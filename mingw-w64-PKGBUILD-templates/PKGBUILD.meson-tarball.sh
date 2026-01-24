@@ -24,8 +24,8 @@ sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 prepare() {
   cd "${_realname}-${pkgver}"
 
-  patch -Np1 -i "${srcdir}"/0001-A-really-important-fix.patch
-  patch -Np1 -i "${srcdir}"/0002-A-less-important-fix.patch
+  patch -Np1 -i ../0001-A-really-important-fix.patch
+  patch -Np1 -i ../0002-A-less-important-fix.patch
 }
 
 build() {
@@ -48,5 +48,5 @@ check() {
 package() {
   meson install -C "build-${MSYSTEM}" --destdir "${pkgdir}"
 
-  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING"
+  install -Dm644 "${_realname}-${pkgver}/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING"
 }
