@@ -4,7 +4,7 @@ _realname=wasmer
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
          "${MINGW_PACKAGE_PREFIX}-lib${_realname}")
-pkgver=6.1.0
+pkgver=7.0.0
 pkgrel=1
 pkgdesc="The leading Wasm Runtime supporting WASIX, WASI and Emscripten (mingw-w64)"
 arch=('any')
@@ -17,20 +17,35 @@ license=('spdx:MIT')
 makedepends=("${MINGW_PACKAGE_PREFIX}-rust"
              "${MINGW_PACKAGE_PREFIX}-cmake"
              "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-llvm"
              "${MINGW_PACKAGE_PREFIX}-openssl"
              "${MINGW_PACKAGE_PREFIX}-nodejs"
+             "${MINGW_PACKAGE_PREFIX}-zstd"
              'git')
+checkdepends=("${MINGW_PACKAGE_PREFIX}-rustup")
 source=("git+${url}.git#tag=v${pkgver}"
-        "reproducible-builds.patch")
-sha256sums=('97f8fc7ad39024b9e040614728c1cb300b68dd968fb4492c24992397ffdcd208'
-            '005429971f0eb52593dd8dc56ae4aa03b21ef0391b66dd64b2efedc2d64b661b')
+        "llvm-sys.tar.gz::https://crates.io/api/v1/crates/llvm-sys/211.0.0/download"
+        "reproducible-builds.patch"
+        "llvm-sys-mingw-fixes.patch")
+sha256sums=('aa2c68fe14938801bb8e42d4368acd270447d13265f6ab9b05d4eac3d187ecff'
+            '108b3ad2b2eaf2a561fc74196273b20e3436e4a688b8b44e250d83974dc1b2e2'
+            'bffb2c1adcf5f1796d725da763b86e247a7fe8d1461b36eb6fed90eba4ab8a70'
+            '4dc73948f833aa672620ce5fd93d398303902db5bc631fcfb10cb8a6ebff7c62')
 
 prepare() {
   cd "${_realname}"
   rm rust-toolchain
 
   patch -Np1 -i "../reproducible-builds.patch"
+  patch -d ../llvm-sys-211.0.0 -p1 -i ../llvm-sys-mingw-fixes.patch
 
+  cat >> Cargo.toml <<END
+
+[patch.crates-io]
+llvm-sys.path = "../llvm-sys-211.0.0"
+END
+
+  cargo update -p llvm-sys
   cargo fetch --locked --target "${RUST_CHOST}"
 }
 
@@ -40,16 +55,28 @@ build() {
   export OPENSSL_NO_VENDOR=1
   export WINAPI_NO_BUNDLED_LIBRARIES=1
   export WASMER_INSTALL_PREFIX=${MINGW_PREFIX}
-  make -O ENABLE_SINGLEPASS=1 ENABLE_CRANELIFT=1 ENABLE_LLVM=0
+  export LLVM_SYS_211_FFI_WORKAROUND=1
+  export RUSTFLAGS="${RUSTFLAGS/+crt-static/-crt-static}"
+  if [[ ${CC} == gcc ]]; then
+    # pthread symbols are somehow defined more than once...
+    export RUSTFLAGS+=" -Clink-arg=-Wl,--allow-multiple-definition"
+  fi
+  make -O ENABLE_SINGLEPASS=1 ENABLE_CRANELIFT=1 ENABLE_LLVM=1
 }
 
-# tests require rustup binary
-# check() {
-#   cd "${_realame}"
-#   make test-examples
-# }
+check() {
+  cd "${_realame}"
+
+  export RUSTUP_TOOLCHAIN="stable-${RUST_CHOST}"
+  make test-examples
+}
 
 package_wasmer() {
+  depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
+           "${MINGW_PACKAGE_PREFIX}-libffi"
+           "${MINGW_PACKAGE_PREFIX}-zlib"
+           "${MINGW_PACKAGE_PREFIX}-zstd")
+
   install -Dm755 "${_realname}"/target/release/wasmer "${pkgdir}${MINGW_PREFIX}/bin/wasmer"
   install -Dm644 "${_realname}"/LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }
@@ -57,10 +84,10 @@ package_wasmer() {
 package_libwasmer() {
   pkgdesc+=' (C-API)'
   conflicts=("${MINGW_PACKAGE_PREFIX}-libwasmtime")
+  depends=("${MINGW_PACKAGE_PREFIX}-cc-libs")
 
   install -Dm755 "${_realname}"/target/release/wasmer.dll "${pkgdir}${MINGW_PREFIX}/bin/wasmer.dll"
   install -Dm755 "${_realname}"/target/release/wasmer.dll.a "${pkgdir}${MINGW_PREFIX}/lib/wasmer.dll.a"
-  install -Dm755 "${_realname}"/target/release/libwasmer.a "${pkgdir}${MINGW_PREFIX}/lib/libwasmer.a"
   install -vDm644 "${_realname}"/lib/c-api/*.h -t "${pkgdir}${MINGW_PREFIX}/include/"
   "${_realname}"/target/release/wasmer config --pkg-config | install -Dm644 /dev/stdin \
     "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/wasmer.pc"
