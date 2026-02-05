@@ -19,6 +19,9 @@
 #undef MAX_PATH
 #define MAX_PATH 4096
 
+#define WIDEN2(x) L##x
+#define WIDEN(x) WIDEN2(x)
+
 static WCHAR msystem_bin[64];
 
 static void print_error(LPCWSTR prefix, DWORD error_number)
@@ -114,48 +117,6 @@ static void my_path_append(LPWSTR list, LPCWSTR path, size_t alloc)
 	}
 }
 
-static int running_on_arm64 = -1;
-
-static int is_running_on_arm64_hardware()
-{
-	if (running_on_arm64 >= 0)
-		return running_on_arm64;
-
-	USHORT process_machine = 0;
-	USHORT native_machine = 0;
-
-	/* Note: IsWow64Process2 is only available in Windows 10 1511+ */
-	BOOL (WINAPI* IsWow64Process2)(HANDLE, PUSHORT, PUSHORT) =
-		(BOOL (WINAPI *)(HANDLE, PUSHORT, PUSHORT))
-		GetProcAddress(GetModuleHandle(L"kernel32"), "IsWow64Process2");
-
-	running_on_arm64 = IsWow64Process2 &&
-		IsWow64Process2(GetCurrentProcess(), &process_machine, &native_machine) &&
-		native_machine == 0xaa64;
-
-	return running_on_arm64;
-}
-
-static int is_running_on_arm64_msystem(LPWSTR top_level_path, LPWSTR msystem_bin)
-{
-	int ret=0;
-	size_t len = wcslen(top_level_path);
-
-	/* Does /clangarm64/bin exist? */
-	my_path_append(top_level_path, L"clangarm64/bin", MAX_PATH);
-	if (_waccess(top_level_path, 0) != -1) {
-		wcscpy(msystem_bin, L"clangarm64/bin");
-		ret=1;
-	}
-	top_level_path[len] = L'\0';
-	return ret;
-}
-
-static inline int is_running_on_arm64(LPWSTR top_level_path, LPWSTR msystem_bin)
-{
-	return is_running_on_arm64_hardware() && is_running_on_arm64_msystem(top_level_path, msystem_bin);
-}
-
 static int is_system32_path(LPWSTR path)
 {
 	WCHAR system32[MAX_PATH];
@@ -165,20 +126,11 @@ static int is_system32_path(LPWSTR path)
 
 static void setup_environment(LPWSTR top_level_path, int full_path)
 {
-	WCHAR msystem[64];
 	LPWSTR path2 = NULL;
 	int len;
 
 	/* Set MSYSTEM */
-	if (running_on_arm64 > 0) {
-		swprintf(msystem, sizeof(msystem),
-				L"CLANGARM64");
-	} else {
-		swprintf(msystem, sizeof(msystem),
-				L"MINGW%d", (int)sizeof(void*) * 8);
-	}
-
-	SetEnvironmentVariable(L"MSYSTEM", msystem);
+	SetEnvironmentVariable(L"MSYSTEM", WIDEN(MSYSTEM));
 
 	/* if not set, set PLINK_PROTOCOL to ssh */
 	if (!GetEnvironmentVariable(L"PLINK_PROTOCOL", NULL, 0))
@@ -633,8 +585,6 @@ static void initialize_top_level_path(LPWSTR top_level_path, LPWSTR exepath,
 	while (strip_count) {
 		if (strip_count < 0) {
 			int len = wcslen(top_level_path);
-			if (is_running_on_arm64(top_level_path, msystem_bin))
-				return;
 			my_path_append(top_level_path, msystem_bin, MAX_PATH);
 			if (_waccess(top_level_path, 0) != -1) {
 				/* We are in an MSys2-based setup */
@@ -665,8 +615,6 @@ static void initialize_top_level_path(LPWSTR top_level_path, LPWSTR exepath,
 		if (strip_count > 0)
 			--strip_count;
 	}
-	/* Only enable ARM64 support if <top-level>/arm64/bin/ exists */
-	is_running_on_arm64(top_level_path, msystem_bin);
 }
 
 static void maybe_read_config(LPWSTR top_level_path)
@@ -720,9 +668,10 @@ int main(void)
 	LPWSTR working_directory = NULL;
 	LPCWSTR prefix_args = NULL;
 
-	/* Determine MSys2-based Git path. */
-	swprintf(msystem_bin, sizeof(msystem_bin),
-		L"mingw%d\\bin", (int) sizeof(void *) * 8);
+	/* Determine MSYS2-based `bin` path. */
+	wcscpy(msystem_bin, WIDEN(MSYSTEM) L"\\bin");
+	for (wchar_t *p = msystem_bin; *p; p++)
+		*p = towlower(*p);
 	*top_level_path = L'\0';
 
 	/* get the installation location */
