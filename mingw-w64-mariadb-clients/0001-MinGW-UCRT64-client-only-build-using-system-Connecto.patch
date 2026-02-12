@@ -1,0 +1,1685 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -132,6 +132,12 @@
+ # NUMA
+ SET(WITH_NUMA "AUTO" CACHE STRING "Build with non-uniform memory access, allowing --innodb-numa-interleave. Options are ON|OFF|AUTO. ON = enabled (requires NUMA library), OFF = disabled, AUTO = enabled if NUMA library found.")
+ 
++# MHNSW vector index support
++SET(WITH_VECTOR_MHNSW ON CACHE BOOL "Build with MHNSW vector index support")
++IF(WITH_VECTOR_MHNSW)
++  ADD_DEFINITIONS(-DWITH_VECTOR_MHNSW)
++ENDIF()
++
+ SET(MYSQL_MAINTAINER_MODE "AUTO" CACHE STRING "Enable MariaDB maintainer-specific warnings. One of: NO (warnings are disabled) WARN (warnings are enabled) ERR (warnings are errors) AUTO (warnings are errors in Debug only)")
+ 
+ # Packaging
+@@ -535,6 +545,12 @@
+ CONFIGURE_FILE(config.h.cmake   ${CMAKE_BINARY_DIR}/include/config.h)
+ CONFIGURE_FILE(${CMAKE_SOURCE_DIR}/include/mysql_version.h.in
+                ${CMAKE_BINARY_DIR}/include/mysql_version.h )
++# Configure built-in plugin list with optional MHNSW
++if (WITH_VECTOR_MHNSW)
++  set(MHNSW_PLUGIN "builtin_maria_mhnsw_plugin,")
++else()
++  set(MHNSW_PLUGIN "")
++endif()
+ CONFIGURE_FILE(${CMAKE_SOURCE_DIR}/sql/sql_builtin.cc.in
+     ${CMAKE_BINARY_DIR}/sql/sql_builtin.cc)
+ 
+@@ -553,32 +569,8 @@
+                ${PROJECT_BINARY_DIR}/include/source_revision.h )
+ ENDIF()
+ 
+-CONFIGURE_FILE(
+-    ${CMAKE_SOURCE_DIR}/cmake/info_macros.cmake.in
+-    ${CMAKE_BINARY_DIR}/info_macros.cmake @ONLY)
+-
+-# Handle the "INFO_*" files.
+-INCLUDE(${CMAKE_BINARY_DIR}/info_macros.cmake)
+-# Source: This can be done during the cmake phase, all information is
+-# available, but should be repeated on each "make" just in case someone
+-# does "cmake ; make ; git pull ; make".
+-CREATE_INFO_SRC(${CMAKE_BINARY_DIR}/Docs)
+-ADD_CUSTOM_TARGET(INFO_SRC ALL
+-  COMMAND ${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/cmake/info_src.cmake
+-  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+-)
+-# Build flags: This must be postponed to the make phase.
+-ADD_CUSTOM_TARGET(INFO_BIN ALL
+-  COMMAND ${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/cmake/info_bin.cmake
+-  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+-)
+-
+ INSTALL_DOCUMENTATION(README.md CREDITS COPYING THIRDPARTY COMPONENT Readme)
+ 
+-# MDEV-6526 these files are not installed anymore
+-#INSTALL_DOCUMENTATION(${CMAKE_BINARY_DIR}/Docs/INFO_SRC
+-#                      ${CMAKE_BINARY_DIR}/Docs/INFO_BIN)
+-
+ IF(UNIX)
+   INSTALL_DOCUMENTATION(Docs/INSTALL-BINARY COMPONENT Readme)
+   IF(WITH_WSREP)
+--- a/client/CMakeLists.txt
++++ b/client/CMakeLists.txt
+@@ -26,35 +26,50 @@
+   ${CMAKE_CURRENT_BINARY_DIR}
+ )
+ 
+-INCLUDE_DIRECTORIES(BEFORE
+-  ${CMAKE_BINARY_DIR}/libmariadb/include
+-  ${CMAKE_SOURCE_DIR}/libmariadb/include)
++IF(USE_SYSTEM_LIBMARIADB)
++  IF(MARIADB_INCLUDE_DIRS)
++    INCLUDE_DIRECTORIES(BEFORE ${MARIADB_INCLUDE_DIRS})
++  ENDIF()
++  # Building client-only against system Connector/C: mysqlbinlog depends
++  # on server internals (log_event et al.). Skip it to avoid pulling server
++  # headers/libs into a client-only build.
++  set(MARIADB_CLIENT_SKIP_BINLOG ON)
++ELSE()
++  INCLUDE_DIRECTORIES(BEFORE
++    ${CMAKE_BINARY_DIR}/libmariadb/include
++    ${CMAKE_SOURCE_DIR}/libmariadb/include)
++ENDIF()
+ 
+ ## We will need libeay32.dll and ssleay32.dll when running client executables.
+ COPY_OPENSSL_DLLS(copy_openssl_client)
+ 
+ SET(CLIENT_LIB mariadbclient mysys)
+ 
+-ADD_DEFINITIONS(${SSL_DEFINES})
++ADD_DEFINITIONS(${SSL_DEFINES} -DMYSQL_CLIENT -DUSE_SYSTEM_LIBMARIADB -DMYSQL_DYNAMIC_PLUGIN -DMYSQL_PLUGIN_IMPORT=)
+ MYSQL_ADD_EXECUTABLE(mariadb completion_hash.cc mysql.cc readline.cc
+                            ${CMAKE_SOURCE_DIR}/sql/sql_string.cc)
+ TARGET_LINK_LIBRARIES(mariadb ${CLIENT_LIB})
++TARGET_LINK_LIBRARIES(mariadb mysqlservices)
+ IF(UNIX)
+   TARGET_LINK_LIBRARIES(mariadb ${MY_READLINE_LIBRARY})
+   SET_TARGET_PROPERTIES(mariadb PROPERTIES ENABLE_EXPORTS TRUE)
+ ENDIF(UNIX)
+ 
+-MYSQL_ADD_EXECUTABLE(mariadb-test mysqltest.cc ${CMAKE_SOURCE_DIR}/sql/sql_string.cc COMPONENT Test)
+-SET_SOURCE_FILES_PROPERTIES(mysqltest.cc PROPERTIES COMPILE_FLAGS "-DTHREADS ${PCRE2_DEBIAN_HACK}")
+-TARGET_LINK_LIBRARIES(mariadb-test  ${CLIENT_LIB} pcre2-posix pcre2-8)
+-SET_TARGET_PROPERTIES(mariadb-test PROPERTIES ENABLE_EXPORTS TRUE)
++IF(NOT WITHOUT_SERVER)
++  MYSQL_ADD_EXECUTABLE(mariadb-test mysqltest.cc ${CMAKE_SOURCE_DIR}/sql/sql_string.cc COMPONENT Test)
++  SET_SOURCE_FILES_PROPERTIES(mysqltest.cc PROPERTIES COMPILE_FLAGS "-DTHREADS ${PCRE2_DEBIAN_HACK}")
++  TARGET_LINK_LIBRARIES(mariadb-test  ${CLIENT_LIB} pcre2-posix pcre2-8)
++  SET_TARGET_PROPERTIES(mariadb-test PROPERTIES ENABLE_EXPORTS TRUE)
++ENDIF()
+ 
+ 
+ MYSQL_ADD_EXECUTABLE(mariadb-check mysqlcheck.c)
+ TARGET_LINK_LIBRARIES(mariadb-check ${CLIENT_LIB})
++TARGET_LINK_LIBRARIES(mariadb-check mysqlservices)
+ 
+ MYSQL_ADD_EXECUTABLE(mariadb-dump mysqldump.cc ../sql-common/my_user.c connection_pool.cc)
+ TARGET_LINK_LIBRARIES(mariadb-dump ${CLIENT_LIB})
++TARGET_LINK_LIBRARIES(mariadb-dump mysqlservices)
+ 
+ ADD_LIBRARY(import_util STATIC import_util.cc import_util.h)
+ IF (PCRE2_DEBIAN_HACK)
+@@ -66,27 +81,36 @@
+ MYSQL_ADD_EXECUTABLE(mariadb-import mysqlimport.cc)
+ TARGET_INCLUDE_DIRECTORIES(mariadb-import PRIVATE ${CMAKE_SOURCE_DIR}/tpool)
+ TARGET_LINK_LIBRARIES(mariadb-import PRIVATE tpool ${CLIENT_LIB} import_util)
++TARGET_LINK_LIBRARIES(mariadb-import PRIVATE mysqlservices)
+ 
+ 
+ MYSQL_ADD_EXECUTABLE(mariadb-upgrade mysql_upgrade.c COMPONENT Server)
+ TARGET_LINK_LIBRARIES(mariadb-upgrade ${CLIENT_LIB})
++TARGET_LINK_LIBRARIES(mariadb-upgrade mysqlservices)
+ ADD_DEPENDENCIES(mariadb-upgrade GenFixPrivs)
+ 
+ MYSQL_ADD_EXECUTABLE(mariadb-show mysqlshow.c)
+ TARGET_LINK_LIBRARIES(mariadb-show ${CLIENT_LIB})
++TARGET_LINK_LIBRARIES(mariadb-show mysqlservices)
+ 
+ MYSQL_ADD_EXECUTABLE(mariadb-plugin mysql_plugin.c)
+ TARGET_LINK_LIBRARIES(mariadb-plugin ${CLIENT_LIB})
++TARGET_LINK_LIBRARIES(mariadb-plugin mysqlservices)
+ 
+-MYSQL_ADD_EXECUTABLE(mariadb-binlog mysqlbinlog.cc)
+-TARGET_LINK_LIBRARIES(mariadb-binlog ${CLIENT_LIB} mysys_ssl)
++IF(NOT MARIADB_CLIENT_SKIP_BINLOG)
++  MYSQL_ADD_EXECUTABLE(mariadb-binlog mysqlbinlog.cc)
++  TARGET_LINK_LIBRARIES(mariadb-binlog ${CLIENT_LIB} mysys_ssl)
++  TARGET_LINK_LIBRARIES(mariadb-binlog mysqlservices)
++ENDIF()
+ 
+ MYSQL_ADD_EXECUTABLE(mariadb-admin mysqladmin.cc ../sql/password.c)
+ TARGET_LINK_LIBRARIES(mariadb-admin ${CLIENT_LIB} mysys_ssl)
++TARGET_LINK_LIBRARIES(mariadb-admin mysqlservices)
+ 
+ MYSQL_ADD_EXECUTABLE(mariadb-slap mysqlslap.c)
+ SET_SOURCE_FILES_PROPERTIES(mysqlslap.c PROPERTIES COMPILE_FLAGS "-DTHREADS")
+ TARGET_LINK_LIBRARIES(mariadb-slap ${CLIENT_LIB})
++TARGET_LINK_LIBRARIES(mariadb-slap mysqlservices)
+ 
+ MYSQL_ADD_EXECUTABLE(mariadb-conv mariadb-conv.cc
+                      ${CMAKE_SOURCE_DIR}/sql/sql_string.cc)
+@@ -105,7 +129,9 @@
+ 
+ FOREACH(t mariadb mariadb-test mariadb-check mariadb-dump mariadb-import mariadb-upgrade mariadb-show mariadb-plugin mariadb-binlog
+   mariadb-admin mariadb-slap async_example)
+-  ADD_DEPENDENCIES(${t} GenError ${CLIENT_LIB})
++  IF(TARGET ${t})
++    ADD_DEPENDENCIES(${t} GenError ${CLIENT_LIB})
++  ENDIF()
+ ENDFOREACH()
+ 
+ ADD_DEFINITIONS(-DHAVE_DLOPEN)
+--- a/client/client_priv.h
++++ b/client/client_priv.h
+@@ -18,6 +18,19 @@
+ 
+ /* Common defines for all clients */
+ 
++#ifdef USE_SYSTEM_LIBMARIADB
++#include <mysql.h>
++#ifdef my_socket
++#undef my_socket
++#endif
++#include <my_global.h>
++#include <my_sys.h>
++#include <m_string.h>
++#include <errmsg.h>
++#include <my_getopt.h>
++#include <mysql_version.h>
++#else
++
+ #include <my_global.h>
+ #include <my_sys.h>
+ #include <m_string.h>
+@@ -25,6 +38,7 @@
+ #include <errmsg.h>
+ #include <my_getopt.h>
+ #include <mysql_version.h>
++#endif
+ 
+ #ifndef WEXITSTATUS
+ # ifdef _WIN32
+--- a/client/mysql.cc
++++ b/client/mysql.cc
+@@ -359,7 +359,7 @@
+ static void add_int_to_prompt(int toadd);
+ static int get_result_width(MYSQL_RES *res);
+ static int get_field_disp_length(MYSQL_FIELD * field);
+-#ifndef EMBEDDED_LIBRARY
++#if 0
+ static uint last_progress_report_length= 0;
+ static void report_progress(const MYSQL *mysql, uint stage, uint max_stage,
+                             double progress, const char *proc_info,
+@@ -1409,9 +1409,7 @@
+   if (opt_outfile)
+     end_tee();
+   mysql_end(0);
+-#ifndef _lint
+-  DBUG_RETURN(0);				// Keep compiler happy
+-#endif
++  DBUG_RETURN(0);
+ }
+ 
+ sig_handler mysql_end(int sig)
+@@ -1980,7 +1978,7 @@
+     }
+     break;
+   case OPT_MYSQL_PROTOCOL:
+-#ifndef EMBEDDED_LIBRARY
++#if 0
+     if (!argument[0])
+       opt_protocol= 0;
+     else if ((opt_protocol=
+@@ -2691,7 +2689,7 @@
+       }
+       buffer.length(0);
+     }
+-    else if (!*ml_comment &&
++    else if (!*ml_comment && *ss_comment != SSC_HINT &&
+              (!*in_string &&
+               (inchar == '#' ||
+                (inchar == '-' && pos[1] == '-' &&
+@@ -2912,7 +2910,9 @@
+     ptr++;
+   }
+   if (total_lines > 1)			
+-    add_history(fixed_buffer.ptr());
++  {
++    add_history(fixed_buffer.c_ptr());
++  }
+ }
+ 
+ /*	
+@@ -3234,7 +3234,13 @@
+   return 0;
+ }
+ 
+-#ifndef EMBEDDED_LIBRARY
++#if 0
++#ifdef __clang__
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wvarargs"
++/* CONC-789 */
++#endif
++
+ static void status_info_cb(void *data, enum enum_mariadb_status_info type, ...)
+ {
+   va_list ap;
+@@ -3250,6 +3256,10 @@
+   }
+   va_end(ap);
+ }
++
++#ifdef __clang__
++#pragma clang diagnostic pop
++#endif
+ #else
+ #define mysql_optionsv(A,B,C,D) do { } while(0)
+ #endif
+@@ -3533,8 +3543,6 @@
+     old_buffer.copy();
+   }
+ 
+-  /* Remove garbage for nicer messages */
+-  LINT_INIT_STRUCT(buff[0]);
+   remove_cntrl(*buffer);
+ 
+   if (buffer->is_empty())
+@@ -5078,7 +5086,9 @@
+   }
+   mysql_init(&mysql);
+   if (!one_database)
++#ifdef MARIADB_OPT_STATUS_CALLBACK
+     mysql_optionsv(&mysql, MARIADB_OPT_STATUS_CALLBACK, status_info_cb, NULL);
++#endif
+   if (opt_init_command)
+     mysql_options(&mysql, MYSQL_INIT_COMMAND, opt_init_command);
+   if (opt_connect_timeout)
+@@ -5120,8 +5130,7 @@
+     return -1;					// Retryable
+   }
+ 
+-  charset_name= IF_EMBEDDED(mysql.charset->coll_name.str,
+-                            mysql.charset->name);
++  charset_name= mysql_character_set_name(&mysql);
+   charset_info= get_charset_by_name(charset_name, MYF(MY_UTF8_IS_UTF8MB3));
+   if (!charset_info)
+   {
+@@ -5133,7 +5142,7 @@
+   }
+   adjust_console_codepage(charset_info->cs_name.str);
+   connected=1;
+-#ifndef EMBEDDED_LIBRARY
++#if 0
+   mysql_options(&mysql, MYSQL_OPT_RECONNECT, &debug_info_flag);
+ 
+   /*
+@@ -5220,8 +5229,7 @@
+ 
+ #if defined(HAVE_OPENSSL) && !defined(EMBEDDED_LIBRARY)
+   if ((status_str= mysql_get_ssl_cipher(&mysql)))
+-    tee_fprintf(stdout, "SSL:\t\t\tCipher in use is %s, cert is %s\n",
+-                status_str, opt_ssl_verify_server_cert ? "OK" : "UNKNOWN");
++    tee_fprintf(stdout, "SSL:\t\t\tCipher in use is %s\n", status_str);
+   else
+ #endif /* HAVE_OPENSSL && !EMBEDDED_LIBRARY */
+     tee_puts("SSL:\t\t\tNot in use", stdout);
+@@ -5272,7 +5280,7 @@
+                 mysql_character_set_name(&mysql));
+   }
+ 
+-#ifndef EMBEDDED_LIBRARY
++#if 0
+   if (strstr(mysql_get_host_info(&mysql),"TCP/IP") || ! mysql.unix_socket)
+     tee_fprintf(stdout, "TCP port:\t\t%d\n", mysql.port);
+   else
+@@ -5626,7 +5634,7 @@
+       }
+       case 'p':
+       {
+-#ifndef EMBEDDED_LIBRARY
++#if 0
+ 	if (!connected)
+ 	{
+ 	  processed_prompt.append(STRING_WITH_LEN("not_connected"));
+@@ -5803,7 +5811,7 @@
+   return 0;
+ }
+ 
+-#ifndef EMBEDDED_LIBRARY
++#if 0
+ static void report_progress(const MYSQL *mysql, uint stage, uint max_stage,
+                             double progress, const char *proc_info,
+                             uint proc_info_length)
+--- a/client/mysqladmin.cc
++++ b/client/mysqladmin.cc
+@@ -463,7 +463,7 @@
+           didn't signal for us to die. Otherwise, signal failure.
+         */
+ 
+-	if (mysql.net.pvio == 0)
++	if (mysql_ping(&mysql) != 0)
+ 	{
+ 	  if (option_wait && !interrupted)
+ 	  {
+@@ -561,16 +561,16 @@
+ 	{
+ 	  fprintf(stderr,
+ 		  "Check that mariadbd is running and that the socket: '%s' exists!\n",
+-		  unix_port ? unix_port : mysql_unix_port);
++		  unix_port ? unix_port : "");
+ 	}
+ 	else if (mysql_errno(mysql) == CR_CONN_HOST_ERROR ||
+ 		 mysql_errno(mysql) == CR_UNKNOWN_HOST)
+ 	{
+ 	  fprintf(stderr,"Check that mariadbd is running on %s",host);
+ 	  fprintf(stderr," and that the port is %d.\n",
+-		  opt_mysql_port ? opt_mysql_port: mysql_port);
++		  opt_mysql_port);
+ 	  fprintf(stderr,"You can check this by doing 'telnet %s %d'\n",
+-		  host, opt_mysql_port ? opt_mysql_port: mysql_port);
++		  host, opt_mysql_port);
+ 	}
+       }
+       return 1;
+--- a/client/mysqlbinlog.cc
++++ b/client/mysqlbinlog.cc
+@@ -33,9 +33,13 @@
+ #define MYSQL_CLIENT
+ #undef MYSQL_SERVER
+ #define TABLE TABLE_CLIENT
++#ifdef USE_SYSTEM_LIBMARIADB
++#include "client_priv.h"
++#else
+ /* This hack is here to avoid adding COMPRESSED data types to libmariadb. */
+ #define MYSQL_TYPE_TIME2 MYSQL_TYPE_TIME2,MYSQL_TYPE_BLOB_COMPRESSED=140,MYSQL_TYPE_VARCHAR_COMPRESSED=141
+ #include "client_priv.h"
++#endif
+ #undef MYSQL_TYPE_TIME2
+ #include <my_time.h>
+ #include <sslopt-vars.h>
+@@ -58,9 +62,18 @@
+ 
+ #include <algorithm>
+ 
++#ifndef my_net_write
+ #define my_net_write ma_net_write
++#endif
++#ifndef net_flush
+ #define net_flush ma_net_flush
++#endif
++#ifndef cli_safe_read
+ #define cli_safe_read mysql_net_read_packet
++#endif
++#ifdef my_net_read
++#undef my_net_read
++#endif
+ #define my_net_read ma_net_read
+ extern "C" unsigned char *mysql_net_store_length(unsigned char *packet, size_t length);
+ #define net_store_length mysql_net_store_length
+@@ -70,7 +83,6 @@
+ 
+ Rpl_filter *binlog_filter= 0;
+ 
+-#define BIN_LOG_HEADER_SIZE	4
+ #define PROBE_HEADER_LEN	(EVENT_LEN_OFFSET+4)
+ 
+ /* Needed for Rpl_filter */
+--- a/client/mysqlslap.c
++++ b/client/mysqlslap.c
+@@ -279,7 +279,7 @@
+     return s + us;
+ }
+ 
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+ static int gettimeofday(struct timeval *tp, void *tzp)
+ {
+   unsigned int ticks;
+--- a/cmake/mariadb_connector_c.cmake
++++ b/cmake/mariadb_connector_c.cmake
+@@ -1,5 +1,42 @@
+ SET(OPT CONC_)
+ 
++# Allow using system-provided Connector/C instead of the submodule
++IF(USE_SYSTEM_LIBMARIADB)
++  FIND_PACKAGE(PkgConfig)
++  IF(PKG_CONFIG_FOUND)
++    # Try common pkg-config names
++    PKG_CHECK_MODULES(MARIADB IMPORTED_TARGET libmariadb)
++    IF(NOT MARIADB_FOUND)
++      PKG_CHECK_MODULES(MARIADB IMPORTED_TARGET mysqlclient)
++    ENDIF()
++  ENDIF()
++  # Fallback detection if pkg-config not found or module missing
++  IF(NOT MARIADB_FOUND)
++    FIND_PATH(MARIADB_INCLUDE_DIRS
++      NAMES mariadb/mysql.h mysql/mysql.h
++      PATHS "$ENV{MINGW_PREFIX}/include" "${CMAKE_INSTALL_PREFIX}/include"
++      PATH_SUFFIXES mariadb mysql)
++    FIND_LIBRARY(MARIADB_LIBRARIES
++      NAMES mariadb mysqlclient
++      PATHS "$ENV{MINGW_PREFIX}/lib" "${CMAKE_INSTALL_PREFIX}/lib")
++    IF(MARIADB_INCLUDE_DIRS AND MARIADB_LIBRARIES)
++      SET(MARIADB_FOUND TRUE)
++    ENDIF()
++  ENDIF()
++  IF(NOT MARIADB_FOUND)
++    MESSAGE(FATAL_ERROR "USE_SYSTEM_LIBMARIADB=ON but no system Connector/C found. Install libmariadbclient (headers+libs) or provide mariadb.pc/mysqlclient.pc")
++  ENDIF()
++  ADD_LIBRARY(mariadbclient INTERFACE)
++  TARGET_INCLUDE_DIRECTORIES(mariadbclient INTERFACE ${MARIADB_INCLUDE_DIRS})
++  if(TARGET PkgConfig::MARIADB)
++    TARGET_LINK_LIBRARIES(mariadbclient INTERFACE PkgConfig::MARIADB)
++  else()
++    TARGET_LINK_LIBRARIES(mariadbclient INTERFACE ${MARIADB_LIBRARIES})
++  endif()
++  MESSAGE(STATUS "Using system Connector/C includes='${MARIADB_INCLUDE_DIRS}' libs='${MARIADB_LIBRARIES}'")
++  RETURN()
++ENDIF()
++
+ IF (CMAKE_BUILD_TYPE STREQUAL "Debug")
+   SET(CONC_WITH_RTC ON)
+ ENDIF()
+@@ -69,4 +106,4 @@
+ ENDIF()
+ 
+ GET_DIRECTORY_PROPERTY(MARIADB_CONNECTOR_C_VERSION DIRECTORY libmariadb DEFINITION CPACK_PACKAGE_VERSION)
+-MESSAGE1(MARIADB_CONNECTOR_C_VERSION "MariaDB Connector/C ${MARIADB_CONNECTOR_C_VERSION}")
++MESSAGE(STATUS "MariaDB Connector/C ${MARIADB_CONNECTOR_C_VERSION}")
+--- a/cmake/ssl.cmake
++++ b/cmake/ssl.cmake
+@@ -184,4 +184,4 @@
+       ADD_CUSTOM_TARGET(${target_name} ALL)
+     ENDIF()
+   ENDIF()
+-ENDMACRO()
++ENDMACRO()
+\ No newline at end of file
+--- a/cmake/submodules.cmake
++++ b/cmake/submodules.cmake
+@@ -1,5 +1,6 @@
+ # update submodules automatically
+ 
++OPTION(USE_SYSTEM_LIBMARIADB "Use system-installed MariaDB Connector/C instead of submodule" OFF)
+ OPTION(UPDATE_SUBMODULES "Update submodules automatically" ON)
+ IF(NOT UPDATE_SUBMODULES)
+   RETURN()
+@@ -43,7 +44,7 @@
+   ENDIF()
+ ENDIF()
+ 
+-IF(update_result OR NOT EXISTS ${CMAKE_SOURCE_DIR}/libmariadb/CMakeLists.txt)
++IF(NOT USE_SYSTEM_LIBMARIADB AND (update_result OR NOT EXISTS ${CMAKE_SOURCE_DIR}/libmariadb/CMakeLists.txt))
+   MESSAGE(FATAL_ERROR "No MariaDB Connector/C! Run
+     ${GIT_EXECUTABLE} submodule update --init --recursive
+ Then restart the build.${SUBMODULE_UPDATE_CONFIG_MESSAGE}")
+--- a/config.h.cmake
++++ b/config.h.cmake
+@@ -401,8 +401,9 @@
+ 
+ #cmakedefine SIGNAL_WITH_VIO_CLOSE 1
+ 
+-/* Windows stuff, mostly functions, that have Posix analogs but named differently */
+-#ifdef _WIN32
++/* Windows stuff, mostly functions, that have Posix analogs but named differently
++   Avoid redefining standard types under MinGW where they already exist. */
++#if defined(_WIN32) && !defined(__MINGW32__) 
+ #define S_IROTH _S_IREAD
+ #define S_IFIFO _S_IFIFO
+ #define SIGQUIT SIGTERM
+@@ -422,7 +423,17 @@
+ #define HAVE_SETENV
+ #define NOMINMAX 1
+ #define PSAPI_VERSION 2     /* for GetProcessMemoryInfo() */
+-#endif /* _WIN32 */
++#endif /* _WIN32 && !MinGW */
++
++/* Minimal signal compatibility for MinGW builds */
++#if defined(_WIN32) && (defined(__MINGW32__) || defined(__MINGW64__))
++# ifndef SIGQUIT
++#  define SIGQUIT SIGTERM
++# endif
++# ifndef SIGPIPE
++#  define SIGPIPE SIGINT
++# endif
++#endif
+ 
+ /*
+   MySQL features
+--- a/include/my_global.h
++++ b/include/my_global.h
+@@ -281,10 +281,6 @@
+ #error "Please add -fno-exceptions to CXXFLAGS and reconfigure/recompile"
+ #endif
+ 
+-#if defined(_lint) && !defined(lint)
+-#define lint
+-#endif
+-
+ #ifndef stdin
+ #include <stdio.h>
+ #endif
+@@ -448,22 +444,19 @@
+ /*
+    Suppress uninitialized variable warning without generating code.
+ */
+-#if defined(__GNUC__)
+-/* GCC specific self-initialization which inhibits the warning. */
++#if defined(__GNUC__) && !defined(WITH_UBSAN)
++/*
++  GCC specific self-initialization which inhibits the warning.
++  clang and static analysis will complain loudly about this
++  so compile those under WITH_UBSAN.
++*/
+ #define UNINIT_VAR(x) x= x
+-#elif defined(_lint) || defined(FORCE_INIT_OF_VARS)
++#elif defined(FORCE_INIT_OF_VARS)
+ #define UNINIT_VAR(x) x= 0
+ #else
+ #define UNINIT_VAR(x) x
+ #endif
+ 
+-/* This is only to be used when resetting variables in a class constructor */
+-#if defined(_lint) || defined(FORCE_INIT_OF_VARS)
+-#define LINT_INIT(x) x= 0
+-#else
+-#define LINT_INIT(x)
+-#endif
+-
+ #if !defined(HAVE_UINT)
+ #undef HAVE_UINT
+ #define HAVE_UINT
+@@ -505,7 +498,7 @@
+ #endif
+ 
+ /* We might be forced to turn debug off, if not turned off already */
+-#if (defined(FORCE_DBUG_OFF) || defined(_lint)) && !defined(DBUG_OFF)
++#if defined(FORCE_DBUG_OFF) && !defined(DBUG_OFF)
+ #  define DBUG_OFF
+ #  ifdef DBUG_ON
+ #    undef DBUG_ON
+@@ -527,7 +520,7 @@
+ #endif
+ /* Type for functions that handles signals */
+ #define sig_handler RETSIGTYPE
+-#if defined(__GNUC__) && !defined(_lint)
++#if defined(__GNUC__)
+ typedef char	pchar;		/* Mixed prototypes can take char */
+ typedef char	puchar;		/* Mixed prototypes can take char */
+ typedef char	pbool;		/* Mixed prototypes can take char */
+@@ -689,9 +682,11 @@
+ 	/* Typical record cache */
+ #define RECORD_CACHE_SIZE	(uint) (128*1024)
+ 	/* Typical key cache */
+-#define KEY_CACHE_SIZE		(uint) (128L*1024L*1024L)
++#define KEY_CACHE_SIZE		(ulong) (128L*1024L*1024L)
+ 	/* Default size of a key cache block  */
+ #define KEY_CACHE_BLOCK_SIZE	(uint) 1024
++        /* Min resonable key cache size, only for testing */
++#define MIN_KEY_CACHE_SIZE      8192*16L
+ 
+ 	/* Some things that this system doesn't have */
+ 
+@@ -1035,7 +1030,7 @@
+ #define YESNO(X) ((X) ? "yes" : "no")
+ 
+ #define MY_HOW_OFTEN_TO_ALARM	2	/* How often we want info on screen */
+-#define MY_HOW_OFTEN_TO_WRITE	10000	/* How often we want info on screen */
++#define MY_HOW_OFTEN_TO_WRITE	100000	/* How often we want info on screen */
+ 
+ #include <my_byteorder.h>
+ 
+@@ -1052,6 +1047,7 @@
+ #endif
+ 
+ #ifdef _WIN32
++#if !defined(HAVE_DLFCN_H) && !defined(_DLFCN_H)
+ #define dlsym(lib, name) (void*)GetProcAddress((HMODULE)lib, name)
+ #define dlopen(libname, unused) LoadLibraryEx(libname, NULL, 0)
+ #define RTLD_DEFAULT GetModuleHandle(NULL)
+@@ -1069,6 +1065,7 @@
+ }
+ #define HAVE_DLOPEN 1
+ #define HAVE_DLERROR 1
++#endif /* !defined(HAVE_DLFCN_H) */
+ #endif
+ 
+ #ifdef HAVE_DLFCN_H
+@@ -1081,18 +1078,22 @@
+ #endif
+ #ifndef HAVE_DLADDR
+ #define dladdr(A, B) 0
+-/* Dummy definition in case we're missing dladdr() */
++/* Dummy definition only if a system header didn't already define Dl_info */
++#if !defined(DLFCN_H)
+ typedef struct { const char *dli_fname, dli_fbase; } Dl_info;
+ #endif
++#endif
+ #else
+ #define dlerror() "No support for dynamic loading (static build?)"
+ #define dlopen(A,B) 0
+ #define dlsym(A,B) 0
+ #define dlclose(A) 0
+ #define dladdr(A, B) 0
+-/* Dummy definition in case we're missing dladdr() */
++/* Dummy definition only if a system header didn't already define Dl_info */
++#if !defined(DLFCN_H)
+ typedef struct { const char *dli_fname, dli_fbase; } Dl_info;
+ #endif
++#endif
+ 
+ /*
+  *  Include standard definitions of operator new and delete.
+--- a/include/my_pthread.h
++++ b/include/my_pthread.h
+@@ -30,7 +30,7 @@
+ #define EXTERNC
+ #endif /* __cplusplus */ 
+ 
+-#if defined(_WIN32)
++#if defined(_WIN32) && !defined(__MINGW32__)
+ typedef CRITICAL_SECTION pthread_mutex_t;
+ typedef DWORD		 pthread_t;
+ typedef struct thread_attr {
+@@ -130,6 +130,16 @@
+ 
+ #else /* Normal threads */
+ 
++/* Ensure basic types like sigset_t are declared */
++#include <sys/types.h>
++#include <signal.h>
++#if defined(__MINGW32__) || defined(__MINGW64__)
++/* MinGW does not typedef sigset_t unless _POSIX is defined; provide a mapping */
++# ifndef _POSIX
++typedef _sigset_t sigset_t;
++# endif
++#endif
++
+ #ifdef HAVE_rts_threads
+ #define sigwait org_sigwait
+ #include <signal.h>
+@@ -175,7 +185,11 @@
+ 
+ static inline int my_sigwait(sigset_t *set, int *sig, int *code)
+ {
+-#ifdef HAVE_SIGWAITINFO
++#if defined(__MINGW32__) 
++  /* No sigwait on MinGW; emulate as no-op */
++  (void)set;
++  *sig = 0; *code = 0; return 0;
++#elif defined(HAVE_SIGWAITINFO)
+   siginfo_t siginfo;
+   *sig= sigwaitinfo(set, &siginfo);
+   *code= siginfo.si_code;
+@@ -190,7 +204,7 @@
+ #define pthread_sigmask(A,B,C) sigthreadmask((A),(B),(C))
+ #endif
+ 
+-#if !defined(HAVE_SIGWAIT) && !defined(HAVE_rts_threads) && !defined(sigwait) && !defined(alpha_linux_port) && !defined(_AIX)
++#if !defined(HAVE_SIGWAIT) && !defined(HAVE_rts_threads) && !defined(sigwait) && !defined(alpha_linux_port) && !defined(_AIX) && !defined(__MINGW32__) 
+ int sigwait(sigset_t *setp, int *sigp);		/* Use our implementation */
+ #endif
+ 
+--- a/include/my_stack_alloc.h
++++ b/include/my_stack_alloc.h
+@@ -19,7 +19,7 @@
+ 
+ #ifdef _MSC_VER
+ #include <intrin.h> // For MSVC-specific intrinsics
+-#else
++#elif !defined(_WIN32)
+ #include <sys/resource.h>
+ #endif
+ 
+--- a/include/my_sys.h
++++ b/include/my_sys.h
+@@ -18,13 +18,13 @@
+ #define _my_sys_h
+ 
+ #include <m_string.h>
++#include <my_pthread.h>
+ #include <mysql/psi/mysql_memory.h>
+ 
+ C_MODE_START
+ 
+ 
+ #include <my_valgrind.h>
+-#include <my_pthread.h>
+ #include <m_ctype.h>                    /* for CHARSET_INFO */
+ #include <stdarg.h>
+ #include <typelib.h>
+@@ -89,6 +89,7 @@
+ #define MY_FREE_ON_ERROR 128U	/* my_realloc() ; Free old ptr on error */
+ #define MY_DONT_OVERWRITE_FILE 2048U /* my_copy: Don't overwrite file */
+ #define MY_THREADSAFE 2048U     /* my_seek(): lock fd mutex */
++#define MY_BUFFER_NO_RESIZE 512U
+ #define MY_SYNC       4096U     /* my_copy(): sync dst file */
+ #define MY_SYNC_DIR   32768U    /* my_create/delete/rename: sync directory */
+ #define MY_THREAD_SPECIFIC 0x10000U /* my_malloc(): thread specific */
+@@ -154,12 +155,15 @@
+ 
+ /* If we have our own safemalloc (for debugging) */
+ #if defined(SAFEMALLOC)
+-void sf_report_leaked_memory(my_thread_id id);
++my_bool sf_report_leaked_memory(my_thread_id id);
+ int sf_sanity();
++my_bool sf_have_memory_leak();
+ extern my_thread_id (*sf_malloc_dbug_id)(void);
+ #define SAFEMALLOC_REPORT_MEMORY(X) if (!sf_leaking_memory) sf_report_leaked_memory(X)
++#define SAFEMALLOC_HAVE_MEMORY_LEAK sf_have_memory_leak()
+ #else
+ #define SAFEMALLOC_REPORT_MEMORY(X) do {} while(0)
++#define SAFEMALLOC_HAVE_MEMORY_LEAK 0
+ #endif
+ 
+ typedef void (*MALLOC_SIZE_CB) (long long size, my_bool is_thread_specific); 
+@@ -362,6 +366,17 @@
+   myf malloc_flags;
+ } DYNAMIC_ARRAY;
+ 
++typedef struct st_mem_root_dynamic_array
++{
++  MEM_ROOT *mem_root;
++  uchar *buffer;
++  size_t elements, max_element;
++  size_t alloc_increment;
++  size_t size_of_element;
++  PSI_memory_key m_psi_key;
++  myf malloc_flags;
++} MEM_ROOT_DYNAMIC_ARRAY;
++
+ 
+ typedef struct st_dynamic_array_append
+ {
+@@ -1176,6 +1191,74 @@
+ extern void thd_increment_bytes_received(void *thd, size_t length);
+ extern void thd_increment_net_big_packet_count(void *thd, size_t length);
+ 
++extern int mem_root_dynamic_array_init(MEM_ROOT *mem_root,
++                                       PSI_memory_key psi_key,
++                                       MEM_ROOT_DYNAMIC_ARRAY *array,
++                                       size_t element_size, void *init_buffer,
++                                       size_t init_alloc,
++                                       size_t alloc_increment,
++                                       myf my_flags);
++int mem_root_allocate_dynamic(MEM_ROOT *mem_root,
++                              MEM_ROOT_DYNAMIC_ARRAY *array,
++                              size_t idx);
++extern void* mem_root_dynamic_array_get_val(MEM_ROOT_DYNAMIC_ARRAY *array, size_t idx);
++extern void mem_root_dynamic_array_reset(MEM_ROOT_DYNAMIC_ARRAY *array);
++extern int mem_root_dynamic_array_resize_not_allowed(MEM_ROOT_DYNAMIC_ARRAY *array);
++extern void mem_root_dynamic_array_copy_values(MEM_ROOT_DYNAMIC_ARRAY *dest, MEM_ROOT_DYNAMIC_ARRAY *src);
++static inline int mem_root_dynamic_array_set_val(MEM_ROOT_DYNAMIC_ARRAY *array,
++                                   const void *element, size_t idx)
++{
++  DBUG_ASSERT(idx < array->max_element);
++
++  memcpy(array->buffer+(idx * array->size_of_element), element,
++         array->size_of_element);
++  return TRUE;
++}
++static inline int mem_root_dynamic_array_resize_and_set_val(MEM_ROOT_DYNAMIC_ARRAY *array,
++                                   const void *element, size_t idx)
++{
++  if (array->malloc_flags & MY_BUFFER_NO_RESIZE)
++    return TRUE;
++
++  if (idx >= array->max_element)
++  {
++    if (mem_root_allocate_dynamic(array->mem_root, array, idx))
++      return 1;
++    array->elements++;
++  }
++
++  /*
++     Ensure the array size has increased and the index is
++     now well within the array bounds.
++  */
++  DBUG_ASSERT(idx < array->max_element);
++
++  memcpy(array->buffer+(idx * array->size_of_element), element,
++         array->size_of_element);
++
++  return FALSE;
++}
++
++static inline void* mem_root_dynamic_array_resize_and_get_val(MEM_ROOT_DYNAMIC_ARRAY *array, size_t idx)
++{
++  if (array->malloc_flags & MY_BUFFER_NO_RESIZE)
++    return NULL;
++
++  if (idx >= array->max_element)
++  {
++    if (mem_root_allocate_dynamic(array->mem_root, array, idx))
++      return NULL;
++  }
++
++  /*
++     Ensure the array size has increased and the index is
++     now well within the array bounds.
++  */
++  DBUG_ASSERT(idx < array->max_element);
++
++  return mem_root_dynamic_array_get_val(array, idx);
++}
++
+ #include <mysql/psi/psi.h>
+ 
+ #ifdef HAVE_PSI_INTERFACE
+--- a/include/mysql/psi/psi.h
++++ b/include/mysql/psi/psi.h
+@@ -51,7 +51,7 @@
+ #include "psi_base.h"
+ #include "psi_memory.h"
+ 
+-#ifdef _WIN32
++#if defined(_WIN32) && !defined(__MINGW32__) 
+ typedef struct thread_attr pthread_attr_t;
+ typedef DWORD pthread_t;
+ #endif
+@@ -3043,4 +3043,3 @@
+ 
+ C_MODE_END
+ #endif /* MYSQL_PERFORMANCE_SCHEMA_INTERFACE_H */
+-
+--- a/include/sslopt-vars.h
++++ b/include/sslopt-vars.h
+@@ -36,6 +36,24 @@
+ SSL_STATIC char *opt_ssl_fplist  = 0;
+ SSL_STATIC my_bool opt_ssl_verify_server_cert= 2;
+ 
++#ifdef MARIADB_OPT_TLS_VERSION
++# define SET_TLS_VERSION(M) mysql_options((M), MARIADB_OPT_TLS_VERSION, opt_tls_version)
++#else
++# define SET_TLS_VERSION(M) do { } while(0)
++#endif
++
++#ifdef MARIADB_OPT_TLS_PEER_FP
++# define SET_TLS_PEER_FP(M) mysql_options((M), MARIADB_OPT_TLS_PEER_FP, opt_ssl_fp)
++#else
++# define SET_TLS_PEER_FP(M) do { } while(0)
++#endif
++
++#ifdef MARIADB_OPT_TLS_PEER_FP_LIST
++# define SET_TLS_PEER_FP_LIST(M) mysql_options((M), MARIADB_OPT_TLS_PEER_FP_LIST, opt_ssl_fplist)
++#else
++# define SET_TLS_PEER_FP_LIST(M) do { } while(0)
++#endif
++
+ #define SET_SSL_OPTS(M)                                                 \
+   do {                                                                  \
+     if (opt_use_ssl)                                                    \
+@@ -44,9 +62,9 @@
+                     opt_ssl_capath, opt_ssl_cipher);                    \
+       mysql_options((M), MYSQL_OPT_SSL_CRL, opt_ssl_crl);               \
+       mysql_options((M), MYSQL_OPT_SSL_CRLPATH, opt_ssl_crlpath);       \
+-      mysql_options((M), MARIADB_OPT_TLS_VERSION, opt_tls_version);     \
+-      mysql_options((M), MARIADB_OPT_TLS_PEER_FP, opt_ssl_fp);          \
+-      mysql_options((M), MARIADB_OPT_TLS_PEER_FP_LIST, opt_ssl_fplist); \
++      SET_TLS_VERSION(M);                                              \
++      SET_TLS_PEER_FP(M);                                              \
++      SET_TLS_PEER_FP_LIST(M);                                         \
+     }                                                                   \
+     else                                                                \
+       opt_ssl_verify_server_cert= 0;                                    \
+--- a/libmysqld/CMakeLists.txt
++++ b/libmysqld/CMakeLists.txt
+@@ -64,6 +64,7 @@
+            ../sql/item.cc ../sql/item_create.cc ../sql/item_func.cc 
+            ../sql/item_geofunc.cc ../sql/item_row.cc ../sql/item_strfunc.cc 
+            ../sql/item_subselect.cc ../sql/item_sum.cc ../sql/item_timefunc.cc 
++           ../sql/item_numconvfunc.cc
+            ../sql/item_xmlfunc.cc ../sql/item_jsonfunc.cc
+            ../sql/json_schema.cc ../sql/json_schema_helper.cc
+            ../sql/key.cc ../sql/lock.cc ../sql/log.cc ../sql/log_cache.cc
+@@ -92,6 +93,7 @@
+            ../sql/sql_lex.cc ../sql/keycaches.cc
+            ../sql/sql_list.cc ../sql/sql_load.cc ../sql/sql_locale.cc 
+            ../sql/sql_binlog.cc ../sql/sql_manager.cc
++           ../sql/sql_oracle_outer_join.cc
+            ../sql/sql_parse.cc ../sql/sql_bootstrap.cc
+            ../sql/sql_partition.cc ../sql/sql_plugin.cc 
+            ../sql/debug_sync.cc ../sql/debug.cc
+@@ -114,7 +116,8 @@
+            ../sql/sql_alter.cc ../sql/sql_partition_admin.cc
+            ../sql/event_parse_data.cc
+            ../sql/sql_signal.cc
+-           ../sql/sys_vars.cc ../sql/vector_mhnsw.cc
++           ../sql/sys_vars.cc
++           $<$<BOOL:${WITH_VECTOR_MHNSW}>:../sql/vector_mhnsw.cc>
+            ${CMAKE_BINARY_DIR}/sql/sql_builtin.cc
+            ../sql/mdl.cc ../sql/transaction.cc
+            ../sql/sql_join_cache.cc
+@@ -135,6 +138,8 @@
+            ../sql/sql_schema.cc
+            ../sql/lex_charset.cc ../sql/charset_collations.cc
+            ../sql/sql_type.cc ../sql/sql_type.h
++           ../sql/sql_type_composite.cc ../sql/item_composite.cc
++           ../sql/sql_type_row.cc
+            ../sql/sql_mode.cc
+            ../sql/sql_type_string.cc
+            ../sql/sql_type_json.cc
+@@ -160,6 +165,7 @@
+            ../sql/opt_hints_parser.cc ../sql/opt_hints_parser.h
+            ../sql/scan_char.h
+            ../sql/opt_hints.cc ../sql/opt_hints.h
++	   ../sql/opt_trace_ddl_info.cc ../sql/opt_trace_ddl_info.h
+            ${GEN_SOURCES}
+            ${MYSYS_LIBWRAP_SOURCE}
+ )
+--- a/mysys/CMakeLists.txt
++++ b/mysys/CMakeLists.txt
+@@ -50,14 +50,20 @@
+                                 my_timezone.cc  my_thread_name.cc
+                                 my_virtual_mem.c)
+ 
+-IF (WIN32)
++IF (MSVC)
+   SET (MYSYS_SOURCES ${MYSYS_SOURCES}
+     my_winthread.c
+     my_wintoken.c
+     my_wincond.c
++    my_minidump.cc
++    )
++ENDIF()
++
++# Windows wrappers needed across MSVC and MinGW builds
++IF (WIN32)
++  SET (MYSYS_SOURCES ${MYSYS_SOURCES}
+     my_winerr.c
+     my_winfile.c
+-    my_minidump.cc
+     my_win_popen.cc)
+ ENDIF()
+ 
+--- a/mysys/crc32ieee.cc
++++ b/mysys/crc32ieee.cc
+@@ -28,7 +28,8 @@
+ 
+ typedef unsigned int (*my_crc32_t)(unsigned int, const void *, size_t);
+ 
+-#if defined _M_IX86 || defined _M_X64 || defined __i386__ || defined __x86_64__
++#if (defined _M_IX86 || defined _M_X64 || defined __i386__ || defined __x86_64__) && \
++    !(defined(__MINGW32__))
+ extern "C" my_crc32_t crc32_pclmul_enabled();
+ #elif defined HAVE_ARMV8_CRC
+ extern "C" int crc32_aarch64_available();
+@@ -38,7 +39,8 @@
+ 
+ static my_crc32_t init_crc32()
+ {
+-#if defined _M_IX86 || defined _M_X64 || defined __i386__ || defined __x86_64__
++#if (defined _M_IX86 || defined _M_X64 || defined __i386__ || defined __x86_64__) && \
++    !(defined(__MINGW32__))
+   if (my_crc32_t crc= crc32_pclmul_enabled())
+     return crc;
+ #elif defined HAVE_ARMV8_CRC
+--- a/mysys/my_chsize.c
++++ b/mysys/my_chsize.c
+@@ -55,7 +55,7 @@
+ 
+   if (oldsize > newlength)
+   {
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+     if (my_win_chsize(fd, newlength))
+     {
+       my_errno= errno;
+--- a/mysys/my_fopen.c
++++ b/mysys/my_fopen.c
+@@ -46,7 +46,7 @@
+ 
+   make_ftype(type,flags);
+ 
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+   fd= my_win_fopen(filename, type);
+ #else
+   fd= fopen(filename, type);
+@@ -82,7 +82,7 @@
+ } /* my_fopen */
+ 
+ 
+-#if defined(_WIN32)
++#if defined(_MSC_VER)
+ 
+ static FILE *my_win_freopen(const char *path, const char *mode, FILE *stream)
+ {
+@@ -146,7 +146,7 @@
+ {
+   FILE *result;
+ 
+-#if defined(_WIN32)
++#if defined(_MSC_VER)
+   result= my_win_freopen(path, mode, stream);
+ #else
+   result= freopen(path, mode, stream);
+@@ -171,7 +171,7 @@
+     my_file_info[file].name= NULL;
+     my_file_info[file].type= UNOPEN;
+   }
+-#ifndef _WIN32
++#if !defined(_MSC_VER)
+   err= fclose(fd);
+ #else
+   err= my_win_fclose(fd);
+@@ -205,7 +205,7 @@
+ 		   Filedes, Flags, MyFlags));
+ 
+   make_ftype(type,Flags);
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+   fd= my_win_fdopen(Filedes, type);
+ #else
+   fd= fdopen(Filedes, type);
+--- a/mysys/my_fstream.c
++++ b/mysys/my_fstream.c
+@@ -186,7 +186,7 @@
+ /* Get a File corresponding to the stream*/
+ int my_fileno(FILE *f)
+ {
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+   return my_win_fileno(f);
+ #else
+  return fileno(f);
+--- a/mysys/my_init.c
++++ b/mysys/my_init.c
+@@ -16,6 +16,7 @@
+    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335  USA */
+ 
+ #include "mysys_priv.h"
++#include <locale.h>
+ #include "my_static.h"
+ #include "mysys_err.h"
+ #include <m_string.h>
+@@ -565,4 +566,3 @@
+   mysql_stage_register(category, all_mysys_stages, count);
+ }
+ #endif /* HAVE_PSI_INTERFACE */
+-
+--- a/mysys/my_lib.c
++++ b/mysys/my_lib.c
+@@ -332,7 +332,7 @@
+ {
+   DBUG_ENTER("my_fstat");
+   DBUG_PRINT("my",("fd: %d  MyFlags: %lu", Filedes, MyFlags));
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+   DBUG_RETURN(my_win_fstat(Filedes, stat_area));
+ #else
+   DBUG_RETURN(fstat(Filedes, (struct stat *) stat_area));
+@@ -351,14 +351,14 @@
+     if (!(stat_area= (MY_STAT *) my_malloc(key_memory_MY_STAT, sizeof(MY_STAT),
+                                            my_flags)))
+       goto error;
+-#ifndef _WIN32
++#if defined(_MSC_VER)
++  if (!my_win_stat(path, stat_area))
++    DBUG_RETURN(stat_area);
++#else
+   if (!stat((char *) path, (struct stat *) stat_area))
+   {
+     DBUG_RETURN(stat_area);
+   }
+-#else
+-  if (!my_win_stat(path, stat_area))
+-    DBUG_RETURN(stat_area);
+ #endif
+   DBUG_PRINT("error",("Got errno: %d from stat", errno));
+   my_errno= errno;
+--- a/mysys/my_mkdir.c
++++ b/mysys/my_mkdir.c
+@@ -18,7 +18,7 @@
+ #include "mysys_err.h"
+ #include <sys/types.h>
+ #include <sys/stat.h>
+-#ifdef _WIN32
++#if defined(_WIN32)
+ #include <direct.h>
+ #endif
+ 
+@@ -26,7 +26,7 @@
+ {
+   DBUG_ENTER("my_dir");
+   DBUG_PRINT("enter",("dir: %s",dir));
+-#ifdef _WIN32
++#if defined(_WIN32)
+   LPSECURITY_ATTRIBUTES attr =
+     my_dir_security_attributes.lpSecurityDescriptor?
+     &my_dir_security_attributes : NULL;
+@@ -34,10 +35,17 @@
+   if (!ok)
+   {
+     my_osmaperr(GetLastError());
++  
++    my_errno=errno;
++    DBUG_PRINT("error",("error %d when creating directory %s",my_errno,dir));
++    if (MyFlags & (MY_FFNF | MY_FAE | MY_WME))
++      my_error(EE_CANT_MKDIR,  MYF(ME_BELL), dir, my_errno);
++    DBUG_RETURN(-1);
++  }
++  DBUG_RETURN(0);
+ #else
+   if (mkdir((char*) dir, Flags & my_umask_dir))
+   {
+-#endif
+     my_errno=errno;
+     DBUG_PRINT("error",("error %d when creating directory %s",my_errno,dir));
+     if (MyFlags & (MY_FFNF | MY_FAE | MY_WME))
+@@ -45,4 +53,5 @@
+     DBUG_RETURN(-1);
+   }
+   DBUG_RETURN(0);
++ #endif
+ }
+--- a/mysys/my_open.c
++++ b/mysys/my_open.c
+@@ -49,12 +49,14 @@
+ 		   FileName, Flags, MyFlags));
+   if (!(MyFlags & (MY_WME | MY_FAE | MY_FFNF)))
+     MyFlags|= my_global_flags;
+-#if defined(_WIN32)
++#if defined(_MSC_VER)
+   fd= my_win_open(FileName, Flags);
+ #else
++  #ifndef _WIN32
+   if (MyFlags & MY_NOSYMLINKS)
+     fd = open_nosymlinks(FileName, Flags | O_CLOEXEC, my_umask);
+   else
++  #endif
+     fd = open(FileName, Flags | O_CLOEXEC, my_umask);
+ #endif
+ 
+@@ -89,7 +91,7 @@
+     my_file_info[fd].name= NULL;
+     my_file_info[fd].type= UNOPEN;
+   }
+-#ifndef _WIN32
++#if !defined(_MSC_VER)
+   err= close(fd);
+ #else
+   err= my_win_close(fd);
+--- a/mysys/my_pread.c
++++ b/mysys/my_pread.c
+@@ -19,7 +19,7 @@
+ #include "my_base.h"
+ #include <m_string.h>
+ #include <errno.h>
+-#ifndef _WIN32
++#if !defined(_MSC_VER)
+ #include <unistd.h>
+ #endif
+ 
+--- a/mysys/my_quick.c
++++ b/mysys/my_quick.c
+@@ -20,14 +20,14 @@
+ #include "my_nosys.h"
+ 
+ 
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+ extern size_t my_win_read(File Filedes,uchar *Buffer,size_t Count);
+ #endif
+ 
+ size_t my_quick_read(File Filedes,uchar *Buffer,size_t Count,myf MyFlags)
+ {
+   size_t readbytes;
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+   readbytes= my_win_read(Filedes, Buffer, Count);
+ #else
+   readbytes= read(Filedes, Buffer, Count);
+@@ -52,7 +52,7 @@
+ 
+ size_t my_quick_write(File Filedes, const uchar *Buffer, size_t Count)
+ {
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+   return my_win_write(Filedes, Buffer, Count);
+ #else
+ 
+--- a/mysys/my_read.c
++++ b/mysys/my_read.c
+@@ -45,7 +45,7 @@
+   for (;;)
+   {
+     errno= 0;					/* Linux, Windows don't reset this on EOF/success */
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+     readbytes= my_win_read(Filedes, Buffer, Count);
+ #else
+     readbytes= read(Filedes, Buffer, Count);
+--- a/mysys/my_seek.c
++++ b/mysys/my_seek.c
+@@ -56,7 +56,7 @@
+       Make sure we are using a valid file descriptor!
+   */
+   DBUG_ASSERT(fd != -1);
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+   newpos= my_win_lseek(fd, pos, whence);
+ #else
+   newpos= lseek(fd, pos, whence);
+@@ -86,7 +86,7 @@
+   DBUG_ENTER("my_tell");
+   DBUG_PRINT("my",("fd: %d  MyFlags: %lu",fd, MyFlags));
+   DBUG_ASSERT(fd >= 0);
+-#if defined (HAVE_TELL) && !defined (_WIN32) && !defined(_AIX)
++#if defined (HAVE_TELL) && !defined (_MSC_VER) && !defined(_AIX)
+   pos= tell(fd);
+ #else
+   pos= my_seek(fd, 0L, MY_SEEK_CUR,0);
+--- a/mysys/my_sync.c
++++ b/mysys/my_sync.c
+@@ -87,6 +87,7 @@
+     if (res == -1 && errno == ENOLCK)
+       res= 0;                                   /* Result Bug in Old FreeBSD */
+ #elif defined(_WIN32)
++    /* On Windows (MSVC or MinGW), use FlushFileBuffers via my_win_fsync */
+     res= my_win_fsync(fd);
+ #else
+ #error Cannot find a way to sync a file, durability in danger
+--- a/mysys/my_timezone.cc
++++ b/mysys/my_timezone.cc
+@@ -22,7 +22,7 @@
+ #include <stdio.h>
+ #include <time.h>
+ 
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+ #include <icu.h>
+ #include <objbase.h>
+ #define MAX_TZ_ABBR 64
+@@ -125,7 +125,7 @@
+   uenum_close(en);
+   return ret;
+ }
+-#endif /* _WIN32 */
++#endif /* _MSC_VER */
+ 
+ /**
+   Initialize time conversion information
+@@ -137,7 +137,7 @@
+ extern "C" void my_tzset()
+ {
+   tzset();
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+   /*
+     CoInitializeEx is needed by ICU on older Windows 10, until
+     version 1903.
+@@ -154,7 +154,7 @@
+ */
+ extern "C" void my_tzname(char* sys_timezone, size_t size)
+ {
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+   if (use_icu_for_tzinfo)
+   {
+     /* TZ environment variable not set - return default timezone name*/
+@@ -226,7 +226,7 @@
+ */
+ void my_tzinfo(time_t t, struct my_tz* tz)
+ {
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+   if (use_icu_for_tzinfo)
+   {
+     icu_get_tzinfo(t, tz);
+--- a/mysys/my_win_popen.cc
++++ b/mysys/my_win_popen.cc
+@@ -22,6 +22,8 @@
+ #include <mutex>
+ #include <stdlib.h>
+ #include <unordered_map>
++#include <cstdio>
++#include <string>
+ 
+ enum
+ {
+--- a/mysys/my_write.c
++++ b/mysys/my_write.c
+@@ -38,7 +38,7 @@
+   
+   for (;;)
+   {
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+     if(Filedes < 0)
+     {
+       my_errno= errno= EBADF;
+--- a/mysys/stacktrace.c
++++ b/mysys/stacktrace.c
+@@ -707,14 +707,16 @@
+ 
+ int my_safe_print_str(const char *val, size_t len)
+ {
+-  __try
+-  {
++  #if defined(_MSC_VER)
++  __try {
+     my_write_stderr(val, len);
+-  }
+-  __except(EXCEPTION_EXECUTE_HANDLER)
+-  {
++  } __except(EXCEPTION_EXECUTE_HANDLER) {
+     my_safe_printf_stderr("%s", "is an invalid string pointer");
+   }
++  #else
++  /* On MinGW/GCC we do not have SEH __try; just attempt to write */
++  my_write_stderr(val, len);
++  #endif
+   return 0;
+ }
+ #endif /*_WIN32*/
+--- a/plugin/auth_ed25519/CMakeLists.txt
++++ b/plugin/auth_ed25519/CMakeLists.txt
+@@ -1,3 +1,7 @@
++IF(WITHOUT_SERVER)
++  RETURN()
++ENDIF()
++
+ SET(REF10_SOURCES
+       ref10/fe_0.c ref10/fe_1.c ref10/fe_add.c ref10/fe_cmov.c ref10/fe_copy.c
+       ref10/fe_frombytes.c ref10/fe_invert.c ref10/fe_isnegative.c
+--- a/plugin/win_auth_client/CMakeLists.txt
++++ b/plugin/win_auth_client/CMakeLists.txt
+@@ -13,7 +13,7 @@
+ # along with this program; if not, write to the Free Software
+ # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1335 USA
+ 
+-IF(WIN32)
++IF(WIN32 AND NOT USE_SYSTEM_LIBMARIADB)
+   #
+   # Configuration for building Windows Authentication Plugin (client-side)
+   #
+--- a/sql/CMakeLists.txt
++++ b/sql/CMakeLists.txt
+@@ -106,13 +106,15 @@
+                hostname.cc init.cc item.cc item_buff.cc item_cmpfunc.cc
+                item_create.cc item_func.cc item_geofunc.cc item_row.cc
+                item_strfunc.cc item_subselect.cc item_sum.cc item_timefunc.cc
++               item_numconvfunc.cc
+                key.cc log.cc log_cache.cc lock.cc
+                log_event.cc log_event_server.cc
+                rpl_record.cc rpl_reporting.cc
+                mf_iocache.cc my_decimal.cc
+                mysqld.cc net_serv.cc  keycaches.cc
+                ../sql-common/client_plugin.c
+-               opt_range.cc vector_mhnsw.cc
++               opt_range.cc
++               $<$<BOOL:${WITH_VECTOR_MHNSW}>:vector_mhnsw.cc>
+                opt_group_by_cardinality.cc
+                opt_rewrite_date_cmp.cc
+                opt_rewrite_remove_casefold.cc
+@@ -132,6 +134,7 @@
+                sql_error.cc sql_handler.cc sql_get_diagnostics.cc
+                sql_help.cc sql_insert.cc sql_lex.cc
+                sql_list.cc sql_load.cc sql_manager.cc
++               sql_oracle_outer_join.cc
+                sql_parse.cc sql_bootstrap.cc
+                sql_partition.cc sql_plugin.cc sql_prepare.cc sql_rename.cc
+                debug_sync.cc debug.cc
+@@ -186,6 +189,7 @@
+                rowid_filter.cc rowid_filter.h
+                optimizer_costs.h optimizer_defaults.h
+                opt_trace.cc
++               opt_trace_ddl_info.cc
+                table_cache.cc encryption.cc temporary_tables.cc
+                json_table.cc
+                proxy_protocol.cc backup.cc xa.cc
+@@ -194,6 +198,9 @@
+                opt_vcol_substitution.cc
+                opt_hints_parser.cc opt_hints_parser.h scan_char.h
+                opt_hints.cc opt_hints.h
++               sql_type_row.cc
++               sql_type_composite.cc sql_type_composite.h
++               item_composite.cc item_composite.h
+                ${CMAKE_CURRENT_BINARY_DIR}/lex_hash.h
+                ${CMAKE_CURRENT_BINARY_DIR}/lex_token.h
+                ${GEN_SOURCES}
+@@ -202,9 +209,15 @@
+ 
+ MY_CHECK_CXX_COMPILER_FLAG(-Wno-unused-but-set-variable)
+ IF(have_CXX__Wno_unused_but_set_variable)
++  IF(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64"
++     AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
++     AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.0")
++    # Avoid excessive compile time on RHEL8 aarch64
++    SET(ARM_OLD_GCC_FLAGS -fno-strict-aliasing)
++  ENDIF()
+   ADD_COMPILE_FLAGS(${CMAKE_CURRENT_BINARY_DIR}/yy_mariadb.cc
+     ${CMAKE_CURRENT_BINARY_DIR}/yy_oracle.cc
+-    COMPILE_FLAGS "-Wno-unused-but-set-variable")
++    COMPILE_FLAGS "${ARM_OLD_GCC_FLAGS} -Wno-unused-but-set-variable")
+ ENDIF()
+ 
+ IF ((CMAKE_SYSTEM_NAME MATCHES "Linux" OR
+@@ -242,7 +255,8 @@
+   online_alter_log
+   ${LIBWRAP} ${LIBCRYPT} ${CMAKE_DL_LIBS} ${CMAKE_THREAD_LIBS_INIT}
+   ${SSL_LIBRARIES}
+-  ${LIBSYSTEMD})
++  ${LIBSYSTEMD}
++  $<$<BOOL:${WIN32}>:psapi>)
+ IF(TARGET pcre2)
+   ADD_DEPENDENCIES(sql pcre2)
+ ENDIF()
+@@ -542,6 +556,11 @@
+ IF(NOT WITH_WSREP)
+   SET(EXCL_WSREP "wsrep_[a-np-z]*.h")
+ ENDIF()
++INSTALL(FILES
++    ${CMAKE_CURRENT_BINARY_DIR}/lex_hash.h
++    ${CMAKE_CURRENT_BINARY_DIR}/lex_token.h
++    DESTINATION ${INSTALL_INCLUDEDIR}/server/private
++    COMPONENT Development)
+ INSTALL(DIRECTORY . DESTINATION ${INSTALL_INCLUDEDIR}/server/private COMPONENT Development
+   FILES_MATCHING PATTERN "*.h"
+   PATTERN share EXCLUDE
+--- a/sql/bloom_filters.h
++++ b/sql/bloom_filters.h
+@@ -33,9 +33,16 @@
+   Use gcc function multiversioning to optimize for a specific CPU with run-time
+   detection. Works only for x86, for other architectures we provide only one
+   implementation for now.
++  
++  Disable multiversioning on Windows/MinGW as ifunc is not supported
+ */
+ #define DEFAULT_IMPLEMENTATION
+-#if __GNUC__ > 7 && defined(__GLIBC__)
++/*
++  Enable CPU multiversioning on non-Windows (no MinGW) when using GCC>7.
++  Keep a plain default implementation on MinGW/Windows where ifunc is not supported.
++*/
++#if !defined(_WIN32) && !defined(_WIN64) && !defined(__MINGW32__) 
++# if __GNUC__ > 7
+ #ifdef __x86_64__
+ #ifdef HAVE_IMMINTRIN_H
+ #include <immintrin.h>
+@@ -52,11 +59,13 @@
+ #undef DEFAULT_IMPLEMENTATION
+ #define NEON_IMPLEMENTATION
+ #endif
+-#endif
+-#if defined __powerpc64__ && defined __VSX__
+-#include <altivec.h>
+-#define POWER_IMPLEMENTATION
+-#endif
++# endif /* __GNUC__ > 7 */
++/* PowerPC VSX support (non-Windows environments) */
++# if defined __powerpc64__ && defined __VSX__
++# include <altivec.h>
++# define POWER_IMPLEMENTATION
++# endif
++#endif /* !Windows/MinGW */
+ 
+ template <typename T>
+ struct PatternedSimdBloomFilter
+--- a/sql/handler.cc
++++ b/sql/handler.cc
+@@ -155,7 +155,7 @@
+   NullS};
+ TYPELIB tx_isolation_typelib= CREATE_TYPELIB_FOR(tx_isolation_names);
+ 
+-static TYPELIB known_extensions= {0,"known_exts", NULL, NULL};
++static TYPELIB known_extensions= {0,"known_exts", NULL, NULL, NULL};
+ uint known_extensions_id= 0;
+ 
+ 
+@@ -2123,15 +2123,17 @@
+                 thd->rgi_slave->is_parallel_exec);
+   }
+ end:
+-  if (mdl_backup.ticket)
++  // reset the pointer to the ticket when it's stack instantiated
++  if (thd->backup_commit_lock == &mdl_backup)
+   {
+     /*
+       We do not always immediately release transactional locks
+       after ha_commit_trans() (see uses of ha_enable_transaction()),
+       thus we release the commit blocker lock as soon as it's
+       not needed.
+-    */
+-    thd->mdl_context.release_lock(mdl_backup.ticket);
++     */
++    if (mdl_backup.ticket)
++      thd->mdl_context.release_lock(mdl_backup.ticket);
+     thd->backup_commit_lock= 0;
+   }
+ #ifdef WITH_WSREP
+@@ -5294,12 +5296,6 @@
+   DBUG_RETURN(errkey);
+ }
+ 
+-bool handler::has_dup_ref() const
+-{
+-  DBUG_ASSERT(lookup_errkey != (uint)-1 || errkey != (uint)-1);
+-  return ha_table_flags() & HA_DUPLICATE_POS || lookup_errkey != (uint)-1;
+-}
+-
+ 
+ /**
+   Delete all files with extension from bas_ext().
+@@ -5973,7 +5969,12 @@
+     info_arg->options|= HA_LEX_CREATE_GLOBAL_TMP_TABLE;
+   int error= create(name, form, info_arg);
+   if (!error &&
+-      !(info_arg->options & (HA_LEX_CREATE_TMP_TABLE | HA_CREATE_TMP_ALTER)))
++      !(info_arg->options & (HA_LEX_CREATE_TMP_TABLE | HA_CREATE_TMP_ALTER)) &&
++      /*
++        DO not notify if not main handler.
++        So skip notifications for partitions.
++      */
++      form->file == this)
+     mysql_audit_create_table(form);
+   return error;
+ }
+@@ -6498,6 +6499,7 @@
+     goto err;
+   }
+ 
++#ifdef WITH_VECTOR_MHNSW
+   /* create secondary tables for high level indexes */
+   if (share.hlindexes())
+   {
+@@ -6506,16 +6508,17 @@
+     DBUG_ASSERT(share.key_info[share.keys].algorithm == HA_KEY_ALG_VECTOR);
+     TABLE_SHARE index_share;
+     char file_name[FN_REFLEN+1];
+-    char index_file_name[FN_REFLEN+1], *index_file_name_end;
++    char index_file_name[FN_REFLEN+1], *UNINIT_VAR(index_file_name_end);
+     Alter_info index_ainfo;
+     HA_CREATE_INFO index_cinfo;
+     char *path_end= strmov(file_name, path);
+ 
+     bzero((char*) &index_cinfo, sizeof(index_cinfo));
+     index_cinfo.alter_info= &index_ainfo;
+-    if (create_info->index_file_name)
++    index_file_name_end= const_cast<char*>(create_info->index_file_name);
++    if (index_file_name_end)
+     {
+-      index_file_name_end= strmov(index_file_name, create_info->index_file_name);
++      index_file_name_end= strmov(index_file_name, index_file_name_end);
+       index_cinfo.index_file_name= index_file_name;
+       index_cinfo.data_file_name= index_file_name;
+     }
+@@ -6549,6 +6552,7 @@
+     thd->lex->sql_command= old_sql_command;
+     free_table_share(&index_share);
+   }
++#endif /* WITH_VECTOR_MHNSW */
+ 
+ err:
+   free_table_share(&share);
+@@ -8019,8 +8023,12 @@
+   DBUG_ASSERT(this == table->file);
+   if (!table_share->period.unique_keys)
+     return 0;
+-  if (table->versioned() && !table->vers_end_field()->is_max())
+-    return 0;
++  if (table->versioned())
++  {
++    Field *end= table->vers_end_field();
++    if (!end->is_max(end->ptr_in_record(new_data)))
++      return 0;
++  }
+ 
+   const bool after_write= ha_table_flags() & HA_CHECK_UNIQUE_AFTER_WRITE;
+   const bool is_update= !after_write && old_data;
+--- a/sql/sql_builtin.cc.in
++++ b/sql/sql_builtin.cc.in
+@@ -31,7 +31,7 @@
+ #endif
+ builtin_maria_plugin 
+   @mysql_mandatory_plugins@ @mysql_optional_plugins@
+-  builtin_maria_binlog_plugin, builtin_maria_mhnsw_plugin,
++  builtin_maria_binlog_plugin, @MHNSW_PLUGIN@
+   builtin_maria_mysql_password_plugin;
+ 
+ struct st_maria_plugin *mysql_optional_plugins[]=
+@@ -42,6 +42,6 @@
+ struct st_maria_plugin *mysql_mandatory_plugins[]=
+ {
+   builtin_maria_binlog_plugin, builtin_maria_mysql_password_plugin,
+-  builtin_maria_mhnsw_plugin,
++  @MHNSW_PLUGIN@
+   @mysql_mandatory_plugins@ 0
+ };
+--- a/storage/innobase/include/univ.i
++++ b/storage/innobase/include/univ.i
+@@ -31,7 +31,20 @@
+ #define INNODB_EXTEND_TIMEOUT_INTERVAL 30
+ 
+ #if defined(_WIN32)
++/* Ensure Winsock is included before windows.h to avoid header ordering issues */
++# include <winsock2.h>
++# include <ws2tcpip.h>
+ # include <windows.h>
++/* Undefine Windows macros that clash with InnoDB enums/symbols */
++# ifdef FILE_CREATE
++#  undef FILE_CREATE
++# endif
++# ifdef FILE_CREATED
++#  undef FILE_CREATED
++# endif
++# ifdef FILE_CREATE_TREE_CONNECTION
++#  undef FILE_CREATE_TREE_CONNECTION
++# endif
+ #endif /* _WIN32 */
+ 
+ /* Include a minimum number of SQL header files so that few changes
+--- a/win/packaging/CMakeLists.txt
++++ b/win/packaging/CMakeLists.txt
+@@ -90,7 +90,7 @@
+ 
+ SET(CPACK_WIX_UPGRADE_CODE ${CPACK_WIX_UPGRADE_CODE_${WIX_ARCH}})
+ IF(NOT CPACK_WIX_UPGRADE_CODE)
+-  MESSAGE_ONCE("unknown upgrade code for arch ${WIX_ARCH}")
++  MESSAGE("unknown upgrade code for arch ${WIX_ARCH}")
+   CANT_BUILD_MSI("unknown upgrade code for arch ${WIX_ARCH}")
+ ENDIF()
+ 
