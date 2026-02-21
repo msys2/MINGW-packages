@@ -1,8 +1,7 @@
-From 6d7e6014d2bb1b0f883cdaeb8e13861ae0f57c7c Mon Sep 17 00:00:00 2001
+From 2df01f04337d3e985454c98b5693c4ba7b7220ce Mon Sep 17 00:00:00 2001
 From: Jon Turney <jon.turney@dronecode.org.uk>
 Date: Tue, 4 Feb 2014 00:57:13 +0000
-Subject: [PATCH 05/29] Add support for DWARF in PECOFF as used by Cygwin and
- MinGW
+Subject: [PATCH] Add support for DWARF in PECOFF as used by Cygwin and MinGW
 
 For cygwin and mingw targets, build a dump_syms tool which can read DWARF
 symbols contained in a PE/COFF executable.
@@ -42,18 +41,18 @@ reader, for reading .dwo/.dwp files...
 
 Signed-off-by: Jon Turney <jon.turney@dronecode.org.uk>
 ---
- Makefile.am                                    |  30 ++
- configure.ac                                   |   5 +
- src/common/pecoff/dump_symbols-inl.h           | 705 +++++++++++++++++++++++++
- src/common/pecoff/dump_symbols.cc              |  90 ++++
- src/common/pecoff/dump_symbols.h               |  80 +++
- src/common/pecoff/pecoff.h                     | 262 +++++++++
- src/common/pecoff/pecoff_file_id.cc            |  83 +++
- src/common/pecoff/pecoff_file_id.h             |  52 ++
- src/common/pecoff/pecoffutils.cc               | 494 +++++++++++++++++
- src/common/pecoff/pecoffutils.h                | 167 ++++++
- src/tools/windows/dump_syms_dwarf/dump_syms.cc |  88 +++
- 11 files changed, 2056 insertions(+)
+ Makefile.am                                   |  28 +
+ configure.ac                                  |   5 +
+ src/common/pecoff/dump_symbols-inl.h          | 708 ++++++++++++++++++
+ src/common/pecoff/dump_symbols.cc             |  90 +++
+ src/common/pecoff/dump_symbols.h              |  79 ++
+ src/common/pecoff/pecoff.h                    | 262 +++++++
+ src/common/pecoff/pecoff_file_id.cc           |  83 ++
+ src/common/pecoff/pecoff_file_id.h            |  52 ++
+ src/common/pecoff/pecoffutils.cc              | 494 ++++++++++++
+ src/common/pecoff/pecoffutils.h               | 167 +++++
+ .../windows/dump_syms_dwarf/dump_syms.cc      |  93 +++
+ 11 files changed, 2061 insertions(+)
  create mode 100644 src/common/pecoff/dump_symbols-inl.h
  create mode 100644 src/common/pecoff/dump_symbols.cc
  create mode 100644 src/common/pecoff/dump_symbols.h
@@ -65,10 +64,10 @@ Signed-off-by: Jon Turney <jon.turney@dronecode.org.uk>
  create mode 100644 src/tools/windows/dump_syms_dwarf/dump_syms.cc
 
 diff --git a/Makefile.am b/Makefile.am
-index fcff8ea7..8d816efc 100644
+index ad13c373..702a7a87 100644
 --- a/Makefile.am
 +++ b/Makefile.am
-@@ -51,6 +51,11 @@ AM_CFLAGS += -fPIC
+@@ -50,6 +50,11 @@ AM_CFLAGS += -fPIC
  AM_CXXFLAGS += -fPIC
  endif
  
@@ -80,22 +79,20 @@ index fcff8ea7..8d816efc 100644
  # Specify include paths for ac macros
  ACLOCAL_AMFLAGS = -I m4
  
-@@ -368,6 +373,12 @@ endif
- endif
- endif LINUX_HOST
+@@ -274,6 +279,10 @@ endif LINUX_HOST
+ #
+ if !DISABLE_TOOLS
  
 +if WINDOWS_HOST
-+if !DISABLE_TOOLS
 +bin_PROGRAMS += \
 +	src/tools/windows/dump_syms_dwarf/dump_syms
 +endif
-+endif
  
- ## Tests
- if !DISABLE_PROCESSOR
-@@ -768,6 +779,25 @@ src_tools_linux_md2core_minidump_2_core_unittest_LDADD = \
- 
- endif LINUX_HOST
+ bin_PROGRAMS += \
+ 	src/tools/linux/symupload/minidump_upload \
+@@ -887,6 +896,25 @@ src_tools_linux_md2core_minidump_2_core_unittest_LDADD = \
+ 	$(TEST_LIBS) \
+ 	$(PTHREAD_CFLAGS) $(PTHREAD_LIBS)
  
 +if WINDOWS_HOST
 +if !DISABLE_TOOLS
@@ -116,14 +113,14 @@ index fcff8ea7..8d816efc 100644
 +endif
 +endif
 +
- if !DISABLE_PROCESSOR
  src_processor_address_map_unittest_SOURCES = \
  	src/processor/address_map_unittest.cc
+ src_processor_address_map_unittest_LDADD = \
 diff --git a/configure.ac b/configure.ac
-index ec194ddd..4e92b291 100644
+index 0258c116..368e517a 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -110,8 +110,13 @@ case $host in
+@@ -101,8 +101,13 @@ case $host in
    *-*-linux* | *-android* )
      LINUX_HOST=true
      ;;
@@ -139,10 +136,10 @@ index ec194ddd..4e92b291 100644
  case $host in
 diff --git a/src/common/pecoff/dump_symbols-inl.h b/src/common/pecoff/dump_symbols-inl.h
 new file mode 100644
-index 00000000..23955f6a
+index 00000000..c8734e97
 --- /dev/null
 +++ b/src/common/pecoff/dump_symbols-inl.h
-@@ -0,0 +1,705 @@
+@@ -0,0 +1,708 @@
 +// Copyright (c) 2011 Google Inc.
 +// All rights reserved.
 +//
@@ -205,7 +202,6 @@ index 00000000..23955f6a
 +#include "common/stabs_reader.h"
 +#include "common/stabs_to_module.h"
 +#endif
-+#include "common/using_std_string.h"
 +
 +// This namespace contains helper functions.
 +namespace {
@@ -218,7 +214,6 @@ index 00000000..23955f6a
 +#ifndef NO_STABS_SUPPORT
 +using google_breakpad::StabsToModule;
 +#endif
-+using google_breakpad::scoped_ptr;
 +
 +//
 +// FDWrapper
@@ -308,38 +303,43 @@ index 00000000..23955f6a
 +#endif  // NO_STABS_SUPPORT
 +
 +// A line-to-module loader that accepts line number info parsed by
-+// dwarf2reader::LineInfo and populates a Module and a line vector
++// google_breakpad::LineInfo and populates a Module and a line vector
 +// with the results.
 +class DumperLineToModule: public DwarfCUToModule::LineToModuleHandler {
 + public:
 +  // Create a line-to-module converter using BYTE_READER.
-+  explicit DumperLineToModule(dwarf2reader::ByteReader *byte_reader)
++  explicit DumperLineToModule(google_breakpad::ByteReader *byte_reader)
 +      : byte_reader_(byte_reader) { }
-+  void StartCompilationUnit(const string& compilation_dir) {
++  void StartCompilationUnit(const std::string& compilation_dir) override {
 +    compilation_dir_ = compilation_dir;
 +  }
-+  void ReadProgram(const uint8_t *program, uint64 length,
-+                   Module *module, std::vector<Module::Line> *lines) {
-+    DwarfLineToModule handler(module, compilation_dir_, lines);
-+    dwarf2reader::LineInfo parser(program, length, byte_reader_, &handler);
++    virtual void ReadProgram(const uint8_t* program, uint64_t length,
++                             const uint8_t* string_section,
++                             uint64_t string_section_length,
++                             const uint8_t* line_string_section,
++                             uint64_t line_string_length,
++                             Module* module, vector<Module::Line>* lines,
++                             std::map<uint32_t, Module::File*>* files) override {
++    DwarfLineToModule handler(module, compilation_dir_, lines, files);
++    google_breakpad::LineInfo parser(program, length, byte_reader_, string_section, string_section_length, line_string_section, line_string_length, &handler);
 +    parser.Start();
 +  }
 + private:
-+  string compilation_dir_;
-+  dwarf2reader::ByteReader *byte_reader_;
++  std::string compilation_dir_;
++  google_breakpad::ByteReader *byte_reader_;
 +};
 +
 +template<typename ObjectFileReader>
-+bool LoadDwarf(const string& dwarf_filename,
++bool LoadDwarf(const std::string& dwarf_filename,
 +               const typename ObjectFileReader::ObjectFileBase header,
 +               const bool big_endian,
 +               bool handle_inter_cu_refs,
 +               Module* module) {
 +  typedef typename ObjectFileReader::Section Shdr;
 +
-+  const dwarf2reader::Endianness endianness = big_endian ?
-+      dwarf2reader::ENDIANNESS_BIG : dwarf2reader::ENDIANNESS_LITTLE;
-+  dwarf2reader::ByteReader byte_reader(endianness);
++  const google_breakpad::Endianness endianness = big_endian ?
++      google_breakpad::ENDIANNESS_BIG : google_breakpad::ENDIANNESS_LITTLE;
++  google_breakpad::ByteReader byte_reader(endianness);
 +
 +  // Construct a context for this file.
 +  DwarfCUToModule::FileContext file_context(dwarf_filename,
@@ -350,7 +350,7 @@ index 00000000..23955f6a
 +  int num_sections = ObjectFileReader::GetNumberOfSections(header);
 +  for (int i = 0; i < num_sections; ++i) {
 +    const Shdr section = ObjectFileReader::FindSectionByIndex(header, i);
-+    string name = ObjectFileReader::GetSectionName(header, section);
++    std::string name = ObjectFileReader::GetSectionName(header, section);
 +    const uint8_t* contents = reinterpret_cast<const uint8_t *>(ObjectFileReader::GetSectionPointer(header, section));
 +    file_context.AddSectionToSectionMap(name, contents,
 +                                        ObjectFileReader::GetSectionSize(header, section));
@@ -358,24 +358,24 @@ index 00000000..23955f6a
 +
 +  // Parse all the compilation units in the .debug_info section.
 +  DumperLineToModule line_to_module(&byte_reader);
-+  dwarf2reader::SectionMap::const_iterator debug_info_entry =
++  google_breakpad::SectionMap::const_iterator debug_info_entry =
 +      file_context.section_map().find(".debug_info");
 +  assert(debug_info_entry != file_context.section_map().end());
-+  const std::pair<const uint8_t*, uint64>& debug_info_section =
++  const std::pair<const uint8_t*, uint64_t>& debug_info_section =
 +      debug_info_entry->second;
 +  // This should never have been called if the file doesn't have a
 +  // .debug_info section.
 +  assert(debug_info_section.first);
-+  uint64 debug_info_length = debug_info_section.second;
-+  for (uint64 offset = 0; offset < debug_info_length;) {
++  uint64_t debug_info_length = debug_info_section.second;
++  for (uint64_t offset = 0; offset < debug_info_length;) {
 +    // Make a handler for the root DIE that populates MODULE with the
 +    // data that was found.
 +    DwarfCUToModule::WarningReporter reporter(dwarf_filename, offset);
-+    DwarfCUToModule root_handler(&file_context, &line_to_module, &reporter);
++    DwarfCUToModule root_handler(&file_context, &line_to_module, nullptr, &reporter);
 +    // Make a Dwarf2Handler that drives the DIEHandler.
-+    dwarf2reader::DIEDispatcher die_dispatcher(&root_handler);
++    google_breakpad::DIEDispatcher die_dispatcher(&root_handler);
 +    // Make a DWARF parser for the compilation unit at OFFSET.
-+    dwarf2reader::CompilationUnit reader(dwarf_filename,
++    google_breakpad::CompilationUnit reader(dwarf_filename,
 +                                         file_context.section_map(),
 +                                         offset,
 +                                         &byte_reader,
@@ -392,7 +392,7 @@ index 00000000..23955f6a
 +// success, or false if HEADER's machine architecture is not
 +// supported.
 +bool DwarfCFIRegisterNames(const char *architecture,
-+                           std::vector<string>* register_names) {
++                           std::vector<std::string>* register_names) {
 +  if (strcmp(architecture, "x86" ) == 0)
 +      *register_names = DwarfCFIToModule::RegisterNames::I386();
 +  else if (strcmp(architecture, "arm" ) == 0)
@@ -408,7 +408,7 @@ index 00000000..23955f6a
 +}
 +
 +template<typename ObjectFileReader>
-+bool LoadDwarfCFI(const string& dwarf_filename,
++bool LoadDwarfCFI(const std::string& dwarf_filename,
 +                  const typename ObjectFileReader::ObjectFileBase header,
 +                  const char* section_name,
 +                  const typename ObjectFileReader::Section section,
@@ -420,13 +420,13 @@ index 00000000..23955f6a
 +  // Find the appropriate set of register names for this file's
 +  // architecture.
 +  const char *architecture = ObjectFileReader::Architecture(header);
-+  std::vector<string> register_names;
++  std::vector<std::string> register_names;
 +  if (!DwarfCFIRegisterNames(architecture, &register_names)) {
 +    return false;
 +  }
 +
-+  const dwarf2reader::Endianness endianness = big_endian ?
-+      dwarf2reader::ENDIANNESS_BIG : dwarf2reader::ENDIANNESS_LITTLE;
++  const google_breakpad::Endianness endianness = big_endian ?
++      google_breakpad::ENDIANNESS_BIG : google_breakpad::ENDIANNESS_LITTLE;
 +
 +  // Find the call frame information and its size.
 +  const uint8_t* cfi = reinterpret_cast<const uint8_t *>(ObjectFileReader::GetSectionPointer(header, section));
@@ -435,7 +435,7 @@ index 00000000..23955f6a
 +  // Plug together the parser, handler, and their entourages.
 +  DwarfCFIToModule::Reporter module_reporter(dwarf_filename, section_name);
 +  DwarfCFIToModule handler(module, register_names, &module_reporter);
-+  dwarf2reader::ByteReader byte_reader(endianness);
++  google_breakpad::ByteReader byte_reader(endianness);
 +
 +  byte_reader.SetAddressSize(ObjectFileReader::kAddrSize);
 +
@@ -453,14 +453,14 @@ index 00000000..23955f6a
 +
 +  dwarf2reader::CallFrameInfo::Reporter dwarf_reporter(dwarf_filename,
 +                                                       section_name);
-+  dwarf2reader::CallFrameInfo parser(cfi, cfi_size,
++  google_breakpad::CallFrameInfo parser(cfi, cfi_size,
 +                                     &byte_reader, &handler, &dwarf_reporter,
 +                                     eh_frame);
 +  parser.Start();
 +  return true;
 +}
 +
-+bool LoadFile(const string& obj_file, MmapWrapper* map_wrapper,
++bool LoadFile(const std::string& obj_file, MmapWrapper* map_wrapper,
 +             const void** header) {
 +  int obj_fd = open(obj_file.c_str(), O_RDONLY);
 +  if (obj_fd < 0) {
@@ -488,28 +488,28 @@ index 00000000..23955f6a
 +}
 +
 +// Read the .gnu_debuglink and get the debug file name. If anything goes
-+// wrong, return an empty string.
++// wrong, return an empty std::string.
 +template<typename ObjectFileReader>
-+string ReadDebugLink(const char* debuglink,
++std::string ReadDebugLink(const char* debuglink,
 +                     size_t debuglink_size,
-+                     const string& obj_file,
-+                     const std::vector<string>& debug_dirs) {
++                     const std::string& obj_file,
++                     const std::vector<std::string>& debug_dirs) {
 +  size_t debuglink_len = strlen(debuglink) + 5;  // '\0' + CRC32.
 +  debuglink_len = 4 * ((debuglink_len + 3) / 4);  // Round to nearest 4 bytes.
 +
 +  // Sanity check.
 +  if (debuglink_len != debuglink_size) {
-+    fprintf(stderr, "Mismatched .gnu_debuglink string / section size: "
++    fprintf(stderr, "Mismatched .gnu_debuglink std::string / section size: "
 +            "%zx %zx\n", debuglink_len, debuglink_size);
 +    return "";
 +  }
 +
 +  bool found = false;
 +  int debuglink_fd = -1;
-+  string debuglink_path;
-+  std::vector<string>::const_iterator it;
++  std::string debuglink_path;
++  std::vector<std::string>::const_iterator it;
 +  for (it = debug_dirs.begin(); it < debug_dirs.end(); ++it) {
-+    const string& debug_dir = *it;
++    const std::string& debug_dir = *it;
 +    debuglink_path = debug_dir + "/" + debuglink;
 +    debuglink_fd = open(debuglink_path.c_str(), O_RDONLY);
 +    if (debuglink_fd >= 0) {
@@ -522,7 +522,7 @@ index 00000000..23955f6a
 +    fprintf(stderr, "Failed to find debug file for '%s' after trying:\n",
 +            obj_file.c_str());
 +    for (it = debug_dirs.begin(); it < debug_dirs.end(); ++it) {
-+      const string debug_dir = *it;
++      const std::string debug_dir = *it;
 +      fprintf(stderr, "  %s/%s\n", debug_dir.c_str(), debuglink);
 +    }
 +    return "";
@@ -547,13 +547,13 @@ index 00000000..23955f6a
 + public:
 +  typedef typename ObjectFileReader::Addr Addr;
 +
-+  explicit LoadSymbolsInfo(const std::vector<string>& dbg_dirs) :
++  explicit LoadSymbolsInfo(const std::vector<std::string>& dbg_dirs) :
 +    debug_dirs_(dbg_dirs),
 +    has_loading_addr_(false) {}
 +
 +  // Keeps track of which sections have been loaded so sections don't
 +  // accidentally get loaded twice from two different files.
-+  void LoadedSection(const string &section) {
++  void LoadedSection(const std::string &section) {
 +    if (loaded_sections_.count(section) == 0) {
 +      loaded_sections_.insert(section);
 +    } else {
@@ -564,7 +564,7 @@ index 00000000..23955f6a
 +
 +  // The file and linked debug file are expected to have the same preferred
 +  // loading address.
-+  void set_loading_addr(Addr addr, const string &filename) {
++  void set_loading_addr(Addr addr, const std::string &filename) {
 +    if (!has_loading_addr_) {
 +      loading_addr_ = addr;
 +      loaded_file_ = filename;
@@ -581,37 +581,37 @@ index 00000000..23955f6a
 +  }
 +
 +  // Setters and getters
-+  const std::vector<string>& debug_dirs() const {
++  const std::vector<std::string>& debug_dirs() const {
 +    return debug_dirs_;
 +  }
 +
-+  string debuglink_file() const {
++  std::string debuglink_file() const {
 +    return debuglink_file_;
 +  }
-+  void set_debuglink_file(string file) {
++  void set_debuglink_file(std::string file) {
 +    debuglink_file_ = file;
 +  }
 +
 + private:
-+  const std::vector<string>& debug_dirs_; // Directories in which to
++  const std::vector<std::string>& debug_dirs_; // Directories in which to
 +                                          // search for the debug file.
 +
-+  string debuglink_file_;  // Full path to the debug file.
++  std::string debuglink_file_;  // Full path to the debug file.
 +
 +  bool has_loading_addr_;  // Indicate if LOADING_ADDR_ is valid.
 +
 +  Addr loading_addr_;  // Saves the preferred loading address from the
 +                       // first call to LoadSymbols().
 +
-+  string loaded_file_;  // Name of the file loaded from the first call to
++  std::string loaded_file_;  // Name of the file loaded from the first call to
 +                        // LoadSymbols().
 +
-+  std::set<string> loaded_sections_;  // Tracks the Loaded sections
++  std::set<std::string> loaded_sections_;  // Tracks the Loaded sections
 +                                      // between calls to LoadSymbols().
 +};
 +
 +template<typename ObjectFileReader>
-+bool LoadSymbols(const string& obj_file,
++bool LoadSymbols(const std::string& obj_file,
 +                 const bool big_endian,
 +                 const typename ObjectFileReader::ObjectFileBase header,
 +                 const bool read_gnu_debug_link,
@@ -628,7 +628,7 @@ index 00000000..23955f6a
 +  bool found_debug_info_section = false;
 +  bool found_usable_info = false;
 +
-+  if (options.symbol_data != ONLY_CFI) {
++  if (options.symbol_data & (INLINES | SYMBOLS_AND_FILES)) {
 +#ifndef NO_STABS_SUPPORT
 +    // Look for STABS debugging information, and load it if present.
 +    const Shdr stab_section =
@@ -663,7 +663,7 @@ index 00000000..23955f6a
 +    }
 +  }
 +
-+  if (options.symbol_data != NO_CFI) {
++  if (options.symbol_data & CFI) {
 +    // Dwarf Call Frame Information (CFI) is actually independent from
 +    // the other DWARF debugging information, and can be used alone.
 +    const Shdr dwarf_cfi_section =
@@ -714,7 +714,7 @@ index 00000000..23955f6a
 +        if (!info->debug_dirs().empty()) {
 +          const char* debuglink_contents = reinterpret_cast<const char *>
 +              (ObjectFileReader::GetSectionPointer(header, gnu_debuglink_section));
-+          string debuglink_file
++          std::string debuglink_file
 +              = ReadDebugLink<ObjectFileReader>(debuglink_contents,
 +                                                ObjectFileReader::GetSectionSize(header, gnu_debuglink_section),
 +                                                obj_file, info->debug_dirs());
@@ -728,7 +728,7 @@ index 00000000..23955f6a
 +                obj_file.c_str());
 +      }
 +    } else {
-+      if (options.symbol_data != ONLY_CFI) {
++      if (options.symbol_data & (INLINES | SYMBOLS_AND_FILES)) {
 +        // The caller doesn't want to consult .gnu_debuglink.
 +        // See if there are export symbols available.
 +        bool result = ObjectFileReader::ExportedSymbolsToModule(header, module);
@@ -750,10 +750,10 @@ index 00000000..23955f6a
 +
 +// Return the non-directory portion of FILENAME: the portion after the
 +// last slash, or the whole filename if there are no slashes.
-+string BaseFileName(const string &filename) {
++std::string BaseFileName(const std::string &filename) {
 +  // Lots of copies!  basename's behavior is less than ideal.
 +  char *c_filename = strdup(filename.c_str());
-+  string base = basename(c_filename);
++  std::string base = basename(c_filename);
 +  free(c_filename);
 +  return base;
 +}
@@ -761,14 +761,14 @@ index 00000000..23955f6a
 +template<typename ObjectFileReader>
 +bool ReadSymbolDataFromObjectFile(
 +    const typename ObjectFileReader::ObjectFileBase header,
-+    const string& obj_filename,
-+    const std::vector<string>& debug_dirs,
++    const std::string& obj_filename,
++    const std::vector<std::string>& debug_dirs,
 +    const DumpOptions& options,
 +    Module** out_module) {
 +
 +  *out_module = NULL;
 +
-+  string identifier = ObjectFileReader::FileIdentifierFromMappedFile(header);
++  std::string identifier = ObjectFileReader::FileIdentifierFromMappedFile(header);
 +  if (identifier.empty()) {
 +    fprintf(stderr, "%s: unable to generate file identifier\n",
 +            obj_filename.c_str());
@@ -785,16 +785,16 @@ index 00000000..23955f6a
 +  if (!ObjectFileReader::Endianness(header, &big_endian))
 +    return false;
 +
-+  string name = BaseFileName(obj_filename);
-+  string os = "windows";
-+  string id = identifier;
++  std::string name = BaseFileName(obj_filename);
++  std::string os = "windows";
++  std::string id = identifier;
 +
 +  LoadSymbolsInfo<ObjectFileReader> info(debug_dirs);
-+  scoped_ptr<Module> module(new Module(name, os, architecture, id));
++  std::unique_ptr<Module> module(new Module(name, os, architecture, id));
 +  if (!LoadSymbols<ObjectFileReader>(obj_filename, big_endian, header,
 +                             !debug_dirs.empty(), &info,
 +                             options, module.get())) {
-+    const string debuglink_file = info.debuglink_file();
++    const std::string debuglink_file = info.debuglink_file();
 +    if (debuglink_file.empty())
 +      return false;
 +
@@ -850,7 +850,7 @@ index 00000000..23955f6a
 +#endif // COMMON_PECOFF_DUMP_SYMBOLS_INL_H
 diff --git a/src/common/pecoff/dump_symbols.cc b/src/common/pecoff/dump_symbols.cc
 new file mode 100644
-index 00000000..47be9408
+index 00000000..7c8b7e0a
 --- /dev/null
 +++ b/src/common/pecoff/dump_symbols.cc
 @@ -0,0 +1,90 @@
@@ -892,8 +892,8 @@ index 00000000..47be9408
 +
 +// Not explicitly exported, but not static so it can be used in unit tests.
 +bool ReadSymbolDataInternal(const uint8_t* obj_file,
-+                            const string& obj_filename,
-+                            const std::vector<string>& debug_dirs,
++                            const std::string& obj_filename,
++                            const std::vector<std::string>& debug_dirs,
 +                            const DumpOptions& options,
 +                            Module** module) {
 +  if (!IsValidPeCoff(obj_file)) {
@@ -916,8 +916,8 @@ index 00000000..47be9408
 +  return false;
 +}
 +
-+bool WriteSymbolFile(const string &obj_file,
-+                     const std::vector<string>& debug_dirs,
++bool WriteSymbolFile(const std::string &obj_file,
++                     const std::vector<std::string>& debug_dirs,
 +                     const DumpOptions& options,
 +                     std::ostream &sym_stream) {
 +  Module* module;
@@ -929,8 +929,8 @@ index 00000000..47be9408
 +  return result;
 +}
 +
-+bool ReadSymbolData(const string& obj_file,
-+                    const std::vector<string>& debug_dirs,
++bool ReadSymbolData(const std::string& obj_file,
++                    const std::vector<std::string>& debug_dirs,
 +                    const DumpOptions& options,
 +                    Module** module) {
 +  MmapWrapper map_wrapper;
@@ -946,10 +946,10 @@ index 00000000..47be9408
 +}  // namespace google_breakpad
 diff --git a/src/common/pecoff/dump_symbols.h b/src/common/pecoff/dump_symbols.h
 new file mode 100644
-index 00000000..675a4895
+index 00000000..e4764d0f
 --- /dev/null
 +++ b/src/common/pecoff/dump_symbols.h
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,79 @@
 +// -*- mode: c++ -*-
 +
 +// Copyright (c) 2011, Google Inc.
@@ -992,7 +992,6 @@ index 00000000..675a4895
 +#include <vector>
 +
 +#include "common/symbol_data.h"
-+#include "common/using_std_string.h"
 +
 +namespace google_breakpad {
 +
@@ -1014,16 +1013,16 @@ index 00000000..675a4895
 +// If OBJ_FILE has been stripped but contains a .gnu_debuglink section,
 +// then look for the debug file in DEBUG_DIRS.
 +// SYMBOL_DATA allows limiting the type of symbol data written.
-+bool WriteSymbolFile(const string &obj_file,
-+                     const std::vector<string>& debug_dirs,
++bool WriteSymbolFile(const std::string &obj_file,
++                     const std::vector<std::string>& debug_dirs,
 +                     const DumpOptions& options,
 +                     std::ostream &sym_stream);
 +
 +// As above, but simply return the debugging information in MODULE
 +// instead of writing it to a stream. The caller owns the resulting
 +// Module object and must delete it when finished.
-+bool ReadSymbolData(const string& obj_file,
-+                    const std::vector<string>& debug_dirs,
++bool ReadSymbolData(const std::string& obj_file,
++                    const std::vector<std::string>& debug_dirs,
 +                    const DumpOptions& options,
 +                    Module** module);
 +
@@ -1447,7 +1446,7 @@ index 00000000..fd2ea103
 +#endif  // COMMON_PECOFF_PECOFF_FILE_ID_H__
 diff --git a/src/common/pecoff/pecoffutils.cc b/src/common/pecoff/pecoffutils.cc
 new file mode 100644
-index 00000000..f097cc61
+index 00000000..dbbdb00b
 --- /dev/null
 +++ b/src/common/pecoff/pecoffutils.cc
 @@ -0,0 +1,494 @@
@@ -1725,9 +1724,9 @@ index 00000000..f097cc61
 +          (export_rva < (data_directory_export_entry->mVirtualAddress + data_directory_export_entry->mSize)))
 +        continue;
 +
-+      Module::Extern* ext = new Module::Extern(export_rva + GetLoadingAddress(obj_base));
++      auto ext = std::make_unique<Module::Extern>(export_rva + GetLoadingAddress(obj_base));
 +      ext->name = export_name;
-+      module->AddExtern(ext);
++      module->AddExtern(std::move(ext));
 +    }
 +
 +    return true;
@@ -1746,7 +1745,7 @@ index 00000000..f097cc61
 +}
 +
 +template<class PeCoffClassTraits>
-+string
++std::string
 +PeCoffObjectFileReader<PeCoffClassTraits>::FileIdentifierFromMappedFile(
 +    ObjectFileBase obj_file) {
 +  uint8_t identifier[kMDGUIDSize];
@@ -1777,7 +1776,7 @@ index 00000000..f097cc61
 +    identifier_str[buffer_idx++] = (lo >= 10) ? 'A' + lo - 10 : '0' + lo;
 +  }
 +  identifier_str[buffer_idx] = 0;
-+  string id = identifier_str;
++  std::string id = identifier_str;
 +
 +  // Append age
 +  char age_string[9];
@@ -1947,7 +1946,7 @@ index 00000000..f097cc61
 +}
 diff --git a/src/common/pecoff/pecoffutils.h b/src/common/pecoff/pecoffutils.h
 new file mode 100644
-index 00000000..3e2d7b34
+index 00000000..a47d32b5
 --- /dev/null
 +++ b/src/common/pecoff/pecoffutils.h
 @@ -0,0 +1,167 @@
@@ -2084,7 +2083,7 @@ index 00000000..3e2d7b34
 +  // Return the identifier for the file mapped into memory.
 +  // Return an empty string if the identifier could not be created
 +  // for the file.
-+  static string FileIdentifierFromMappedFile(ObjectFileBase obj_base);
++  static std::string FileIdentifierFromMappedFile(ObjectFileBase obj_base);
 +
 +  //
 +  // Helpers for PeCoffFileID
@@ -2120,10 +2119,10 @@ index 00000000..3e2d7b34
 +#endif  // COMMON_PECOFF_PECOFFUTILS_H__
 diff --git a/src/tools/windows/dump_syms_dwarf/dump_syms.cc b/src/tools/windows/dump_syms_dwarf/dump_syms.cc
 new file mode 100644
-index 00000000..2d7f70a6
+index 00000000..e2344af2
 --- /dev/null
 +++ b/src/tools/windows/dump_syms_dwarf/dump_syms.cc
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,93 @@
 +// Copyright (c) 2011, Google Inc.
 +// All rights reserved.
 +//
@@ -2169,6 +2168,7 @@ index 00000000..2d7f70a6
 +          "[directories-for-debug-file]\n\n", self);
 +  fprintf(stderr, "Options:\n");
 +  fprintf(stderr, "  -c    Do not generate CFI section\n");
++  fprintf(stderr, "  -d    Generate INLINE/INLINE_ORIGIN records\n");
 +  fprintf(stderr, "  -r    Do not handle inter-compilation unit references\n");
 +  return 1;
 +}
@@ -2178,12 +2178,15 @@ index 00000000..2d7f70a6
 +    return usage(argv[0]);
 +
 +  bool cfi = true;
++  bool handle_inlines = false;
 +  bool handle_inter_cu_refs = true;
 +  int arg_index = 1;
 +  while (arg_index < argc && strlen(argv[arg_index]) > 0 &&
 +         argv[arg_index][0] == '-') {
 +    if (strcmp("-c", argv[arg_index]) == 0) {
 +      cfi = false;
++    } else if (strcmp("-d", argv[arg_index]) == 0) {
++      handle_inlines = true;
 +    } else if (strcmp("-r", argv[arg_index]) == 0) {
 +      handle_inter_cu_refs = false;
 +    } else {
@@ -2195,7 +2198,7 @@ index 00000000..2d7f70a6
 +    return usage(argv[0]);
 +
 +  const char* binary;
-+  std::vector<string> debug_dirs;
++  std::vector<std::string> debug_dirs;
 +  binary = argv[arg_index];
 +  for (int debug_dir_index = arg_index + 1;
 +       debug_dir_index < argc;
@@ -2203,7 +2206,8 @@ index 00000000..2d7f70a6
 +    debug_dirs.push_back(argv[debug_dir_index]);
 +  }
 +
-+  SymbolData symbol_data = cfi ? ALL_SYMBOL_DATA : NO_CFI;
++  SymbolData symbol_data = (handle_inlines ? INLINES : NO_DATA) |
++                            (cfi ? CFI : NO_DATA) | SYMBOLS_AND_FILES;
 +  google_breakpad::DumpOptions options(symbol_data, handle_inter_cu_refs);
 +  if (!WriteSymbolFile(binary, debug_dirs, options, std::cout)) {
 +    fprintf(stderr, "Failed to write symbol file.\n");
@@ -2213,5 +2217,5 @@ index 00000000..2d7f70a6
 +  return 0;
 +}
 -- 
-2.15.0
+2.53.0.windows.1
 
