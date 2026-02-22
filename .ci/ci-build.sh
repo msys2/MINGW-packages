@@ -166,7 +166,7 @@ for package in "${packages[@]}"; do
         if [ "${#binaries[@]}" -ne 0 ]; then
             for binary in ${binaries[@]}; do
                 echo "${binary}:"
-                ntldd -R ${binary} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder\|ngcrecovery\|AzureAttest\|PdmUtilities\|WTDSENSOR\|wtdccm\|SAMSRV\|LSASRV" || true
+                ntldd -R ${binary} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder\|ngcrecovery\|AzureAttest\|PdmUtilities\|WTDSENSOR\|wtdccm\|SAMSRV\|LSASRV\|EDPCSP\|policymanagerprecheck\|dmenterprisediagnostics\|EFSCORE\|FVESKYBACKUP" || true
             done
         fi
         echo "::endgroup::"
