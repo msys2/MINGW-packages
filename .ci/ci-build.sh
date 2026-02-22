@@ -152,7 +152,7 @@ for package in "${packages[@]}"; do
 
         echo "::group::[meta-diff] ${pkgname}"
         message "Package info diff for ${pkgname}"
-        diff -Nur <(pacman -Si ${MSYSTEM,,}/"${pkgname}") <(pacman -Qip "${pkg}") || true
+        diff -Nur <(pacman -Si ${MSYSTEM,,}/"${pkgname}" | sed '/Download Size/d') <(pacman -Qip "${pkg}" | sed '/Compressed Size/d') || true
         echo "::endgroup::"
 
         echo "::group::[file-diff] ${pkgname}"
