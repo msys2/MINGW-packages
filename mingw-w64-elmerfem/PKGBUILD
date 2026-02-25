@@ -2,7 +2,8 @@
 
 _realname=elmerfem
 pkgbase=mingw-w64-${_realname}
-pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         $([[ "${CARCH}" == "aarch64" ]] || echo "${MINGW_PACKAGE_PREFIX}-${_realname}-mpi"))
 pkgver=26.1
 pkgrel=1
 pkgdesc="Finite element software for multiphysical problems (mingw-w64)"
@@ -40,7 +41,7 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-gl2ps"
              "${MINGW_PACKAGE_PREFIX}-liblas"
              "${MINGW_PACKAGE_PREFIX}-libmariadbclient"
-             "${MINGW_PACKAGE_PREFIX}-msmpi"
+             $([[ "${CARCH}" == "aarch64" ]] || echo "${MINGW_PACKAGE_PREFIX}-msmpi")
              "${MINGW_PACKAGE_PREFIX}-netcdf"
              "${MINGW_PACKAGE_PREFIX}-openslide"
              "${MINGW_PACKAGE_PREFIX}-openvdb"
@@ -68,8 +69,6 @@ prepare() {
 }
 
 build() {
-  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
-
   declare -a _extra_config
   if check_option "debug" "n"; then
     _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
@@ -77,14 +76,37 @@ build() {
     _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
   fi
 
+  declare -a _common_config
+  _common_config=("-DBUILD_SHARED_LIBS=ON"
+                  "-DCPACK_BUNDLE_EXTRA_WINDOWS_DLLS=OFF"
+                  "-DBLA_VENDOR=OpenBLAS"
+                  "-DEXTERNAL_ARPACK=ON"
+                  "-DEXTERNAL_PARPACK=ON"
+                  "-DEXTERNAL_UMFPACK=ON"
+                  "-DWITH_ELMERGUI=ON"
+                  "-DWITH_LUA=ON"
+                  "-DWITH_MATC=ON"
+                  "-DWITH_OCC=ON"
+                  "-DWITH_OpenMP=ON"
+                  "-DWITH_PARAVIEW=ON"
+                  "-DWITH_QT6=ON"
+                  "-DWITH_VTK=ON"
+                  "-DWITH_Zoltan=OFF"
+                  "-DCREATE_PKGCONFIG_FILE=ON"
+                  "-DParMetis_LIBRARIES=$(pkg-config --libs parmetis)"
+                  "-DParMetis_INCLUDE_DIR=$(pkg-config --cflags parmetis)")
+
   if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
     export FFLAGS="-I${MINGW_PREFIX}/include"
-    _extra_config+=("-DWITH_Mumps=OFF")
+    _common_config+=("-DWITH_Mumps=OFF")
   else
-    _extra_config+=("-DWITH_Mumps=ON")
-    _extra_config+=("-DMumps_LIBRARIES=$(pkg-config --libs mumps-dmo mumps-zmo mumps-smo mumps-cmo)")
-    _extra_config+=("-DMumps_INCLUDE_DIR=$(pkg-config --variable=includedir mumps-dmo mumps-zmo mumps-smo mumps-cmo)")
+    _common_config+=("-DWITH_Mumps=ON")
+    _common_config+=("-DMumps_LIBRARIES=$(pkg-config --libs mumps-dmo mumps-zmo mumps-smo mumps-cmo)")
+    _common_config+=("-DMumps_INCLUDE_DIR=$(pkg-config --variable=includedir mumps-dmo mumps-zmo mumps-smo mumps-cmo)")
   fi
+
+  msg2 "Without MPI"
+  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
 
   CFLAGS+=" -Wno-error=incompatible-pointer-types" \
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
@@ -92,48 +114,55 @@ build() {
       -Wno-dev \
       -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
       "${_extra_config[@]}" \
-      -DBUILD_SHARED_LIBS=ON \
-      -DCPACK_BUNDLE_EXTRA_WINDOWS_DLLS=OFF \
-      -DBLA_VENDOR="OpenBLAS" \
-      -DEXTERNAL_ARPACK=ON \
-      -DEXTERNAL_PARPACK=ON \
-      -DEXTERNAL_UMFPACK=ON \
-      -DWITH_ELMERGUI=ON \
-      -DWITH_ElmerIce=ON \
-      -DWITH_LUA=ON \
-      -DWITH_MATC=ON \
-      -DWITH_MPI=ON \
-      -DWITH_OCC=ON \
-      -DWITH_OpenMP=ON \
-      -DWITH_PARAVIEW=ON \
-      -DWITH_QT6=ON \
-      -DWITH_VTK=ON \
-      -DWITH_Zoltan=OFF \
-      -DCREATE_PKGCONFIG_FILE=ON \
-      -DParMetis_LIBRARIES="$(pkg-config --libs parmetis)" \
-      -DParMetis_INCLUDE_DIR="$(pkg-config --cflags parmetis)" \
+      "${_common_config[@]}" \
+      -DWITH_ElmerIce=OFF \
+      -DWITH_MPI=OFF \
       ../${_realname}-release-${pkgver}
 
   "${MINGW_PREFIX}"/bin/cmake.exe --build .
+
+  if [[ "${CARCH}" != "aarch64" ]]; then
+    msg2 "With MPI"
+    mkdir -p "${srcdir}/build-${MSYSTEM}-mpi" && cd "${srcdir}/build-${MSYSTEM}-mpi"
+
+    CFLAGS+=" -Wno-error=incompatible-pointer-types" \
+    MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+      "${MINGW_PREFIX}"/bin/cmake.exe \
+        -Wno-dev \
+        -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+        "${_extra_config[@]}" \
+        "${_common_config[@]}" \
+        -DWITH_ElmerIce=ON \
+        -DWITH_MPI=ON \
+        ../${_realname}-release-${pkgver}
+
+    "${MINGW_PREFIX}"/bin/cmake.exe --build .
+  fi
 }
 
 check() {
+  msg2 "Without MPI"
   cd "${srcdir}/build-${MSYSTEM}"
-
-  # This is the default installation location for Microsoft MPI.
-  # It might need to be adjusted dependent on the system where the tests are run.
-  MSMPI_BIN="/c/Program Files/Microsoft MPI/Bin"
-  #: ${MSMPI_BIN:="/c/Program Files/Microsoft MPI/Bin"}
-
-  ${MINGW_PREFIX}/bin/cmake \
-    -DMPI_TEST_MAXPROC=$(nproc) \
-    -DMPIEXEC_EXECUTABLE="${MSMPI_BIN}/mpiexec.exe" \
-    ../${_realname}-release-${pkgver}
-  ${MINGW_PREFIX}/bin/cmake --build .
   ${MINGW_PREFIX}/bin/ctest . -LE slow || true
+
+  if [[ "${CARCH}" != "aarch64" ]]; then
+    msg2 "With MPI"
+    cd "${srcdir}/build-${MSYSTEM}-mpi"
+    # This is the default installation location for Microsoft MPI.
+    # It might need to be adjusted dependent on the system where the tests are run.
+    MSMPI_BIN="/c/Program Files/Microsoft MPI/Bin"
+    #: ${MSMPI_BIN:="/c/Program Files/Microsoft MPI/Bin"}
+
+    ${MINGW_PREFIX}/bin/cmake \
+      -DMPI_TEST_MAXPROC=$(nproc) \
+      -DMPIEXEC_EXECUTABLE="${MSMPI_BIN}/mpiexec.exe" \
+      ../${_realname}-release-${pkgver}
+    ${MINGW_PREFIX}/bin/cmake --build .
+    ${MINGW_PREFIX}/bin/ctest . -LE slow || true
+  fi
 }
 
-package() {
+package_elmerfem() {
   cd "${srcdir}/build-${MSYSTEM}"
 
   DESTDIR="${pkgdir}" "${MINGW_PREFIX}"/bin/cmake.exe --install .
@@ -148,3 +177,33 @@ package() {
 
   install -Dm644 "${srcdir}/${_realname}-release-${pkgver}/license_texts/LICENSES_GPL.txt" -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}"
 }
+
+package_elmerfem-mpi() {
+  pkgdesc="Finite element software for multiphysical problems with MPI (mingw-w64)"
+  conflicts=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+
+  cd "${srcdir}/build-${MSYSTEM}-mpi"
+
+  DESTDIR="${pkgdir}" "${MINGW_PREFIX}"/bin/cmake.exe --install .
+
+  WIN_PREFIX=$(cygpath -wm ${MINGW_PREFIX})
+  for _f in elmerf90 elmerld; do
+    sed -e "s|${WIN_PREFIX}|${MINGW_PREFIX}|g" -i "${pkgdir}${MINGW_PREFIX}"/bin/${_f}
+  done
+  sed -e "s|${WIN_PREFIX}|$\{prefix}|g" -i "${pkgdir}${MINGW_PREFIX}"/share/pkgconfig/elmer.pc
+
+  rm "${pkgdir}${MINGW_PREFIX}"/bin/*.bat
+
+  install -Dm644 "${srcdir}/${_realname}-release-${pkgver}/license_texts/LICENSES_GPL.txt" -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}"
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;
