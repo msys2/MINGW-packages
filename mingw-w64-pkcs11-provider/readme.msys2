@@ -1,0 +1,90 @@
+﻿This is a well-established and a performant alternative to libp11 where OpenSSL provider
+was added way later. This package is built to leverage p11-kit proxy allowing to use
+multiple hardware tokens with a single OpenSSL configuration.
+
+There are too many moving parts while some are optional and there are plenty of similarly
+named DLLs. Therefore, here is beginner-friendly overview showing dependencies and
+potential entry points for application.
+
+            +---------------------------+
+            |       OpenSSL PKCS#11     |<--??? e.g. curl
+            +----------+----------------+
+            | provider | engine(legacy) |
+            +----------+----------------+
+               |     |        |
+         +-----+     +--+     +------------+
+         |              |                  |
+         |              v                  v
+         v           +------------------+---------------+
++-----------------+  |  pkcs11prov.dll  |  pkcs11.dll   |
+| pkcs11-provider |  +------------------+---------------+
++-----------------+  | (statically linked) libp11-3.dll |<-???
+       |      |      +----------------------------------+
+       |      |                  |            |
+       |      v                  v            |
+       |  +--------------------------------+  |
+       |  | p11-kit proxy libp11-kit-0.dll |<-|---???
+       |  +--------------------------------+  |
+       |                  |                   |
+       v                  v                   v
+  +----------------------------------------------+
+  | Vendor-specific PKCS#11 modules (middleware) |<--??? e.g. Firefox
+  +---------------+-------------------+----------+
+  | libykcs11.dll | opensc-pkcs11.dll |   ...    |   ??? e.g., Chrome
+  +---------------+-------------------+----------+     |
+                 |            |                        v
+yubico-piv-tool  v            |  +-------------+  +----------+
+  |    +--------------+       |  |    Vendor   |<-| CAPI/CSP |
+  +--->| libykpiv.dll |       |  | mini-driver |  | CNG/KSP  |
+       +--------------+       |  +-------------+  +----------+
+            |                 |         |
+            v                 v         v
+    +---------------------------------------------+
+    | PC/SC, Windows Smart Card API  WinSCard.dll |<--??? e.g. ykman
+    +---------------------------------------------+
+               |
+               v
+     +---------------+ USB CCID +--------------+
+     | kernel driver |--------->| Hardware key |
+     +---------------+          +--------------+
+
+Normally, one would specify PKCS#11 module to use explicitly with OpenSSL provider via
+environment variables, e.g. for YubiKey
+
+  $ PKCS11_MODULE_PATH=libykcs11.dll openssl pkeyutl -provider pkcs11prov \
+  -inkey "pkcs11:object=Private key for PIV Authentication;type=private;pin-value=123456" \
+  -sign -in data.txt -out data.sig
+
+Note that libykcs11.dll along with its dependencies has to be on the PATH.
+
+However, this package is built with default PKCS#11 module libp11-kit-0.dll. That is if you
+have YOUR-ENV-p11-kit package installed, and say you use OpenSC installed in its default
+location along with a properly configured module, e.g. by creating a file
+/ucrt64/etc/pkcs11/modules/opensc.module with a single line
+
+  module: C:\Program Files\OpenSC Project\OpenSC\pkcs11\opensc-pkcs11.dll
+
+then you would be able to use it implicitly with OpenSSL provider
+
+  $ openssl pkeyutl -provider pkcs11prov \
+  -inkey "pkcs11:token=some_cn;type=private;pin-value=123456" \
+  -sign -in data.txt -out data.sig
+
+If you set everything up properly in openssl.cnf, you should be able to simply use
+
+  $ openssl pkeyutl -inkey pkcs11: -sign -in data.txt -out data.sig
+
+You should be able to check whether your module is set up properly by running
+
+  p11-kit list-modules
+
+You should see opensc module in there as well as your token.
+
+Note that pkg-config has an incorrect information about proxy on msys2. The following line
+will result in an error.
+
+  $ ls -l $(pkg-config.exe --variable=proxy_module p11-kit-1)
+  ls: cannot access 'C:/msys64/ucrt64/bin/../lib/p11-kit-proxy.dll': No such file or directory
+
+However the proxy and the main library (libp11-kit-0.dll) are essentially the same.  This is a
+bug in p11-kit packaging discussed at https://github.com/msys2/MINGW-packages/pull/22595 .
