@@ -14,5 +14,4 @@ Legend:
 - `"0003-add-pthread-as-system-lib-for-mingw.patch"` :grey_exclamation:
 - `"0004-enable-emutls-for-mingw.patch"` :grey_exclamation:
 - `"0101-link-pthread-with-mingw.patch"` :grey_exclamation:
-- `"0102-Rename-flang-new-flang-experimental-exec-to-flang.patch"` :grey_question: https://reviews.llvm.org/D143592
 - `"0303-ignore-new-bfd-options.patch"` :x:
