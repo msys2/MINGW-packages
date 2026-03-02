@@ -1,0 +1,174 @@
+From 263debae0027cdc481663df385e5431c08727c69 Mon Sep 17 00:00:00 2001
+From: Morten Welinder <terra@gnome.org>
+Date: Wed, 11 Feb 2026 18:08:06 -0500
+Subject: [PATCH] ole: fix problems with codepage 1200 (unicode)
+
+See #44.
+---
+ NEWS                  |  3 ++
+ gsf/gsf-msole-utils.c | 94 +++++++++++++++++++++++++++++++++++++++----
+ 2 files changed, 89 insertions(+), 8 deletions(-)
+
+diff --git a/NEWS b/NEWS
+index 8816fcb..dc1562f 100644
+--- a/NEWS
++++ b/NEWS
+@@ -1,5 +1,8 @@
+ libgsf 1.14.56
+ 
++liren:
++	* Fix problems with ole files using codepage 1200 (unicode). [#44]
++
+ --------------------------------------------------------------------------
+ libgsf 1.14.55
+ 
+diff --git a/gsf/gsf-msole-utils.c b/gsf/gsf-msole-utils.c
+index d9a68e3..991b87f 100644
+--- a/gsf/gsf-msole-utils.c
++++ b/gsf/gsf-msole-utils.c
+@@ -1034,7 +1034,62 @@ msole_prop_read (GsfInput *in,
+ 			len = GSF_LE_GET_GUINT32 (data + 4);
+ 
+ 			g_return_val_if_fail (len < 0x10000, FALSE);
+-			byte_len = len * section->char_size;
++
++			/* Per MS-OLEPS 2.16:
++			 * - For Unicode (char_size == 2): len should be character count
++			 * - For non-Unicode (char_size == 1): len is byte count
++			 *
++			 * However, older libgsf versions incorrectly wrote byte count
++			 * for Unicode. Detect and handle both formats by checking which
++			 * interpretation results in a valid null-terminated string.
++			 * Prefer byte count (old format) when both could work, as it's
++			 * more common in existing files.
++			 */
++			if (section->char_size == 1) {
++				/* Non-Unicode: len is byte count */
++				byte_len = len;
++			} else {
++				/* Unicode: try to detect if len is character count or byte count */
++				guint32 char_count_bytes = len * section->char_size;
++				gboolean byte_count_valid = FALSE;
++				gboolean char_count_valid = FALSE;
++
++				/* Check byte count interpretation (old buggy format) first */
++				if (len >= 2 && len <= end - (data + 8)) {
++					guint8 const *byte_null_pos = data + 8 + len - 2;
++					if (byte_null_pos[0] == 0 && byte_null_pos[1] == 0) {
++						byte_count_valid = TRUE;
++					}
++				}
++
++				/* Check character count interpretation (spec-compliant) */
++				if (char_count_bytes >= 2 && char_count_bytes <= end - (data + 8)) {
++					guint8 const *char_null_pos = data + 8 + char_count_bytes - 2;
++					if (char_null_pos[0] == 0 && char_null_pos[1] == 0) {
++						char_count_valid = TRUE;
++					}
++				}
++
++				if (byte_count_valid && !char_count_valid) {
++					/* Only byte count has valid null terminator */
++					byte_len = len;
++				} else if (char_count_valid && !byte_count_valid) {
++					/* Only char count has valid null terminator */
++					byte_len = char_count_bytes;
++				} else if (byte_count_valid && char_count_valid) {
++					/* Both have null terminators - prefer character count (spec-compliant)
++					 * as this is what correctly-written files use per MS-OLEPS 2.16 */
++					byte_len = char_count_bytes;
++				} else if (char_count_bytes <= end - (data + 8)) {
++					/* Neither has null terminator, try char count first */
++					byte_len = char_count_bytes;
++				} else if (len <= end - (data + 8)) {
++					/* Try byte count as last resort */
++					byte_len = len;
++				} else {
++					g_return_val_if_reached (FALSE);
++				}
++			}
+ 			g_return_val_if_fail (byte_len <= end - (data + 8), FALSE);
+ 
+ 			gslen = 0;
+@@ -1370,7 +1425,7 @@ gvalue_to_msole_vt (GValue const *value, GsfMSOleMetaDataPropMap const *map)
+ 	case G_TYPE_UCHAR:	return VT_UI1;
+ 	case G_TYPE_FLOAT:	return VT_R4;
+ 	case G_TYPE_DOUBLE:	return VT_R8;
+-	case G_TYPE_STRING: 	return VT_LPSTR;
++	case G_TYPE_STRING: 	return VT_LPSTR;  /* Will be changed to VT_LPWSTR for Unicode codepage in msole_metadata_write_prop */
+ 	case G_TYPE_INT:
+ 		return (NULL != map && map->prefered_type == VT_I2)
+ 			? VT_I2 : VT_I4;
+@@ -1413,7 +1468,7 @@ gvalue_to_msole_vt (GValue const *value, GsfMSOleMetaDataPropMap const *map)
+ }
+ 
+ static gboolean
+-msole_metadata_write_string (WritePropState *state, const char *txt)
++msole_metadata_write_string (WritePropState *state, const char *txt, gboolean for_dict)
+ {
+ 	guint8 buf[4];
+ 	guint32 len;
+@@ -1431,9 +1486,23 @@ msole_metadata_write_string (WritePropState *state, const char *txt)
+ 		bytes_written = 0;
+ 	}
+ 
+-	// *Bytes*, not characters, including the termination, but not the
+-	// padding.
+-	GSF_LE_SET_GUINT32 (buf, bytes_written + state->char_size);
++	/* Per MS-OLEPS:
++	 * - Dictionary entries (2.16): For Unicode, length is character count; for non-Unicode, byte count
++	 * - VT_LPWSTR (2.5 UnicodeString): Length is character count
++	 * - VT_LPSTR (2.5 CodePageString): Length is byte count
++	 * All lengths include the null terminator.
++	 *
++	 * For Unicode (char_size == 2), we always use character count because:
++	 * - Dictionary entries require character count per spec
++	 * - Property values should use VT_LPWSTR which also uses character count
++	 */
++	if (state->char_size == 2) {
++		/* Unicode: character count */
++		GSF_LE_SET_GUINT32 (buf, (bytes_written / state->char_size) + 1);
++	} else {
++		/* Non-Unicode: byte count */
++		GSF_LE_SET_GUINT32 (buf, bytes_written + state->char_size);
++	}
+ 	res = gsf_output_write (state->out, 4, buf);
+ 
+ 	res = res && gsf_output_write (state->out, bytes_written, ctxt);
+@@ -1467,6 +1536,14 @@ msole_metadata_write_prop (WritePropState *state,
+ 	g_return_val_if_fail (value != NULL, FALSE);
+ 
+ 	type = gvalue_to_msole_vt (value, map);
++
++	/* For Unicode codepage (1200), use VT_LPWSTR instead of VT_LPSTR.
++	 * VT_LPWSTR uses character count which is what we write for Unicode.
++	 */
++	if (type == VT_LPSTR && state->char_size == 2) {
++		type = VT_LPWSTR;
++	}
++
+ 	if (!suppress_type) {
+ 		GSF_LE_SET_GUINT32 (buf, type);
+ 		gsf_output_write (state->out, 4, buf);
+@@ -1521,7 +1598,8 @@ msole_metadata_write_prop (WritePropState *state,
+ 		return gsf_output_write (state->out, 8, buf);
+ 
+ 	case VT_LPSTR:
+-		return msole_metadata_write_string (state, g_value_get_string (value));
++	case VT_LPWSTR:
++		return msole_metadata_write_string (state, g_value_get_string (value), FALSE);
+ 
+ 	case VT_FILETIME : {
+ 		GsfTimestamp const *ts = g_value_get_boxed (value);
+@@ -1552,7 +1630,7 @@ cb_write_dict (char const *name, gpointer id, WritePropState *state)
+ 
+ 	GSF_LE_SET_GUINT32 (buf, GPOINTER_TO_UINT (id));
+ 	gsf_output_write (state->out, 4, buf);
+-	msole_metadata_write_string (state, name);
++	msole_metadata_write_string (state, name, TRUE);
+ }
+ 
+ static gboolean
+-- 
+2.53.0.windows.1
+
