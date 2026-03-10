@@ -40,15 +40,13 @@
     @REM Connect up the current ssh-agent
     @IF [!SSH_AGENT_PID!] == []  @(
         @ECHO Removing old ssh-agent sockets
-        @FOR /d %%d IN (%TEMP%\ssh-??????*) DO @RMDIR /s /q %%d
+        @FOR %%s IN (%USERPROFILE%\.ssh\agent\s.*) DO @DEL /q "%%s" 2>nul
     ) ELSE  @(
         @ECHO Found ssh-agent at !SSH_AGENT_PID!
-        @FOR /d %%d IN (%TEMP%\ssh-??????*) DO @(
-            @FOR %%f IN (%%d\agent.*) DO @(
-                @SET SSH_AUTH_SOCK=%%f
-                @SET SSH_AUTH_SOCK=!SSH_AUTH_SOCK:%TEMP%=/tmp!
-                @SET SSH_AUTH_SOCK=!SSH_AUTH_SOCK:\=/!
-            )
+        @FOR %%s IN (%USERPROFILE%\.ssh\agent\s.*) DO @(
+            @SET SSH_AUTH_SOCK=%%s
+            @SET SSH_AUTH_SOCK=!SSH_AUTH_SOCK:%USERPROFILE%=~!
+            @SET SSH_AUTH_SOCK=!SSH_AUTH_SOCK:\=/!
         )
         @IF NOT [!SSH_AUTH_SOCK!] == [] @(
             @ECHO Found ssh-agent socket at !SSH_AUTH_SOCK!

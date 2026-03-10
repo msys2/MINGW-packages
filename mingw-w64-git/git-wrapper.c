@@ -19,9 +19,6 @@
 #undef MAX_PATH
 #define MAX_PATH 4096
 
-#define WIDEN2(x) L##x
-#define WIDEN(x) WIDEN2(x)
-
 static WCHAR msystem_bin[64];
 
 static void print_error(LPCWSTR prefix, DWORD error_number)
@@ -130,7 +127,7 @@ static void setup_environment(LPWSTR top_level_path, int full_path)
 	int len;
 
 	/* Set MSYSTEM */
-	SetEnvironmentVariable(L"MSYSTEM", WIDEN(MSYSTEM));
+	SetEnvironmentVariable(L"MSYSTEM", MSYSTEM);
 
 	/* if not set, set PLINK_PROTOCOL to ssh */
 	if (!GetEnvironmentVariable(L"PLINK_PROTOCOL", NULL, 0))
@@ -669,7 +666,7 @@ int main(void)
 	LPCWSTR prefix_args = NULL;
 
 	/* Determine MSYS2-based `bin` path. */
-	wcscpy(msystem_bin, WIDEN(MSYSTEM) L"\\bin");
+	wcscpy(msystem_bin, MSYSTEM L"\\bin");
 	for (wchar_t *p = msystem_bin; *p; p++)
 		*p = towlower(*p);
 	*top_level_path = L'\0';
