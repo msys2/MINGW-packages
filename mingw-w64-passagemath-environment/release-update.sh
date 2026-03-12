@@ -31,7 +31,8 @@ do
 
     cd "$pkg_dir" || exit 2
     echo "Info: Updating $(basename $pkg_dir) to $NEW_VERSION ..."
-    sed -i "s/^pkgver=.*/pkgver=${NEW_VERSION}/g" PKGBUILD
+    sed -i "s/^pkgver=.*/pkgver=${NEW_VERSION}/g" PKGBUILD # update version
+    sed -i 's/^pkgrel=.*/pkgrel=1/' PKGBUILD # reset pkgrel to 1
     updpkgsums
     if [ $? -ne 0 ]
     then
