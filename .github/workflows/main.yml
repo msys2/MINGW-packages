@@ -13,7 +13,8 @@ jobs:
     name: 🖥️ Compute job matrix
     runs-on: ubuntu-24.04
     outputs:
-      jobmatrix: ${{ steps.compute.outputs.jobmatrix }}
+      jobmatrix:        ${{ steps.compute.outputs.jobmatrix }}
+      modifiedPackages: ${{ steps.compute.outputs.modifiedPackages }}
     steps:
       - name: ⏬ Checkout repository
         uses: actions/checkout@v6
@@ -37,96 +38,22 @@ jobs:
 
       - name: 🔍 Find modified packages and used msystems
         id: compute
-        shell: python
-        run: |
-          from json       import dumps
-          from os         import getenv
-          from pathlib    import Path
-          from re         import compile, MULTILINE
-          from subprocess import check_output
-          from textwrap   import dedent
-
-          availableJobs = [
-            {"icon": "🟨", "msystem": "UCRT64",     "runner": "windows-2022"},
-            {"icon": "🟧", "msystem": "CLANG64",    "runner": "windows-2022"},
-            {"icon": "🟦", "msystem": "MINGW64",    "runner": "windows-2022"},
-            {"icon": "⬛", "msystem": "MINGW32",    "runner": "windows-2022"},
-            {"icon": "🟪", "msystem": "CLANGARM64", "runner": "windows-11-arm"}
-          ]
-          defaultMinGWArch = {"mingw32", "mingw64", "ucrt64", "clang64"}
-
-          def git_log(diff) -> list:
-            output = check_output(["git", "log", "--pretty=format:", "--name-only", diff]).decode("utf-8").strip()
-            return output.splitlines()
-
-          changes =  set(Path(file) for file in git_log("upstream/master.."))
-          # changes |= set(Path(file) for file in git_log("HEAD^.."))                  # Delivers same result as previous command. What's the use case?
-          # changes = list(dict.fromkeys(x.split("::")[-1] for x in sorted(changes)))  # What's the use case?
-
-          print(f"Modified files:")
-          for change in changes:
-            print(f"  {change}")
-          
-          modifiedPackages = [path.parent for path in changes if path.exists() and path.name == "PKGBUILD"]
-
-          print("Modified packages:")
-          for packagePath in modifiedPackages:
-            print(f"  {packagePath.name}")
-
-          architectures = set()
-          pattern = compile(r"""^mingw_arch=\(('|")(.*?)('|")\)""", flags=MULTILINE)
-          print("Inspecting PKGBUILD files for 'mingw_arch' settings ...")
-          for packagePath in modifiedPackages:
-            pkgBuildPath = packagePath / "PKGBUILD"
-            print(f"  {pkgBuildPath}")
-            with pkgBuildPath.open("r", encoding="utf-8") as f:
-              content = f.read()
-
-            if (match := pattern.search(content)) is not None:
-              print(f"    {match[0]}")
-              architectures |= set(arch.replace("'", "").lower() for arch in match[2].split(" ") if arch != "")
-            else:
-              print("    'mingw_arch' not configured => using defaults")
-              architectures |= defaultMinGWArch
-            
-            if len(architectures) == len(availableJobs):
-              if architectures == {job["msystem"].lower() for job in availableJobs}:
-                print("All build architectures are needed.")
-                break
-              else:
-                print("Collected an unknown architecture!")
-                exit(1)
-
-          print("Necessary build architectures:")
-          for architecture in architectures:
-            print(f"  {architecture}")
-
-          jobs = [job for job in availableJobs if job["msystem"].lower() in architectures]
-          print("Jobs to start:")
-          for job in jobs:
-            print(f"  {job["icon"]} {job["msystem"]} on {job["runner"]}")
-
-          githubOutput = Path(getenv("GITHUB_OUTPUT"))
-          print(f"GITHUB_OUTPUT: {githubOutput}")
-          with githubOutput.open("a+", encoding="utf-8") as f:
-            f.write(dedent(f"""\
-              jobmatrix={dumps(jobs)}
-            """))
+        run: .ci/ci-prepare.py
 
 # TODO: An error could be created if package files were modified, but PKGBUILD was not.
-
       - name: 🪲 Debug
         run: |
           printf -- '${{ steps.compute.outputs.jobmatrix }}\n'
 
   build:
-    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master'}}
     needs:
       - prepare
+    # Don't run: if pushed to master or if nothing was modified
+    if: ${{ ! ((github.event_name == 'push' && github.ref == 'refs/heads/master') || needs.prepare.outputs.modifiedPackages == '') }}
     strategy:
       fail-fast: false
       matrix:
-        # msystem, runner
+        # Matrix elements: icon, msystem, runner
         include: ${{ fromJson(needs.prepare.outputs.jobmatrix) }}
     name: ${{ matrix.icon }} ${{ matrix.msystem }}
     runs-on: ${{ matrix.runner }}
@@ -198,7 +125,10 @@ jobs:
           if-no-files-found: ignore
 
   check:
-    needs: [build]
+    needs:
+      - prepare
+      - build
+    if: ${{ needs.prepare.outputs.modifiedPackages != '' }}
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v6
@@ -234,8 +164,11 @@ jobs:
           python .ci/ci-check.py "${{ runner.temp }}/artifacts"
 
   package-grokker:
+    needs:
+      - prepare
+      - build
+    if: ${{ needs.prepare.outputs.modifiedPackages != '' }}
     runs-on: ubuntu-latest
-    needs: build
     name: package-grokker-${{ matrix.msystem }}
     strategy:
       fail-fast: false
