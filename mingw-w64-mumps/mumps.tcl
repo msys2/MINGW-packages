@@ -30,15 +30,17 @@ foreach static {{} static} {
   }
 }
 
+if {[string match *-clang-* $env(MINGW_PACKAGE_PREFIX)]} {set FC flang} else {set FC gfortran}
+
 foreach precision {double single} {
   foreach scalar {real complex} {
     if {$scalar == "complex"} {set input input_simpletest_cmplx} else {set input input_simpletest_real}
     foreach static {{} static} {
       foreach executor {{} omp} {
-        xyz::unit MUMPS [list $executor $static $precision $scalar fortran] -input $input {
+        xyz::unit MUMPS [list $executor $static $precision $scalar fortran] -input $input -fc $FC {
           package require buildme
           buildme::sandbox {
-            buildme::shell "gfortran -o a [string index [dict get $unit -xyz] 0]simpletest.F `pkgconf mumps-[dict get $unit -xyz] --cflags --libs [dict get $unit -static]` [dict get $unit -static] && ./a < [dict get $unit -input]"
+            buildme::shell "[dict get $unit -fc] -o a [string index [dict get $unit -xyz] 0]simpletest.F `pkgconf mumps-[dict get $unit -xyz] --cflags --libs [dict get $unit -static]` [dict get $unit -static] && ./a < [dict get $unit -input]"
           }
         }
       }

@@ -1,3 +1,28 @@
+# This package provides multiple library build flavors (for MSYS2) differentiated by
+# the 3-character suffix XYZ as follows:
+#
+#  * X is the scalar type based on the Netlib's SDCZ notation:
+#    - A for multiprecision or precision-neutral build
+#    - S for single precision real
+#    - D for double precision real
+#    - C for single precision complex
+#    - Z for double precision complex
+#
+#  * Y is the execution model:
+#    - S for sequential code
+#    - M for MPI parallel code
+#    - T for multithreaded code, either bare threading or OpenMP, OpenACC etc.
+#    - H for heterogeneous code with CUDA, OpenCL etc.
+#
+#  * Z is the build type:
+#    - O for optimized build
+#    - G for debugging build
+#
+# The suffix is used in the static and dynamic libraires as well as in PkgConfig .pc files.
+# That is the ZMO suffix designates the optimized MPI parallel double precision complex library flavor.
+# Consider the `pkgconf ${package}-zmo --cflags` command to obtain the build-specific compilation flags for ${package}.
+
+
 package require testme
 
 
