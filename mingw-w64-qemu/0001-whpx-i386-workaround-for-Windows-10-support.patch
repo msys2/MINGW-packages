@@ -1,0 +1,104 @@
+From 557ba5c037b161ad81c7a947a95cc7a006bdd44b Mon Sep 17 00:00:00 2001
+From: Mohamed Mediouni <mohamed@unpredictable.fr>
+Date: Sun, 22 Mar 2026 23:33:07 +0100
+Subject: [PATCH] whpx: i386: workaround for Windows 10 support
+
+Windows Server 2022 and later support
+WHvCapabilityCodeProcessorPerfmonFeatures and
+WHvPartitionPropertyCodeSyntheticProcessorFeaturesBanks.
+
+Windows 10 supports neither of those.
+
+As the QEMU executable doesn't have a manifest, OS version
+queries do not return the actual Windows version but 6.2.9200
+which corresponds to Windows 8. Windows Server 2022 and Windows
+11 still use the 10.0 number, with distinction being the build
+number.
+
+As such, use the absence of perf monitoring feature query as
+a cutoff to detect if a legacy OS is present.
+
+Signed-off-by: Mohamed Mediouni <mohamed@unpredictable.fr>
+---
+ target/i386/whpx/whpx-all.c | 43 ++++++++++++++++++++++++-------------
+ 4 files changed, 31 insertions(+), 18 deletions(-)
+
+diff --git a/target/i386/whpx/whpx-all.c b/target/i386/whpx/whpx-all.c
+index 4d5d3dbd24..015c0f1dc9 100644
+--- a/target/i386/whpx/whpx-all.c
++++ b/target/i386/whpx/whpx-all.c
+@@ -1948,6 +1948,7 @@ int whpx_accel_init(AccelState *as, MachineState *ms)
+     WHV_CAPABILITY_FEATURES features = {0};
+     WHV_PROCESSOR_FEATURES_BANKS processor_features;
+     WHV_PROCESSOR_PERFMON_FEATURES perfmon_features;
++    bool is_legacy_os = false;
+ 
+     whpx = &whpx_global;
+ 
+@@ -2096,21 +2097,29 @@ int whpx_accel_init(AccelState *as, MachineState *ms)
+     hr = whp_dispatch.WHvGetCapability(
+         WHvCapabilityCodeProcessorPerfmonFeatures, &perfmon_features,
+         sizeof(WHV_PROCESSOR_PERFMON_FEATURES), &whpx_cap_size);
++    /*
++     * Relying on this is a crutch to maintain Windows 10 support.
++     *
++     * WHvCapabilityCodeProcessorPerfmonFeatures and
++     * WHvPartitionPropertyCodeSyntheticProcessorFeaturesBanks
++     * are implemented starting from Windows Server 2022 (build 20348).
++     */
+     if (FAILED(hr)) {
+-        error_report("WHPX: Failed to get performance monitoring features, hr=%08lx", hr);
+-        ret = -ENOSPC;
+-        goto error;
+-    }
+-
+-    hr = whp_dispatch.WHvSetPartitionProperty(
+-            whpx->partition,
+-            WHvPartitionPropertyCodeProcessorPerfmonFeatures,
+-            &perfmon_features,
+-            sizeof(WHV_PROCESSOR_PERFMON_FEATURES));
+-    if (FAILED(hr)) {
+-        error_report("WHPX: Failed to set performance monitoring features, hr=%08lx", hr);
+-        ret = -EINVAL;
+-        goto error;
++        warn_report("WHPX: Failed to get performance "
++                    "monitoring features, hr=%08lx", hr);
++        is_legacy_os = true;
++    } else {
++        hr = whp_dispatch.WHvSetPartitionProperty(
++                whpx->partition,
++                WHvPartitionPropertyCodeProcessorPerfmonFeatures,
++                &perfmon_features,
++                sizeof(WHV_PROCESSOR_PERFMON_FEATURES));
++        if (FAILED(hr)) {
++            error_report("WHPX: Failed to set performance "
++                         "monitoring features, hr=%08lx", hr);
++            ret = -EINVAL;
++            goto error;
++        }
+     }
+ 
+     /* Enable synthetic processor features */
+@@ -2138,7 +2147,7 @@ int whpx_accel_init(AccelState *as, MachineState *ms)
+         synthetic_features.Bank0.DirectSyntheticTimers = 1;
+     }
+ 
+-    if (whpx->hyperv_enlightenments_allowed) {
++    if (!is_legacy_os && whpx->hyperv_enlightenments_allowed) {
+         hr = whp_dispatch.WHvSetPartitionProperty(
+                 whpx->partition,
+                 WHvPartitionPropertyCodeSyntheticProcessorFeaturesBanks,
+@@ -2149,6 +2158,10 @@ int whpx_accel_init(AccelState *as, MachineState *ms)
+             ret = -EINVAL;
+             goto error;
+         }
++    } else if (is_legacy_os && whpx->hyperv_enlightenments_required) {
++        error_report("Hyper-V enlightenments not available on legacy Windows");
++        ret = -EINVAL;
++        goto error;
+     }
+ 
+     /* Register for MSR and CPUID exits */
+-- 
+2.50.1 (Apple Git-155)
+
