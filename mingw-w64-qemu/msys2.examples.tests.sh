@@ -399,7 +399,10 @@ function determineAccel {
 	fi
 	if isWindows
 	then
-		if qemuMinVersion 8 1 90
+		if qemuMinVersion 10 2 90
+		then
+			TESTACCELS="whpx"
+		elif qemuMinVersion 8 1 90
 		then
 			TESTACCELS="whpx,kernel-irqchip=off"
 		elif qemuMinVersion 6 0
