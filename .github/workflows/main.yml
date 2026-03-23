@@ -9,24 +9,58 @@ on:
   pull_request:
 
 jobs:
+  prepare:
+    name: 🖥️ Compute job matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      jobmatrix:        ${{ steps.compute.outputs.jobmatrix }}
+      modifiedPackages: ${{ steps.compute.outputs.modifiedPackages }}
+    steps:
+      - name: ⏬ Checkout repository
+        uses: actions/checkout@v6
+        with:
+#          path: temp
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      - name: 🔝 Add upstream as a second remote
+        run: |
+          UPSTREAM=https://github.com/MSYS2/MINGW-packages
+          printf -- "Add remote 'upstream' -> ${UPSTREAM}\n"
+          git remote add upstream "${UPSTREAM}"
+          printf -- "fetch from upstream ...\n"
+          git fetch --quiet upstream
+          printf -- "Remotes:\n"
+          git remote -v
+          printf -- "Branches:\n"
+          git branch -rv
+
+      - name: 🔍 Find modified packages and used msystems
+        id: compute
+        run: .ci/ci-prepare.py
+
+# TODO: An error could be created if package files were modified, but PKGBUILD was not.
+      - name: 🪲 Debug
+        run: |
+          printf -- '${{ steps.compute.outputs.jobmatrix }}\n'
+
   build:
-    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master'}}
+    needs:
+      - prepare
+    # Don't run: if pushed to master or if nothing was modified
+    if: ${{ ! ((github.event_name == 'push' && github.ref == 'refs/heads/master') || needs.prepare.outputs.modifiedPackages == '') }}
     strategy:
       fail-fast: false
       matrix:
-        include: [
-          { msystem: UCRT64, runner: windows-2022},
-          { msystem: CLANG64, runner: windows-2022},
-          { msystem: MINGW64, runner: windows-2022},
-          { msystem: MINGW32, runner: windows-2022},
-          { msystem: CLANGARM64, runner: windows-11-arm}
-        ]
-    name: ${{ matrix.msystem }}
+        # Matrix elements: icon, msystem, runner
+        include: ${{ fromJson(needs.prepare.outputs.jobmatrix) }}
+    name: ${{ matrix.icon }} ${{ matrix.msystem }}
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Gather Facts
         id: facts
-        run : |
+        run: |
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize -Wrap
           Get-CIMInstance -Class Win32_Processor | Select-Object -Property Name
           Get-CIMInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum | Format-Table @{n="TotalPhysicalMemory";e={$_.Sum}}
@@ -91,7 +125,10 @@ jobs:
           if-no-files-found: ignore
 
   check:
-    needs: [build]
+    needs:
+      - prepare
+      - build
+    if: ${{ needs.prepare.outputs.modifiedPackages != '' }}
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v6
@@ -127,8 +164,11 @@ jobs:
           python .ci/ci-check.py "${{ runner.temp }}/artifacts"
 
   package-grokker:
+    needs:
+      - prepare
+      - build
+    if: ${{ needs.prepare.outputs.modifiedPackages != '' }}
     runs-on: ubuntu-latest
-    needs: build
     name: package-grokker-${{ matrix.msystem }}
     strategy:
       fail-fast: false
