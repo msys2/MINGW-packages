@@ -21,7 +21,7 @@ pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
            "${MINGW_PACKAGE_PREFIX}-rust-wasm" \
            "${MINGW_PACKAGE_PREFIX}-rust-emscripten"))
 pkgver=1.94.0
-pkgrel=3
+pkgrel=4
 pkgdesc="Systems programming language focused on safety, speed and concurrency (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
@@ -60,6 +60,7 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
 source=("${rust_dist_server}/${_realname}c-${pkgver}-src.tar.xz"{,.asc}
         "bootstrap.toml"
         "bootstrap-wasm.toml"
+        "0002-bootstrap-Change-bash-completion-dir.patch"
         "0004-compiler-Use-wasm-ld-for-wasm-targets.patch"
         "0008-disable-self-contained-for-gnu-targets.patch"
         "0016-allow-shared-llvm-for-all.patch"
@@ -69,8 +70,9 @@ source=("${rust_dist_server}/${_realname}c-${pkgver}-src.tar.xz"{,.asc}
 noextract=(${_realname}c-${pkgver}-src.tar.xz)
 sha256sums=('0b53ae34f5c0c3612cfe1de139f9167a018cd5737bc2205664fd69ba9b25f600'
             'SKIP'
-            '826f51af536d1a215d1525a0f2d3061a2c6d251027cce36ad37b3f15f3c26daa'
+            '5a4ed96346342152b4c02406f981d5c3f0a2052b5b53d8283fc485534b5d66de'
             'a76bb1118bcbb14affd6627fdfeccbf491c2d480a3aa0ec5db6c5938e6758c93'
+            'db5d0dbeaaab5bd22c71ef35d1978960dd7e79cc153e5eeb72a5f635255991de'
             '56882f1a0f1404c10c7726d6cc37444f2b343e72b969badfcb43760f80db0f32'
             '767db21e86364eb6777404ba6eee94133b5878ad42fa34afa9aea641ab533759'
             '691f9dcaeb8a340fd279eea1d54a9077305e0a74a32d8cf020a85e50b1956553')
@@ -100,6 +102,7 @@ prepare() {
 
   # 0008-disable-self-contained-for-gnu-targets.patch allows self-contained for non-windows-gnu targets
   apply_patch_with_msg \
+    0002-bootstrap-Change-bash-completion-dir.patch \
     0008-disable-self-contained-for-gnu-targets.patch \
     0004-compiler-Use-wasm-ld-for-wasm-targets.patch \
     0016-allow-shared-llvm-for-all.patch
@@ -113,15 +116,6 @@ build() {
     export OSTYPE="$CARCH-pc-windows-gnullvm"
   else
     export OSTYPE="$CARCH-pc-windows-gnu"
-  fi
-
-  if [[ $MINGW_PACKAGE_PREFIX != *-clang-aarch64 ]]; then
-    # Use $CFLAGS for $OSTYPE only
-    export CFLAGS_${OSTYPE//-/_}="$CFLAGS"
-
-    # Remove unsupported options for target wasm32-*
-    local _unsupported_options="-march=nocona -msahf"
-    export CFLAGS="${CFLAGS#$_unsupported_options}"
   fi
 
   # For a faster build:
@@ -170,7 +164,7 @@ build() {
     if [[ ${_bootstrapping} == no ]]; then
       _pgo_opts+=(--stage0-root="${MINGW_PREFIX}")
     fi
-    # run opt-dist to get rustc optimized with PGO. add linker flag for InitSecurityInterfaceA symbol
+    # run opt-dist to get rustc optimized with PGO
     CXXFLAGS="$CXXFLAGS -fuse-ld=lld" \
     DESTDIR="$PWD/build-$MSYSTEM/dest-rust" \
     build-${MSYSTEM}/${OSTYPE}/stage1-tools-bin/opt-dist local "${_pgo_opts[@]}" -- \
@@ -182,6 +176,10 @@ build() {
 
   # Add wasm32-* targets
   if (( _wasm )); then
+    # empty flags for correct wasm build
+    CFLAGS="" \
+    CXXFLAGS="" \
+    LDFLAGS="" \
     DESTDIR="$PWD/build-$MSYSTEM/dest-wasm" \
       python x.py install \
         --stage 1 \
@@ -199,7 +197,19 @@ build() {
   mv build-${MSYSTEM}/dest-rust${MINGW_PREFIX}/lib/rustlib/src \
     build-${MSYSTEM}/dest-src${MINGW_PREFIX}/lib/rustlib
 
-  rm -f build-${MSYSTEM}/dest-rust${MINGW_PREFIX}/lib/rustlib/$OSTYPE/lib/self-contained/*
+  # delete unnecessary files, e.g. components and manifest files only used for the uninstall script
+  # and self-contained objects
+  (
+    cd build-${MSYSTEM}/dest-rust${MINGW_PREFIX}
+    rm -v etc/target-spec-json-schema.json
+    rm -v lib/rustlib/{components,install.log,rust-installer-version,uninstall.sh}
+    rm -v lib/rustlib/manifest-*
+    rm -v lib/rustlib/$OSTYPE/lib/self-contained/*
+  )
+  (
+    cd build-${MSYSTEM}/dest-wasm${MINGW_PREFIX}/lib/rustlib
+    rm -v components install.log rust-installer-version uninstall.sh manifest-*
+  )
 }
 
 check() {
@@ -219,18 +229,7 @@ package_rust() {
   conflicts=("${MINGW_PACKAGE_PREFIX}-rust-docs")
   replaces=("${MINGW_PACKAGE_PREFIX}-rust-docs")
 
-  cd "${_realname}c-${pkgver}-src/build-${MSYSTEM}"
-
-  cp -a dest-rust/* "${pkgdir}"
-
-  # delete unnecessary files, e.g. components and manifest files only used for the uninstall script
-  cd "${pkgdir}${MINGW_PREFIX}/lib/rustlib"
-  rm components install.log manifest-* rust-installer-version uninstall.sh
-  rm "${pkgdir}${MINGW_PREFIX}/etc/target-spec-json-schema.json"
-
-  install -d "${pkgdir}${MINGW_PREFIX}/share/bash-completion/completions"
-  mv "${pkgdir}${MINGW_PREFIX}/etc/bash_completion.d/cargo" \
-     "${pkgdir}${MINGW_PREFIX}/share/bash-completion/completions/cargo"
+  cp -a "${_realname}c-${pkgver}-src/build-${MSYSTEM}"/dest-rust/* "${pkgdir}"
 }
 
 package_rust-wasm() {
@@ -238,17 +237,13 @@ package_rust-wasm() {
   depends=("${MINGW_PACKAGE_PREFIX}-lld"
            "${MINGW_PACKAGE_PREFIX}-rust"
            "${MINGW_PACKAGE_PREFIX}-wasm-component-ld")
+  options=('!strip')
 
   cd "${_realname}c-${pkgver}-src/build-${MSYSTEM}"
 
   cp -a dest-wasm/* "${pkgdir}"
 
-  STRIP=llvm-strip
-
   install -Dm644 ../LICENSE-{APACHE,MIT} -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}-wasm"
-
-  cd "${pkgdir}${MINGW_PREFIX}/lib/rustlib"
-  rm components install.log manifest-* rust-installer-version uninstall.sh
 }
 
 package_rust-emscripten() {
@@ -259,16 +254,15 @@ package_rust-emscripten() {
            "${MINGW_PACKAGE_PREFIX}-llvm-libs"
            "${MINGW_PACKAGE_PREFIX}-zlib"
            "${MINGW_PACKAGE_PREFIX}-zstd")
+  options=('!strip')
 
   cd "${_realname}c-${pkgver}-src/build-${MSYSTEM}"
 
   cp -a dest-emscripten/* "${pkgdir}"
 
-  STRIP=llvm-strip
-
   # manually add self-contained linkers to make emscripten target happy
-  mkdir -p "${pkgdir}${MINGW_PREFIX}/lib/rustlib/$OSTYPE/bin/gcc-ld/"
-  cp "${MINGW_PREFIX}"/bin/{ld{,64}.lld,lld-link,wasm-ld} \
+  mkdir -pv "${pkgdir}${MINGW_PREFIX}/lib/rustlib/$OSTYPE/bin/gcc-ld/"
+  cp -v "${MINGW_PREFIX}"/bin/{ld{,64}.lld,lld-link,wasm-ld} \
     "${pkgdir}${MINGW_PREFIX}/lib/rustlib/$OSTYPE/bin/gcc-ld/"
 
   install -Dm644 ../LICENSE-{APACHE,MIT} -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}-emscripten"
