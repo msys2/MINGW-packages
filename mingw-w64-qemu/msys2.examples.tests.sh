@@ -197,6 +197,18 @@ function isWindows {
 	       [ -f "$(qWhich qemu-system-x86_64).exe" ]
 }
 
+function windowsVersion {
+	if isWindows
+	then
+		# MINGW64_NT-10.0-19045
+		local TESTVERSION=$(uname -s)
+		if [[ $TESTVERSION =~ _NT-([0-9]+) ]]
+		then
+			echo ${BASH_REMATCH[1]}
+		fi
+	fi
+}
+
 function hasElevatedWindowsPrivileges {
 	local TESTFILE="/c/Windows/.hasElevatedWindowsPrivileges"
 	if isWindows
@@ -399,7 +411,10 @@ function determineAccel {
 	fi
 	if isWindows
 	then
-		if qemuMinVersion 8 1 90
+		if qemuMinVersion 10 2 90
+		then
+			TESTACCELS="whpx"
+		elif qemuMinVersion 8 1 90
 		then
 			TESTACCELS="whpx,kernel-irqchip=off"
 		elif qemuMinVersion 6 0
@@ -426,7 +441,19 @@ function determineAccel {
 }
 
 function accel {
-	echo "-accel $ACCEL"
+	local BIOS="$1"
+	if qemuMinVersion 10 2 90 && [[ "$ACCEL" == "whpx" ]]
+	then
+		local WINVERSION=$(windowsVersion)
+		if [[ "$BIOS" == "uefi" ]] || (( WINVERSION > 10 ))
+		then
+			echo "-accel whpx"
+		else
+			echo "-accel whpx,kernel-irqchip=off"
+		fi
+	else
+		echo "-accel $ACCEL"
+	fi
 }
 
 # Intended to determine absolute path for QEMU-provided firmware files only
@@ -518,9 +545,6 @@ function qemuLiveDesktopUEFI_Pflash {
 	local TESTDIR="uefi_pflash$( [ "$1" != "noaccel" ] && echo "_accel" )"
 	download $LIVE_IMAGE_URL
 	testImageInDir $TESTDIR
-	# Fails with -accel whpx
-	# qemu-system-x86_64.exe: WHPX: Failed to emulate MMIO access with EmulatorReturnStatus: 2
-	# qemu-system-x86_64.exe: WHPX: Failed to exec a virtual processor
 	echo "Instanciate VARS-Firmware to VM dir for r/w pflash access:"
 	firmwareAvailable edk2-i386-vars.fd &&
 	(
@@ -529,7 +553,7 @@ function qemuLiveDesktopUEFI_Pflash {
 		cp -p "$(firmware edk2-i386-vars.fd)" $TESTDIR/
 		firmwareAvailable edk2-x86_64-code.fd &&
 		execute qemu-system-x86_64 -M q35 -m 1536 $(audioq35) -usb -device usb-tablet \
-			$( [ "$1" != "noaccel" ] && echo $(accel)) -boot menu=on \
+			$( [ "$1" != "noaccel" ] && echo $(accel uefi)) -boot menu=on \
 			-drive file="$(firmware edk2-x86_64-code.fd)",if=pflash,format=raw,readonly=on \
 			-drive file=$TESTDIR/edk2-i386-vars.fd,if=pflash,format=raw,readonly=off \
 			-drive id=hd0,if=none,file=$TESTDIR/testimage.qcow2,format=qcow2 \
@@ -557,7 +581,7 @@ function qemuLiveDesktopUEFI_Bios {
 		echo
 		cat "$(firmware edk2-i386-vars.fd)" "$(firmware edk2-x86_64-code.fd)" > $TESTDIR/edk2-x86_64.fd
 		execute qemu-system-x86_64 -M q35 -m 1536 $(audioq35) -usb -device usb-tablet \
-			$( [ "$1" != "noaccel" ] && echo $(accel)) -boot menu=on \
+			$( [ "$1" != "noaccel" ] && echo $(accel uefi)) -boot menu=on \
 			-bios $TESTDIR/edk2-x86_64.fd \
 			-drive id=hd0,if=none,file=$TESTDIR/testimage.qcow2,format=qcow2 \
 			-device ide-hd,drive=hd0,bus=ide.0,bootindex=0 \
@@ -2043,7 +2067,7 @@ function qemu2014day08 {
 		mkdir -p zork.img/EFI/BOOT
 		mv BOOTX64.EFI zork.img/EFI/BOOT/
 		mv -f startup.nsh Frotz.efi DATA/ZORK1.DAT zork.img/
-		execute qemu-system-x86_64 $(accel) -name "uefi zork" -bios OVMF-pure-efi.fd -usb \
+		execute qemu-system-x86_64 $(accel uefi) -name "uefi zork" -bios OVMF-pure-efi.fd -usb \
 			-device usb-storage,drive=zork -drive file=fat:rw:zork.img,id=zork,if=none,format=raw
 	)
 	removeDir qemu-xmas-uefi-zork
