@@ -5,7 +5,7 @@ _realname=expat
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 pkgver=2.7.5
-pkgrel=1
+pkgrel=2
 pkgdesc="An XML parser library (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
@@ -16,7 +16,9 @@ msys2_references=(
   "cpe: cpe:/a:libexpat_project:libexpat"
 )
 license=('spdx:MIT')
-makedepends=("${MINGW_PACKAGE_PREFIX}-cc" "${MINGW_PACKAGE_PREFIX}-autotools")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja")
 source=("https://github.com/libexpat/libexpat/releases/download/R_${pkgver//./_}/expat-${pkgver}.tar.xz"{,.asc})
 sha256sums=('1032dfef4ff17f70464827daa28369b20f6584d108bc36f17ab1676e1edd2f91'
             'SKIP')
@@ -24,31 +26,58 @@ validpgpkeys=('3176EF7DB2367F1FCA4F306B1F9B0E909AF37285') # Sebastian Pipping
 
 prepare() {
   cd "${srcdir}/${_realname}-${pkgver}"
-
-  ./buildconf.sh -f
 }
 
 build() {
-  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
+  declare -a extra_config
+  if check_option "debug" "n"; then
+    extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
 
-  ../${_realname}-${pkgver}/configure \
-    --prefix=${MINGW_PREFIX} \
-    --build=${MINGW_CHOST} \
-    --host=${MINGW_CHOST} \
-    --target=${MINGW_CHOST} \
-    --enable-shared \
-    --enable-static
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    cmake \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+      "${extra_config[@]}" \
+      -DBUILD_SHARED_LIBS=ON \
+      -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
+      -DEXPAT_BUILD_EXAMPLES=OFF \
+      -DEXPAT_BUILD_TESTS=OFF \
+      -S "${_realname}-${pkgver}" \
+      -B "build-${MSYSTEM}"
 
-  make
+  cmake --build "build-${MSYSTEM}"
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    cmake \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+      "${extra_config[@]}" \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DEXPAT_BUILD_EXAMPLES=OFF \
+      -DEXPAT_BUILD_TESTS=OFF \
+      -S "${_realname}-${pkgver}" \
+      -B "build-${MSYSTEM}-static"
+
+  cmake --build "build-${MSYSTEM}-static"
 }
 
 check() {
-  cd "${srcdir}/build-${MSYSTEM}"
-  make check
+  cmake \
+    -DEXPAT_BUILD_TESTS=ON \
+    -S "${_realname}-${pkgver}" \
+    -B "build-${MSYSTEM}"
+  cmake --build "build-${MSYSTEM}"
+  ctest --test-dir build-${MSYSTEM} --output-on-failure || true
 }
 
 package() {
-  cd "${srcdir}/build-${MSYSTEM}"
-  make DESTDIR="${pkgdir}" install
-  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING"
+  DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}-static"
+  rm -r "${pkgdir}"${MINGW_PREFIX}/lib/cmake
+  DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}"
+
+  install -Dm644 "${srcdir}"/${_realname}-${pkgver}/COPYING \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/COPYING
 }
