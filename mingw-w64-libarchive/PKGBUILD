@@ -17,61 +17,78 @@ msys2_references=(
   'gentoo: app-arch/libarchive'
 )
 license=("spdx:BSD-2-Clause")
-makedepends=("${MINGW_PACKAGE_PREFIX}-cc" "${MINGW_PACKAGE_PREFIX}-autotools")
 depends=(${MINGW_PACKAGE_PREFIX}-cc-libs
          ${MINGW_PACKAGE_PREFIX}-bzip2
          ${MINGW_PACKAGE_PREFIX}-expat
          ${MINGW_PACKAGE_PREFIX}-libb2
          ${MINGW_PACKAGE_PREFIX}-libiconv
          ${MINGW_PACKAGE_PREFIX}-lz4
-         ${MINGW_PACKAGE_PREFIX}-libsystre
          ${MINGW_PACKAGE_PREFIX}-openssl
+         ${MINGW_PACKAGE_PREFIX}-pcre2
          ${MINGW_PACKAGE_PREFIX}-xz
          ${MINGW_PACKAGE_PREFIX}-zlib
          ${MINGW_PACKAGE_PREFIX}-zstd)
-source=("https://github.com/libarchive/libarchive/releases/download/v${pkgver}/${_realname}-${pkgver}.tar.xz")
-sha256sums=('8ac57c1f5e99550948d1fe755c806d26026e71827da228f36bef24527e372e6f')
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja")
+source=("https://github.com/libarchive/libarchive/releases/download/v${pkgver}/${_realname}-${pkgver}.tar.xz"
+        "001-fix-static-library-output-name-on-mingw.patch")
+sha256sums=('8ac57c1f5e99550948d1fe755c806d26026e71827da228f36bef24527e372e6f'
+            '4331c43882b4dad45f6036ee5e81671e0b54bdacbea48a64597282fd3d1bfb85')
 
 prepare() {
-  cd "${srcdir}/${_realname}-${pkgver}"
-
-  autoreconf -fiv
+  cd ${_realname}-${pkgver}
+  patch -p1 -i "${srcdir}"/001-fix-static-library-output-name-on-mingw.patch
 }
 
 build() {
-  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
-
-  if [ "${CARCH}" = "i686" ]; then
-    # Need for 32-bit toolchain to have 64bit time
-    CFLAGS+=" -D__MINGW_USE_VC2005_COMPAT"
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
   fi
 
-  # Mention default options explicitly to clarify any confusion
-  ../${_realname}-${pkgver}/configure \
-    --build="${MINGW_CHOST}" \
-    --host="${MINGW_CHOST}" \
-    --target="${MINGW_CHOST}" \
-    --prefix="${MINGW_PREFIX}" \
-    --without-xml2 \
-    --without-lzo2 \
-    --without-nettle \
-    --with-openssl \
-    --without-libiconv-prefix \
-    --with-cng
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    cmake \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+      "${_extra_config[@]}" \
+      -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
+      -DENABLE_BZip2=ON \
+      -DENABLE_CNG=ON \
+      -DENABLE_EXPAT=ON \
+      -DENABLE_ICONV=ON \
+      -DENABLE_LIBB2=ON \
+      -DENABLE_LZ4=ON \
+      -DENABLE_LZMA=ON \
+      -DENABLE_PCRE2POSIX=ON \
+      -DENABLE_ZLIB=ON \
+      -DENABLE_ZSTD=ON \
+      -DENABLE_OPENSSL=ON \
+      -DENABLE_CAT_SHARED=ON \
+      -DENABLE_CPIO_SHARED=ON \
+      -DENABLE_TAR_SHARED=ON \
+      -DENABLE_LIBXML2=OFF \
+      -DENABLE_LZO=OFF \
+      -DENABLE_NETTLE=OFF \
+      -DENABLE_TEST=OFF \
+      -DPOSIX_REGEX_LIB=LIBPCRE2POSIX \
+      -S "${_realname}-${pkgver}" \
+      -B "build-${MSYSTEM}"
 
-  make
+  cmake --build "build-${MSYSTEM}"
 }
 
 check() {
-  cd "${srcdir}/build-${MSYSTEM}"
-  make check
+  cmake -DENABLE_TEST=ON -S"${_realname}-${pkgver}" -B"build-${MSYSTEM}"
+  cmake --build "build-${MSYSTEM}"
+  ctest --test-dir build-${MSYSTEM} --output-on-failure || true
 }
 
 package() {
-  cd "${srcdir}/build-${MSYSTEM}"
-  make DESTDIR="${pkgdir}" install
- 
-  #fix issue with hard-coded path in libarchive.pc file.
-  _localpath=$(cygpath -wm ${MINGW_PREFIX})
-  sed -i -e "s|${_localpath}|${MINGW_PREFIX}|g" "${pkgdir}"/${MINGW_PREFIX}/lib/pkgconfig/libarchive.pc
+  DESTDIR="${pkgdir}" cmake --install build-${MSYSTEM}
+
+  install -Dm644 "${srcdir}"/${_realname}-${pkgver}/COPYING \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }
