@@ -23,10 +23,11 @@ foreach scalar {real complex} {
             }
             # FORTRAN
             testme::with tags {fortran ksp} {
-              xyz::unit PETSc $tags {
+              if {[string match *-clang-* $::env(MINGW_PACKAGE_PREFIX)]} {set FC flang} else {set FC gfortran}
+              xyz::unit PETSc $tags -fc $FC {
                 package require buildme
                 buildme::sandbox {
-                  buildme::shell "gfortran -o a ksp/ex1f.F90 `pkgconf petsc-[dict get $unit -xyz] --cflags --libs [dict get $unit -static]` [dict get $unit -static] && ./a"
+                  buildme::shell "[dict get $unit -fc] -o a ksp/ex1f.F90 `pkgconf petsc-[dict get $unit -xyz] --cflags --libs [dict get $unit -static]` [dict get $unit -static] && ./a"
                 }
               }
             }
