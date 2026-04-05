@@ -188,6 +188,10 @@ function isQemuSystem {
 	which "qemu-system-$ARCH" &> /dev/null
 }
 
+function accelQemuSystemI386 {
+	( [[ "${ACCEL:0:4}" == "whpx" ]] && qemuMinVersion 10 2 90 ) && echo qemu-system-x86_64 || echo qemu-system-i386
+}
+
 function isLinux {
 	! isWindows && [ "$(uname)" == "Linux" ]
 }
@@ -195,6 +199,18 @@ function isLinux {
 function isWindows {
 	( [ -n "$OS" ] && [[ $OS =~ Windows ]] ) ||
 	       [ -f "$(qWhich qemu-system-x86_64).exe" ]
+}
+
+function windowsVersion {
+	if isWindows
+	then
+		# MINGW64_NT-10.0-19045
+		local TESTVERSION=$(uname -s)
+		if [[ $TESTVERSION =~ -([0-9]+)$ ]]
+		then
+			echo ${BASH_REMATCH[1]}
+		fi
+	fi
 }
 
 function hasElevatedWindowsPrivileges {
@@ -399,7 +415,10 @@ function determineAccel {
 	fi
 	if isWindows
 	then
-		if qemuMinVersion 8 1 90
+		if qemuMinVersion 10 2 90
+		then
+			TESTACCELS="whpx"
+		elif qemuMinVersion 8 1 90
 		then
 			TESTACCELS="whpx,kernel-irqchip=off"
 		elif qemuMinVersion 6 0
@@ -426,7 +445,18 @@ function determineAccel {
 }
 
 function accel {
-	echo "-accel $ACCEL"
+	if qemuMinVersion 10 2 90 && [[ "$ACCEL" == "whpx" ]]
+	then
+		local WINVERSION=$(windowsVersion)
+		if (( WINVERSION >= 20000 ))
+		then
+			echo "-accel whpx"
+		else
+			echo "-accel whpx,kernel-irqchip=off"
+		fi
+	else
+		echo "-accel $ACCEL"
+	fi
 }
 
 # Intended to determine absolute path for QEMU-provided firmware files only
@@ -518,9 +548,6 @@ function qemuLiveDesktopUEFI_Pflash {
 	local TESTDIR="uefi_pflash$( [ "$1" != "noaccel" ] && echo "_accel" )"
 	download $LIVE_IMAGE_URL
 	testImageInDir $TESTDIR
-	# Fails with -accel whpx
-	# qemu-system-x86_64.exe: WHPX: Failed to emulate MMIO access with EmulatorReturnStatus: 2
-	# qemu-system-x86_64.exe: WHPX: Failed to exec a virtual processor
 	echo "Instanciate VARS-Firmware to VM dir for r/w pflash access:"
 	firmwareAvailable edk2-i386-vars.fd &&
 	(
@@ -955,7 +982,7 @@ function qemu2023day04 {
 	tar -xf day04.tar.gz
 	cat day04/adv-cal.txt
 	execute qemu-system-i386 -display sdl -drive format=qcow2,file=day04/conway.qcow2
-	execute qemu-system-i386 $(accel) -display sdl -drive format=qcow2,file=day04/shell.qcow2
+	execute $(accelQemuSystemI386) $(accel) -display sdl -drive format=qcow2,file=day04/shell.qcow2
 	removeDir day04
 }
 
@@ -1470,7 +1497,7 @@ function qemu2018day08 {
 	echo "lynx -source http://www.google.com/"
 	echo "shutdown -h now"
 	echo
-	execute qemu-system-i386 -m 32 -M isapc,acpi=off $(accel) -cpu pentium $(pcspk) \
+	execute qemu-system-i386 -m 32 -M isapc,acpi=off -cpu pentium $(pcspk) \
 		-net nic,model=ne2k_isa -net user -drive if=ide,file=day08/hd.qcow2
 	removeDir day08
 }
@@ -1488,7 +1515,7 @@ function qemu2018day10 {
 	download https://www.qemu-advent-calendar.org/2018/download/day10.tar.xz
 	tar -xf day10.tar.xz
 	cat day10/readme.txt
-	execute qemu-system-i386 $(accel) -cdrom day10/gamebro.iso
+	execute $(accelQemuSystemI386) $(accel) -cdrom day10/gamebro.iso
 	removeDir day10
 }
 
@@ -1633,7 +1660,7 @@ function qemu2016day03 {
 	download https://www.qemu-advent-calendar.org/2016/download/day03.tar.xz
 	tar -xf day03.tar.xz
 	cat freegem/readme.txt
-	execute qemu-system-i386 $(accel) -m 32 -hda freegem/freegem.qcow2 $(pcspk)
+	execute $(accelQemuSystemI386) $(accel) -m 32 -hda freegem/freegem.qcow2 $(pcspk)
 	removeDir freegem
 }
 
@@ -1651,7 +1678,7 @@ function qemu2016day04 {
 	(
 		cd reactos
 		7z x -y ../reactos-livecd-0.4.15-dev-2574-g18e95f5-x86-gcc-lin-dbg.7z > /dev/null
-		execute qemu-system-i386 $(accel) -m 512 -net nic,model=rtl8139 -net user -vga std $(audio AC97) \
+		execute $(accelQemuSystemI386) $(accel) -m 512 -net nic,model=rtl8139 -net user -vga std $(audio AC97) \
 			-usb -device usb-tablet -serial file:reactos.log \
 			-cdrom reactos-livecd-0.4.15-dev-2574-g18e95f5-x86-gcc-lin-dbg.iso
 	)
@@ -1675,7 +1702,7 @@ function qemu2016day06 {
 	(
 		cd menuet32
 		unzip -o -q ../M32-086.ZIP
-		execute qemu-system-i386 $(accel) $(audio AC97) -m 512 -drive file=M32-086.IMG,format=raw,if=floppy
+		execute $(accelQemuSystemI386) $(accel) $(audio AC97) -m 512 -drive file=M32-086.IMG,format=raw,if=floppy
 	)
 	removeDir menuet32
 }
@@ -1716,7 +1743,7 @@ function qemu2016day09 {
 	download https://www.qemu-advent-calendar.org/2016/download/day09-v2.tar.xz
 	tar -xf day09-v2.tar.xz
 	cat kolibrios/readme.txt
-	execute qemu-system-i386 $(accel) -device e1000,netdev=u0 -netdev user,id=u0 -usb $(audio hda-duplex) \
+	execute $(accelQemuSystemI386) $(accel) -device e1000,netdev=u0 -netdev user,id=u0 -usb $(audio hda-duplex) \
 		-boot d -cdrom kolibrios/kolibri-v2.iso
 	removeDir kolibrios
 }
@@ -1734,7 +1761,7 @@ function qemu2016day11 {
 	download https://www.qemu-advent-calendar.org/2016/download/day11.tar.xz
 	tar -xf day11.tar.xz
 	cat genode/README
-	execute qemu-system-i386 -serial stdio -cdrom genode/Genode_on_seL4.iso -m 1G -vga cirrus $(accel)
+	execute $(accelQemuSystemI386) -serial stdio -cdrom genode/Genode_on_seL4.iso -m 1G -vga cirrus $(accel)
 	removeDir genode
 }
 
@@ -1742,7 +1769,7 @@ function qemu2016day12 {
 	download https://www.qemu-advent-calendar.org/2016/download/day12.tar.xz
 	tar -xf day12.tar.xz
 	cat tetros/readme.txt
-	execute qemu-system-i386 $(accel) -m 32 -drive if=ide,file=tetros/tetros.img,format=raw
+	execute $(accelQemuSystemI386) $(accel) -m 32 -drive if=ide,file=tetros/tetros.img,format=raw
 	removeDir tetros
 }
 
@@ -1800,7 +1827,7 @@ function qemu2016day18 {
 	(
 		cd redox
 		zcat ../harddrive.bin.gz > harddrive.bin
-		execute qemu-system-i386 -M q35 $(accel) -vga std $(audio AC97) -smp 4 -m 1024 \
+		execute $(accelQemuSystemI386) -M q35 $(accel) -vga std $(audio AC97) -smp 4 -m 1024 \
 		     -net nic,model=e1000 -net user -drive file=harddrive.bin,format=raw
 	)
 	removeDir redox
@@ -1824,7 +1851,7 @@ function qemu2016day20 {
 		cd haiku
 		tar -xf ../haiku-r1alpha4.1-vmdk.tar.xz
 		qemu-img convert -f vmdk haiku-r1alpha4.vmdk -O qcow2 haiku-r1alpha4.qcow2
-		execute qemu-system-i386 $(accel) $(audio hda-duplex) -m 512 \
+		execute $(accelQemuSystemI386) $(accel) $(audio hda-duplex) -m 512 \
 			-hda haiku-r1alpha4.qcow2 -hdb blank-bfs-2048mb.vmdk
 	)
 	removeDir haiku
@@ -1834,7 +1861,7 @@ function qemu2016day21 {
 	download https://www.qemu-advent-calendar.org/2016/download/day21.tar.xz
 	tar -xf day21.tar.xz
 	cat wireguard/readme.txt
-	execute qemu-system-i386 -nodefaults -machine q35 $(accel) -smp 2 -m 96M -monitor none \
+	execute $(accelQemuSystemI386) -nodefaults -machine q35 $(accel) -smp 2 -m 96M -monitor none \
 		-kernel wireguard/wireguard-test-4f257956-d81f-43f3-8fd8-1475360f58b8.kernel -append console=hvc0
 	removeDir wireguard
 }
@@ -1861,7 +1888,7 @@ function qemu2016day24 {
 	cat day24/readme.txt
 	(
 		cd day24
-		execute qemu-system-i386 $(accel) $(audio AC97) -device VGA,addr=07.0 \
+		execute $(accelQemuSystemI386) $(accel) $(audio AC97) -device VGA,addr=07.0 \
 		-kernel kernel -initrd null,null,null,music.ogg
 	)
 	removeDir day24
@@ -1873,7 +1900,7 @@ function qemu2014day24 {
 	extractReadme day24/run
 	(
 		cd day24
-		execute qemu-system-i386 $(accel) -kernel kernel \
+		execute qemu-system-i386 -kernel kernel \
 			-initrd null,null,null,music.ogg,win.ogg,loss.ogg $(audio AC97) -vga std
 	)
 	removeDir day24
@@ -1902,7 +1929,7 @@ function qemu2014day21 {
 	download https://www.qemu-advent-calendar.org/2014/download/boundvariable.tar.xz
 	tar -xf boundvariable.tar.xz
 	extractReadme boundvariable/run
-	execute qemu-system-i386 $(accel) -m 1024 \
+	execute $(accelQemuSystemI386) $(accel) -m 1024 \
 		-drive if=virtio,file=boundvariable/boundvariable.qcow2,format=qcow2
 	removeDir boundvariable
 }
@@ -1947,7 +1974,7 @@ function qemu2014day17 {
 	download https://www.qemu-advent-calendar.org/2014/download/bb_debian.tar.xz
 	tar -xf bb_debian.tar.xz
 	extractReadme bb_debian/run
-	execute qemu-system-i386 $(accel) -m 512 -vga std $(audio hda-duplex) bb_debian/bb_debian.qcow2
+	execute $(accelQemuSystemI386) $(accel) -m 512 -vga std $(audio hda-duplex) bb_debian/bb_debian.qcow2
 	removeDir bb_debian
 }
 
@@ -1955,7 +1982,7 @@ function qemu2014day16 {
 	download https://www.qemu-advent-calendar.org/2014/download/tempest-showroom.tar.xz
 	tar -xf tempest-showroom.tar.xz
 	extractReadme tempest-showroom/run
-	execute qemu-system-i386 $(accel) -cdrom tempest-showroom/tempest-showroom_v0.9.7.iso
+	execute $(accelQemuSystemI386) $(accel) -cdrom tempest-showroom/tempest-showroom_v0.9.7.iso
 	removeDir tempest-showroom
 }
 
@@ -1963,7 +1990,7 @@ function qemu2014day15 {
 	download https://www.qemu-advent-calendar.org/2014/download/plan9.tar.xz
 	tar -xf plan9.tar.xz
 	extractReadme plan9/run
-	execute qemu-system-i386 $(accel) -m 1024 plan9/plan9.qcow2
+	execute $(accelQemuSystemI386) $(accel) -m 1024 plan9/plan9.qcow2
 	removeDir plan9
 }
 
@@ -1987,7 +2014,7 @@ function qemu2014day12 {
 	download https://www.qemu-advent-calendar.org/2014/download/oberon.tar.xz
 	tar -xf oberon.tar.xz
 	extractReadme oberon/run
-	execute qemu-system-i386 $(accel) oberon/oberon.qcow2
+	execute $(accelQemuSystemI386) $(accel) oberon/oberon.qcow2
 	removeDir oberon
 }
 
@@ -2061,7 +2088,7 @@ function qemu2014day06 {
 	download https://www.qemu-advent-calendar.org/2014/download/fractal-mbr.tar.xz
 	tar -xf fractal-mbr.tar.xz
 	extractReadme fractal-mbr/run
-	execute qemu-system-i386 -drive file=fractal-mbr/phosphene.mbr,format=raw $(accel)
+	execute $(accelQemuSystemI386) -drive file=fractal-mbr/phosphene.mbr,format=raw $(accel)
 	removeDir fractal-mbr
 }
 
@@ -2144,7 +2171,7 @@ case $BLOCK in
 		perform qemu2023day10
 		ignoreSize && perform qemu2023day11
 		perform qemu2023day12
-		perform qemu2023day13
+		isQemuSystem microblazeel && perform qemu2023day13
 		perform qemu2023day14
 		perform qemu2023day15
 		perform qemu2023day16
