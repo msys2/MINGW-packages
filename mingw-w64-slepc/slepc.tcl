@@ -23,10 +23,11 @@ foreach scalar {real complex} {
             }
             # FORTRAN
             testme::with tags {fortran} {
-              xyz::unit SLEPc $tags {
+              if {[string match *-clang-* $::env(MINGW_PACKAGE_PREFIX)]} {set FC flang} else {set FC gfortran}
+              xyz::unit SLEPc $tags -fc $FC {
                 package require buildme
                 buildme::sandbox {
-                  buildme::shell "gfortran -o a ex1f.F90 `pkgconf slepc-[dict get $unit -xyz] --cflags --libs [dict get $unit -static]` [dict get $unit -static] && ./a"
+                  buildme::shell "[dict get $unit -fc] -o a ex1f.F90 `pkgconf slepc-[dict get $unit -xyz] --cflags --libs [dict get $unit -static]` [dict get $unit -static] && ./a"
                 }
               }
             }
