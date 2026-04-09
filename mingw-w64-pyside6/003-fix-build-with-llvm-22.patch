@@ -1,0 +1,1112 @@
+--- a/sources/shiboken6/ApiExtractor/CMakeLists.txt
++++ b/sources/shiboken6/ApiExtractor/CMakeLists.txt
+@@ -77,7 +77,8 @@
+ clangparser/clangbuilder.cpp clangparser/clangbuilder.h
+ clangparser/clangdebugutils.cpp clangparser/clangdebugutils.h
+ clangparser/clangparser.cpp clangparser/clangparser.h
+-clangparser/clangutils.cpp clangparser/clangutils.h
++clangparser/clangtype.cpp clangparser/clangtype.h
++clangparser/clangutils.cpp clangparser/clangutils.h clangparser/clang_typedefs.h
+ clangparser/compilersupport.cpp clangparser/compilersupport.h
+ # Old parser
+ parser/codemodel.cpp parser/codemodel.h parser/codemodel_fwd.h parser/codemodel_enums.h
+--- a/sources/shiboken6/ApiExtractor/abstractmetabuilder.cpp
++++ b/sources/shiboken6/ApiExtractor/abstractmetabuilder.cpp
+@@ -489,6 +489,10 @@
+         for (qsizetype i = 0; i < diagnosticsCount; ++i)
+             d << "  " << diagnostics.at(i) << '\n';
+     }
++
++    if (const auto rejectedTypes = builder.rejectedTypes(); !rejectedTypes.isEmpty())
++        ReportHandler::addGeneralMessage(msgRejectedTypes(rejectedTypes));
++
+     return result;
+ }
+ 
+@@ -2795,7 +2799,7 @@
+         newInfo.setIndirectionsV(typeInfo.indirectionsV());
+         newInfo.setConstant(typeInfo.isConstant());
+         newInfo.setVolatile(typeInfo.isVolatile());
+-        newInfo.setFunctionPointer(typeInfo.isFunctionPointer());
++        newInfo.setTypeCategory(typeInfo.typeCategory());
+         newInfo.setQualifiedName(typeInfo.qualifiedName());
+         newInfo.setReferenceType(typeInfo.referenceType());
+         newInfo.setVolatile(typeInfo.isVolatile());
+new file mode 100644
+--- /dev/null
++++ b/sources/shiboken6/ApiExtractor/clangparser/clang_typedefs.h
+@@ -0,0 +1,19 @@
++// Copyright (C) 2026 The Qt Company Ltd.
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0
++
++#ifndef CLANG_TYPEDEFS_H
++#define CLANG_TYPEDEFS_H
++
++#include <clang-c/Index.h>
++
++namespace clang {
++
++#if LLVM_VERSION >= 22
++using PrintingPolicy = CXPrintingPolicy;
++#else
++using PrintingPolicy = void *;
++#endif
++
++} // namespace clang
++
++#endif // CLANG_TYPEDEFS_H
+--- a/sources/shiboken6/ApiExtractor/clangparser/clangbuilder.cpp
++++ b/sources/shiboken6/ApiExtractor/clangparser/clangbuilder.cpp
+@@ -4,6 +4,7 @@
+ #include "clangbuilder.h"
+ #include "compilersupport.h"
+ #include "clangutils.h"
++#include "clangtype.h"
+ #include "clangdebugutils.h"
+ 
+ #include <codemodel.h>
+@@ -19,6 +20,10 @@
+ #include <QtCore/qstack.h>
+ #include <QtCore/qlist.h>
+ 
++#include <algorithm>
++#include <optional>
++#include <set>
++
+ using namespace Qt::StringLiterals;
+ 
+ namespace clang {
+@@ -40,7 +45,7 @@
+     return isClassCursor(clang_getCursorLexicalParent(cursor));
+ }
+ 
+-static QString fixTypeName(QString t)
++static QString fixOperatorTypeName(QString t)
+ {
+     // Fix "Foo &" -> "Foo&", similarly "Bar **" -> "Bar**"
+     auto pos = t.size() - 1;
+@@ -163,13 +168,15 @@
+     FunctionModelItem createMemberFunction(const CXCursor &cursor,
+                                            bool isTemplateCode = false);
+     void qualifyConstructor(const CXCursor &cursor);
+-    TypeInfo createTypeInfoUncached(const CXType &type,
+-                                    bool *cacheable = nullptr) const;
+-    TypeInfo createTypeInfo(const CXType &type) const;
+-    TypeInfo createTypeInfo(const CXCursor &cursor) const
++    std::optional<TypeInfo> createTypeInfoUncached(const CXType &type,
++                                                   bool *cacheable = nullptr) const;
++    std::optional<TypeInfo> createTypeInfo(const CXType &type) const;
++    std::optional<TypeInfo> createTypeInfo(const CXCursor &cursor) const
+     { return createTypeInfo(clang_getCursorType(cursor)); }
++    std::optional<TypeInfo> createFunctionTypeInfo(const CXType &type, TypeCategory cat,
++                                                   bool *cacheable) const;
+     void addTemplateInstantiations(const CXType &type,
+-                                   QString *typeName,
++                                   const QString &templateParameters,
+                                    TypeInfo *t) const;
+     bool addTemplateInstantiationsRecursion(const CXType &type, TypeInfo *t) const;
+ 
+@@ -180,7 +187,7 @@
+ 
+     TemplateParameterModelItem createTemplateParameter(const CXCursor &cursor) const;
+     TemplateParameterModelItem createNonTypeTemplateParameter(const CXCursor &cursor) const;
+-    void addField(const CXCursor &cursor);
++    void addField(const CXCursor &cursor, bool staticField = false);
+ 
+     static QString cursorValueExpression(BaseVisitor *bv, const CXCursor &cursor);
+     std::pair<QString, ClassModelItem> getBaseClass(CXType type) const;
+@@ -220,6 +227,7 @@
+     CodeModel::FunctionType m_currentFunctionType = CodeModel::Normal;
+     bool m_withinFriendDecl = false;
+     mutable QHash<QString, SpecialSystemHeader> m_systemHeaders;
++    mutable std::set<QString> m_rejectedTypes;
+ };
+ 
+ bool BuilderPrivate::addClass(const CXCursor &cursor, CodeModel::ClassType t)
+@@ -329,11 +337,14 @@
+     QString name = getCursorSpelling(cursor);
+     // Apply type fixes to "operator X &" -> "operator X&"
+     if (name.startsWith(u"operator "))
+-        name = fixTypeName(name);
++        name = fixOperatorTypeName(name);
+     auto result = std::make_shared<_FunctionModelItem>(m_model, name);
+     setFileName(cursor, result.get());
+     const auto type = clang_getCursorResultType(cursor);
+-    result->setType(createTypeInfo(type));
++    auto resultTypeO = createTypeInfo(type);
++    if (!resultTypeO.has_value())
++        return {};
++    result->setType(resultTypeO.value());
+     result->setScopeResolution(hasScopeResolution(type));
+     result->setFunctionType(t);
+     result->setScope(m_scope);
+@@ -392,6 +403,8 @@
+         : functionTypeFromCursor(cursor);
+     isTemplateCode |= m_currentClass->name().endsWith(u'>');
+     auto result = createFunction(cursor, functionType, isTemplateCode);
++    if (!result)
++        return result;
+     result->setAccessPolicy(accessPolicy(clang_getCXXAccessSpecifier(cursor)));
+     result->setConstant(clang_CXXMethod_isConst(cursor) != 0);
+     result->setAttribute(FunctionAttribute::Static, clang_CXXMethod_isStatic(cursor) != 0);
+@@ -424,45 +437,31 @@
+ 
+ TemplateParameterModelItem BuilderPrivate::createNonTypeTemplateParameter(const CXCursor &cursor) const
+ {
++    auto typeO = createTypeInfo(clang_getCursorType(cursor));
++    if (!typeO.has_value())
++        return {};
+     TemplateParameterModelItem result = createTemplateParameter(cursor);
+-    result->setType(createTypeInfo(clang_getCursorType(cursor)));
++    result->setType(typeO.value());
+     return result;
+ }
+ 
+ // CXCursor_VarDecl, CXCursor_FieldDecl cursors
+-void BuilderPrivate::addField(const CXCursor &cursor)
++void BuilderPrivate::addField(const CXCursor &cursor, bool staticField)
+ {
++    auto typeO = createTypeInfo(cursor);
++    if (!typeO.has_value())
++        return;
+     auto field = std::make_shared<_VariableModelItem>(m_model, getCursorSpelling(cursor));
+     field->setAccessPolicy(accessPolicy(clang_getCXXAccessSpecifier(cursor)));
+     field->setScope(m_scope);
+-    field->setType(createTypeInfo(cursor));
++    field->setType(typeO.value());
+     field->setMutable(clang_CXXField_isMutable(cursor) != 0);
++    field->setStatic(staticField);
+     setFileName(cursor, field.get());
+     m_currentField = field;
+     m_scopeStack.back()->addVariable(field);
+ }
+ 
+-// Create qualified name "std::list<std::string>" -> ("std", "list<std::string>")
+-static QStringList qualifiedName(const QString &t)
+-{
+-    QStringList result;
+-    auto end = t.indexOf(u'<');
+-    if (end == -1)
+-        end = t.indexOf(u'(');
+-    if (end == -1)
+-        end = t.size();
+-    qsizetype lastPos = 0;
+-    while (true) {
+-        const auto nextPos = t.indexOf(u"::"_s, lastPos);
+-        if (nextPos < 0 || nextPos >= end)
+-            break;
+-        result.append(t.mid(lastPos, nextPos - lastPos));
+-        lastPos = nextPos + 2;
+-    }
+-    result.append(t.right(t.size() - lastPos));
+-    return result;
+-}
+-
+ static bool isArrayType(CXTypeKind k)
+ {
+     return k == CXType_ConstantArray || k == CXType_IncompleteArray
+@@ -488,7 +487,10 @@
+                 // of a non-type template (template <int v>).
+                 if (argType.kind == CXType_Invalid)
+                     return false;
+-                t->addInstantiation(createTypeInfoUncached(argType));
++                auto typeO = createTypeInfoUncached(argType);
++                if (!typeO.has_value())
++                    return false;
++                t->addInstantiation(typeO.value());
+             }
+         }
+         break;
+@@ -498,10 +500,8 @@
+     return true;
+ }
+ 
+-static void dummyTemplateArgumentHandler(int, QStringView) {}
+-
+ void BuilderPrivate::addTemplateInstantiations(const CXType &type,
+-                                               QString *typeName,
++                                               const QString &templateParameters,
+                                                TypeInfo *t) const
+ {
+     // In most cases, for templates like "Vector<A>", Clang will give us the
+@@ -512,16 +512,12 @@
+     //    Vector(const Vector&);
+     // };
+     // In that case, have TypeInfo parse the list from the spelling.
+-    // Finally, remove the list "<>" from the type name.
+     const bool parsed = addTemplateInstantiationsRecursion(type, t)
+         && !t->instantiations().isEmpty();
+-    if (!parsed)
++    if (!parsed) {
+         t->setInstantiations({});
+-    const auto pos = parsed
+-        ? parseTemplateArgumentList(*typeName, dummyTemplateArgumentHandler)
+-        : t->parseTemplateArgumentList(*typeName);
+-    if (pos.first != -1 && pos.second != -1 && pos.second > pos.first)
+-        typeName->remove(pos.first, pos.second - pos.first);
++        t->parseTemplateArgumentList(templateParameters);
++    }
+ }
+ 
+ static TypeCategory typeCategoryFromClang(CXTypeKind k)
+@@ -545,22 +541,59 @@
+     return TypeCategory::Other;
+ }
+ 
+-TypeInfo BuilderPrivate::createTypeInfoUncached(const CXType &type,
+-                                                bool *cacheable) const
++// Reject decltype() expressions, template parameter packs, etc.
++static inline bool checkTypeName(const QString &name)
+ {
++    static constexpr QLatin1StringView exclusions[] = {
++        "decltype("_L1, "std::declval"_L1, "::detail::"_L1, "std::enable_if<"_L1,
++        "template "_L1, "..."_L1
++    };
++
++    auto excludedPred = [&name](QLatin1StringView ex) { return name.contains(ex); };
++    return std::none_of(std::begin(exclusions), std::end(exclusions), excludedPred);
++}
++
++static QString fixTypeName(QString typeName)
++{
++    while (TypeInfo::stripLeadingConst(&typeName) || TypeInfo::stripLeadingVolatile(&typeName)) {
++    }
++    static constexpr auto leadingTypename = "typename "_L1;
++    if (typeName.startsWith(leadingTypename))
++        typeName.remove(0, leadingTypename.size());
++    typeName.replace("<typename "_L1, "<"_L1);
++    typeName.replace(", typename "_L1, ", "_L1);
++    return typeName;
++}
++
++std::optional<TypeInfo>
++    BuilderPrivate::createFunctionTypeInfo(const CXType &type, TypeCategory cat, bool *cacheable) const
++{
++    const int argCount = clang_getNumArgTypes(type);
++    if (argCount < 0)
++        return std::nullopt;
++    auto resultO = createTypeInfoUncached(clang_getResultType(type), cacheable);
++    if (!resultO.has_value())
++        return std::nullopt;
++    resultO->setTypeCategory(cat);
++    for (int a = 0; a < argCount; ++a) {
++        auto argTypeO = createTypeInfoUncached(clang_getArgType(type, unsigned(a)), cacheable);
++        if (!argTypeO.has_value())
++            return std::nullopt;
++        resultO->addArgument(argTypeO.value());
++    }
++    return resultO;
++}
++
++std::optional<TypeInfo>
++    BuilderPrivate::createTypeInfoUncached(const CXType &type, bool *cacheable) const
++{
++    if (type.kind == CXType_FunctionProto)
++        return createFunctionTypeInfo(type, TypeCategory::Function, cacheable);
++
+     if (type.kind == CXType_Pointer) { // Check for function pointers, first.
+         const CXType pointeeType = clang_getPointeeType(type);
+-        const int argCount = clang_getNumArgTypes(pointeeType);
+-        if (argCount >= 0) {
+-            TypeInfo result = createTypeInfoUncached(clang_getResultType(pointeeType),
+-                                                     cacheable);
+-            result.setTypeCategory(TypeCategory::Pointer);
+-            result.setFunctionPointer(true);
+-            for (int a = 0; a < argCount; ++a)
+-                result.addArgument(createTypeInfoUncached(clang_getArgType(pointeeType, unsigned(a)),
+-                                                          cacheable));
+-            return result;
+-        }
++        if (pointeeType.kind == CXType_FunctionProto)
++            return createFunctionTypeInfo(pointeeType, TypeCategory::FunctionPointer, cacheable);
+     }
+ 
+     TypeInfo typeInfo;
+@@ -594,9 +627,12 @@
+     typeInfo.setConstant(clang_isConstQualifiedType(nestedType) != 0);
+     typeInfo.setVolatile(clang_isVolatileQualifiedType(nestedType) != 0);
+ 
+-    QString typeName = getResolvedTypeName(nestedType);
+-    while (TypeInfo::stripLeadingConst(&typeName)
+-           || TypeInfo::stripLeadingVolatile(&typeName)) {
++    QString typeName = fixTypeName(getResolvedTypeName(nestedType,
++                                                       m_baseVisitor->printingPolicy()));
++
++    if (!checkTypeName(typeName)) {
++        m_rejectedTypes.insert(typeName);
++        return std::nullopt;
+     }
+ 
+     // For typedefs within templates or nested classes within templates (iterators):
+@@ -618,33 +654,44 @@
+ 
+     // Obtain template instantiations if the name has '<' (thus excluding
+     // typedefs like "std::string".
+-    if (typeName.contains(u'<'))
+-        addTemplateInstantiations(nestedType, &typeName, &typeInfo);
+ 
+-    typeInfo.setQualifiedName(qualifiedName(typeName));
++    auto clangTypeNameO = clang::parseTypeName(typeName);
++    if (!clangTypeNameO.has_value()) {
++        m_rejectedTypes.insert(typeName);
++        return std::nullopt;
++    }
++
++    const auto &clangTypeName = clangTypeNameO.value();
++    if (!clangTypeName.templateParameters.isEmpty())
++        addTemplateInstantiations(nestedType, clangTypeName.templateParameters, &typeInfo);
++
++    typeInfo.setQualifiedName(clangTypeName.name.split("::"_L1));
+     // 3320:CINDEX_LINKAGE int clang_getNumArgTypes(CXType T); function ptr types?
+     typeInfo.simplifyStdType();
+     return typeInfo;
+ }
+ 
+-TypeInfo BuilderPrivate::createTypeInfo(const CXType &type) const
++std::optional<TypeInfo> BuilderPrivate::createTypeInfo(const CXType &type) const
+ {
+     const auto it = m_typeInfoHash.constFind(type);
+     if (it != m_typeInfoHash.constEnd())
+         return it.value();
+     bool cacheable = true;
+-    TypeInfo result = createTypeInfoUncached(type, &cacheable);
+-    if (cacheable)
+-        m_typeInfoHash.insert(type, result);
+-    return result;
++    auto resultO = createTypeInfoUncached(type, &cacheable);
++    if (resultO.has_value() && cacheable)
++        m_typeInfoHash.insert(type, resultO.value());
++    return resultO;
+ }
+ 
+ void BuilderPrivate::addTypeDef(const CXCursor &cursor, const CXType &cxType)
+ {
+     const QString target = getCursorSpelling(cursor);
++    auto typeInfoO = createTypeInfo(cxType);
++    if (!typeInfoO.has_value())
++        return;
+     auto item = std::make_shared<_TypeDefModelItem>(m_model, target);
+     setFileName(cursor, item.get());
+-    item->setType(createTypeInfo(cxType));
++    item->setType(typeInfoO.value());
+     item->setScope(m_scope);
+     item->setAccessPolicy(accessPolicy(clang_getCXXAccessSpecifier(cursor)));
+     m_scopeStack.back()->addTypeDef(item);
+@@ -674,8 +721,10 @@
+     // Usually "<elaborated>std::list<T>" or "<unexposed>Container1<T>",
+     // as obtained with parser of PYSIDE-323
+     if (type.kind == CXType_Unexposed || type.kind == CXType_Elaborated) {
+-        m_currentTemplateTypeAlias->setType(createTypeInfo(type));
+-        m_scopeStack.back()->addTemplateTypeAlias(m_currentTemplateTypeAlias);
++        if (auto typeO = createTypeInfo(type)) {
++            m_currentTemplateTypeAlias->setType(typeO.value());
++            m_scopeStack.back()->addTemplateTypeAlias(m_currentTemplateTypeAlias);
++        }
+     }
+     m_currentTemplateTypeAlias.reset();
+ }
+@@ -732,9 +781,11 @@
+ {
+     const auto decl = resolveBaseClassType(type);
+     // Note: spelling has "struct baseClass", use type
+-    QString baseClassName = getTypeName(decl.type);
+-    if (baseClassName.startsWith(u"std::")) // Simplify "std::" types
+-        baseClassName = createTypeInfo(decl.type).toString();
++    QString baseClassName = getTypeName(decl.type, m_baseVisitor->printingPolicy());
++    if (baseClassName.startsWith(u"std::")) { // Simplify "std::" types
++        if (auto typeO = createTypeInfo(decl.type))
++            baseClassName = typeO.value().toString();
++    }
+ 
+     auto it = m_cursorClassHash.constFind(decl.declaration);
+     // Not found: Set unqualified name. This happens in cases like
+@@ -916,6 +967,11 @@
+     return std::dynamic_pointer_cast<_FileModelItem>(rootScope);
+ }
+ 
++QStringList Builder::rejectedTypes() const
++{
++    return {d->m_rejectedTypes.cbegin(), d->m_rejectedTypes.cend()};
++}
++
+ static QString msgOutOfOrder(const CXCursor &cursor, const char *expectedScope)
+ {
+     return getCursorKindName(cursor.kind) + u' '
+@@ -944,7 +1000,7 @@
+     return NamespaceType::Default;
+ }
+ 
+-static QString enumType(const CXCursor &cursor)
++static QString enumType(const CXCursor &cursor, PrintingPolicy p)
+ {
+     QString name = getCursorSpelling(cursor); // "enum Foo { v1, v2 };"
+     if (name.contains(u"unnamed enum")) // Clang 16.0
+@@ -952,7 +1008,7 @@
+     if (name.isEmpty()) {
+         // PYSIDE-1228: For "typedef enum { v1, v2 } Foo;", type will return
+         // "Foo" as expected. Care must be taken to exclude real anonymous enums.
+-        name = getTypeName(clang_getCursorType(cursor));
++        name = getTypeName(clang_getCursorType(cursor), p);
+         if (name.contains(u"(unnamed") // Clang 12.0.1
+             || name.contains(u"(anonymous")) { // earlier
+             name.clear();
+@@ -1010,7 +1066,7 @@
+         d->m_scope.back() += "<>"_L1;
+         break;
+     case CXCursor_EnumDecl: {
+-        QString name = enumType(cursor);
++        QString name = enumType(cursor, printingPolicy());
+         EnumKind kind = CEnum;
+         if (name.isEmpty()) {
+             kind = AnonymousEnum;
+@@ -1030,7 +1086,7 @@
+             d->m_currentEnum->setDeprecated(true);
+         const auto enumType = fullyResolveType(clang_getEnumDeclIntegerType(cursor));
+         d->m_currentEnum->setSigned(isSigned(enumType.kind));
+-        d->m_currentEnum->setUnderlyingType(getTypeName(enumType));
++        d->m_currentEnum->setUnderlyingType(getTypeName(enumType, printingPolicy()));
+         if (std::dynamic_pointer_cast<_ClassModelItem>(d->m_scopeStack.back()))
+             d->m_currentEnum->setAccessPolicy(accessPolicy(clang_getCXXAccessSpecifier(cursor)));
+     }
+@@ -1058,10 +1114,8 @@
+         break;
+     case CXCursor_VarDecl:
+         // static class members are seen as CXCursor_VarDecl
+-        if (isClassOrNamespaceCursor(clang_getCursorSemanticParent(cursor))) {
+-             d->addField(cursor);
+-             d->m_currentField->setStatic(true);
+-        }
++        if (isClassOrNamespaceCursor(clang_getCursorSemanticParent(cursor)))
++            d->addField(cursor, true);
+         break;
+     case CXCursor_FieldDecl:
+         d->addField(cursor);
+@@ -1072,13 +1126,16 @@
+     case CXCursor_Constructor:
+     case CXCursor_Destructor: // Note: Also use clang_CXXConstructor_is..Constructor?
+     case CXCursor_CXXMethod:
+-    case CXCursor_ConversionFunction:
++    case CXCursor_ConversionFunction: {
+         // Member functions of other classes can be declared to be friends.
+         // Skip inline member functions outside class, only go by declarations inside class
+         if (d->m_withinFriendDecl || !withinClassDeclaration(cursor))
+             return Skip;
+-        d->m_currentFunction = d->createMemberFunction(cursor, false);
+-        d->m_scopeStack.back()->addFunction(d->m_currentFunction);
++        auto func = d->createMemberFunction(cursor, false);
++        if (!func)
++            return Skip;
++        d->m_currentFunction = func;
++    }
+         break;
+     // Not fully supported, currently, seen as normal function
+     // Note: May appear inside class (member template) or outside (free template).
+@@ -1086,31 +1143,30 @@
+         const CXCursor semParent = clang_getCursorSemanticParent(cursor);
+         if (isClassCursor(semParent)) {
+             if (semParent == clang_getCursorLexicalParent(cursor)) {
+-                d->m_currentFunction = d->createMemberFunction(cursor, true);
+-                d->m_scopeStack.back()->addFunction(d->m_currentFunction);
+-                break;
++                if (auto func = d->createMemberFunction(cursor, true)) {
++                    d->m_currentFunction = func;
++                    break;
++                }
+             }
+             return Skip; // inline member functions outside class
+         }
+-    }
+-        d->m_currentFunction = d->createFunction(cursor, CodeModel::Normal, true);
++        auto func = d->createFunction(cursor, CodeModel::Normal, true);
++        if (!func)
++            return Skip;
++        d->m_currentFunction = func;
+         d->setFileName(cursor, d->m_currentFunction.get());
+-        d->m_scopeStack.back()->addFunction(d->m_currentFunction);
++    }
+         break;
+     case CXCursor_FunctionDecl:
+         // Free functions or functions completely defined within "friend" (class
+         // operators). Note: CXTranslationUnit_SkipFunctionBodies must be off for
+         // clang_isCursorDefinition() to work here.
+         if (!d->m_withinFriendDecl || clang_isCursorDefinition(cursor) != 0) {
+-            auto scope = d->m_scopeStack.size() - 1; // enclosing class
+-            if (d->m_withinFriendDecl) {
+-                // Friend declaration: go back to namespace or file scope.
+-                for (--scope;  d->m_scopeStack.at(scope)->kind() == _CodeModelItem::Kind_Class; --scope) {
+-                }
+-            }
+-            d->m_currentFunction = d->createFunction(cursor, CodeModel::Normal, false);
++            auto func = d->createFunction(cursor, CodeModel::Normal, false);
++            if (!func)
++                return Skip;
++            d->m_currentFunction = func;
+             d->m_currentFunction->setHiddenFriend(d->m_withinFriendDecl);
+-            d->m_scopeStack.at(scope)->addFunction(d->m_currentFunction);
+         }
+         break;
+     case CXCursor_Namespace: {
+@@ -1143,10 +1199,15 @@
+         // and function pointer typedefs.
+         if (!d->m_currentArgument && d->m_currentFunction) {
+             const QString name = getCursorSpelling(cursor);
+-            d->m_currentArgument = std::make_shared<_ArgumentModelItem>(d->m_model, name);
+             const auto type = clang_getCursorType(cursor);
++            auto typeO = d->createTypeInfo(type);
++            if (!typeO.has_value()) {
++                d->m_currentFunction.reset();
++                return Skip;
++            }
++            d->m_currentArgument = std::make_shared<_ArgumentModelItem>(d->m_model, name);
+             d->m_currentArgument->setScopeResolution(hasScopeResolution(type));
+-            d->m_currentArgument->setType(d->createTypeInfo(type));
++            d->m_currentArgument->setType(typeO.value());
+             d->m_currentFunction->addArgument(d->m_currentArgument);
+             QString defaultValueExpression = BuilderPrivate::cursorValueExpression(this, cursor);
+             if (!defaultValueExpression.isEmpty()) {
+@@ -1163,10 +1224,30 @@
+             ? d->createTemplateParameter(cursor) : d->createNonTypeTemplateParameter(cursor);
+         // Apply to function/member template?
+         if (d->m_currentFunction) {
+-            d->m_currentFunction->setTemplateParameters(d->m_currentFunction->templateParameters() << tItem);
++            if (!tItem) {
++                d->m_currentFunction.reset();
++                return Skip;
++            }
++            d->m_currentFunction->addTemplateParameter(tItem);
+         } else if (d->m_currentTemplateTypeAlias) {
++            if (!tItem) {
++                d->m_currentTemplateTypeAlias.reset();
++                return Skip;
++            }
+             d->m_currentTemplateTypeAlias->addTemplateParameter(tItem);
+         } else if (d->m_currentClass) { // Apply to class
++            if (!tItem) {
++                // Failure is fatal if the first parameter cannot be determined, trailing
++                // parameters will be warned about.
++                const bool fatal = d->m_currentClass->templateParameters().isEmpty();
++                const QString message = "Failed to determine template parameter of "_L1
++                                        + d->m_currentClass->name();
++                const Diagnostic d(message, cursor,
++                                   fatal ? CXDiagnostic_Error : CXDiagnostic_Warning);
++                qWarning() << d;
++                appendDiagnostic(d);
++                return fatal ? Error : Skip;
++            }
+             const QString &tplParmName = tItem->name();
+             if (Q_UNLIKELY(!insertTemplateParameterIntoClassName(tplParmName, d->m_currentClass)
+                            || !insertTemplateParameterIntoClassName(tplParmName, &d->m_scope.back()))) {
+@@ -1177,7 +1258,7 @@
+                 appendDiagnostic(d);
+                 return Error;
+             }
+-            d->m_currentClass->setTemplateParameters(d->m_currentClass->templateParameters() << tItem);
++            d->m_currentClass->addTemplateParameter(tItem);
+         }
+     }
+         break;
+@@ -1288,9 +1369,10 @@
+         d->m_currentField.reset();
+         break;
+     case CXCursor_Constructor:
+-        d->qualifyConstructor(cursor);
+         if (d->m_currentFunction) {
++            d->qualifyConstructor(cursor);
+             d->m_currentFunction->_determineType();
++            d->m_scopeStack.back()->addFunction(d->m_currentFunction);
+             d->m_currentFunction.reset();
+         }
+         break;
+@@ -1300,12 +1382,28 @@
+     case CXCursor_FunctionTemplate:
+         if (d->m_currentFunction) {
+             d->m_currentFunction->_determineType();
++            auto scope = d->m_scopeStack.size() - 1; // enclosing class
++            if (cursor.kind == CXCursor_FunctionDecl) {
++                // Free functions or functions completely defined within "friend" (class
++                // operators).
++                if (!d->m_withinFriendDecl || clang_isCursorDefinition(cursor) != 0) {
++                    if (d->m_withinFriendDecl) {
++                        // Friend declaration: go back to namespace or file scope.
++                        for (--scope;
++                             d->m_scopeStack.at(scope)->kind() == _CodeModelItem::Kind_Class;
++                             --scope) {
++                        }
++                    }
++                }
++            }
++            d->m_scopeStack.at(scope)->addFunction(d->m_currentFunction);
+             d->m_currentFunction.reset();
+         }
+         break;
+     case CXCursor_ConversionFunction:
+         if (d->m_currentFunction) {
+             d->m_currentFunction->setFunctionType(CodeModel::ConversionOperator);
++            d->m_scopeStack.back()->addFunction(d->m_currentFunction);
+             d->m_currentFunction.reset();
+         }
+         break;
+--- a/sources/shiboken6/ApiExtractor/clangparser/clangbuilder.h
++++ b/sources/shiboken6/ApiExtractor/clangparser/clangbuilder.h
+@@ -33,6 +33,8 @@
+ 
+     FileModelItem dom() const;
+ 
++    QStringList rejectedTypes() const;
++
+ private:
+     BuilderPrivate *d;
+ };
+--- a/sources/shiboken6/ApiExtractor/clangparser/clangparser.cpp
++++ b/sources/shiboken6/ApiExtractor/clangparser/clangparser.cpp
+@@ -286,7 +286,8 @@
+     QString message;
+     {
+         QTextStream str(&message);
+-        str << "CLANG v" << CINDEX_VERSION_MAJOR << '.' << CINDEX_VERSION_MINOR
++        str << "CLANG v" << LLVM_VERSION << '/'
++            << CINDEX_VERSION_MAJOR << '.' << CINDEX_VERSION_MINOR
+             << " targeting \"" << targetTriple() << "\"/"
+             << clang::compilerTripletValue(clang::compiler())
+             << ", " << pointerSize() << "bit";
+@@ -321,9 +322,19 @@
+     setupTarget(translationUnit);
+ 
+     CXCursor rootCursor = clang_getTranslationUnitCursor(translationUnit);
++#if LLVM_VERSION >= 22
++    CXPrintingPolicy printingPolicy = clang_getCursorPrintingPolicy(rootCursor);
++    clang_PrintingPolicy_setProperty(printingPolicy, CXPrintingPolicy_IncludeNewlines, 0);
++    bv.setPrintingPolicy(printingPolicy);
++#endif
+ 
+     clang_visitChildren(rootCursor, visitorCallback, reinterpret_cast<CXClientData>(&bv));
+ 
++#if LLVM_VERSION >= 22
++    bv.setPrintingPolicy(nullptr);
++    clang_PrintingPolicy_dispose(printingPolicy);
++#endif
++
+     QList<Diagnostic> diagnostics = getDiagnostics(translationUnit);
+     diagnostics.append(bv.diagnostics());
+     bv.setDiagnostics(diagnostics);
+--- a/sources/shiboken6/ApiExtractor/clangparser/clangparser.h
++++ b/sources/shiboken6/ApiExtractor/clangparser/clangparser.h
+@@ -4,7 +4,7 @@
+ #ifndef CLANGPARSER_H
+ #define CLANGPARSER_H
+ 
+-#include <clang-c/Index.h>
++#include "clang_typedefs.h"
+ 
+ #include <QtCore/qbytearraylist.h>
+ #include <QtCore/qhash.h>
+@@ -72,10 +72,14 @@
+     // For usage by the parser
+     bool _handleVisitLocation( const CXSourceLocation &location);
+ 
++    PrintingPolicy printingPolicy() const { return m_printingPolicy; }
++    void setPrintingPolicy(CXPrintingPolicy p) { m_printingPolicy = p; }
++
+ private:
+     SourceFileCache m_fileCache;
+     Diagnostics m_diagnostics;
+     CXFile m_currentCxFile{};
++    PrintingPolicy m_printingPolicy = nullptr;
+     bool m_visitCurrent = true;
+ };
+ 
+new file mode 100644
+--- /dev/null
++++ b/sources/shiboken6/ApiExtractor/clangparser/clangtype.cpp
+@@ -0,0 +1,83 @@
++// Copyright (C) 2026 The Qt Company Ltd.
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0
++
++#include "clangtype.h"
++
++#include <QtCore/qdebug.h>
++
++using namespace Qt::StringLiterals;
++
++// Up until clang version 21, clang_getTypeSpelling() was used to retrieve type names,
++// which returned fully qualified names. In clang 22, clang_getTypeSpelling() was
++// changed to return the actual spelling, that is, no longer return fully qualified names
++// (from for example inner class contexts) unless they were spelled out.
++// clang_getFullyQualifiedName() was provided as a replacement, but that returns
++// template parameters of the class as well, that is, "std::list<int>::value_type"
++// instead of "std::list::value_type". Those they need to be removed for the
++// type entry lookup system to work. This is done by parseTypeName().
++// FIXME: Keep checking whether this can be replaced by a CXPrintingPolicy setting
++// in a later clang version.
++
++namespace clang {
++
++// Find the start of a template starting from the closing '>'
++static qsizetype findTemplateStart(QStringView sv, qsizetype pos)
++{
++    Q_ASSERT(pos > 0 && pos < sv.size() && sv.at(pos) == u'>');
++    int level = 1;
++    for (--pos; pos >= 0; --pos) {
++        switch (sv.at(pos).unicode()) {
++        case '>':
++            ++level;
++            break;
++        case '<':
++            if (--level == 0)
++                return pos;
++            break;
++        default:
++            break;
++        }
++    }
++    return -1;
++}
++
++std::optional<TypeName> parseTypeName(QString t)
++{
++    TypeName result;
++    // Skip over the trailing template parameters "list<T>::iterator<V>" ->
++    // "list<T>::iterator"
++    if (t.endsWith(u'>')) {
++        const auto pos = findTemplateStart(t, t.size() - 1);
++        if (pos == -1)
++            return std::nullopt;
++        result.templateParameters = t.sliced(pos, t.size() - pos);
++        t.truncate(pos);
++    }
++
++    // Remove class template parameters "list<T>::iterator" -> "list::iterator"
++    while (true) {
++        auto specEnd = t.lastIndexOf(">::"_L1);
++        if (specEnd == -1)
++            break;
++        const auto pos = findTemplateStart(t, specEnd);
++        if (pos == -1)
++            return std::nullopt;
++        t.remove(pos, specEnd + 1 - pos);
++    }
++    result.name = t;
++    return result;
++}
++
++QDebug operator<<(QDebug debug, const TypeName &ct)
++{
++    QDebugStateSaver saver(debug);
++    debug.nospace();
++    debug.noquote();
++    debug << "ClangTypeName(name=\"" << ct.name << '"';
++    if (!ct.templateParameters.isEmpty())
++        debug << ", templateParameters=\"" << ct.templateParameters << '"';
++    debug << ')';
++    return debug;
++}
++
++} // namespace clang
+new file mode 100644
+--- /dev/null
++++ b/sources/shiboken6/ApiExtractor/clangparser/clangtype.h
+@@ -0,0 +1,28 @@
++// Copyright (C) 2026 The Qt Company Ltd.
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0
++
++#ifndef CLANGTYPE_H
++#define CLANGTYPE_H
++
++#include <QtCore/qstring.h>
++
++#include <optional>
++
++QT_FORWARD_DECLARE_CLASS(QDebug)
++
++namespace clang {
++
++struct TypeName
++{
++    QString name;
++    QString templateParameters;
++};
++
++// Split a type name "std::list<int>::value_type<T>" into the canonical name
++// "std::list::value_type" and its template parameters "<T>"
++std::optional<TypeName> parseTypeName(QString t);
++
++QDebug operator<<(QDebug, const TypeName &ct);
++} // namespace clang
++
++#endif // CLANGTYPE_H
+--- a/sources/shiboken6/ApiExtractor/clangparser/clangutils.cpp
++++ b/sources/shiboken6/ApiExtractor/clangparser/clangutils.cpp
+@@ -10,6 +10,8 @@
+ 
+ #include <string_view>
+ 
++using namespace Qt::StringLiterals;
++
+ bool operator==(const CXCursor &c1, const CXCursor &c2) noexcept
+ {
+     return c1.kind == c2.kind
+@@ -137,11 +139,26 @@
+     return resolveTypedef(resolveElaboratedType(type));
+ }
+ 
+-QString getTypeName(const CXType &type)
++QString getTypeName(const CXType &type, [[maybe_unused]] PrintingPolicy p)
+ {
++    // Behavioral change, clang_getTypeSpelling() may no longer return the qualified name in 22.1
++#if LLVM_VERSION >= 22
++    // clang_getFullyQualifiedName() can crash (assertion in getFullyQualifiedType)
++    // on types without explicit handling (function types, some dependent types, etc.).
++    // Only use it for types that have a valid type declaration (records, enums, typedefs).
++    if (p && type.kind != CXType_Invalid) {
++        CXCursor decl = clang_getTypeDeclaration(type);
++        if (!clang_isInvalid(decl.kind)) {
++            CXString qualName = clang_getFullyQualifiedName(type, p, 0);
++            QString result = QString::fromUtf8(clang_getCString(qualName));
++            clang_disposeString(qualName);
++            return result;
++        }
++    }
++#endif
+     CXString typeSpelling = clang_getTypeSpelling(type);
+     const QString result = QString::fromUtf8(clang_getCString(typeSpelling));
+     clang_disposeString(typeSpelling);
+     return result;
+ }
+ 
+@@ -157,9 +166,9 @@
+ }
+ 
+ // Resolve elaborated types occurring with clang 16
+-QString getResolvedTypeName(const CXType &type)
++QString getResolvedTypeName(const CXType &type, PrintingPolicy p)
+ {
+-    return getTypeName(resolveElaboratedType(type));
++    return getTypeName(resolveElaboratedType(type), p);
+ }
+ 
+ Diagnostic::Diagnostic(const QString &m, const CXCursor &c, CXDiagnosticSeverity s)
+--- a/sources/shiboken6/ApiExtractor/clangparser/clangutils.h
++++ b/sources/shiboken6/ApiExtractor/clangparser/clangutils.h
+@@ -4,7 +4,8 @@
+ #ifndef CLANGUTILS_H
+ #define CLANGUTILS_H
+ 
+-#include <clang-c/Index.h>
++#include "clang_typedefs.h"
++
+ #include <QtCore/qstring.h>
+ #include <QtCore/qstringlist.h>
+ #include <QtCore/qcompare.h>
+@@ -26,14 +27,10 @@
+ QString getCursorKindName(CXCursorKind cursorKind);
+ QString getCursorSpelling(const CXCursor &cursor);
+ QString getCursorDisplayName(const CXCursor &cursor);
+-QString getTypeName(const CXType &type);
++QString getTypeName(const CXType &type, PrintingPolicy p);
+ bool hasScopeResolution(const CXType &type);
+ CXType fullyResolveType(const CXType &type);
+-QString getResolvedTypeName(const CXType &type);
+-inline QString getCursorTypeName(const CXCursor &cursor)
+-    { return getTypeName(clang_getCursorType(cursor)); }
+-inline QString getCursorResultTypeName(const CXCursor &cursor)
+-    { return getTypeName(clang_getCursorResultType(cursor)); }
++QString getResolvedTypeName(const CXType &type, PrintingPolicy p);
+ 
+ inline bool isCursorValid(const CXCursor &c)
+ {
+--- a/sources/shiboken6/ApiExtractor/messages.cpp
++++ b/sources/shiboken6/ApiExtractor/messages.cpp
+@@ -1116,3 +1116,14 @@
+     result.append(u'\n');
+     return result;
+ }
++
++QString msgRejectedTypes(const QStringList &rejectedTypes)
++{
++    QString result;
++    QTextStream str(&result);
++    str << "Rejected Types (" << rejectedTypes.size() << "):\n";
++    for (const auto &rejectedType : rejectedTypes)
++        str << "  \"" << rejectedType << "\"\n";
++    str << '\n';
++    return result;
++}
+--- a/sources/shiboken6/ApiExtractor/messages.h
++++ b/sources/shiboken6/ApiExtractor/messages.h
+@@ -288,4 +288,6 @@
+ 
+ QString msgCommandLineArguments(const QStringList &argv);
+ 
++QString msgRejectedTypes(const QStringList &rejectedTypes);
++
+ #endif // MESSAGES_H
+--- a/sources/shiboken6/ApiExtractor/parser/codemodel.cpp
++++ b/sources/shiboken6/ApiExtractor/parser/codemodel.cpp
+@@ -345,9 +345,9 @@
+     return m_templateParameters;
+ }
+ 
+-void _ClassModelItem::setTemplateParameters(const TemplateParameterList &templateParameters)
++void _ClassModelItem::addTemplateParameter(const TemplateParameterModelItem &templateParameter)
+ {
+-    m_templateParameters = templateParameters;
++    m_templateParameters.append(templateParameter);
+ }
+ 
+ bool _ClassModelItem::extendsClass(const QString &name) const
+@@ -1475,6 +1475,11 @@
+     m_accessPolicy = accessPolicy;
+ }
+ 
++void _MemberModelItem::addTemplateParameter(const TemplateParameterModelItem &templateParameter)
++{
++    m_templateParameters.append(templateParameter);
++}
++
+ bool _MemberModelItem::isStatic() const
+ {
+     return m_isStatic;
+--- a/sources/shiboken6/ApiExtractor/parser/codemodel.h
++++ b/sources/shiboken6/ApiExtractor/parser/codemodel.h
+@@ -284,7 +284,7 @@
+     void addBaseClass(const BaseClass &b) { m_baseClasses.append(b); }
+ 
+     TemplateParameterList templateParameters() const;
+-    void setTemplateParameters(const TemplateParameterList &templateParameters);
++    void addTemplateParameter(const TemplateParameterModelItem &templateParameter);
+ 
+     bool extendsClass(const QString &name) const;
+ 
+@@ -430,7 +430,7 @@
+     void setAccessPolicy(Access accessPolicy);
+ 
+     TemplateParameterList templateParameters() const { return m_templateParameters; }
+-    void setTemplateParameters(const TemplateParameterList &templateParameters) { m_templateParameters = templateParameters; }
++    void addTemplateParameter(const TemplateParameterModelItem &templateParameter);
+ 
+     TypeInfo type() const;
+     void setType(const TypeInfo &type);
+--- a/sources/shiboken6/ApiExtractor/parser/codemodel_enums.h
++++ b/sources/shiboken6/ApiExtractor/parser/codemodel_enums.h
+@@ -58,13 +58,14 @@
+ Q_DECLARE_FLAGS(FunctionAttributes, FunctionAttribute)
+ Q_DECLARE_OPERATORS_FOR_FLAGS(FunctionAttributes)
+ 
+-// C++ type category for TypeInfo, reflecting clang's CXTypeKind
++// C++ type category for TypeInfo, roughly reflecting clang's CXTypeKind
+ enum class TypeCategory : unsigned char {
+     Other,
+     Builtin,
+     Enum,
+     Pointer,
+     Function,
++    FunctionPointer, // not present in clang
+     Void
+ };
+ 
+--- a/sources/shiboken6/ApiExtractor/parser/typeinfo.cpp
++++ b/sources/shiboken6/ApiExtractor/parser/typeinfo.cpp
+@@ -41,8 +41,7 @@
+         struct {
+             uint m_constant: 1;
+             uint m_volatile: 1;
+-            uint m_functionPointer: 1;
+-            uint m_padding: 29;
++            uint m_padding: 30;
+         };
+     };
+ 
+@@ -223,13 +222,7 @@
+ 
+ bool TypeInfo::isFunctionPointer() const
+ {
+-    return d->m_functionPointer;
+-}
+-
+-void TypeInfo::setFunctionPointer(bool is)
+-{
+-    if (d->m_functionPointer != is)
+-        d->m_functionPointer = is;
++    return d->m_category == TypeCategory::FunctionPointer;
+ }
+ 
+ const QStringList &TypeInfo::arrayElements() const
+@@ -426,8 +419,11 @@
+         break;
+     }
+ 
+-    if (isFunctionPointer()) {
+-        tmp += u" (*)("_s;
++    if (d->m_category == TypeCategory::Function || d->m_category == TypeCategory::FunctionPointer) {
++        tmp += u' ';
++        if (d->m_category == TypeCategory::FunctionPointer)
++            tmp += "(*)"_L1;
++        tmp += u'(';
+         for (qsizetype i = 0; i < d->m_arguments.size(); ++i) {
+             if (i != 0)
+                 tmp += u", "_s;
+@@ -461,7 +457,7 @@
+     return flags == other.flags
+            && m_qualifiedName == other.m_qualifiedName
+            && m_category == other.m_category
+-           && (!m_functionPointer || m_arguments == other.m_arguments)
++           && m_arguments == other.m_arguments
+            && m_instantiations == other.m_instantiations;
+ }
+ 
+@@ -602,8 +598,14 @@
+         debug << ", [pointer]";
+         break;
+     case TypeCategory::Function:
+-        debug << ", [function";
++        debug << ", [function]";
++        break;
++    case TypeCategory::FunctionPointer:
++        debug << ", [function-ptr]";
+         break;
++    default:
++        break;
++
+     }
+     if (!d->m_indirections.isEmpty()) {
+         debug << ", indirections=";
+@@ -625,8 +627,12 @@
+         formatSequence(debug, d->m_instantiations.begin(), d->m_instantiations.end());
+         debug << '>';
+     }
+-    if (d->m_functionPointer) {
+-        debug << ", function ptr(";
++
++    if (d->m_category == TypeCategory::Function || d->m_category == TypeCategory::FunctionPointer) {
++        debug << ", function";
++        if (d->m_category == TypeCategory::FunctionPointer)
++            debug << "_ptr";
++        debug << '(';
+         formatSequence(debug, d->m_arguments.begin(), d->m_arguments.end());
+         debug << ')';
+     }
+--- a/sources/shiboken6/ApiExtractor/parser/typeinfo.h
++++ b/sources/shiboken6/ApiExtractor/parser/typeinfo.h
+@@ -71,7 +71,6 @@
+     void setIndirections(int indirections);
+ 
+     bool isFunctionPointer() const;
+-    void setFunctionPointer(bool is);
+ 
+     const QStringList &arrayElements() const;
+     void setArrayElements(const QStringList &arrayElements);
+--- a/sources/shiboken6/cmake/ShibokenSetup.cmake
++++ b/sources/shiboken6/cmake/ShibokenSetup.cmake
+@@ -83,8 +83,11 @@
+     shiboken_internal_set_python_site_packages()
+ endif()
+ 
++string(REGEX REPLACE "\\.[0-9]+\\.[0-9]+$" "" LLVM_VERSION "${LLVM_PACKAGE_VERSION}")
++
+ set_cmake_cxx_flags()
+-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D QT_NO_CAST_FROM_ASCII -D QT_NO_CAST_TO_ASCII")
++set(CMAKE_CXX_FLAGS
++    "${CMAKE_CXX_FLAGS} -D QT_NO_CAST_FROM_ASCII -D QT_NO_CAST_TO_ASCII -D LLVM_VERSION=${LLVM_VERSION}")
+ 
+ # Force usage of the C++17 standard
+ set(CMAKE_CXX_STANDARD 17)
