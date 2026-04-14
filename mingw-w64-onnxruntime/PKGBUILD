@@ -1,0 +1,404 @@
+# Maintainer: Johannes Schindelin <johannes.schindelin@gmx.de>
+
+_realname=onnxruntime
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+pkgver=1.24.4
+pkgrel=1
+pkgdesc="Cross-platform inference and training machine-learning accelerating engine (mingw-w64)"
+arch=('any')
+mingw_arch=('ucrt64' 'clang64')
+url='https://onnxruntime.ai'
+msys2_repository_url="https://github.com/microsoft/onnxruntime"
+msys2_references=(
+  'purl: pkg:github/microsoft/onnxruntime'
+)
+license=('spdx:MIT')
+depends=("${MINGW_PACKAGE_PREFIX}-cc-libs")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-python"
+             "${MINGW_PACKAGE_PREFIX}-nlohmann-json"
+             "${MINGW_PACKAGE_PREFIX}-eigen3")
+source=("https://github.com/microsoft/onnxruntime/archive/refs/tags/v${pkgver}/${_realname}-${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd ${_realname}-${pkgver}
+
+  # MinGW-w64 provides real SAL annotations via sal.h; the blanket
+  # "not MSVC => stub them out" guard collides with those definitions
+  # and triggers -Werror redefinition errors.
+  sed -i 's/^#ifndef _MSC_VER$/#if !defined(_MSC_VER) \&\& !defined(__MINGW32__)/' \
+    include/onnxruntime/core/session/onnxruntime_c_api.h
+
+  # MinGW supports _aligned_malloc (from malloc.h) just like MSVC.
+  # Without this, the non-MSVC C++ fallback uses posix_memalign which
+  # does not exist on Windows.
+  sed -i 's/^#ifdef _MSC_VER$/\#if defined(_MSC_VER) || defined(_WIN32)/' \
+    onnxruntime/core/mlas/lib/mlasi.h
+
+  # Several cmake files use if(WIN32) to guard MSVC-specific compiler
+  # flags (/wd, /Zc:, /w1).  GCC interprets these as file paths, causing
+  # fatal errors.  Narrow the guards to if(MSVC).
+  sed -i '0,/^if (WIN32)/{s/^if (WIN32)/if (MSVC)/}' \
+    cmake/CMakeLists.txt
+  sed -i 's/^if(WIN32)$/if(MSVC)/' \
+    cmake/onnxruntime_common.cmake
+
+  # The platform-file selection at the top of onnxruntime_common.cmake uses
+  # if(MSVC) to choose between windows/ and posix/ sources.  MinGW is on
+  # Windows but not MSVC, so it needs the Windows platform files.
+  # However, some Windows files (telemetry, ETW logging) require
+  # TraceLoggingProvider.h from the Windows 10 SDK, which MinGW lacks.
+  # Strategy: change if(MSVC) to if(WIN32) so MinGW enters the block,
+  # then filter out SDK-specific files for non-MSVC compilers.
+  sed -i '33s/^if(MSVC)$/if(WIN32)/' \
+    cmake/onnxruntime_common.cmake
+  # After the file(GLOB) expansion, remove MSVC-SDK-only files for MinGW.
+  # telemetry needs TraceLoggingProvider.h, etw_sink needs full ETW.
+  sed -i '/^file(GLOB onnxruntime_common_src CONFIGURE_DEPENDS/,/)/{
+    /)/a\
+if(WIN32 AND NOT MSVC)\
+    list(FILTER onnxruntime_common_src EXCLUDE REGEX "windows/telemetry")\
+    list(FILTER onnxruntime_common_src EXCLUDE REGEX "windows/logging/")\
+endif()
+  }' cmake/onnxruntime_common.cmake
+
+  # device_discovery.cc needs dxcore.h / d3d12.h from the Windows SDK.
+  # Only MSVC has these.
+  sed -i 's/^if (WIN32)$/if (MSVC)/' \
+    cmake/onnxruntime_common.cmake
+
+  sed -i '0,/^if (WIN32)/{s/^if (WIN32)/if (MSVC)/}' \
+    cmake/onnxruntime_mlas.cmake
+
+  # MinGW's <winerror.h> only typedefs HRESULT when
+  # INLINE_HRESULT_FROM_WIN32 is defined.  Include <windef.h>
+  # to get the unconditional typedef.
+  sed -i 's|^#include <winerror.h>$|#include <windef.h>\n#include <winerror.h>|' \
+    include/onnxruntime/core/common/status.h
+
+  # Decouple env.h from the Windows-SDK-only telemetry header.
+  # Replace the WindowsTelemetry include and member with the base Telemetry
+  # class when not building with MSVC.
+  sed -i 's|^#include "core/platform/windows/telemetry.h"$|#ifdef _MSC_VER\n#include "core/platform/windows/telemetry.h"\n#else\n#include "core/platform/telemetry.h"\n#endif|' \
+    onnxruntime/core/platform/windows/env.h
+  sed -i 's/^  WindowsTelemetry telemetry_provider_;/#ifdef _MSC_VER\n  WindowsTelemetry telemetry_provider_;\n#else\n  Telemetry telemetry_provider_;\n#endif/' \
+    onnxruntime/core/platform/windows/env.h
+
+  # MSVC's i64 integer literal suffix does not exist in GCC.
+  sed -i 's/116444736000000000i64/116444736000000000LL/' \
+    onnxruntime/core/platform/windows/env_time.cc
+
+  # Make tracing.h MinGW-safe: it includes <TraceLoggingProvider.h> which
+  # MinGW lacks.  On MinGW, make it an empty header.
+  cat > include/onnxruntime/core/platform/tracing.h << 'TRACING_H'
+#pragma once
+#ifdef _MSC_VER
+#include <windows.h>
+#include <TraceLoggingProvider.h>
+TRACELOGGING_DECLARE_PROVIDER(telemetry_provider_handle);
+#endif
+TRACING_H
+
+  # Make windows/telemetry.h MinGW-safe by providing a stub WindowsTelemetry
+  # class when not building with MSVC.  The stub inherits from the base
+  # Telemetry class (all virtual no-ops) and adds the EtwInternalCallback
+  # typedef plus Register/Unregister stubs so that code referencing these
+  # under #ifdef _WIN32 compiles but does nothing on MinGW.
+  sed -i '/#pragma once/a\
+#ifndef _MSC_VER\
+#include "core/platform/telemetry.h"\
+#include <functional>\
+#include <Windows.h>\
+#include <evntprov.h>\
+static constexpr size_t TelemetrySampleCount = 10;\
+namespace onnxruntime {\
+class WindowsTelemetry : public Telemetry {\
+public:\
+  using EtwInternalCallback = std::function<void(LPCGUID, ULONG, UCHAR,\
+      ULONGLONG, ULONGLONG, PEVENT_FILTER_DESCRIPTOR, PVOID)>;\
+  static void RegisterInternalCallback(const EtwInternalCallback\&) {}\
+  static void UnregisterInternalCallback(const EtwInternalCallback\&) {}\
+};\
+}\
+#else' \
+    onnxruntime/core/platform/windows/telemetry.h
+  echo '#endif  // _MSC_VER' >> onnxruntime/core/platform/windows/telemetry.h
+
+  # Microsoft's WIL (Windows Implementation Libraries) does not support
+  # GCC: its template code assumes MSVC-specific nullptr/int conversions.
+  # env.cc only uses wil::unique_handle and wil::unique_hfile for RAII.
+  # Provide a minimal shim with just those two types for MinGW.
+  cat > onnxruntime/core/platform/windows/mingw_wil_shim.h << 'SHIM'
+#pragma once
+#include <Windows.h>
+#include <cstdlib>
+#ifndef FAIL_FAST_LAST_ERROR_IF
+#define FAIL_FAST_LAST_ERROR_IF(cond) do { if (cond) std::abort(); } while(0)
+#endif
+namespace wil {
+class unique_handle {
+  HANDLE h_ = nullptr;
+  void close() { if (h_ && h_ != INVALID_HANDLE_VALUE) { CloseHandle(h_); h_ = nullptr; } }
+public:
+  unique_handle() = default;
+  explicit unique_handle(HANDLE h) : h_(h) {}
+  ~unique_handle() { close(); }
+  unique_handle(unique_handle&& o) noexcept : h_(o.h_) { o.h_ = nullptr; }
+  unique_handle& operator=(unique_handle&& o) noexcept {
+    if (this != &o) { close(); h_ = o.h_; o.h_ = nullptr; }
+    return *this;
+  }
+  unique_handle(const unique_handle&) = delete;
+  unique_handle& operator=(const unique_handle&) = delete;
+  HANDLE get() const { return h_; }
+  HANDLE* addressof() { return &h_; }
+  HANDLE* put() { close(); return &h_; }
+  explicit operator bool() const { return h_ != nullptr && h_ != INVALID_HANDLE_VALUE; }
+  void reset(HANDLE h = nullptr) { close(); h_ = h; }
+};
+using unique_hfile = unique_handle;
+}
+SHIM
+  sed -i 's|^#include <wil/Resource.h>$|#ifdef _MSC_VER\n#include <wil/Resource.h>\n#else\n#include "core/platform/windows/mingw_wil_shim.h"\n#endif|' \
+    onnxruntime/core/platform/windows/env.cc
+
+  # MinGW needs explicit includes for _S_IREAD/_S_IWRITE and _SH_DENYWR
+  # (MSVC's <io.h> pulls these in transitively; MinGW's does not).
+  # Also provide a GCC-compatible __cpuid wrapper: MSVC's __cpuid(int[4], int)
+  # intrinsic has a different signature than GCC's __cpuid(level, a, b, c, d)
+  # macro from <cpuid.h>.  The Intel hybrid CPU detection code uses MSVC style.
+  sed -i '/#include <io.h>/a\#include <share.h>\n#include <sys/stat.h>' \
+    onnxruntime/core/platform/windows/env.cc
+  sed -i '/#include "core\/platform\/windows\/dll_load_error.h"/a\
+#ifndef _MSC_VER\
+#include <cpuid.h>\
+#undef __cpuid\
+static inline void __cpuid(int info[4], int leaf) {\
+    __cpuid_count(leaf, 0, info[0], info[1], info[2], info[3]);\
+}\
+#endif' \
+    onnxruntime/core/platform/windows/env.cc
+
+  # GCC does not allow implicit FARPROC-to-void* conversion.
+  # There are two call sites: one via a local void* in SearchModulesForSymbol
+  # and one in GetSymbolFromLibrary.
+  sed -i 's/symbol = GetProcAddress(modules\[i\], name);/symbol = reinterpret_cast<void*>(GetProcAddress(modules[i], name));/' \
+    onnxruntime/core/platform/windows/env.cc
+  sed -i 's/\*symbol = ::GetProcAddress(reinterpret_cast<HMODULE>(handle), symbol_name.c_str());/*symbol = reinterpret_cast<void*>(::GetProcAddress(reinterpret_cast<HMODULE>(handle), symbol_name.c_str()));/' \
+    onnxruntime/core/platform/windows/env.cc
+
+  # ETW (Event Tracing for Windows) requires TraceLoggingProvider.h from
+  # the Windows 10 SDK.  MinGW's ntverp.h reports VER_PRODUCTBUILD=3790
+  # (Server 2003 era) so ETW_TRACE_LOGGING_SUPPORTED is never defined and
+  # the EtwSink class does not exist.  The logging code references it behind
+  # #ifdef _WIN32 which fires on MinGW too.  Guard the dead-code branch so
+  # the compiler does not try to instantiate make_unique<EtwSink>.
+  sed -i '/std::make_unique<EtwSink>/i\#ifdef ETW_TRACE_LOGGING_SUPPORTED' \
+    onnxruntime/core/common/logging/logging.cc
+  sed -i '/std::make_unique<EtwSink>/a\#endif' \
+    onnxruntime/core/common/logging/logging.cc
+
+  # Several headers/sources gate ETW telemetry includes (winmeta.h, evntrace.h,
+  # WindowsTelemetry) behind #ifdef _WIN32.  MinGW is _WIN32 but lacks these
+  # SDK headers.  Narrow to _MSC_VER.
+  sed -i 's/^#ifdef _WIN32$/#ifdef _MSC_VER/' \
+    onnxruntime/core/framework/execution_providers.h
+  sed -i 's/^#ifdef _WIN32$/#ifdef _MSC_VER/' \
+    onnxruntime/core/session/provider_registration.cc
+  sed -i 's/defined(_WIN32) && defined(ONNXRUNTIME_ENABLE_INSTRUMENT)/defined(_MSC_VER) \&\& defined(ONNXRUNTIME_ENABLE_INSTRUMENT)/' \
+    onnxruntime/core/session/provider_registration.cc
+
+  # _tpause intrinsic requires -mwaitpkg on GCC but spin_pause.cc gates it
+  # on _WIN32 (always true on MinGW).  Narrow to _MSC_VER so the GCC path
+  # falls through to _mm_pause().
+  sed -i 's/#if defined(_WIN32) || defined(__WAITPKG__)/#if defined(_MSC_VER) || defined(__WAITPKG__)/' \
+    onnxruntime/core/common/spin_pause.cc
+
+  # onnxruntime_graph.cmake gates /EHsc + MSVC linker flags on WIN32.
+  # tensorboard proto has the same problem with /wd flags.
+  sed -i 's/^if (WIN32)$/if (MSVC)/' \
+    cmake/onnxruntime_graph.cmake
+  sed -i 's/^if(WIN32)$/if(MSVC)/' \
+    cmake/tensorboard/compat/proto/CMakeLists.txt
+  # profiler.cc: the StartProfiling<T> template calls fstream::open(basic_string<T>)
+  # which does not compile with libstdc++ when T=wchar_t.  Wrap with
+  # std::filesystem::path so both char and wchar_t work.
+  sed -i '/#include "profiler.h"/a\#include <filesystem>' \
+    onnxruntime/core/common/profiler.cc
+  sed -i 's/profile_stream_.open(file_name,/profile_stream_.open(std::filesystem::path{file_name},/' \
+    onnxruntime/core/common/profiler.cc
+
+  # libstdc++ fstream does not accept std::wstring (an MSVC extension).
+  # PathString is std::wstring on Windows; wrap it with std::filesystem::path
+  # which libstdc++ does accept.  Use brace initialization to avoid the
+  # most vexing parse when constructing temporaries.
+  sed -i '/#include <sstream>/a\#include <filesystem>' \
+    onnxruntime/core/framework/allocation_planner.cc
+  sed -i 's/std::ifstream if_stream(config_file_)/std::ifstream if_stream{std::filesystem::path{config_file_}}/' \
+    onnxruntime/core/framework/allocation_planner.cc
+  sed -i 's/std::ofstream of_stream(config_file_)/std::ofstream of_stream{std::filesystem::path{config_file_}}/' \
+    onnxruntime/core/framework/allocation_planner.cc
+  sed -i 's/std::ifstream f(config_file)/std::ifstream f{std::filesystem::path{config_file}}/' \
+    onnxruntime/core/framework/allocation_planner.cc
+
+  # windres (MinGW resource compiler) chokes on the VER_STRING=\"...\"
+  # define that cmake generates for ninja (no shell to strip backslashes).
+  # The .rc file only provides DLL version metadata; just remove it.
+  sed -i 's|"${ONNXRUNTIME_ROOT}/core/dll/onnxruntime.rc"||' \
+    cmake/onnxruntime.cmake
+  sed -i 's|"${ONNXRUNTIME_ROOT}/core/dll/onnxruntime.rc"||' \
+    cmake/onnxruntime_providers_cpu.cmake
+
+  # inference_session.cc: The two #ifdef _WIN32 blocks containing
+  # active_sessions_mutex_ reference EtwRegistrationManager and EtwSink,
+  # which are part of ETW logging (excluded from MinGW build).
+  # Narrow both to _MSC_VER.
+  sed -i '/#ifdef _WIN32/{N;/active_sessions_mutex_/{s/#ifdef _WIN32/#ifdef _MSC_VER/}}' \
+    onnxruntime/core/session/inference_session.cc
+  # However, the static member definition of active_sessions_mutex_ is used
+  # unconditionally (the declaration in the header has no guard).  Move its
+  # definition outside the _MSC_VER block; only the ETW callback stays guarded.
+  sed -i '/^#ifdef _MSC_VER$/{N;/^#ifdef _MSC_VER\nstd::mutex InferenceSession::active_sessions_mutex_/{s/^#ifdef _MSC_VER\n//}}' \
+    onnxruntime/core/session/inference_session.cc
+  sed -i '/^onnxruntime::WindowsTelemetry::EtwInternalCallback/i\#ifdef _MSC_VER' \
+    onnxruntime/core/session/inference_session.cc
+  # Same fstream(wstring) pattern as allocation_planner.cc.
+  sed -i '/#include <sstream>/a\#include <filesystem>' \
+    onnxruntime/core/session/inference_session.cc
+  sed -i 's/std::ifstream bytes_stream(model_uri, std::ifstream::in | std::ifstream::binary)/std::ifstream bytes_stream{std::filesystem::path{model_uri}, std::ifstream::in | std::ifstream::binary}/' \
+    onnxruntime/core/session/inference_session.cc
+
+  # logging.cc: EtwRegistrationManager::Instance() and ORTTraceLoggingKeyword
+  # are only available with MSVC ETW infrastructure.  Guard the ETW-referencing
+  # blocks.  The include of etw_sink.h also needs an _MSC_VER guard.
+  sed -i 's|^#include "core/platform/windows/logging/etw_sink.h"|#ifdef _MSC_VER\n#include "core/platform/windows/logging/etw_sink.h"\n#endif|' \
+    onnxruntime/core/common/logging/logging.cc
+  sed -i '/#ifdef _WIN32/{N;/auto\& manager =/{s/#ifdef _WIN32/#ifdef _MSC_VER/}}' \
+    onnxruntime/core/common/logging/logging.cc
+
+  # MLAS assembly: The MASM .asm kernels require MSVC's ml64, and the
+  # Linux GAS .S files use System V calling convention (incompatible with
+  # Windows ABI).  Disable MLAS_TARGET_AMD64 on MinGW so that platform.cpp
+  # does not reference assembly kernels; the scalar C++ fallbacks are used
+  # instead.  This is slower but correct; assembly support requires
+  # porting the MASM files to GAS with Windows ABI.
+  sed -i 's/^#define MLAS_TARGET_AMD64$/#if !defined(__MINGW32__)\n#define MLAS_TARGET_AMD64\n#endif/' \
+    onnxruntime/core/mlas/inc/mlas.h
+  sed -i 's/^#define MLAS_TARGET_IX86$/#if !defined(__MINGW32__)\n#define MLAS_TARGET_IX86\n#endif/' \
+    onnxruntime/core/mlas/inc/mlas.h
+  sed -i 's/^#define MLAS_TARGET_AMD64_IX86$/#if !defined(__MINGW32__)\n#define MLAS_TARGET_AMD64_IX86\n#endif/' \
+    onnxruntime/core/mlas/inc/mlas.h
+
+  # etw_sink.h: The dummy EtwRegistrationManager class (used when ETW is
+  # unsupported, which includes MinGW) declares Instance() and SupportsETW()
+  # without definitions.  The implementations live in etw_sink.cc which is
+  # excluded from the MinGW build.  Make them inline in the dummy class.
+  sed -i '/^#else$/,/^#endif/ {
+    s/static EtwRegistrationManager\& Instance();/static EtwRegistrationManager\& Instance() { static EtwRegistrationManager instance; return instance; }/
+    s/static bool SupportsETW();/static bool SupportsETW() { return false; }/
+  }' onnxruntime/core/platform/windows/logging/etw_sink.h
+
+  # path_lib.cc uses PathCchRemoveBackslash/PathCchRemoveFileSpec from
+  # pathcch.dll.  MSVC picks up the library via #pragma comment(lib),
+  # which GCC ignores.  Add it to onnxruntime_common's link libraries.
+  sed -i '/target_link_libraries(onnxruntime_common PUBLIC safeint_interface/a\
+if(MINGW)\
+  target_link_libraries(onnxruntime_common PRIVATE pathcch)\
+endif()' \
+    cmake/onnxruntime_common.cmake
+
+  # GNU ld does not handle .def files passed as bare input files: it tries
+  # to parse them as linker scripts and chokes on the EXPORTS directive.
+  # Remove the .def from the shared library source list (MSVC's link.exe
+  # understands .def-as-source, GCC's ld does not).  This means all
+  # symbols are exported, which is acceptable for a system package.
+  sed -i '/onnxruntime_add_shared_library(onnxruntime/{n;/\${SYMBOL_FILE}/d}' \
+    cmake/onnxruntime.cmake
+
+  # The -DEF:<file> link option is MSVC linker syntax.  GCC parses it as
+  # -D EF:<file> (a harmless preprocessor define) but the .def file is
+  # not actually consumed.  Guard with if(MSVC).
+  sed -i 's|target_link_options(onnxruntime PRIVATE  "-DEF:\${SYMBOL_FILE}")|if(MSVC)\n    target_link_options(onnxruntime PRIVATE  "-DEF:${SYMBOL_FILE}")\n    endif()|' \
+    cmake/onnxruntime.cmake
+
+  # The DELAYLOAD and /ignore:4199 flags at the bottom of onnxruntime.cmake
+  # are MSVC-specific linker options.  The guard "WIN32 AND NOT ...kernel32.lib"
+  # fires on MinGW (whose standard libs use -lkernel32, not kernel32.lib).
+  # Narrow to MSVC.
+  sed -i 's|if (WIN32 AND NOT CMAKE_CXX_STANDARD_LIBRARIES MATCHES kernel32.lib)|if (MSVC AND NOT CMAKE_CXX_STANDARD_LIBRARIES MATCHES kernel32.lib)|' \
+    cmake/onnxruntime.cmake
+}
+
+build() {
+  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
+
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  # The real CMakeLists.txt is in the cmake/ subdirectory.
+  #
+  # ONNX Runtime pins protobuf v21.12, which is ABI-incompatible with
+  # the system protobuf (v33.x).  Let FetchContent build it from source
+  # together with its tightly-coupled deps (abseil, re2).
+  #
+  # Delay-loaded DLLs use MSVC's delayimp.lib; must be disabled for MinGW.
+  # GCC needs -mxsave for the _xgetbv intrinsic used in MLAS
+  # platform detection code; MSVC provides it unconditionally.
+  # -Wno-attributes: ELF visibility attributes are meaningless on PE.
+  # -Wno-unknown-pragmas: MSVC '#pragma warning(push/pop)' is harmless.
+  CXXFLAGS+=" -mxsave -Wno-attributes -Wno-unknown-pragmas -Wno-unused-value -Wno-unused-variable -Wno-unused-parameter -Wno-unused-but-set-variable -Wno-switch -Wno-parentheses -Wno-cast-function-type -Wno-sign-compare -Wno-deprecated-declarations -DPLATFORM_WINDOWS -DNOGDI -DNOMINMAX -D_USE_MATH_DEFINES -D_WIN32_WINNT=0x0A00 -D_NO_W32_PSEUDO_MODIFIERS" \
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake.exe -Wno-dev \
+    -G"Ninja" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
+    -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
+    -Donnxruntime_BUILD_SHARED_LIB=ON \
+    -Donnxruntime_BUILD_UNIT_TESTS=OFF \
+    -Donnxruntime_BUILD_BENCHMARKS=OFF \
+    -Donnxruntime_ENABLE_PYTHON=OFF \
+    -Donnxruntime_USE_CUDA=OFF \
+    -Donnxruntime_USE_TENSORRT=OFF \
+    -Donnxruntime_USE_OPENVINO=OFF \
+    -Donnxruntime_USE_COREML=OFF \
+    -Donnxruntime_USE_DML=OFF \
+    -Donnxruntime_USE_WINML=OFF \
+    -Donnxruntime_USE_XNNPACK=OFF \
+    -Donnxruntime_USE_WEBNN=OFF \
+    -Donnxruntime_USE_WEBGPU=OFF \
+    -Donnxruntime_USE_JSEP=OFF \
+    -Donnxruntime_USE_QNN=OFF \
+    -Donnxruntime_USE_SNPE=OFF \
+    -Donnxruntime_USE_RKNPU=OFF \
+    -Donnxruntime_USE_DNNL=OFF \
+    -Donnxruntime_USE_MIGRAPHX=OFF \
+    -Donnxruntime_USE_ACL=OFF \
+    -Donnxruntime_USE_ARMNN=OFF \
+    -Donnxruntime_USE_CANN=OFF \
+    -Donnxruntime_USE_VITISAI=OFF \
+    -DCMAKE_DISABLE_FIND_PACKAGE_flatbuffers=ON \
+    -Donnxruntime_ENABLE_DELAY_LOADING_WIN_DLLS=OFF \
+    -Donnxruntime_ENABLE_TRAINING=OFF \
+    -Donnxruntime_ENABLE_TRAINING_APIS=OFF \
+    -Donnxruntime_USE_MIMALLOC=OFF \
+    "${_extra_config[@]}" \
+    ../${_realname}-${pkgver}/cmake
+
+  ${MINGW_PREFIX}/bin/cmake --build .
+}
+
+package() {
+  cd "${srcdir}/build-${MSYSTEM}"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
+
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" \
+    "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+}
