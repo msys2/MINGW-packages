@@ -232,6 +232,13 @@ static inline void __cpuid(int info[4], int leaf) {\
   sed -i 's/profile_stream_.open(file_name,/profile_stream_.open(std::filesystem::path{file_name},/' \
     onnxruntime/core/common/profiler.cc
 
+  # file_sink.h: The Windows variant uses wofstream(wstring) which does not
+  # compile on libstdc++.  Wrap with filesystem::path.
+  sed -i '/#include <fstream>/a\#include <filesystem>' \
+    onnxruntime/core/common/logging/sinks/file_sink.h
+  sed -i 's/std::make_unique<std::wofstream>(filename,/std::make_unique<std::wofstream>(std::filesystem::path{filename},/' \
+    onnxruntime/core/common/logging/sinks/file_sink.h
+
   # libstdc++ fstream does not accept std::wstring (an MSVC extension).
   # PathString is std::wstring on Windows; wrap it with std::filesystem::path
   # which libstdc++ does accept.  Use brace initialization to avoid the
@@ -280,6 +287,105 @@ static inline void __cpuid(int info[4], int leaf) {\
   sed -i '/#ifdef _WIN32/{N;/auto\& manager =/{s/#ifdef _WIN32/#ifdef _MSC_VER/}}' \
     onnxruntime/core/common/logging/logging.cc
 
+  # Global fstream(wstring) fix for test code.  libstdc++ does not accept
+  # std::wstring in fstream constructors (MSVC extension), but does accept
+  # std::filesystem::path.  Wrap the first argument of all fstream
+  # constructors in test/ with std::filesystem::path{} so both char and
+  # wchar_t paths work.  This is a broad sed across all test .cc files.
+  find onnxruntime/test -name '*.cc' | while read f; do
+    grep -qE '(ifstream|ofstream)' "$f" || continue
+    # Add #include <filesystem> after first #include if not already present
+    grep -q '<filesystem>' "$f" || \
+      sed -i '0,/#include/{/#include/a\#include <filesystem>
+      }' "$f"
+    # Wrap first arg of fstream(var, flags) and fstream{var, flags}
+    # with std::filesystem::path{}.  The brace-init pattern [^,}]* stops
+    # at } so it won't double-wrap already-wrapped expressions.
+    sed -i \
+      -e 's/\(std::ifstream [a-zA-Z_][a-zA-Z_0-9]*\)(\([^,)]*\),/\1(std::filesystem::path{\2},/g' \
+      -e 's/\(std::ofstream [a-zA-Z_][a-zA-Z_0-9]*\)(\([^,)]*\),/\1(std::filesystem::path{\2},/g' \
+      -e 's/\(std::ifstream [a-zA-Z_][a-zA-Z_0-9]*\){\([^,}]*\),/\1{std::filesystem::path{\2},/g' \
+      -e 's/\(std::ofstream [a-zA-Z_][a-zA-Z_0-9]*\){\([^,}]*\),/\1{std::filesystem::path{\2},/g' \
+      "$f"
+  done
+  # Special cases not caught by the generic pattern:
+  # test_utils.cc: brace-init with explicit wstring type cast
+  sed -i 's/std::ifstream stream{std::basic_string<ORTCHAR_T>{model_path}/std::ifstream stream{std::filesystem::path{std::basic_string<ORTCHAR_T>{model_path}}/' \
+    onnxruntime/test/util/test_utils.cc
+  # env_test.cc: single-argument brace-init ofstream
+  sed -i 's/std::ofstream outfile{sub_dir + ORT_TSTR("\/file")}/std::ofstream outfile{std::filesystem::path{sub_dir + ORT_TSTR("\/file")}}/' \
+    onnxruntime/test/platform/env_test.cc
+  # sinks_test.cc: The #ifdef _WIN32 guards that select wide-char stream types
+  # (std::wclog, std::wcerr, std::wofstream) do not work on MinGW's libstdc++.
+  # Narrow those specific guards to _MSC_VER so MinGW uses narrow streams.
+  # Leave the FileSink guard as _WIN32 (it uses ToWideString which works fine).
+  sed -i '/#ifdef _WIN32/{N;/wofstream\|wclog\|wcerr/{s/#ifdef _WIN32/#ifdef _MSC_VER/}}' \
+    onnxruntime/test/common/logging/sinks_test.cc
+
+  # test/util/file_util.cc uses _SH_DENYRW (from share.h) and _S_IREAD
+  # (from sys/stat.h) which MinGW does not pull in transitively via io.h.
+  sed -i '/#include <io.h>/a\#include <share.h>\n#include <sys/stat.h>' \
+    onnxruntime/test/util/file_util.cc
+
+  # onnxruntime_unittests.cmake: /wd26409 is an MSVC warning flag passed
+  # to the custom_op_library and benchmark targets inside non-UNIX blocks
+  # without an MSVC guard.  GCC interprets it as a file path.
+  sed -i 's/if (NOT onnxruntime_USE_CUDA)/if (MSVC AND NOT onnxruntime_USE_CUDA)/' \
+    cmake/onnxruntime_unittests.cmake
+
+  # test_main.cc: std::locale(".UTF-8", std::locale::ctype) is MSVC-only
+  # (libstdc++ does not have this two-arg locale constructor).
+  # Also, std::wclog.imbue() only makes sense when using wide streams.
+  sed -i '/#ifdef _WIN32/{N;N;/wclog/{s/#ifdef _WIN32/#ifdef _MSC_VER/}}' \
+    onnxruntime/test/unittest_main/test_main.cc
+
+  # element_wise_ops_test.cc: TrigFloatTest template uses noexcept function
+  # references, but MinGW's math functions (sinf, cosf, etc.) are not
+  # declared noexcept.  Extend the _LIBCPP_VERSION guard to also cover MinGW.
+  sed -i 's/#ifdef _LIBCPP_VERSION/#if defined(_LIBCPP_VERSION) || defined(__MINGW32__)/' \
+    onnxruntime/test/providers/cpu/math/element_wise_ops_test.cc
+
+  # strings_helper.h: missing <cstdint> for int64_t (MSVC pulls it in
+  # transitively; MinGW does not).
+  sed -i '/#include <string_view>/a\#include <cstdint>' \
+    onnxruntime/test/perftest/strings_helper.h
+
+  # main.cc (onnx test runner): ifstream(ConcatPathComponent(...)) spans
+  # multiple lines so the global fstream sed can't catch it.  The result
+  # is a wstring which libstdc++ can't handle.
+  sed -i '/#include "TestCase.h"/a\#include <filesystem>' \
+    onnxruntime/test/onnx/main.cc
+  sed -i 's/std::ifstream overrides_ifstream(ConcatPathComponent(/std::ifstream overrides_ifstream(std::filesystem::path{ConcatPathComponent(/' \
+    onnxruntime/test/onnx/main.cc
+  sed -i 's/ORT_TSTR("onnx_backend_test_series_overrides.jsonc")));/ORT_TSTR("onnx_backend_test_series_overrides.jsonc"))});/' \
+    onnxruntime/test/onnx/main.cc
+
+  # Test executables using wmain (wide entry point under #ifdef _WIN32)
+  # need -municode on MinGW so the CRT startup calls wmain instead of
+  # looking for WinMain.
+  sed -i '/set_target_properties(onnx_test_runner PROPERTIES FOLDER/a\
+if(MINGW)\
+  target_link_options(onnx_test_runner PRIVATE -municode)\
+endif()' \
+    cmake/onnxruntime_unittests.cmake
+  sed -i '/set_target_properties(onnxruntime_perf_test PROPERTIES FOLDER/a\
+if(MINGW)\
+  target_link_options(onnxruntime_perf_test PRIVATE -municode)\
+endif()' \
+    cmake/onnxruntime_unittests.cmake
+
+  # performance_runner.cc: ofstream::open(wstring) not supported by
+  # libstdc++.  Wrap with filesystem::path.
+  sed -i '/#include "performance_runner.h"/a\#include <filesystem>' \
+    onnxruntime/test/perftest/performance_runner.cc
+  sed -i 's/outfile.open(path,/outfile.open(std::filesystem::path{path},/' \
+    onnxruntime/test/perftest/performance_runner.cc
+
+  # test_model_loading.cc: uses wil/Resource.h for unique_hfile RAII
+  # wrappers.  Same fix as env.cc: use our MinGW WIL shim.
+  sed -i 's|^#include <wil/Resource.h>$|#ifdef _MSC_VER\n#include <wil/Resource.h>\n#else\n#include "core/platform/windows/mingw_wil_shim.h"\n#endif|' \
+    onnxruntime/test/shared_lib/test_model_loading.cc
+
   # MLAS assembly: The MASM .asm kernels require MSVC's ml64, and the
   # Linux GAS .S files use System V calling convention (incompatible with
   # Windows ABI).  Disable MLAS_TARGET_AMD64 on MinGW so that platform.cpp
@@ -301,6 +407,10 @@ static inline void __cpuid(int info[4], int leaf) {\
     s/static EtwRegistrationManager\& Instance();/static EtwRegistrationManager\& Instance() { static EtwRegistrationManager instance; return instance; }/
     s/static bool SupportsETW();/static bool SupportsETW() { return false; }/
   }' onnxruntime/core/platform/windows/logging/etw_sink.h
+  # The dummy class uses std::function and uint64_t but only includes
+  # severity.h.  Add the missing standard headers.
+  sed -i '/#include "core\/common\/logging\/severity.h"/a\#include <functional>\n#include <cstdint>' \
+    onnxruntime/core/platform/windows/logging/etw_sink.h
 
   # path_lib.cc uses PathCchRemoveBackslash/PathCchRemoveFileSpec from
   # pathcch.dll.  MSVC picks up the library via #pragma comment(lib),
@@ -354,7 +464,13 @@ build() {
   # platform detection code; MSVC provides it unconditionally.
   # -Wno-attributes: ELF visibility attributes are meaningless on PE.
   # -Wno-unknown-pragmas: MSVC '#pragma warning(push/pop)' is harmless.
+  #
+  # --allow-multiple-definition: Without a .def file, MinGW exports ALL
+  # symbols from the DLL.  Test executables that link against both the
+  # DLL import library and the same static libraries get duplicate
+  # symbols.  MSVC avoids this because its .def restricts DLL exports.
   CXXFLAGS+=" -mxsave -Wno-attributes -Wno-unknown-pragmas -Wno-unused-value -Wno-unused-variable -Wno-unused-parameter -Wno-unused-but-set-variable -Wno-switch -Wno-parentheses -Wno-cast-function-type -Wno-sign-compare -Wno-deprecated-declarations -DPLATFORM_WINDOWS -DNOGDI -DNOMINMAX -D_USE_MATH_DEFINES -D_WIN32_WINNT=0x0A00 -D_NO_W32_PSEUDO_MODIFIERS" \
+  LDFLAGS+=" -Wl,--allow-multiple-definition" \
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake.exe -Wno-dev \
     -G"Ninja" \
@@ -362,7 +478,7 @@ build() {
     -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
     -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
     -Donnxruntime_BUILD_SHARED_LIB=ON \
-    -Donnxruntime_BUILD_UNIT_TESTS=OFF \
+    -Donnxruntime_BUILD_UNIT_TESTS=ON \
     -Donnxruntime_BUILD_BENCHMARKS=OFF \
     -Donnxruntime_ENABLE_PYTHON=OFF \
     -Donnxruntime_USE_CUDA=OFF \
@@ -393,6 +509,11 @@ build() {
     ../${_realname}-${pkgver}/cmake
 
   ${MINGW_PREFIX}/bin/cmake --build .
+}
+
+check() {
+  cd "${srcdir}/build-${MSYSTEM}"
+  ${MINGW_PREFIX}/bin/ctest --output-on-failure
 }
 
 package() {
