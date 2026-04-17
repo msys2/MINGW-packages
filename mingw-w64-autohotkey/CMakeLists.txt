@@ -205,8 +205,6 @@ if(MINGW)
   )
   target_link_options(AutoHotkey PRIVATE
     -municode
-    -static-libgcc
-    -static-libstdc++
     -Wl,--stack,4194304
     -Wl,--disable-dynamicbase
     -Wl,--disable-nxcompat
