@@ -20,7 +20,8 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-ninja"
              "${MINGW_PACKAGE_PREFIX}-python"
              "${MINGW_PACKAGE_PREFIX}-nlohmann-json"
-             "${MINGW_PACKAGE_PREFIX}-eigen3")
+             "${MINGW_PACKAGE_PREFIX}-eigen3"
+             "${MINGW_PACKAGE_PREFIX}-uasm")
 source=("https://github.com/microsoft/onnxruntime/archive/refs/tags/v${pkgver}/${_realname}-${pkgver}.tar.gz")
 sha256sums=('SKIP')
 
@@ -386,18 +387,123 @@ endif()' \
   sed -i 's|^#include <wil/Resource.h>$|#ifdef _MSC_VER\n#include <wil/Resource.h>\n#else\n#include "core/platform/windows/mingw_wil_shim.h"\n#endif|' \
     onnxruntime/test/shared_lib/test_model_loading.cc
 
-  # MLAS assembly: The MASM .asm kernels require MSVC's ml64, and the
-  # Linux GAS .S files use System V calling convention (incompatible with
-  # Windows ABI).  Disable MLAS_TARGET_AMD64 on MinGW so that platform.cpp
-  # does not reference assembly kernels; the scalar C++ fallbacks are used
-  # instead.  This is slower but correct; assembly support requires
-  # porting the MASM files to GAS with Windows ABI.
-  sed -i 's/^#define MLAS_TARGET_AMD64$/#if !defined(__MINGW32__)\n#define MLAS_TARGET_AMD64\n#endif/' \
-    onnxruntime/core/mlas/inc/mlas.h
-  sed -i 's/^#define MLAS_TARGET_IX86$/#if !defined(__MINGW32__)\n#define MLAS_TARGET_IX86\n#endif/' \
-    onnxruntime/core/mlas/inc/mlas.h
-  sed -i 's/^#define MLAS_TARGET_AMD64_IX86$/#if !defined(__MINGW32__)\n#define MLAS_TARGET_AMD64_IX86\n#endif/' \
-    onnxruntime/core/mlas/inc/mlas.h
+  # MLAS assembly: The MASM .asm kernels cannot be assembled by GCC's as(1),
+  # but UASM (MASM-compatible assembler) handles them.  Provide the SEH
+  # macros that MASM gets from the Windows SDK's macamd64.inc, enable AVX-512
+  # EVEX encoding, and teach cmake to use UASM for MinGW builds.
+  cat > onnxruntime/core/mlas/lib/amd64/macamd64.inc << 'MACAMD64'
+; macamd64.inc -- SEH frame macros for UASM (replaces Windows SDK header)
+push_reg MACRO reg
+    push    reg
+    .pushreg reg
+ENDM
+
+rex_push_reg MACRO reg
+    push    reg
+    .pushreg reg
+ENDM
+
+alloc_stack MACRO size
+    sub     rsp, size
+    .allocstack size
+ENDM
+
+save_reg MACRO reg, offset
+    mov     [rsp+offset], reg
+    .savereg reg, offset
+ENDM
+
+save_xmm128 MACRO reg, offset
+    movaps  [rsp+offset], reg
+    .savexmm128 reg, offset
+ENDM
+
+END_PROLOGUE MACRO
+    .endprolog
+ENDM
+
+BEGIN_EPILOGUE MACRO
+ENDM
+
+LEAF_ENTRY MACRO Name, Section
+    Section SEGMENT
+    ALIGN   16
+    PUBLIC  Name
+    Name PROC
+ENDM
+
+LEAF_END MACRO Name, Section
+    Name ENDP
+    Section ENDS
+ENDM
+
+NESTED_ENTRY MACRO Name, Section, Handler
+    Section SEGMENT
+    ALIGN   16
+    PUBLIC  Name
+    IF @SizeStr(<Handler>) GT 0
+        Name PROC FRAME:Handler
+    ELSE
+        Name PROC FRAME
+    ENDIF
+ENDM
+
+NESTED_END MACRO Name, Section
+    Name ENDP
+    Section ENDS
+ENDM
+MACAMD64
+
+  # Enable AVX-512 EVEX encoding in UASM (must come before first instruction)
+  sed -i '/INCLUDE macamd64.inc/a\        option evex:1' \
+    onnxruntime/core/mlas/lib/amd64/mlasi.inc
+
+  # Exclude the 4 .asm files that UASM 2.57 cannot assemble:
+  # - ConvSymKernelAvx512Core.asm, QgemmU8X8KernelAvx512Core.asm,
+  #   QgemvU8S8KernelAvx512Core.asm: EVEX operand encoding gaps
+  # - cvtfp16Avx.asm: AVX-NE-CONVERT instructions (too new for UASM 2.57)
+  # These functions will fall back to C++ scalar implementations.
+  for f in ConvSymKernelAvx512Core QgemmU8X8KernelAvx512Core \
+           QgemvU8S8KernelAvx512Core cvtfp16Avx; do
+    sed -i "/${f}.asm/d" cmake/onnxruntime_mlas.cmake
+  done
+
+  # For MinGW, enable ASM_MASM language and configure UASM as the assembler.
+  # The MSVC path uses enable_language(ASM_MASM) gated behind if(MSVC).
+  # Extend it to also fire for MinGW when UASM is available.
+  sed -i '/enable_language(ASM_MASM)$/a\  elseif(MINGW)\
+    set(CMAKE_ASM_MASM_COMPILER "uasm")\
+    set(CMAKE_ASM_MASM_FLAGS "-win64 -I${MLAS_SRC_DIR}/amd64")\
+    enable_language(ASM_MASM)' \
+    cmake/adjust_global_compile_flags.cmake
+
+  # In onnxruntime_mlas.cmake, the MSVC path calls setup_mlas_source_for_windows().
+  # Make MinGW also take that path instead of falling through to the Linux/else branch.
+  sed -i 's/^elseif(MSVC)$/elseif(MSVC OR MINGW)/' \
+    cmake/onnxruntime_mlas.cmake
+  # But setup_mlas_source_for_windows() has /arch:AVX and /arch:AVX2 flags
+  # that are MSVC-only.  Guard them and add GCC equivalents for MinGW.
+  sed -i 's|set_source_files_properties(\${mlas_platform_srcs_avx} PROPERTIES COMPILE_FLAGS "/arch:AVX")|if(MSVC)\n    set_source_files_properties(${mlas_platform_srcs_avx} PROPERTIES COMPILE_FLAGS "/arch:AVX")\n    elseif(MINGW)\n    set_source_files_properties(${mlas_platform_srcs_avx} PROPERTIES COMPILE_FLAGS "-mavx")\n    endif()|' \
+    cmake/onnxruntime_mlas.cmake
+  sed -i 's|set_source_files_properties(\${mlas_platform_srcs_avx2} PROPERTIES COMPILE_FLAGS "/arch:AVX2")|if(MSVC)\n    set_source_files_properties(${mlas_platform_srcs_avx2} PROPERTIES COMPILE_FLAGS "/arch:AVX2")\n    elseif(MINGW)\n    set_source_files_properties(${mlas_platform_srcs_avx2} PROPERTIES COMPILE_FLAGS "-mavx2 -mfma")\n    endif()|' \
+    cmake/onnxruntime_mlas.cmake
+  # Also add GCC flags for specific C++ source files that need SSE4.1/AVX512
+  sed -i '/target_sources(onnxruntime_mlas PRIVATE/,/)/ {
+    /qgemm_kernel_sse41.cpp/a\
+    if(MINGW)\
+      set_source_files_properties(${MLAS_SRC_DIR}/qgemm_kernel_sse41.cpp PROPERTIES COMPILE_FLAGS "-msse4.1")\
+      set_source_files_properties(${MLAS_SRC_DIR}/qgemm_kernel_amx.cpp PROPERTIES COMPILE_FLAGS "-mavx512f -mavx512bw -mavx512dq -mavx512vl -mamx-int8 -mamx-tile")\
+      set_source_files_properties(${MLAS_SRC_DIR}/intrinsics/avx512/quantize_avx512f.cpp PROPERTIES COMPILE_FLAGS "-mavx512f")\
+      set_source_files_properties(${MLAS_SRC_DIR}/sqnbitgemm_kernel_avx512.cpp PROPERTIES COMPILE_FLAGS "-mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni")\
+      set_source_files_properties(${MLAS_SRC_DIR}/sqnbitgemm_kernel_avx512vnni.cpp PROPERTIES COMPILE_FLAGS "-mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512vnni")\
+    endif()
+  }' cmake/onnxruntime_mlas.cmake
+
+  # The target platform detection only normalizes for MSVC.  MinGW on x64
+  # reports CMAKE_SYSTEM_PROCESSOR=AMD64 but setup_mlas_source_for_windows()
+  # checks for "x64".  Extend the normalization to also cover MinGW.
+  sed -i 's/^if (MSVC)$/if (MSVC OR MINGW)/' \
+    cmake/detect_onnxruntime_target_platform.cmake
 
   # etw_sink.h: The dummy EtwRegistrationManager class (used when ETW is
   # unsupported, which includes MinGW) declares Instance() and SupportsETW()
