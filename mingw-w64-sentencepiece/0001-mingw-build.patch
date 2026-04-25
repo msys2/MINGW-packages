@@ -1,0 +1,85 @@
+From: Kreijstal <kreijstal@hotmail.com>
+Subject: [PATCH] Build cleanly under MinGW-w64
+
+The CMake `if(WIN32)` block force-disables shared libraries; constrain it
+to MSVC so MinGW-w64 can build the DLLs.
+
+`setup.py`'s `os.name == 'nt'` branch hard-codes MSVC import-library
+paths. Skip it when Python was built with GCC (mingw-w64) and link the
+extension against the staged `../build/root` static libraries and the
+system abseil.
+---
+ CMakeLists.txt  |  2 +-
+ python/setup.py | 27 +++++++++++++++++++++++++--
+ 2 files changed, 26 insertions(+), 3 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 200e394..69d5302 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -59,7 +59,7 @@ if (SPM_CROSS_SYSTEM_PROCESSOR)
+ endif()
+ 
+ # Disable shared build on windows
+-if(WIN32)
++if(MSVC)
+   set(SPM_ENABLE_SHARED OFF)
+ endif()
+ 
+diff --git a/python/setup.py b/python/setup.py
+index 60e0811..9f060d7 100755
+--- a/python/setup.py
++++ b/python/setup.py
+@@ -57,8 +57,12 @@ def find_abseil_lib(search_root):
+   return absl_libs
+ 
+ 
++def is_mingw():
++  return os.name == 'nt' and 'GCC' in sys.version
++
++
+ def get_protobuf_includes():
+-  prefix = '/I' if os.name == 'nt' else '-I'
++  prefix = '/I' if os.name == 'nt' and not is_mingw() else '-I'
+   paths = [
+       '../src/builtin_pb',
+       './sentencepiece/src/builtin_pb',
+@@ -100,10 +104,29 @@ def find_absl_include(is_msvc=True):
+   return [prefix + os.path.normpath(p) for p in paths]
+ 
+ 
++def get_mingw_cflags_and_libs(root):
++  # Link the static libraries staged by the CMake build (as on other
++  # platforms) and the system abseil DLLs.
++  cflags, libs = get_cflags_and_libs(root)
++  libs += subprocess.check_output(
++      ['pkg-config', '--libs', 'absl_status', 'absl_status_builder',
++       'absl_strings', 'absl_flags', 'absl_flags_parse', 'absl_log',
++       'absl_log_initialize', 'absl_check', 'absl_random_random',
++       'absl_time']
++  ).decode().split()
++  return cflags, libs
++
++
+ class build_ext_unix(_build_ext):
+   """Override build_extension to run cmake."""
+ 
+   def build_extension(self, ext):
++    if is_mingw():
++      ext.extra_compile_args, ext.extra_link_args = get_mingw_cflags_and_libs(
++          '../build/root')
++      _build_ext.build_extension(self, ext)
++      return
++
+     cflags, libs = get_cflags_and_libs('../build/root')
+     abseil_libs = find_abseil_lib('../build/third_party')
+     cflags.extend(find_absl_include(is_msvc=False))
+@@ -291,7 +314,7 @@ else:
+   )
+ 
+ 
+-if os.name == 'nt':
++if os.name == 'nt' and not is_mingw():
+   cmdclass = {'build_ext': build_ext_win}
+ else:
+   cmdclass = {'build_ext': build_ext_unix}
