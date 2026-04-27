@@ -65,7 +65,7 @@ install_packages() {
 list_dll_deps(){
     local target="${1}"
     echo "$(tput setaf 2)MSYS2 DLL dependencies:$(tput sgr0)"
-    find "$target" -regex ".*\.\(exe\|dll\)" -print0 | xargs -0 -r ldd | GREP_COLOR="1;35" grep --color=always "msys-.*\|" \
+    find "$target" -regex ".*\.\(exe\|dll\)" -exec "echo '{}:' && ldd '{}';" | GREP_COLOR="1;35" grep --color=always "msys-.*\|" \
     || echo "        None"
 }
 
@@ -129,6 +129,13 @@ pacman -S --needed --noconfirm ${MINGW_PACKAGE_PREFIX}-ntldd
 # Enable linting
 export MAKEPKG_LINT_PKGBUILD=1
 
+# Run function CHECK if env var CI_MAKEPKG_RUN_CHECK is set (to any value)
+if test "${CI_MAKEPKG_RUN_CHECK+set}" = set; then
+    MAKEPKG_RUN_CHECK_FLAG=''
+else
+    MAKEPKG_RUN_CHECK_FLAG='--nocheck'
+fi
+
 message 'Building packages'
 for package in "${packages[@]}"; do
     echo "::group::[build] ${package}"
@@ -136,7 +143,7 @@ for package in "${packages[@]}"; do
     execute 'Fetch keys' "$DIR/fetch-validpgpkeys.sh"
     cp -r ${package} B && cd B
     message 'Building binary'
-    makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild || failure "${status} failed"
+    makepkg-mingw --noconfirm --noprogressbar --syncdeps --rmdeps --cleanbuild "${MAKEPKG_RUN_CHECK_FLAG}" || failure "${status} failed"
     cd - > /dev/null
     repo-add $PWD/artifacts/ci.db.tar.gz $PWD/B/*.pkg.tar.*
     pacman -Sy
