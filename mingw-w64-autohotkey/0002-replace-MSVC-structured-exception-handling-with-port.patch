@@ -1,0 +1,137 @@
+From b37a169048566549d77d070be55c1ca4d24eb0c3 Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Tue, 14 Apr 2026 23:49:23 +0200
+Subject: [PATCH 02/N] replace MSVC structured exception handling with
+ portable alternatives
+
+MinGW GCC does not support the __try/__except SEH syntax that is an
+MSVC extension.  AutoHotkey uses SEH in two places: the main execution
+loop (AutoHotkey.cpp) and DllCall (DllCall.cpp).
+
+For DllCall, which needs to catch access violations from bad function
+pointers or arguments, the replacement uses SetUnhandledExceptionFilter
+combined with setjmp/longjmp.  The filter stores the exception code
+and triggers a longjmp back to the call site, which then raises the
+error through AutoHotkey's normal error path.
+
+For the main execution loop, the original SEH handler catches
+EXCEPTION_STACK_OVERFLOW ("Function recursion limit exceeded"),
+EXCEPTION_ACCESS_VIOLATION ("Invalid memory read/write"), and other
+system exceptions, formats a user-friendly message, and calls
+CriticalError() to display it before terminating.  The MinGW
+replacement installs a SetUnhandledExceptionFilter callback that
+provides the exact same messages and calls CriticalError() in the
+same way.  The filter is installed before the auto-execute section
+and restored on normal exit.
+---
+ source/AutoHotkey.cpp  | 30 +++++++++++++++++++++++++++++-
+ source/lib/DllCall.cpp | 27 +++++++++++++++++++++++++++
+ 2 files changed, 56 insertions(+), 1 deletion(-)
+
+diff --git a/source/AutoHotkey.cpp b/source/AutoHotkey.cpp
+index 82aa5ea..69c2fba 100644
+--- a/source/AutoHotkey.cpp
++++ b/source/AutoHotkey.cpp
+@@ -305,7 +305,31 @@ int MainExecuteScript(bool aMsgSleep)
+ 	Hotkey::ManifestAllHotkeysHotstringsHooks(); // We want these active now in case auto-execute never returns (e.g. loop)
+ 
+ #ifndef _DEBUG
++#ifdef _MSC_VER
+ 	__try
++#else
++	// MinGW/GCC: use SetUnhandledExceptionFilter to replicate the MSVC
++	// __try/__except that wraps the main execution loop.  The filter
++	// provides the same user-friendly messages for stack overflow and
++	// access violation, then terminates via CriticalError.
++	struct MainSEH {
++		static LONG WINAPI Filter(PEXCEPTION_POINTERS ep) {
++			LPCTSTR msg;
++			auto ecode = ep->ExceptionRecord->ExceptionCode;
++			switch (ecode)
++			{
++			case EXCEPTION_STACK_OVERFLOW: msg = _T("Function recursion limit exceeded."); break;
++			case EXCEPTION_ACCESS_VIOLATION: msg = _T("Invalid memory read/write."); break;
++			default: msg = _T("System exception 0x%X."); break;
++			}
++			TCHAR buf[127];
++			sntprintf(buf, _countof(buf), msg, ecode);
++			g_script.CriticalError(buf); // calls TerminateApp, does not return
++			return EXCEPTION_EXECUTE_HANDLER; // not reached
++		}
++	};
++	auto prev_filter = SetUnhandledExceptionFilter(MainSEH::Filter);
++#endif
+ #endif
+ 	{
+ 		// Run the auto-execute part at the top of the script:
+@@ -334,6 +358,7 @@ int MainExecuteScript(bool aMsgSleep)
+ 		}
+ 	}
+ #ifndef _DEBUG
++#ifdef _MSC_VER
+ 	__except (EXCEPTION_EXECUTE_HANDLER)
+ 	{
+ 		LPCTSTR msg;
+@@ -352,6 +377,9 @@ int MainExecuteScript(bool aMsgSleep)
+ 		g_script.CriticalError(buf);
+ 		return ecode;
+ 	}
+-#endif 
++#else
++	SetUnhandledExceptionFilter(prev_filter);
++#endif
++#endif
+ 	return 0;
+ }
+diff --git a/source/lib/DllCall.cpp b/source/lib/DllCall.cpp
+index baad41c..ee6fc37 100644
+--- a/source/lib/DllCall.cpp
++++ b/source/lib/DllCall.cpp
+@@ -19,6 +19,10 @@ GNU General Public License for more details.
+ #include "globaldata.h"
+ #include "script_func_impl.h"
+ 
++#ifndef _MSC_VER
++#include <setjmp.h>
++#endif
++
+ 
+ 
+ #ifdef ENABLE_DLLCALL
+@@ -252,6 +256,7 @@ DYNARESULT DynaCall(void *aFunction, DYNAPARM aParam[], int aParamCount, DWORD &
+ 	}
+ 
+ 	// Call the function.
++#ifdef _MSC_VER
+ 	__try
+ 	{
+ 		Res.UIntPtr = PerformDynaCall(stackArgsSize, stackArgs, regArgs, aFunction);
+@@ -260,6 +265,28 @@ DYNARESULT DynaCall(void *aFunction, DYNAPARM aParam[], int aParamCount, DWORD &
+ 	{
+ 		aException = GetExceptionCode(); // aException is an output parameter for our caller.
+ 	}
++#else
++	// MinGW/GCC: Use SetUnhandledExceptionFilter for DllCall crash protection,
++	// since __try/__except is an MSVC extension.
++	{
++		static thread_local DWORD seh_exception_code;
++		static thread_local jmp_buf seh_jmp;
++		struct DllCallSEH {
++			static LONG WINAPI Handler(PEXCEPTION_POINTERS ep) {
++				seh_exception_code = ep->ExceptionRecord->ExceptionCode;
++				longjmp(seh_jmp, 1);
++				return EXCEPTION_EXECUTE_HANDLER; // not reached
++			}
++		};
++		seh_exception_code = 0;
++		auto prev_filter = SetUnhandledExceptionFilter(DllCallSEH::Handler);
++		if (setjmp(seh_jmp) == 0)
++			Res.UIntPtr = PerformDynaCall(stackArgsSize, stackArgs, regArgs, aFunction);
++		else
++			aException = seh_exception_code;
++		SetUnhandledExceptionFilter(prev_filter);
++	}
++#endif
+ 
+ #endif
+ 

@@ -1,0 +1,521 @@
+From 0c1e0f4b1412cbd1f6f07c3d25e594e6998cf568 Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Tue, 14 Apr 2026 12:45:22 +0200
+Subject: [PATCH 10/N] fix cross-initialization errors from goto past
+ declarations
+
+GCC 15 treats jumping past an initialized variable declaration as a
+hard error (cross-initialization), even with -fpermissive. MSVC
+silently accepts this pattern, which AutoHotkey uses extensively:
+a variable is declared and initialized inside a block that contains
+goto targets, and the goto can jump past the declaration.
+
+The fix hoists the declaration above the goto targets and separates
+it from the initialization. The initialization then happens at the
+original location, after the goto targets. For reference-type
+variables that cannot be separated from initialization, braces are
+added to create an explicit scope that does not span any goto targets.
+
+This affects 10 files: MdFunc.cpp (5 hoisted declarations in the
+argument marshalling loop), pixel.cpp (8 hoisted declarations across
+getbits, PixelSearch, and ImageSearch), regex.cpp (brace-scoped
+cache entry reference), string.cpp (7 hoisted declarations in
+BIF_Sort), win.cpp (5 hoisted declarations in ControlClick),
+script.cpp (hotkey_uses_otb hoisting), script.h (threads_are_attached
+hoisting in a macro), script2.cpp (2 hoisted declarations in
+BIF_IsTypeish), script_expression.cpp (brace-scoped variables in
+ExpandExpression and hoisted declarations in UserFunc::Call and
+ExpandArgs), and script_gui.cpp (hoisted declarations in
+ControlChoose, Submit, and FindOrCreateFont).
+---
+ source/MdFunc.cpp            | 14 +++++++++-----
+ source/lib/pixel.cpp         | 19 ++++++++++++-------
+ source/lib/regex.cpp         |  2 ++
+ source/lib/string.cpp        | 23 ++++++++++++++++-------
+ source/lib/win.cpp           | 17 ++++++++++++-----
+ source/script.cpp            |  3 ++-
+ source/script.h              |  3 ++-
+ source/script2.cpp           |  6 ++++--
+ source/script_expression.cpp | 13 ++++++++++---
+ source/script_gui.cpp        | 27 +++++++++++++++++++--------
+ 10 files changed, 88 insertions(+), 39 deletions(-)
+
+diff --git a/source/MdFunc.cpp b/source/MdFunc.cpp
+index 5c0454d..25b79f4 100644
+--- a/source/MdFunc.cpp
++++ b/source/MdFunc.cpp
+@@ -4,6 +4,7 @@
+ #include "abi.h"
+ #include "script_func_impl.h"
+ #include "window.h"
++#include <new> // placement new
+ 
+ 
+ // internal to this file
+@@ -160,6 +161,12 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
+ 
+ 	ResultType result = OK;
+ 
++	MdType retval_arg_type = MdType::Void;
++	int retval_index = -1;
++	int output_var_count = 0;
++	auto atp = mArgType;
++	bool aborted = false;
++
+ 	if (mPrototype) // This implies thiscall and an initial 'this' parameter, excluded from mArgType.
+ 	{
+ 		auto obj = ParamIndexToObject(0);
+@@ -181,10 +188,7 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
+ 		first_param_index = 1;
+ 	}
+ 
+-	MdType retval_arg_type = MdType::Void;
+-	int retval_index = -1;
+-	int output_var_count = 0;
+-	auto atp = mArgType;
++	atp = mArgType;
+ 	for (int ai = first_param_index, pi = ai; ai < mArgSlots; ++ai, ++atp)
+ 	{
+ 		bool opt = false;
+@@ -407,7 +411,7 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
+ 	rup = DynaCall(mArgSlots, args, mMcFunc, mThisCall);
+ 
+ 	// Convert the return value
+-	bool aborted = false;
++	aborted = false;
+ 	switch (mRetType)
+ 	{
+ 	// Unused return types are commented out or omitted to reduce code size, and disabled
+diff --git a/source/lib/pixel.cpp b/source/lib/pixel.cpp
+index deffb91..2057982 100644
+--- a/source/lib/pixel.cpp
++++ b/source/lib/pixel.cpp
+@@ -35,6 +35,8 @@ LPCOLORREF getbits(HBITMAP ahImage, HDC hdc, LONG &aWidth, LONG &aHeight, bool &
+ 	HGDIOBJ tdc_orig_select = NULL;
+ 	LPCOLORREF image_pixel = NULL;
+ 	bool success = false;
++	int image_pixel_count;
++	bool is_8bit;
+ 
+ 	// Confirmed:
+ 	// Needs extra memory to prevent buffer overflow due to: "A bottom-up DIB is specified by setting
+@@ -59,7 +61,7 @@ LPCOLORREF getbits(HBITMAP ahImage, HDC hdc, LONG &aWidth, LONG &aHeight, bool &
+ 	aWidth = bmi.bmiHeader.biWidth;
+ 	aHeight = bmi.bmiHeader.biHeight;
+ 
+-	int image_pixel_count = aWidth * aHeight;
++	image_pixel_count = aWidth * aHeight;
+ 	if (   !(image_pixel = (LPCOLORREF)malloc(image_pixel_count * sizeof(COLORREF)))   )
+ 		goto end;
+ 
+@@ -67,7 +69,7 @@ LPCOLORREF getbits(HBITMAP ahImage, HDC hdc, LONG &aWidth, LONG &aHeight, bool &
+ 	// of the extra color table handling for 1-bpp images.  Update: For code simplification, support only
+ 	// 8-bpp images.  If ever support lower color depths, use something like "bmi.bmiHeader.biBitCount > 1
+ 	// && bmi.bmiHeader.biBitCount < 9";
+-	bool is_8bit = (bmi.bmiHeader.biBitCount == 8);
++	is_8bit = (bmi.bmiHeader.biBitCount == 8);
+ 	if (!is_8bit)
+ 		bmi.bmiHeader.biBitCount = 32;
+ 	bmi.bmiHeader.biHeight = -bmi.bmiHeader.biHeight; // Storing a negative inside the bmiHeader struct is a signal for GetDIBits().
+@@ -203,6 +205,7 @@ FResult PixelSearch(BOOL *aFound, ResultToken *aFoundX, ResultToken *aFoundY
+ 	HBITMAP hbitmap_screen = NULL;
+ 	LPCOLORREF screen_pixel = NULL;
+ 	HGDIOBJ sdc_orig_select = NULL;
++	LONG screen_pixel_count;
+ 
+ 	// Some explanation for the method below is contained in this quote from the newsgroups:
+ 	// "you shouldn't really be getting the current bitmap from the GetDC DC. This might
+@@ -234,7 +237,7 @@ FResult PixelSearch(BOOL *aFound, ResultToken *aFoundX, ResultToken *aFoundY
+ 	// second problem [in the test script], since GetPixel even in 16bit will return some "valid"
+ 	// data in the last 3bits of each byte."
+ 	register int i;
+-	LONG screen_pixel_count = screen_width * screen_height;
++	screen_pixel_count = screen_width * screen_height;
+ 	if (screen_is_16bit)
+ 		for (i = 0; i < screen_pixel_count; ++i)
+ 			screen_pixel[i] &= 0xF8F8F8F8;
+@@ -505,6 +508,8 @@ bif_impl FResult ImageSearch(ResultToken &aFoundX, ResultToken &aFoundY
+ 	LPCOLORREF image_pixel = NULL, screen_pixel = NULL, image_mask = NULL;
+ 	HGDIOBJ sdc_orig_select = NULL;
+ 	bool found = false; // Must init here for use by "goto end".
++	int search_width, search_height;
++	LONG image_pixel_count, screen_pixel_count;
+     
+ 	bool image_is_16bit;
+ 	LONG image_width, image_height;
+@@ -537,8 +542,8 @@ bif_impl FResult ImageSearch(ResultToken &aFoundX, ResultToken &aFoundY
+ 		goto end;
+ 
+ 	// Create an empty bitmap to hold all the pixels currently visible on the screen that lie within the search area:
+-	int search_width = aRight - aLeft + 1;
+-	int search_height = aBottom - aTop + 1;
++	search_width = aRight - aLeft + 1;
++	search_height = aBottom - aTop + 1;
+ 	if (   !(sdc = CreateCompatibleDC(hdc)) || !(hbitmap_screen = CreateCompatibleBitmap(hdc, search_width, search_height))   )
+ 		goto end;
+ 
+@@ -554,8 +559,8 @@ bif_impl FResult ImageSearch(ResultToken &aFoundX, ResultToken &aFoundY
+ 	if (   !(screen_pixel = getbits(hbitmap_screen, sdc, screen_width, screen_height, screen_is_16bit))   )
+ 		goto end;
+ 
+-	LONG image_pixel_count = image_width * image_height;
+-	LONG screen_pixel_count = screen_width * screen_height;
++	image_pixel_count = image_width * image_height;
++	screen_pixel_count = screen_width * screen_height;
+ 	int i, j, k, x, y; // Declaring as "register" makes no performance difference with current compiler, so let the compiler choose which should be registers.
+ 
+ 	// If either is 16-bit, convert *both* to the 16-bit-compatible 32-bit format:
+diff --git a/source/lib/regex.cpp b/source/lib/regex.cpp
+index 1acef30..368b1d2 100644
+--- a/source/lib/regex.cpp
++++ b/source/lib/regex.cpp
+@@ -599,6 +599,7 @@ break_both:
+ 
+ 	// ADD THE NEWLY-COMPILED REGEX TO THE CACHE.
+ 	// An earlier stage has set insert_pos to be the desired insert-position in the cache.
++	{ // Braces added to limit scope of reference (avoids cross-initialization on goto).
+ 	pcre_cache_entry &this_entry = sCache[insert_pos]; // For performance and convenience.
+ 	if (this_entry.re_compiled) // An existing cache item is being overwritten, so free it's attributes.
+ 	{
+@@ -629,6 +630,7 @@ break_both:
+ 
+ 	LeaveCriticalSection(&g_CriticalRegExCache);
+ 	return re_compiled; // Indicate success.
++	} // End of this_entry reference scope.
+ 
+ match_found: // RegEx was found in the cache at position sLastFound, so return the cached info back to the caller.
+ 	aExtra = sCache[sLastFound].extra;
+diff --git a/source/lib/string.cpp b/source/lib/string.cpp
+index da69084..2905a9b 100644
+--- a/source/lib/string.cpp
++++ b/source/lib/string.cpp
+@@ -928,6 +928,15 @@ BIF_DECL(BIF_Sort)
+ 		}
+ 	}
+ 
++	// Hoisted declarations (separated from initialization to avoid cross-initialization on goto).
++	size_t aContents_length;
++	int unit_size;
++	size_t item_size;
++	LPTSTR *item_curr;
++	size_t item_count_minus_1;
++	DWORD omit_dupe_count;
++	LPTSTR item_prev;
++
+ 	if (!ParamIndexIsOmitted(2))
+ 	{
+ 		if (  !(g_SortFunc = ParamIndexToObject(2))  )
+@@ -950,7 +959,7 @@ BIF_DECL(BIF_Sort)
+ 	for (item_count = 1, cp = aContents; *cp; ++cp)  // Start at 1 since item_count is delimiter_count+1
+ 		if (*cp == delimiter)
+ 			++item_count;
+-	size_t aContents_length = cp - aContents;
++	aContents_length = cp - aContents;
+ 
+ 	// If the last character in the unsorted list is a delimiter then technically the final item
+ 	// in the list is a blank item.  However, if the options specify not to allow that, don't count that
+@@ -1023,8 +1032,8 @@ BIF_DECL(BIF_Sort)
+ 	// Create the array of pointers that points into aContents to each delimited item.
+ 	// Use item_count + 1 to allow space for the last (blank) item in case
+ 	// trailing_delimiter_indicates_trailing_blank_item is false:
+-	int unit_size = sort_random ? 2 : 1;
+-	size_t item_size = unit_size * sizeof(LPTSTR);
++	unit_size = sort_random ? 2 : 1;
++	item_size = unit_size * sizeof(LPTSTR);
+ 	item = (LPTSTR *)malloc((item_count + 1) * item_size);
+ 	if (!item)
+ 	{
+@@ -1044,7 +1053,7 @@ BIF_DECL(BIF_Sort)
+ 	//    into the result.
+ 	// 2) Store a marker/pointer to each item (string) in aContents so that we know where
+ 	//    each item begins for sorting and recopying purposes.
+-	LPTSTR *item_curr = item; // i.e. Don't use [] indexing for the reason in the paragraph previous to above.
++	item_curr = item; // i.e. Don't use [] indexing for the reason in the paragraph previous to above.
+ 	for (item_count = 0, cp = *item_curr = aContents; *cp; ++cp)
+ 	{
+ 		if (*cp == delimiter)  // Each delimiter char becomes the terminator of the previous key phrase.
+@@ -1112,11 +1121,11 @@ BIF_DECL(BIF_Sort)
+ 	aResultToken.symbol = SYM_STRING;
+ 
+ 	// Set default in case original last item is still the last item, or if last item was omitted due to being a dupe:
+-	size_t i, item_count_minus_1 = item_count - 1;
+-	DWORD omit_dupe_count = 0;
++	size_t i; item_count_minus_1 = item_count - 1;
++	omit_dupe_count = 0;
+ 	bool keep_this_item;
+ 	LPTSTR source, dest;
+-	LPTSTR item_prev = NULL;
++	item_prev = NULL;
+ 
+ 	// Copy the sorted result back into output_var.  Do all except the last item, since the last
+ 	// item gets special treatment depending on the options that were specified.
+diff --git a/source/lib/win.cpp b/source/lib/win.cpp
+index 416398d..1df50fd 100644
+--- a/source/lib/win.cpp
++++ b/source/lib/win.cpp
+@@ -412,6 +412,13 @@ bif_impl FResult ControlClick(ExprTokenType *aControlSpec, ExprTokenType *aWinTi
+ 	}
+ 	ASSERT(target_window != NULL);
+ 
++	// Hoisted declarations (separated from initialization to avoid cross-initialization on goto).
++	WPARAM wparam_up;
++	bool vk_is_wheel;
++	bool vk_is_hwheel;
++	LPARAM lparam;
++	FResult result;
++
+ 	// It's debatable, but might be best for flexibility (and backward compatibility) to allow target_window to itself
+ 	// be a control (at least for the position_mode handler below).  For example, the script may have called SetParent
+ 	// to make a top-level window the child of some other window, in which case this policy allows it to be seen like
+@@ -485,9 +492,9 @@ bif_impl FResult ControlClick(ExprTokenType *aControlSpec, ExprTokenType *aWinTi
+ 	}
+ 
+ 	UINT msg_down, msg_up;
+-	WPARAM wparam, wparam_up = 0;
+-	bool vk_is_wheel = aVK == VK_WHEEL_UP || aVK == VK_WHEEL_DOWN;
+-	bool vk_is_hwheel = aVK == VK_WHEEL_LEFT || aVK == VK_WHEEL_RIGHT; // v1.0.48: Lexikos: Support horizontal scrolling in Windows Vista and later.
++	WPARAM wparam; wparam_up = 0;
++	vk_is_wheel = aVK == VK_WHEEL_UP || aVK == VK_WHEEL_DOWN;
++	vk_is_hwheel = aVK == VK_WHEEL_LEFT || aVK == VK_WHEEL_RIGHT; // v1.0.48: Lexikos: Support horizontal scrolling in Windows Vista and later.
+ 
+ 	if (vk_is_wheel)
+ 	{
+@@ -536,7 +543,7 @@ bif_impl FResult ControlClick(ExprTokenType *aControlSpec, ExprTokenType *aWinTi
+ 		}
+ 	}
+ 
+-	LPARAM lparam = MAKELPARAM(click.x, click.y);
++	lparam = MAKELPARAM(click.x, click.y);
+ 
+ 	// SetActiveWindow() requires ATTACH_THREAD_INPUT to succeed.  Even though the MSDN docs state
+ 	// that SetActiveWindow() has no effect unless the parent window is foreground, Jon insists
+@@ -560,7 +567,7 @@ bif_impl FResult ControlClick(ExprTokenType *aControlSpec, ExprTokenType *aWinTi
+ 	//    ControlGet, HWND, HWND,, OK, A  ; Get the HWND of the OK button.
+ 	//    ControlClick,, ahk_id %HWND%
+ 
+-	FResult result = OK;
++	result = OK;
+ 
+ 	if (vk_is_wheel || vk_is_hwheel) // v1.0.48: Lexikos: Support horizontal scrolling in Windows Vista and later.
+ 	{
+diff --git a/source/script.cpp b/source/script.cpp
+index 93f4075..298af89 100644
+--- a/source/script.cpp
++++ b/source/script.cpp
+@@ -1772,6 +1772,7 @@ ResultType Script::LoadIncludedFile(TextStream *fp, int aFileIndex)
+ 		// This must be reset for each iteration because a prior iteration may have changed it, even
+ 		// indirectly by calling something that changed it:
+ 		mCurrLine = NULL;  // To signify that we're in transition, trying to load a new one.
++		bool hotkey_uses_otb; // Hoisted declaration (avoids cross-initialization on goto).
+ 
+ 		if (!GetLineContinuation(fp, buf, next_buf, phys_line_number, has_continuation_section))
+ 			return FAIL;
+@@ -1789,7 +1790,7 @@ process_completed_line:
+ 
+ 		hotstring_start = NULL;
+ 		hotkey_flag = NULL;
+-		bool hotkey_uses_otb = false; // used for hotstrings too.
++		hotkey_uses_otb = false; // used for hotstrings too.
+ 		if (buf[0] == ':' && buf[1])
+ 		{
+ 			hotstring_options = buf + 1; // Point it to the hotstring's option letters, if any.
+diff --git a/source/script.h b/source/script.h
+index 15420a6..188df8b 100644
+--- a/source/script.h
++++ b/source/script.h
+@@ -75,7 +75,8 @@ enum VariableTypeType {VAR_TYPE_INVALID, VAR_TYPE_NUMBER, VAR_TYPE_INTEGER, VAR_
+ 		threads_are_attached = AttachThreadInput(g_MainThreadID, target_thread, TRUE) != 0;
+ // BELOW IS SAME AS ABOVE except it checks do_activate and also does a SetActiveWindow():
+ #define ATTACH_THREAD_INPUT_AND_SETACTIVEWINDOW_IF_DO_ACTIVATE \
+-	bool threads_are_attached = false;\
++	bool threads_are_attached;\
++	threads_are_attached = false;\
+ 	DWORD target_thread;\
+ 	if (do_activate)\
+ 	{\
+diff --git a/source/script2.cpp b/source/script2.cpp
+index d3c0355..aba9f3d 100644
+--- a/source/script2.cpp
++++ b/source/script2.cpp
+@@ -2109,6 +2109,8 @@ BIF_DECL(BIF_IsTypeish)
+ 	auto variable_type = (VariableTypeType)_f_callee_id;
+ 	bool if_condition;
+ 	TCHAR *cp;
++	LPTSTR aValueStr; // Hoisted declaration (avoids cross-initialization on goto).
++	StringCaseSenseType string_case_sense; // Hoisted declaration.
+ 
+ 	// The first set of checks are for isNumber(), isInteger() and isFloat(), which permit pure numeric values.
+ 	switch (TypeOfToken(*aParam[0]))
+@@ -2153,8 +2155,8 @@ BIF_DECL(BIF_IsTypeish)
+ 		}
+ 	}
+ 	// Since above did not return or goto, the value is a string.
+-	LPTSTR aValueStr = ParamIndexToString(0);
+-	auto string_case_sense = ParamIndexToCaseSense(1); // For IsAlpha, IsAlnum, IsUpper, IsLower.
++	aValueStr = ParamIndexToString(0);
++	string_case_sense = ParamIndexToCaseSense(1); // For IsAlpha, IsAlnum, IsUpper, IsLower.
+ 	switch (string_case_sense)
+ 	{
+ 	case SCS_INSENSITIVE: // This case also executes when the parameter is omitted, such as for functions which don't have this parameter.
+diff --git a/source/script_expression.cpp b/source/script_expression.cpp
+index cac8cf2..ccf9f47 100644
+--- a/source/script_expression.cpp
++++ b/source/script_expression.cpp
+@@ -640,6 +640,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
+ 		// Get the first operand for this operator (for non-unary operators, this is the right-side operand):
+ 		if (!stack_count) // Prevent stack underflow.  An expression such as -*3 causes this.
+ 			goto abort_with_exception;
++		{ // Braces added to scope 'right' so gotos from above can jump to push_this_token without crossing its initialization.
+ 		ExprTokenType &right = *STACK_POP;
+ 		if (right.symbol == SYM_MISSING)
+ 		{
+@@ -1289,6 +1290,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
+ 			// Now fall through and push this_token onto the stack as an operand for use by future operators.
+ 			// This is because by convention, an assignment like "x+=1" produces a usable operand.
+ 		}
++		} // End of scope for 'right'.
+ 
+ push_this_token:
+ 		ASSERT(stack_count < mArg[aArgIndex].max_stack);
+@@ -1298,6 +1300,7 @@ push_this_token:
+ 	if (stack_count != 1) // Even for multi-statement expressions, the stack should have only one item left on it:
+ 		goto abort_with_exception; // the overall result.  Any conditions that cause this *should* be detected at load time.
+ 
++	{ // Braces added to scope 'result_token' so gotos from above can jump to labels below without crossing its initialization.
+ 	ExprTokenType &result_token = *stack[0];  // For performance and convenience.  Even for multi-statement, the bottommost item on the stack is the final result so that things like var1:=1,var2:=2 work.
+ 
+ 	// Although ACT_EXPRESSION was already checked higher above for function calls, there are other ways besides
+@@ -1495,6 +1498,7 @@ push_this_token:
+ 		error_value = &result_token;
+ 		goto type_mismatch;
+ 	} // switch (result_token.symbol)
++	} // End of scope for 'result_token'.
+ 
+ // ALL PATHS ABOVE SHOULD "GOTO".  TO CATCH BUGS, ANY THAT DON'T FALL INTO "ABORT" BELOW.
+ abort_with_exception:
+@@ -1798,6 +1802,8 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
+ 		UDFCallInfo recurse(this);
+ 
+ 		int j, count_of_actuals_that_have_formals;
++		int default_expr;
++		ResultType result;
+ 		count_of_actuals_that_have_formals = (aParamCount > mParamCount)
+ 			? mParamCount  // Omit any actuals that lack formals (this can happen when a dynamic call passes too many parameters).
+ 			: aParamCount;
+@@ -1910,7 +1916,7 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
+ 			}
+ 		}
+ 
+-		int default_expr = mParamCount;
++		default_expr = mParamCount;
+ 		for (j = 0; j < mParamCount; ++j) // For each formal parameter.
+ 		{
+ 			FuncParam &this_formal_param = mParam[j]; // For performance and convenience.
+@@ -2031,7 +2037,7 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
+ 
+ 		DEBUGGER_STACK_PUSH(&recurse)
+ 
+-		ResultType result = OK;
++		result = OK;
+ 		// Execute any default initializers that weren't simple constants.  This is not done in
+ 		// the loop above for two reasons:
+ 		//  1) It needs to be after DEBUGGER_STACK_PUSH (which isn't moved because it probably
+@@ -2108,6 +2114,7 @@ ResultType Line::ExpandArgs(ResultToken *aResultTokens)
+ 	// the calling of functions in the script:
+ 	LPTSTR arg_deref[MAX_ARGS];
+ 	int i;
++	int max_params;
+ 
+ 	// Make two passes through this line's arg list.  This is done because the performance of
+ 	// realloc() is worse than doing a free() and malloc() because the former often does a memcpy()
+@@ -2306,7 +2313,7 @@ ResultType Line::ExpandArgs(ResultToken *aResultTokens)
+ 	// that all the other sections don't need to check mArgc anymore.
+ 	// Benchmarks show that it doesn't help performance to try to tweak this with a pre-check such as
+ 	// "if (mArgc < max_params)":
+-	int max_params = g_act[mActionType].MaxParams; // Resolve once for performance.
++	max_params = g_act[mActionType].MaxParams; // Resolve once for performance.
+ 	for (i = mArgc; i < max_params; ++i) // START AT mArgc.  For performance, this only does the actual max args for THIS command, not MAX_ARGS.
+ 		sArgDeref[i] = _T("");
+ 
+diff --git a/source/script_gui.cpp b/source/script_gui.cpp
+index 73c0550..d2bc83a 100644
+--- a/source/script_gui.cpp
++++ b/source/script_gui.cpp
+@@ -1315,6 +1315,7 @@ ResultType GuiType::ControlChoose(GuiControlType &aControl, ExprTokenType &aPara
+ {
+ 	int selection_index = -1;
+ 	bool is_choose_string = true;
++	UINT msg_set_index, msg_select_string, msg_find_string; // Hoisted (avoids cross-initialization on goto).
+ 	switch (TypeOfToken(aParam))
+ 	{
+ 	case SYM_INTEGER: is_choose_string = false; break;
+@@ -1322,7 +1323,7 @@ ResultType GuiType::ControlChoose(GuiControlType &aControl, ExprTokenType &aPara
+ 	}
+ 	TCHAR buf[MAX_NUMBER_SIZE];
+ 	
+-	UINT msg_set_index = 0, msg_select_string = 0, msg_find_string = 0;
++	msg_set_index = 0; msg_select_string = 0; msg_find_string = 0;
+ 	switch(aControl.type)
+ 	{
+ 	case GUI_CONTROL_TAB:
+@@ -7759,6 +7760,11 @@ FResult GuiType::Submit(optl<BOOL> aHideIt, IObject *&aRetVal)
+ 
+ 	// Handle all non-radio controls:
+ 	GuiIndexType u;
++	// Hoisted declarations (avoids cross-initialization on goto).
++	int group_radios;
++	int group_radios_with_name;
++	LPTSTR group_name;
++	int selection_number;
+ 	for (u = 0; u < mControlCount; ++u)
+ 	{
+ 		GuiControlType& control = *mControl[u]; // For performance and readability.
+@@ -7788,10 +7794,10 @@ FResult GuiType::Submit(optl<BOOL> aHideIt, IObject *&aRetVal)
+ 
+ 	// Handle GUI_CONTROL_RADIO separately so that any radio group that has a single name
+ 	// to share among all its members can be given special treatment:
+-	int group_radios = 0;           // The number of radio buttons in the current group.
+-	int group_radios_with_name = 0; // The number of the above that have a name.
+-	LPTSTR group_name = NULL;       // The last-found name of the current group.
+-	int selection_number = 0;       // Which radio in the current group is selected (0 if none).
++	group_radios = 0;           // The number of radio buttons in the current group.
++	group_radios_with_name = 0; // The number of the above that have a name.
++	group_name = NULL;       // The last-found name of the current group.
++	selection_number = 0;       // Which radio in the current group is selected (0 if none).
+ 	LPTSTR output_name;
+ 
+ 	// The below uses <= so that it goes one beyond the limit.  This allows the final radio group
+@@ -8087,6 +8093,11 @@ int GuiType::FindOrCreateFont(LPCTSTR aOptions, LPCTSTR aFontName, FontType *aFo
+ 
+ 	int point_size = 0;
+ 
++	// Hoisted declarations (avoids cross-initialization on goto).
++	HDC hdc;
++	int pixels_per_point_y;
++	int font_index;
++
+ 	TCHAR option[MAX_NUMBER_SIZE + 1];
+ 	LPCTSTR next_option, option_end;
+ 	for (next_option = aOptions; *(next_option = omit_leading_whitespace(next_option)); next_option = option_end)
+@@ -8139,10 +8150,10 @@ int GuiType::FindOrCreateFont(LPCTSTR aOptions, LPCTSTR aFontName, FontType *aFo
+ 	if (aColor) // Caller wanted color returned in an output parameter.
+ 		*aColor = color;
+ 
+-	HDC hdc = GetDC(HWND_DESKTOP);
++	hdc = GetDC(HWND_DESKTOP);
+ 	// Fetch the value every time in case it can change while the system is running (e.g. due to changing
+ 	// display to TV-Out, etc).
+-	int pixels_per_point_y = GetDeviceCaps(hdc, LOGPIXELSY);
++	pixels_per_point_y = GetDeviceCaps(hdc, LOGPIXELSY);
+ 	
+ 	// MulDiv() is usually better because it has automatic rounding, getting the target font
+ 	// closer to the size specified.  This must be done prior to calling FindFont below:
+@@ -8158,7 +8169,7 @@ int GuiType::FindOrCreateFont(LPCTSTR aOptions, LPCTSTR aFontName, FontType *aFo
+ 
+ 	// Now that the attributes of the requested font are known, see if such a font already
+ 	// exists in the array:
+-	int font_index = FindFont(font);
++	font_index = FindFont(font);
+ 	if (font_index != -1) // Match found.
+ 		return font_index;
+ 

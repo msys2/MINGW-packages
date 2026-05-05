@@ -8,6 +8,8 @@ add_definitions(-DWIN32 -D_WIN32_WINNT=0x603 -DFREE_WINDOWS)
 # Support restoring this value once pre-compiled libraries have been handled.
 set(WITH_STATIC_LIBS_INIT ${WITH_STATIC_LIBS})
 
+unset(LIBDIR)
+
 # Wrapper to prefer static libraries
 macro(find_package_wrapper)
   if(WITH_STATIC_LIBS)
@@ -20,12 +22,17 @@ endmacro()
 # ----------------------------------------------------------------------------
 # Precompiled Libraries
 #
-
 find_package_wrapper(JPEG REQUIRED)
 find_package_wrapper(PNG REQUIRED)
 find_package_wrapper(ZLIB REQUIRED)
 find_package_wrapper(Zstd REQUIRED)
 find_package_wrapper(Epoxy REQUIRED)
+find_package_wrapper(fmt REQUIRED)
+if(DEFINED fmt_DIR)
+  # Hide the fmt_DIR from the standard user settings to be consistent with our
+  # other "here is the library" settings.
+  mark_as_advanced(fmt_DIR)
+endif()
 
 # XXX Linking errors with debian static tiff :/
 # find_package_wrapper(TIFF REQUIRED)
@@ -42,21 +49,23 @@ if(WITH_VULKAN_BACKEND)
 endif()
 
 function(check_freetype_for_brotli)
-  if((DEFINED HAVE_BROTLI AND HAVE_BROTLI) AND
-     (DEFINED HAVE_BROTLI_INC AND ("${HAVE_BROTLI_INC}" STREQUAL "${FREETYPE_INCLUDE_DIRS}")))
-    # Pass, the includes didn't change, use the cached value.
-  else()
-    unset(HAVE_BROTLI CACHE)
-    include(CheckSymbolExists)
-    set(CMAKE_REQUIRED_INCLUDES ${FREETYPE_INCLUDE_DIRS})
-    check_symbol_exists(FT_CONFIG_OPTION_USE_BROTLI "freetype/config/ftconfig.h" HAVE_BROTLI)
-    unset(CMAKE_REQUIRED_INCLUDES)
-    if(NOT HAVE_BROTLI)
-      unset(HAVE_BROTLI CACHE)
-      message(FATAL_ERROR "Freetype needs to be compiled with brotli support!")
+  if((DEFINED HAVE_BROTLI) AND (DEFINED HAVE_BROTLI_INC))
+    if(HAVE_BROTLI AND ("${HAVE_BROTLI_INC}" STREQUAL "${FREETYPE_INCLUDE_DIRS}"))
+      # Pass, the includes didn't change, use the cached value.
+      return()
     endif()
-    set(HAVE_BROTLI_INC "${FREETYPE_INCLUDE_DIRS}" CACHE INTERNAL "")
   endif()
+
+  unset(HAVE_BROTLI CACHE)
+  include(CheckSymbolExists)
+  set(CMAKE_REQUIRED_INCLUDES ${FREETYPE_INCLUDE_DIRS})
+  check_symbol_exists(FT_CONFIG_OPTION_USE_BROTLI "freetype/config/ftconfig.h" HAVE_BROTLI)
+  unset(CMAKE_REQUIRED_INCLUDES)
+  if(NOT HAVE_BROTLI)
+    unset(HAVE_BROTLI CACHE)
+    message(FATAL_ERROR "Freetype needs to be compiled with brotli support!")
+  endif()
+  set(HAVE_BROTLI_INC "${FREETYPE_INCLUDE_DIRS}" CACHE INTERNAL "")
 endfunction()
 
 find_package_wrapper(Freetype REQUIRED)
@@ -74,11 +83,21 @@ else()
 endif()
 
 if(WITH_IMAGE_OPENEXR)
-  find_package_wrapper(OpenEXR)  # our own module
-  set_and_warn_library_found("OpenEXR" OPENEXR_FOUND WITH_IMAGE_OPENEXR)
+  find_package_wrapper(OpenEXR)
+  set_and_warn_library_found("OpenEXR" OpenEXR_FOUND WITH_IMAGE_OPENEXR)
+endif()
+if(DEFINED OpenEXR_DIR)
+  mark_as_advanced(OpenEXR_DIR)
+endif()
+if(DEFINED Imath_DIR)
+  mark_as_advanced(Imath_DIR)
+endif()
+if(DEFINED openjph_DIR)
+  mark_as_advanced(openjph_DIR)
 endif()
 add_bundled_libraries(openexr/lib)
 add_bundled_libraries(imath/lib)
+add_bundled_libraries(openjph/lib)
 
 if(WITH_IMAGE_OPENJPEG)
   find_package_wrapper(OpenJPEG)
@@ -128,21 +147,6 @@ if(WITH_FFTW3)
   set_and_warn_library_found("fftw3" FFTW3_FOUND WITH_FFTW3)
 endif()
 
-if(WITH_OPENCOLLADA)
-  find_package_wrapper(OpenCOLLADA)
-  if(OPENCOLLADA_FOUND)
-
-    find_package_wrapper(XML2)
-  else()
-    set_and_warn_library_found("OpenCollada" OPENCOLLADA_FOUND WITH_OPENCOLLADA)
-  endif()
-endif()
-
-if(WITH_MEM_JEMALLOC)
-  find_package_wrapper(JeMalloc)
-  set_and_warn_library_found("JeMalloc" JEMALLOC_FOUND WITH_MEM_JEMALLOC)
-endif()
-
 if(WITH_INPUT_NDOF)
   find_package_wrapper(Spacenav)
   set_and_warn_library_found("SpaceNav" SPACENAV_FOUND WITH_INPUT_NDOF)
@@ -157,18 +161,9 @@ endif()
 if(WITH_CYCLES AND WITH_CYCLES_OSL)
   find_package_wrapper(OSL 1.13.4)
   set_and_warn_library_found("OSL" OSL_FOUND WITH_CYCLES_OSL)
-  
-  if(OSL_FOUND)
-    if(${OSL_LIBRARY_VERSION_MAJOR} EQUAL "1" AND ${OSL_LIBRARY_VERSION_MINOR} LESS "6")
-      # Note: --whole-archive is needed to force loading of all symbols in liboslexec,
-      # otherwise LLVM is missing the osl_allocate_closure_component function
-      set(OSL_LIBRARIES
-        ${OSL_OSLCOMP_LIBRARY}
-        -Wl,--whole-archive ${OSL_OSLEXEC_LIBRARY}
-        -Wl,--no-whole-archive ${OSL_OSLQUERY_LIBRARY}
-      )
-    endif()
-  endif()
+endif()
+if(DEFINED OSL_DIR)
+  mark_as_advanced(OSL_DIR)
 endif()
 add_bundled_libraries(osl/lib)
 
@@ -189,6 +184,9 @@ endif()
 if(WITH_OPENVDB)
   find_package(OpenVDB)
   set_and_warn_library_found("OpenVDB" OPENVDB_FOUND WITH_OPENVDB)
+  if(OPENVDB_FOUND)
+    set(OPENVDB_DEFINITIONS "")
+  endif()
 endif()
 add_bundled_libraries(openvdb/lib)
 
@@ -197,7 +195,8 @@ if(WITH_NANOVDB)
   set_and_warn_library_found("NanoVDB" NANOVDB_FOUND WITH_NANOVDB)
 endif()
 
-if(WITH_CPU_SIMD AND SUPPORT_NEON_BUILD)
+test_neon_support()
+if(SUPPORTS_NEON_BUILD)
   find_package_wrapper(sse2neon)
 endif()
 
@@ -218,18 +217,6 @@ if(WITH_MATERIALX)
   set_and_warn_library_found("MaterialX" MaterialX_FOUND WITH_MATERIALX)
 endif()
 add_bundled_libraries(materialx/lib)
-
-# With Blender 4.4 libraries there is no more Boost. But Linux distros may have
-# older versions of libs like USD with a header dependency on Boost, so can't
-# remove this entirely yet.
-if(WITH_BOOST)
-  if(DEFINED LIBDIR AND NOT EXISTS "${LIBDIR}/boost")
-    set(WITH_BOOST OFF)
-    set(BOOST_LIBRARIES)
-    set(BOOST_PYTHON_LIBRARIES)
-    set(BOOST_INCLUDE_DIR)
-  endif()
-endif()
 
 if(WITH_BOOST)
   # uses in build instructions to override include and library variables
@@ -272,12 +259,14 @@ if(WITH_PUGIXML)
 endif()
 
 if(WITH_IMAGE_WEBP)
-  set(WEBP_ROOT_DIR ${LIBDIR}/webp)
   find_package_wrapper(WebP)
   set_and_warn_library_found("WebP" WEBP_FOUND WITH_IMAGE_WEBP)
 endif()
 
 find_package_wrapper(OpenImageIO REQUIRED)
+if(DEFINED OpenImageIO_DIR)
+  mark_as_advanced(OpenImageIO_DIR)
+endif()
 add_bundled_libraries(openimageio/lib)
 
 if(WITH_OPENCOLORIO)
@@ -299,6 +288,27 @@ if(WITH_OPENIMAGEDENOISE)
   add_bundled_libraries(openimagedenoise/lib)
 endif()
 
+if(WITH_OPENSUBDIV)
+  find_package(OpenSubdiv)
+
+  set(OPENSUBDIV_LIBRARIES ${OPENSUBDIV_LIBRARIES})
+  set(OPENSUBDIV_LIBPATH "")  # TODO, remove and reference the absolute path everywhere
+
+  set_and_warn_library_found("OpenSubdiv" OPENSUBDIV_FOUND WITH_OPENSUBDIV)
+endif()
+add_bundled_libraries(opensubdiv/lib)
+
+if(WITH_CYCLES AND WITH_CYCLES_EMBREE)
+  find_package(Embree 4.0.0 REQUIRED)
+endif()
+add_bundled_libraries(embree/lib)
+
+if(WITH_OPENIMAGEDENOISE)
+  find_package_wrapper(OpenImageDenoise)
+  set_and_warn_library_found("OpenImageDenoise" OPENIMAGEDENOISE_FOUND WITH_OPENIMAGEDENOISE)
+  add_bundled_libraries(openimagedenoise/lib)
+endif()
+
 if(WITH_LLVM)
   find_package_wrapper(LLVM)
   set_and_warn_library_found("LLVM" LLVM_FOUND WITH_LLVM)
@@ -308,13 +318,6 @@ if(WITH_LLVM)
       find_package_wrapper(Clang)
       set_and_warn_library_found("Clang" CLANG_FOUND WITH_CLANG)
     endif()
-
-    # Symbol conflicts with same UTF library used by OpenCollada
-    if(DEFINED LIBDIR)
-      if(WITH_OPENCOLLADA AND (${LLVM_VERSION} VERSION_LESS "4.0.0"))
-        list(REMOVE_ITEM OPENCOLLADA_LIBRARIES ${OPENCOLLADA_UTF_LIBRARY})
-      endif()
-    endif()
   endif()
 endif()
 
@@ -322,19 +325,32 @@ if(WITH_OPENSUBDIV)
   find_package(OpenSubdiv)
 
   set(OPENSUBDIV_LIBRARIES ${OPENSUBDIV_LIBRARIES})
-  set(OPENSUBDIV_LIBPATH)  # TODO, remove and reference the absolute path everywhere
+  set(OPENSUBDIV_LIBPATH "")  # TODO, remove and reference the absolute path everywhere
 
   set_and_warn_library_found("OpenSubdiv" OPENSUBDIV_FOUND WITH_OPENSUBDIV)
 endif()
 add_bundled_libraries(opensubdiv/lib)
 
-if(WITH_TBB)
-  find_package_wrapper(TBB 2021.13.0)
+if(WITH_TBB OR WITH_TBB_MALLOC_PROXY)
+  # find_package_wrapper(TBB 2021.13.0)
+  find_package_wrapper(TBB)
   if(TBB_FOUND)
-    get_target_property(TBB_LIBRARIES TBB::tbb LOCATION)
-    get_target_property(TBB_INCLUDE_DIRS TBB::tbb INTERFACE_INCLUDE_DIRECTORIES)
+    if(WITH_TBB)
+      get_target_property(TBB_LIBRARIES TBB::tbb LOCATION)
+      get_target_property(TBB_INCLUDE_DIRS TBB::tbb INTERFACE_INCLUDE_DIRECTORIES)
+    endif()
+    if(WITH_TBB_MALLOC_PROXY)
+      get_target_property(TBB_MALLOC_PROXY_LIBRARIES TBB::tbbmalloc_proxy LOCATION)
+      get_target_property(TBB_MALLOC_LIBRARIES TBB::tbbmalloc LOCATION)
+    endif()
   endif()
-  set_and_warn_library_found("TBB" TBB_FOUND WITH_TBB)
+  if(WITH_TBB)
+    set_and_warn_library_found("TBB" TBB_FOUND WITH_TBB)
+  endif()
+  if(WITH_TBB_MALLOC_PROXY)
+    set_and_warn_library_found("TBB" TBB_FOUND WITH_TBB_MALLOC_PROXY)
+  endif()
+  mark_as_advanced(TBB_DIR)
 endif()
 add_bundled_libraries(tbb/lib)
 
@@ -416,19 +432,12 @@ if(WITH_SYSTEM_FREETYPE)
   set(BROTLI_LIBRARIES "")
 endif()
 
-if(WITH_LZO AND WITH_SYSTEM_LZO)
-  find_package_wrapper(LZO)
-  if(NOT LZO_FOUND)
-    message(FATAL_ERROR "Failed finding system LZO version!")
-  endif()
-endif()
+find_package_wrapper(Eigen3 REQUIRED)
 
-if(WITH_SYSTEM_EIGEN3)
-  find_package_wrapper(Eigen3)
-  if(NOT EIGEN3_FOUND)
-    message(FATAL_ERROR "Failed finding system Eigen3 version!")
-  endif()
+if(WITH_LIBMV)
+  find_package_wrapper(Ceres REQUIRED)
 endif()
+add_bundled_libraries(ceres/lib)
 
 # Jack is intended to use the system library.
 if(WITH_JACK)
@@ -442,6 +451,13 @@ if(WITH_PULSEAUDIO)
   set_and_warn_library_found("PulseAudio" PULSE_FOUND WITH_PULSEAUDIO)
 endif()
 
+# PipeWire is intended to use the system library.
+if(WITH_PIPEWIRE)
+  find_package(PkgConfig)
+  pkg_check_modules(PIPEWIRE libpipewire-0.3>=1.1.0)
+  set_and_warn_library_found("PipeWire" PIPEWIRE_FOUND WITH_PIPEWIRE)
+endif()
+
 # Audio IO
 if(WITH_SYSTEM_AUDASPACE)
   find_package_wrapper(Audaspace)
@@ -453,7 +469,7 @@ endif()
 # Compilers
 
 # GNU Compiler
-if(CMAKE_COMPILER_IS_GNUCC)
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
   # ffp-contract=off:
   # Automatically turned on when building with "-march=native". This is
   # explicitly turned off here as it will make floating point math give a bit
