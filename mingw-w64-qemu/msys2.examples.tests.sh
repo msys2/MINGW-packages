@@ -60,6 +60,10 @@ echo
 LIVE_IMAGE_FILE=openSUSE-Leap-15.3-GNOME-Live-x86_64-Media.iso
 LIVE_IMAGE_URL=https://download.opensuse.org/distribution/leap/15.3/live/$LIVE_IMAGE_FILE
 
+function echo2 {
+	>&2 echo "$@"
+}
+
 function download {
 	local URL="$1"
 	local FILE="$2"
@@ -188,6 +192,10 @@ function isQemuSystem {
 	which "qemu-system-$ARCH" &> /dev/null
 }
 
+function accelQemuSystemI386 {
+	( [[ "${ACCEL:0:4}" == "whpx" ]] && qemuMinVersion 10 2 90 ) && echo qemu-system-x86_64 || echo qemu-system-i386
+}
+
 function isLinux {
 	! isWindows && [ "$(uname)" == "Linux" ]
 }
@@ -195,6 +203,18 @@ function isLinux {
 function isWindows {
 	( [ -n "$OS" ] && [[ $OS =~ Windows ]] ) ||
 	       [ -f "$(qWhich qemu-system-x86_64).exe" ]
+}
+
+function windowsVersion {
+	if isWindows
+	then
+		# MINGW64_NT-10.0-19045
+		local TESTVERSION=$(uname -s)
+		if [[ $TESTVERSION =~ -([0-9]+)$ ]]
+		then
+			echo ${BASH_REMATCH[1]}
+		fi
+	fi
 }
 
 function hasElevatedWindowsPrivileges {
@@ -399,7 +419,10 @@ function determineAccel {
 	fi
 	if isWindows
 	then
-		if qemuMinVersion 8 1 90
+		if qemuMinVersion 10 2 90
+		then
+			TESTACCELS="whpx"
+		elif qemuMinVersion 8 1 90
 		then
 			TESTACCELS="whpx,kernel-irqchip=off"
 		elif qemuMinVersion 6 0
@@ -426,7 +449,18 @@ function determineAccel {
 }
 
 function accel {
-	echo "-accel $ACCEL"
+	if qemuMinVersion 10 2 90 && [[ "$ACCEL" == "whpx" ]]
+	then
+		local WINVERSION=$(windowsVersion)
+		if (( WINVERSION >= 20000 ))
+		then
+			echo "-accel whpx"
+		else
+			echo "-accel whpx,kernel-irqchip=off"
+		fi
+	else
+		echo "-accel $ACCEL"
+	fi
 }
 
 # Intended to determine absolute path for QEMU-provided firmware files only
@@ -449,7 +483,7 @@ function firmware {
 		if [ -d "$DIR" ]
 		then
 			REALDIR="$( realpath -e "$DIR" 2> /dev/null )"
-			FW_PATH="$( find "$REALDIR" -type f -name "$FW_NAME" 2> /dev/null | tail -n1 )"
+			FW_PATH="$( find "$REALDIR" -name "$FW_NAME" 2> /dev/null | tail -n1 )"
 			[ -f "$FW_PATH" ] && echo "$FW_PATH" && return
 		fi
 	done
@@ -464,7 +498,7 @@ function firmwareAvailable {
 	do
 		if [ ! -f "$(firmware $FW)" ]
 		then
-			echo "Firmware not available: '$(firmware $FW)'"
+			echo2 "Firmware not available: '$(firmware $FW)'"
 			false
 		fi
 	done
@@ -513,130 +547,230 @@ function audioq35 {
 	audio "$DEVICE" "$DRIVER" "ich9-intel-hda"
 }
 
-# UEFI-Pflash-Desktop (LiveImage)
-function qemuLiveDesktopUEFI_Pflash {
-	local TESTDIR="uefi_pflash$( [ "$1" != "noaccel" ] && echo "_accel" )"
+function uefiForPflashParams {
+	local VMDIR="$1" FW_DIST="" FW_VARS_DIST=""
+	FW_VARS="" FW_CODE=""
+	if firmwareAvailable OVMF.fd
+	then
+		FW_DIST="$(firmware OVMF.fd)"
+		FW_VARS="$VMDIR/OVMF-vars.fd" FW_CODE="$VMDIR/OVMF-code.fd"
+		echo2 "Extract VARS- and CODE-Firmware from '$FW' to VM dir:"
+		echo2 "dd bs=8192 'if=$FW_DIST' 'of=$VMDIR/OVMF-vars.fd' count=66"
+		dd bs=8192 if="$FW_DIST" of="$VMDIR/OVMF-vars.fd" count=66
+		echo2 "dd bs=8192 'if=$FW_DIST' 'of=$VMDIR/OVMF-code.fd' skip=66 count=446"
+		dd bs=8192 "if=$FW_DIST" "of=$VMDIR/OVMF-code.fd" skip=66 count=446
+	elif firmwareAvailable edk2-i386-vars.fd edk2-x86_64-code.fd
+	then
+		FW_VARS_DIST="$(firmware edk2-i386-vars.fd)" \
+		FW_VARS="$VMDIR/edk2-i386-vars.fd" FW_CODE="$(firmware edk2-x86_64-code.fd)"
+		echo2 "Copy VARS-Firmware '$FW_VARS_DIST' to VM dir for r/w pflash access:"
+		echo2 "cp -p '$FW_VARS_DIST' '$FW_VARS'"
+		cp -p "$FW_VARS_DIST" "$FW_VARS"
+	else
+		return 1
+	fi
+	echo2
+}
+
+function uefiForBiosParam {
+	local VMDIR="$1" FW_DIST="" FW_VARS_DIST="" FW_CODE_DIST=""
+	FW=""
+	if firmwareAvailable OVMF.fd
+	then
+		FW_DIST="$(firmware OVMF.fd)"
+		FW="$VMDIR/OVMF.fd"
+		echo2 "Copy Firmware '$FW_DIST' to VM dir for r/w access:"
+		echo2 "cp -p '$FW_DIST' '$FW'"
+		cp -p "$FW_DIST" "$FW"
+	elif firmwareAvailable edk2-i386-vars.fd edk2-x86_64-code.fd
+	then
+		FW_VARS_DIST="$(firmware edk2-i386-vars.fd)" FW_CODE_DIST="$(firmware edk2-x86_64-code.fd)"
+		FW="$VMDIR/edk2.fd"
+		echo2 "Concatenate VARS- and CODE-Firmware in VM dir for usage as bios:"
+		echo2 "cat '$FW_VARS_DIST' '$FW_CODE_DIST' > '$FW'"
+		cat "$FW_VARS_DIST" "$FW_CODE_DIST" > "$FW"
+	else
+		return 1
+	fi
+	echo2
+}
+
+function qemuLiveDesktopUEFIPflashBlockDevices {
+	local VMDIR="$1"
 	download $LIVE_IMAGE_URL
-	testImageInDir $TESTDIR
-	# Fails with -accel whpx
-	# qemu-system-x86_64.exe: WHPX: Failed to emulate MMIO access with EmulatorReturnStatus: 2
-	# qemu-system-x86_64.exe: WHPX: Failed to exec a virtual processor
-	echo "Instanciate VARS-Firmware to VM dir for r/w pflash access:"
-	firmwareAvailable edk2-i386-vars.fd &&
-	(
-		echo "cp -p '$(firmware edk2-i386-vars.fd)' $TESTDIR/"
-		echo
-		cp -p "$(firmware edk2-i386-vars.fd)" $TESTDIR/
-		firmwareAvailable edk2-x86_64-code.fd &&
-		execute qemu-system-x86_64 -M q35 -m 1536 $(audioq35) -usb -device usb-tablet \
-			$( [ "$1" != "noaccel" ] && echo $(accel)) -boot menu=on \
-			-drive file="$(firmware edk2-x86_64-code.fd)",if=pflash,format=raw,readonly=on \
-			-drive file=$TESTDIR/edk2-i386-vars.fd,if=pflash,format=raw,readonly=off \
-			-drive id=hd0,if=none,file=$TESTDIR/testimage.qcow2,format=qcow2 \
-			-device ide-hd,drive=hd0,bus=ide.0,bootindex=0 \
-			-drive id=cd0,if=none,file=$LIVE_IMAGE_FILE,format=raw,read-only=on \
-			-device ide-cd,drive=cd0,bus=ide.1,bootindex=1
+	testImageInDir "$VMDIR"
+	if uefiForPflashParams "$VMDIR"
+	then
+		BLOCKDEVS=(
+			-drive "file=$FW_CODE,if=pflash,format=raw,readonly=on"
+			-drive "file=$FW_VARS,if=pflash,format=raw,readonly=off"
+			-drive "id=hd0,if=none,file=$VMDIR/testimage.qcow2,format=qcow2"
+			-device "ide-hd,drive=hd0,bus=ide.0,bootindex=0"
+			-drive "id=cd0,if=none,file=$LIVE_IMAGE_FILE,format=raw,read-only=on"
+			-device "ide-cd,drive=cd0,bus=ide.1,bootindex=1"
+		)
+	else
+		return 1
+	fi
+}
+
+function qemuLiveDesktopUEFIBiosBlockDevices {
+	local VMDIR="$1"
+	download $LIVE_IMAGE_URL
+	testImageInDir "$VMDIR"
+	if uefiForBiosParam "$VMDIR"
+	then
+		BLOCKDEVS=(
+			-bios "$FW"
+			-drive "id=hd0,if=none,file=$VMDIR/testimage.qcow2,format=qcow2"
+			-device "ide-hd,drive=hd0,bus=ide.0,bootindex=0"
+			-drive "id=cd0,if=none,file=$LIVE_IMAGE_FILE,format=raw,read-only=on"
+			-device "ide-cd,drive=cd0,bus=ide.1,bootindex=1"
+		)
+	else
+		return 1
+	fi
+}
+
+function qemuLiveDesktopLegacyBiosBlockDevices {
+	local VMDIR="$1"
+	download $LIVE_IMAGE_URL
+	testImageInDir "$VMDIR"
+	BLOCKDEVS=(
+		-cdrom "$LIVE_IMAGE_FILE"
+		-drive "file=$VMDIR/testimage.qcow2,format=qcow2,media=disk"
 	)
-	removeDir $TESTDIR
 }
 
-# UEFI-Pflash-Desktop NOT Accelerated (LiveImage)
-function qemuLiveDesktopUEFI_Pflash_Noaccel {
-	qemuLiveDesktopUEFI_Pflash noaccel
-}
-
-# UEFI-Bios-Desktop (LiveImage)
-function qemuLiveDesktopUEFI_Bios {
-	local TESTDIR="uefi_bios$( [ "$1" != "noaccel" ] && echo "_accel" )"
-	download $LIVE_IMAGE_URL
-	testImageInDir $TESTDIR
-	echo "Concatenate VARS- and CODE-Firmware in VM dir for usage as bios:"
-	firmwareAvailable edk2-i386-vars.fd edk2-x86_64-code.fd &&
-	(
-		echo "cat '$(firmware edk2-i386-vars.fd)' '$(firmware edk2-x86_64-code.fd)' > $TESTDIR/edk2-x86_64.fd"
-		echo
-		cat "$(firmware edk2-i386-vars.fd)" "$(firmware edk2-x86_64-code.fd)" > $TESTDIR/edk2-x86_64.fd
-		execute qemu-system-x86_64 -M q35 -m 1536 $(audioq35) -usb -device usb-tablet \
-			$( [ "$1" != "noaccel" ] && echo $(accel)) -boot menu=on \
-			-bios $TESTDIR/edk2-x86_64.fd \
-			-drive id=hd0,if=none,file=$TESTDIR/testimage.qcow2,format=qcow2 \
-			-device ide-hd,drive=hd0,bus=ide.0,bootindex=0 \
-			-drive id=cd0,if=none,file=$LIVE_IMAGE_FILE,format=raw,read-only=on \
-			-device ide-cd,drive=cd0,bus=ide.1,bootindex=1
-	)
-	removeDir $TESTDIR
-}
-
-# UEFI-Bios-Desktop NOT Accelerated (LiveImage)
-function qemuLiveDesktopUEFI_Bios_Noaccel {
-	qemuLiveDesktopUEFI_Bios noaccel
-}
-
-# SDL-Desktop (LiveImage)
-function qemuLiveDesktopSDL {
-	download $LIVE_IMAGE_URL
-	testImageInDir sdl
+function qemuLiveDesktopGTKBase {
 	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -usb -device usb-tablet \
-		-display sdl $(audioq35 hda-duplex) -boot menu=on \
-		-cdrom $LIVE_IMAGE_FILE -drive file=sdl/testimage.qcow2,media=disk
-	removeDir sdl
+		-display "$@" $(audioq35 hda-micro) -boot menu=on \
+		"${BLOCKDEVS[@]}"
 }
 
-# GTK-Desktop (LiveImage)
-function qemuLiveDesktopGTK {
-	download $LIVE_IMAGE_URL
-	testImageInDir gtk
-	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -usb -device usb-tablet \
-		-display gtk $(audioq35 hda-micro) -boot menu=on \
-		-cdrom $LIVE_IMAGE_FILE -drive file=gtk/testimage.qcow2,media=disk
-	removeDir gtk
+function qemuLiveDesktopSDLBase {
+	execute qemu-system-x86_64 -M q35,vmport=off $(accel) -m 1536 -usb -device usb-tablet \
+		-display "$@" $(audioq35 hda-duplex) -boot menu=on \
+		"${BLOCKDEVS[@]}"
 }
 
-# GTK-Desktop (LiveImage)
-function qemuLiveDesktopGTKVgaGl {
-	download $LIVE_IMAGE_URL
-	testImageInDir gtkvgagl
-	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -usb -device usb-tablet \
-		-display gtk,gl=on -device virtio-vga-gl $(audioq35 hda-micro) -boot menu=on \
-		-cdrom $LIVE_IMAGE_FILE -drive file=gtkvgagl/testimage.qcow2,media=disk
-	removeDir gtkvgagl
-}
-
-# GTK-Desktop (LiveImage)
-function qemuLiveDesktopGTKGpuGl {
-	download $LIVE_IMAGE_URL
-	testImageInDir gtkgpugl
-	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -usb -device usb-tablet \
-		-display gtk,gl=on -device virtio-gpu-gl $(audioq35 hda-micro) -boot menu=on \
-		-cdrom $LIVE_IMAGE_FILE -drive file=gtkgpugl/testimage.qcow2,media=disk
-	removeDir gtkgpugl
-}
-
-# VNC-Desktop (LiveImage)
-function qemuLiveDesktopVNC {
-	download $LIVE_IMAGE_URL
-	testImageInDir vnc
-	cygwinXlaunch
+function qemuLiveDesktopVNCBase {
 	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -usb -device usb-tablet -pidfile "$PIDFILE" \
 		-display vnc=:05 -k de $(audioq35 hda-duplex) -boot menu=on \
-		-cdrom $LIVE_IMAGE_FILE -drive file=vnc/testimage.qcow2,media=disk &
-	executeVncForBackgroundQemu
-	removeDir vnc
+		"${BLOCKDEVS[@]}" &
 }
 
-# Spice-Desktop (LiveImage)
-function qemuLiveDesktopSPICE {
-	download $LIVE_IMAGE_URL
-	testImageInDir spice
-	cygwinXlaunch
+function qemuLiveDesktopSPICEBase {
 	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -pidfile "$PIDFILE" \
 		-vga qxl $(audioq35 hda-micro) -boot menu=on \
 		-spice port=5905,addr=127.0.0.1,disable-ticketing=on \
 		-device virtio-serial -chardev spicevmc,id=spicechannel0,name=vdagent \
 		-device virtserialport,chardev=spicechannel0,name=com.redhat.spice.0 \
-		-cdrom $LIVE_IMAGE_FILE -drive file=spice/testimage.qcow2,media=disk &
+		"$@" "${BLOCKDEVS[@]}" &
+}
+
+# UEFI-Pflash-Desktop (LiveImage)
+function qemuLiveDesktopUEFI_Pflash {
+	if qemuLiveDesktopUEFIPflashBlockDevices uefi_pflash
+	then
+		qemuLiveDesktopGTKBase gtk
+	fi
+	removeDir uefi_pflash
+}
+
+# UEFI-Bios-Desktop (LiveImage)
+function qemuLiveDesktopUEFI_Bios {
+	if qemuLiveDesktopUEFIBiosBlockDevices uefi_bios
+	then
+		qemuLiveDesktopGTKBase gtk
+	fi
+	removeDir uefi_bios
+}
+
+# SDL-Desktop (LiveImage)
+function qemuLiveDesktopSDL {
+	qemuLiveDesktopLegacyBiosBlockDevices sdl
+	qemuLiveDesktopSDLBase sdl
+	removeDir sdl
+}
+
+# SDL-VgaGL-UEFI-Desktop (LiveImage)
+function qemuLiveDesktopSDLVgaGl_UEFIBios {
+	if qemuLiveDesktopUEFIBiosBlockDevices sdlgl_uefibios
+	then
+		qemuLiveDesktopSDLBase sdl,gl=on -device virtio-vga-gl
+	fi
+	removeDir sdlgl_uefibios
+}
+
+# SDL-VgaGLES-UEFIPflash-Desktop (LiveImage)
+function qemuLiveDesktopSDLVgaGlES_UEFIPflash {
+	if qemuLiveDesktopUEFIPflashBlockDevices sdlgles_uefipflash
+	then
+		qemuLiveDesktopSDLBase sdl,gl=es -device virtio-vga-gl
+	fi
+	removeDir sdlgles_uefipflash
+}
+
+# GTK-Desktop (LiveImage)
+function qemuLiveDesktopGTK {
+	qemuLiveDesktopLegacyBiosBlockDevices gtk
+	qemuLiveDesktopGTKBase gtk
+	removeDir gtk
+}
+
+# GTK-VgaGL-Desktop (LiveImage)
+function qemuLiveDesktopGTKVgaGl {
+	qemuLiveDesktopLegacyBiosBlockDevices gtkvgagl
+	qemuLiveDesktopGTKBase gtk,gl=on -device virtio-vga-gl
+	removeDir gtkvgagl
+}
+
+# GTK-GpuGL-Desktop (LiveImage)
+function qemuLiveDesktopGTKGpuGl {
+	qemuLiveDesktopLegacyBiosBlockDevices gtkgpugl
+	qemuLiveDesktopGTKBase gtk,gl=on -device virtio-gpu-gl
+	removeDir gtkgpugl
+}
+
+# VNC-Desktop (LiveImage)
+function qemuLiveDesktopVNC {
+	qemuLiveDesktopLegacyBiosBlockDevices vnc
+	cygwinXlaunch
+	qemuLiveDesktopVNCBase
+	executeVncForBackgroundQemu
+	removeDir vnc
+}
+
+# VNC-UEFIPflash-Desktop (LiveImage)
+function qemuLiveDesktopVNC_UEFIPflash {
+	if qemuLiveDesktopUEFIPflashBlockDevices vnc_uefipflash
+	then
+		cygwinXlaunch
+		qemuLiveDesktopVNCBase
+		executeVncForBackgroundQemu
+	fi
+	removeDir vnc_uefipflash
+}
+
+# Spice-Desktop (LiveImage)
+function qemuLiveDesktopSPICE {
+	qemuLiveDesktopLegacyBiosBlockDevices spice
+	cygwinXlaunch
+	qemuLiveDesktopSPICEBase
 	executeSpicyForBackgroundQemu
 	removeDir spice
+}
+
+# Spice-UEFIBios-Desktop (LiveImage)
+function qemuLiveDesktopSPICE_UEFIBios {
+	if qemuLiveDesktopUEFIBiosBlockDevices spice_uefibios
+	then
+		cygwinXlaunch
+		qemuLiveDesktopSPICEBase
+		executeSpicyForBackgroundQemu
+	fi
+	removeDir spice_uefibios
 }
 
 # For qemu-img
@@ -772,15 +906,11 @@ function qemuLiveDesktopQemuImgConversions {
 
 # For QEMU guest support
 function qemuLiveDesktopQemuGuestSupport {
-	download $LIVE_IMAGE_URL
+	qemuLiveDesktopLegacyBiosBlockDevices guestsupport
 	cygwinXlaunch
-	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -pidfile "$PIDFILE" \
-		-vga qxl -spice port=5905,addr=127.0.0.1,disable-ticketing=on \
-		-device virtio-serial -chardev spicevmc,id=spicechannel0,name=vdagent \
-		-device virtserialport,chardev=spicechannel0,name=com.redhat.spice.0 \
+	qemuLiveDesktopSPICEBase \
 		-chardev socket,id=qga0,port=5906,host=127.0.0.1,server=on,wait=off \
-		-device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 \
-		-cdrom $LIVE_IMAGE_FILE &
+		-device virtserialport,chardev=qga0,name=org.qemu.guest_agent.0 
 	sleep 4
 	echo
 	echo '{"execute": "guest-shutdown"}' | socat - tcp-connect:127.0.0.1:5906
@@ -794,6 +924,7 @@ function qemuLiveDesktopQemuGuestSupport {
 	spicy -h localhost -p 5905 2> /dev/null
 	sleep 1
 	killBackgroundQemu
+	removeDir guestsupport
 	wait
 }
 
@@ -955,7 +1086,7 @@ function qemu2023day04 {
 	tar -xf day04.tar.gz
 	cat day04/adv-cal.txt
 	execute qemu-system-i386 -display sdl -drive format=qcow2,file=day04/conway.qcow2
-	execute qemu-system-i386 $(accel) -display sdl -drive format=qcow2,file=day04/shell.qcow2
+	execute $(accelQemuSystemI386) $(accel) -display sdl -drive format=qcow2,file=day04/shell.qcow2
 	removeDir day04
 }
 
@@ -1470,7 +1601,7 @@ function qemu2018day08 {
 	echo "lynx -source http://www.google.com/"
 	echo "shutdown -h now"
 	echo
-	execute qemu-system-i386 -m 32 -M isapc,acpi=off $(accel) -cpu pentium $(pcspk) \
+	execute qemu-system-i386 -m 32 -M isapc,acpi=off -cpu pentium $(pcspk) \
 		-net nic,model=ne2k_isa -net user -drive if=ide,file=day08/hd.qcow2
 	removeDir day08
 }
@@ -1488,7 +1619,7 @@ function qemu2018day10 {
 	download https://www.qemu-advent-calendar.org/2018/download/day10.tar.xz
 	tar -xf day10.tar.xz
 	cat day10/readme.txt
-	execute qemu-system-i386 $(accel) -cdrom day10/gamebro.iso
+	execute $(accelQemuSystemI386) $(accel) -cdrom day10/gamebro.iso
 	removeDir day10
 }
 
@@ -1633,7 +1764,7 @@ function qemu2016day03 {
 	download https://www.qemu-advent-calendar.org/2016/download/day03.tar.xz
 	tar -xf day03.tar.xz
 	cat freegem/readme.txt
-	execute qemu-system-i386 $(accel) -m 32 -hda freegem/freegem.qcow2 $(pcspk)
+	execute $(accelQemuSystemI386) $(accel) -m 32 -hda freegem/freegem.qcow2 $(pcspk)
 	removeDir freegem
 }
 
@@ -1651,7 +1782,7 @@ function qemu2016day04 {
 	(
 		cd reactos
 		7z x -y ../reactos-livecd-0.4.15-dev-2574-g18e95f5-x86-gcc-lin-dbg.7z > /dev/null
-		execute qemu-system-i386 $(accel) -m 512 -net nic,model=rtl8139 -net user -vga std $(audio AC97) \
+		execute $(accelQemuSystemI386) $(accel) -m 512 -net nic,model=rtl8139 -net user -vga std $(audio AC97) \
 			-usb -device usb-tablet -serial file:reactos.log \
 			-cdrom reactos-livecd-0.4.15-dev-2574-g18e95f5-x86-gcc-lin-dbg.iso
 	)
@@ -1675,7 +1806,7 @@ function qemu2016day06 {
 	(
 		cd menuet32
 		unzip -o -q ../M32-086.ZIP
-		execute qemu-system-i386 $(accel) $(audio AC97) -m 512 -drive file=M32-086.IMG,format=raw,if=floppy
+		execute $(accelQemuSystemI386) $(accel) $(audio AC97) -m 512 -drive file=M32-086.IMG,format=raw,if=floppy
 	)
 	removeDir menuet32
 }
@@ -1716,7 +1847,7 @@ function qemu2016day09 {
 	download https://www.qemu-advent-calendar.org/2016/download/day09-v2.tar.xz
 	tar -xf day09-v2.tar.xz
 	cat kolibrios/readme.txt
-	execute qemu-system-i386 $(accel) -device e1000,netdev=u0 -netdev user,id=u0 -usb $(audio hda-duplex) \
+	execute $(accelQemuSystemI386) $(accel) -device e1000,netdev=u0 -netdev user,id=u0 -usb $(audio hda-duplex) \
 		-boot d -cdrom kolibrios/kolibri-v2.iso
 	removeDir kolibrios
 }
@@ -1734,7 +1865,7 @@ function qemu2016day11 {
 	download https://www.qemu-advent-calendar.org/2016/download/day11.tar.xz
 	tar -xf day11.tar.xz
 	cat genode/README
-	execute qemu-system-i386 -serial stdio -cdrom genode/Genode_on_seL4.iso -m 1G -vga cirrus $(accel)
+	execute $(accelQemuSystemI386) -serial stdio -cdrom genode/Genode_on_seL4.iso -m 1G -vga cirrus $(accel)
 	removeDir genode
 }
 
@@ -1742,7 +1873,7 @@ function qemu2016day12 {
 	download https://www.qemu-advent-calendar.org/2016/download/day12.tar.xz
 	tar -xf day12.tar.xz
 	cat tetros/readme.txt
-	execute qemu-system-i386 $(accel) -m 32 -drive if=ide,file=tetros/tetros.img,format=raw
+	execute $(accelQemuSystemI386) $(accel) -m 32 -drive if=ide,file=tetros/tetros.img,format=raw
 	removeDir tetros
 }
 
@@ -1800,7 +1931,7 @@ function qemu2016day18 {
 	(
 		cd redox
 		zcat ../harddrive.bin.gz > harddrive.bin
-		execute qemu-system-i386 -M q35 $(accel) -vga std $(audio AC97) -smp 4 -m 1024 \
+		execute $(accelQemuSystemI386) -M q35 $(accel) -vga std $(audio AC97) -smp 4 -m 1024 \
 		     -net nic,model=e1000 -net user -drive file=harddrive.bin,format=raw
 	)
 	removeDir redox
@@ -1824,7 +1955,7 @@ function qemu2016day20 {
 		cd haiku
 		tar -xf ../haiku-r1alpha4.1-vmdk.tar.xz
 		qemu-img convert -f vmdk haiku-r1alpha4.vmdk -O qcow2 haiku-r1alpha4.qcow2
-		execute qemu-system-i386 $(accel) $(audio hda-duplex) -m 512 \
+		execute $(accelQemuSystemI386) $(accel) $(audio hda-duplex) -m 512 \
 			-hda haiku-r1alpha4.qcow2 -hdb blank-bfs-2048mb.vmdk
 	)
 	removeDir haiku
@@ -1834,7 +1965,7 @@ function qemu2016day21 {
 	download https://www.qemu-advent-calendar.org/2016/download/day21.tar.xz
 	tar -xf day21.tar.xz
 	cat wireguard/readme.txt
-	execute qemu-system-i386 -nodefaults -machine q35 $(accel) -smp 2 -m 96M -monitor none \
+	execute $(accelQemuSystemI386) -nodefaults -machine q35 $(accel) -smp 2 -m 96M -monitor none \
 		-kernel wireguard/wireguard-test-4f257956-d81f-43f3-8fd8-1475360f58b8.kernel -append console=hvc0
 	removeDir wireguard
 }
@@ -1861,7 +1992,7 @@ function qemu2016day24 {
 	cat day24/readme.txt
 	(
 		cd day24
-		execute qemu-system-i386 $(accel) $(audio AC97) -device VGA,addr=07.0 \
+		execute $(accelQemuSystemI386) $(accel) $(audio AC97) -device VGA,addr=07.0 \
 		-kernel kernel -initrd null,null,null,music.ogg
 	)
 	removeDir day24
@@ -1873,7 +2004,7 @@ function qemu2014day24 {
 	extractReadme day24/run
 	(
 		cd day24
-		execute qemu-system-i386 $(accel) -kernel kernel \
+		execute qemu-system-i386 -kernel kernel \
 			-initrd null,null,null,music.ogg,win.ogg,loss.ogg $(audio AC97) -vga std
 	)
 	removeDir day24
@@ -1902,7 +2033,7 @@ function qemu2014day21 {
 	download https://www.qemu-advent-calendar.org/2014/download/boundvariable.tar.xz
 	tar -xf boundvariable.tar.xz
 	extractReadme boundvariable/run
-	execute qemu-system-i386 $(accel) -m 1024 \
+	execute $(accelQemuSystemI386) $(accel) -m 1024 \
 		-drive if=virtio,file=boundvariable/boundvariable.qcow2,format=qcow2
 	removeDir boundvariable
 }
@@ -1947,7 +2078,7 @@ function qemu2014day17 {
 	download https://www.qemu-advent-calendar.org/2014/download/bb_debian.tar.xz
 	tar -xf bb_debian.tar.xz
 	extractReadme bb_debian/run
-	execute qemu-system-i386 $(accel) -m 512 -vga std $(audio hda-duplex) bb_debian/bb_debian.qcow2
+	execute $(accelQemuSystemI386) $(accel) -m 512 -vga std $(audio hda-duplex) bb_debian/bb_debian.qcow2
 	removeDir bb_debian
 }
 
@@ -1955,7 +2086,7 @@ function qemu2014day16 {
 	download https://www.qemu-advent-calendar.org/2014/download/tempest-showroom.tar.xz
 	tar -xf tempest-showroom.tar.xz
 	extractReadme tempest-showroom/run
-	execute qemu-system-i386 $(accel) -cdrom tempest-showroom/tempest-showroom_v0.9.7.iso
+	execute $(accelQemuSystemI386) $(accel) -cdrom tempest-showroom/tempest-showroom_v0.9.7.iso
 	removeDir tempest-showroom
 }
 
@@ -1963,7 +2094,7 @@ function qemu2014day15 {
 	download https://www.qemu-advent-calendar.org/2014/download/plan9.tar.xz
 	tar -xf plan9.tar.xz
 	extractReadme plan9/run
-	execute qemu-system-i386 $(accel) -m 1024 plan9/plan9.qcow2
+	execute $(accelQemuSystemI386) $(accel) -m 1024 plan9/plan9.qcow2
 	removeDir plan9
 }
 
@@ -1987,7 +2118,7 @@ function qemu2014day12 {
 	download https://www.qemu-advent-calendar.org/2014/download/oberon.tar.xz
 	tar -xf oberon.tar.xz
 	extractReadme oberon/run
-	execute qemu-system-i386 $(accel) oberon/oberon.qcow2
+	execute $(accelQemuSystemI386) $(accel) oberon/oberon.qcow2
 	removeDir oberon
 }
 
@@ -2061,7 +2192,7 @@ function qemu2014day06 {
 	download https://www.qemu-advent-calendar.org/2014/download/fractal-mbr.tar.xz
 	tar -xf fractal-mbr.tar.xz
 	extractReadme fractal-mbr/run
-	execute qemu-system-i386 -drive file=fractal-mbr/phosphene.mbr,format=raw $(accel)
+	execute $(accelQemuSystemI386) -drive file=fractal-mbr/phosphene.mbr,format=raw $(accel)
 	removeDir fractal-mbr
 }
 
@@ -2144,7 +2275,7 @@ case $BLOCK in
 		perform qemu2023day10
 		ignoreSize && perform qemu2023day11
 		perform qemu2023day12
-		perform qemu2023day13
+		isQemuSystem microblazeel && perform qemu2023day13
 		perform qemu2023day14
 		perform qemu2023day15
 		perform qemu2023day16
@@ -2301,10 +2432,12 @@ case $BLOCK in
 		perform qemuLiveDesktopGTKVgaGl
 		perform qemuLiveDesktopGTKGpuGl
 		perform qemuLiveDesktopVNC
+		perform qemuLiveDesktopSPICE_UEFIBios
+		perform qemuLiveDesktopSDLVgaGl_UEFIBios
+		perform qemuLiveDesktopSDLVgaGlES_UEFIPflash
 		perform qemuLiveDesktopUEFI_Bios
 		perform qemuLiveDesktopUEFI_Pflash
-		perform qemuLiveDesktopUEFI_Bios_Noaccel
-		perform qemuLiveDesktopUEFI_Pflash_Noaccel
+		perform qemuLiveDesktopVNC_UEFIPflash
 		perform qemuLiveDesktopQemuGuestSupport
 		;;
 esac
