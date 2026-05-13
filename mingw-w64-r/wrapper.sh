@@ -1,2 +1,2 @@
 #!/bin/sh
-exec ${MSYSTEM_PREFIX}/opt/R/bin/$(basename "$0") "$@"
+exec ${MSYSTEM_PREFIX}/lib/R/bin/$(basename "$0") "$@"
