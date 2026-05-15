@@ -1,0 +1,138 @@
+# Maintainer: Alexey Pavlov <alexpux@gmail.com>
+# Contributor: Tim Stahlhut <stahta01@gmail.com>
+
+# See https://aur.archlinux.org/packages/codelite if trying to convert to not using git repo
+
+_wx_basever=3.2
+
+_realname=codelite
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+conflicts=("${MINGW_PACKAGE_PREFIX}-${_realname}-git")
+replaces=("${MINGW_PACKAGE_PREFIX}-${_realname}-git")
+_git_tag=18.3.0
+pkgver=18.3.0
+pkgrel=3
+pkgdesc="Open-source, cross platform IDE for the C/C++ programming languages (mingw-w64)"
+arch=('any')
+mingw_arch=('ucrt64' 'clang64' 'clangarm64')
+url="https://codelite.org/"
+msys2_repository_url="https://github.com/eranif/codelite"
+license=('spdx:GPL-2.0-or-later')
+depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
+         "${MINGW_PACKAGE_PREFIX}-hunspell"
+         "${MINGW_PACKAGE_PREFIX}-libssh"
+         "${MINGW_PACKAGE_PREFIX}-clang"      # libclang
+         "${MINGW_PACKAGE_PREFIX}-wxwidgets${_wx_basever}-msw-libs"
+         "${MINGW_PACKAGE_PREFIX}-sqlite3"
+         "${MINGW_PACKAGE_PREFIX}-clang-tools-extra"
+         "${MINGW_PACKAGE_PREFIX}-libmariadbclient"
+         "${MINGW_PACKAGE_PREFIX}-postgresql"
+         "${MINGW_PACKAGE_PREFIX}-openssl"
+         )
+optdepends=("${MINGW_PACKAGE_PREFIX}-clang: compiler")
+makedepends=('git' 'flex' 'bison'
+             "${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-wxwidgets${_wx_basever}-msw"
+             #"${MINGW_PACKAGE_PREFIX}-clang"
+            )
+#_sourcedir=${_realname}-${pkgver}
+#source=("https://github.com/eranif/codelite/archive/${pkgver}/${_realname}-${pkgver}.tar.gz"
+_sourcedir=${_realname}-git
+source=("${_sourcedir}"::"git+https://github.com/eranif/codelite.git#tag=$_git_tag"
+        # Workaround help bug; see https://github.com/eranif/codelite/issues/3727
+        003-Show-command-line-help.patch
+        # Not tried to push this patch to codelite; I see no reason they would want it
+        004-Guard-WXWIN-and-other-stuff-with-FOR_MSYS2_PACKAGE.patch
+        # These warnings did not show up till used wxWidgets from MSys2 package
+        005-Disable-selected-compiler-warnings.patch
+        # No idea what this patch does or if it is needed
+        007-strip-whitespaces-flags.patch
+        # This patch helps to find/debug issues
+        013-set-developer-log.patch)
+sha256sums=('b0867b663e2e2b771b04a18f3917bd61413e0212c56cd1603f5874b873a05bf4'
+            'f6ba6ff427a0f0662c67d0335aa242f2e68c5b9c654897bc1b9b11db1494a03a'
+            '40b879d8cf3a61939c725b2a89d4d8fb478df6a9f8d1b9cda5a1e2e631db5768'
+            '219bd82c1f65c768e5156d75a5f212fce9ede416f8ba435ddf279b6d0316d1a7'
+            'a9e5539e31c664a84e42412cdd30b44699a92efb2fb6f51000010bb958c10219'
+            '191017e45672f6945db79f1e67844d10df622e894d64afebad6937fbbc8e8412')
+
+# Helper macros to help make tasks easier #
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+
+pkgver() {
+  cd "${srcdir}/${_sourcedir}"
+  local _version=$(head -n 200 CMakeLists.txt | grep 'set(CODELITE_VERSION' | sed -e 's/.* //' | tr '\n' '.' | sed -e 's/\"//g' | sed -e 's/[)]//g' | sed 's/.$/\n/')
+
+  printf "%s" ${_version}
+}
+
+prepare() {
+  cd "${srcdir}/${_sourcedir}"
+
+  git config --local user.name  "nobody"
+  git config --local user.email "nobody@example.com"
+
+  git submodule update --init --recursive
+
+  apply_patch_with_msg \
+    003-Show-command-line-help.patch \
+    004-Guard-WXWIN-and-other-stuff-with-FOR_MSYS2_PACKAGE.patch \
+    005-Disable-selected-compiler-warnings.patch
+
+  # Results in more data being placed in codelite.log under %APPDATA%/codelite/logs
+  # Useful to find startup problems and likely other problems
+  # Once the program works correctly it would likely be a good idea to stop applying it.
+  apply_patch_with_msg 013-set-developer-log.patch
+
+  # No idea if 007-strip-whitespaces-flags.patch is needed
+  apply_patch_with_msg \
+    007-strip-whitespaces-flags.patch
+}
+
+build() {
+  [[ -d ${srcdir}/build-${MSYSTEM} ]] && rm -rf ${srcdir}/build-${MSYSTEM}
+  #[[ -f ${srcdir}/build-${MSYSTEM}/CMakeCache.txt ]] && rm -f ${srcdir}/build-${MSYSTEM}/CMakeCache.txt
+  mkdir -p ${srcdir}/build-${MSYSTEM} && cd ${srcdir}/build-${MSYSTEM}
+
+  local -a extra_config
+  if check_option "debug" "y"; then
+    extra_config+=( -DCMAKE_BUILD_TYPE=Debug )
+  else
+    extra_config+=( -DCMAKE_BUILD_TYPE=Release )
+  fi
+
+  ${MINGW_PREFIX}/bin/cmake \
+    -Wno-dev \
+    -G"Ninja" \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DFOR_MSYS2_PACKAGE=1 \
+    -DwxWidgets_CONFIG_EXECUTABLE=${MINGW_PREFIX}/bin/wx-config-${_wx_basever} \
+    -DwxWidgets_wxrc_EXECUTABLE=${MINGW_PREFIX}/bin/wxrc-${_wx_basever} \
+    "${extra_config[@]}" \
+    ../${_sourcedir}
+
+  ${MINGW_PREFIX}/bin/cmake --build .
+  ${MINGW_PREFIX}/bin/cmake --install .
+}
+
+package() {
+  cd build-${MSYSTEM}
+
+  mkdir -p "${pkgdir}"${MINGW_PREFIX}
+  cp -r ./install/* "${pkgdir}"${MINGW_PREFIX}/
+
+  # why? Because the codelite installer also does not install the .a files
+  rm -f "${pkgdir}"${MINGW_PREFIX}/lib/codelite/*.a
+  rm -f "${pkgdir}"${MINGW_PREFIX}/lib/*.a
+
+  install -Dm644 "${srcdir}"/${_sourcedir}/LICENSE "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
+}

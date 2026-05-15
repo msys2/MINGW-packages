@@ -1,0 +1,161 @@
+# Contributor: Mehdi Chinoune <mehdi.chinoune@hotmail.com>
+
+_realname=qt5-tools
+pkgbase="mingw-w64-${_realname}"
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}-debug")
+pkgver=5.15.18
+pkgrel=9
+pkgdesc="A cross-platform application and UI framework (Development Tools, QtHelp) (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url='https://www.qt.io/'
+msys2_repository_url='https://github.com/qt/qttools'
+msys2_references=(
+  "cpe: cpe:/a:qt:qt"
+)
+msys2_ignore_vulnerabilities=(
+  "CVE-2025-30348" # only affects qt5-base
+)
+license=('spdx:LGPL-3.0-only WITH Qt-GPL-exception-1.0 AND GPL-3.0-or-later AND GPL-2.0-or-later AND GFDL-1.3-no-invariants-only')
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-qt5-declarative"
+             "${MINGW_PACKAGE_PREFIX}-qt5-activeqt"
+             "${MINGW_PACKAGE_PREFIX}-clang"
+             "${MINGW_PACKAGE_PREFIX}-llvm-tools"
+             "${MINGW_PACKAGE_PREFIX}-vulkan-headers"
+             "rsync")
+_pkgfn="${_realname/5-/}-everywhere-opensource-src-${pkgver}"
+source=("https://download.qt.io/archive/qt/${pkgver%.*}/$pkgver/submodules/$_pkgfn.tar.xz"
+        001-qt-5.11-mingw-fix-link-qdoc-with-clang.patch
+        002-qt5-windeployqt-fixes.patch
+        003-ugly-hack-disable-qdoc-build.patch
+        004-fix-build-with-gcc-14.patch
+        005-rename-qmake-to-avoid-conflict-with-qt6.patch
+        012-qt6-windeployqt-ignore-debug.patch)
+sha256sums=('931e0969d9f9d8f233e5e9bf9db0cea9ce9914d49982f1795fe6191010113568'
+            'aff15370d18498ee1cc73f027b3fc76cc899b3cd1f79c3ed3bbda50b927dec33'
+            '5009ef5c9812f6f6ba6d69d6b2a90b5caa43cf0ef46bf36ac507c672e697e5a1'
+            '1927c71175f758914abc485506bb162f3eac5e0816a00be66a78562b168095f0'
+            'a75c851bdc3b0b0822cc527999d3b46b92da02d714bc17b913bd315b6d4b7bae'
+            'a7f742ed80e6d690ecdfcbdef332742f089b9a8adbadbe1ec801e6272a6f436c'
+            '59e132a1a5b50ec493bf3f23a7f0a6241ffb8b41537693a085a6072d2b7abd09')
+
+# Helper macros to help make tasks easier #
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+
+prepare() {
+  cd "${srcdir}"/${_pkgfn/opensource-/}
+
+  apply_patch_with_msg \
+    001-qt-5.11-mingw-fix-link-qdoc-with-clang.patch \
+    002-qt5-windeployqt-fixes.patch \
+    003-ugly-hack-disable-qdoc-build.patch \
+    004-fix-build-with-gcc-14.patch \
+    005-rename-qmake-to-avoid-conflict-with-qt6.patch
+
+  # Debug DLL detection is unreliable for the binaries our toolchains produce
+  # resulting in windeployqt refusing to deploy necessary DLLs. Just ignore
+  # debug/release matching for now.
+  # https://github.com/msys2/MINGW-packages/issues/6272
+  # https://github.com/msys2/MINGW-packages/issues/26612
+  apply_patch_with_msg \
+    012-qt6-windeployqt-ignore-debug.patch
+}
+
+build() {
+  mkdir -p build-${MSYSTEM} && cd build-${MSYSTEM}
+
+  export LLVM_INSTALL_DIR=${MINGW_PREFIX}
+
+  qmake-qt5 ../${_pkgfn/opensource-/}
+
+  make
+}
+
+check() {
+  cd build-${MSYSTEM}
+  make check -j1 -k
+}
+
+package_qt5-tools() {
+  depends=("${MINGW_PACKAGE_PREFIX}-qt5-base")
+  optdepends=("${MINGW_PACKAGE_PREFIX}-clang-libs"
+              "${MINGW_PACKAGE_PREFIX}-qt5-activeqt")
+  groups=("${MINGW_PACKAGE_PREFIX}-qt5")
+
+  cd build-${MSYSTEM}
+
+  # Fix Makefiles
+  local PREFIX_WIN=$(cygpath -am ${MINGW_PREFIX})
+  find "${srcdir}/build-${MSYSTEM}" -type f \( -name 'Makefile*' \) \
+      -exec sed -i -e "s|${PREFIX_WIN:0:2}\$(INSTALL_ROOT|\$(INSTALL_ROOT|g" {} \;
+  find "${srcdir}/build-${MSYSTEM}" -type f \( -name 'Makefile*' \) \
+      -exec sed -i -e "s|)${PREFIX_WIN:2}|)${MINGW_PREFIX}|g" {} \;
+
+  make INSTALL_ROOT="${pkgdir}" install
+
+  install -d "$pkgdir${MINGW_PREFIX}"/share/licenses/${_realname}
+  install -Dm644 $srcdir/${_pkgfn/opensource-/}/LICENSE* -t "$pkgdir${MINGW_PREFIX}"/share/licenses/${_realname}
+
+  # Seperate debug-info files
+  mv -f "${pkgdir}${MINGW_PREFIX}/lib"/*.debug "${pkgdir}${MINGW_PREFIX}/bin"/ || true
+  rsync -armR --remove-source-files --include="*/" --include="*.debug" --exclude="*" --prune-empty-dirs "${pkgdir}"/.${MINGW_PREFIX} "${srcdir}"/${MSYSTEM}-debug/
+
+  # Fix paths in *.pri, *prl and *.pc files:
+  #   $(cygpath -m ${MINGW_PREFIX}) -> $(cygpath -m "${pkgdir}"${MINGW_PREFIX})
+  local PKGDIR_PREFIX_WIN=$(cygpath -m "${pkgdir}"${MINGW_PREFIX})
+  local FAKE_PREFIX_FOR_REPLACE="@@QT_REAL_PREFIX/dir@@"
+
+  find "${pkgdir}${MINGW_PREFIX}/share/qt5" -type f \( -name '*.pri' -o -name '*.prl' \) \
+      -exec sed -i -e "s|${PREFIX_WIN}|${FAKE_PREFIX_FOR_REPLACE}|g" {} \;
+
+  find "${pkgdir}${MINGW_PREFIX}/lib" -type f \( -name '*.pri' -o -name '*.prl' \) \
+      -exec sed -i -e "s|${PREFIX_WIN}|${FAKE_PREFIX_FOR_REPLACE}|g" {} \;
+
+  find "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig" -type f -name '*.pc' \
+      -exec sed -i -e "s|${PREFIX_WIN}|${MINGW_PREFIX}|g" {} \;
+
+  find "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig" -type f -name '*.pc' \
+      -exec sed -i -e "s|${PKGDIR_PREFIX_WIN}|${MINGW_PREFIX}|g" {} \;
+
+  # Avoid conflict with qt6-tools/base
+  for _tool in assistant designer qdistancefieldgenerator lconvert linguist lrelease lrelease-pro lupdate lupdate-pro pixeltool qdbus qdbusviewer qdoc qtdiag qtplugininfo qtpaths windeployqt; do
+    mv "${pkgdir}"${MINGW_PREFIX}/bin/${_tool}{,-qt5}.exe
+  done
+  sed -i "s|qdoc.exe|qdoc-qt5.exe|g" "${pkgdir}"${MINGW_PREFIX}/lib/cmake/Qt5DocTools/Qt5DocToolsConfig.cmake
+  sed -i "s|lrelease.exe|lrelease-qt5.exe|g" "${pkgdir}"${MINGW_PREFIX}/lib/cmake/Qt5LinguistTools/Qt5LinguistToolsConfig.cmake
+  sed -i "s|lconvert.exe|lconvert-qt5.exe|g" "${pkgdir}"${MINGW_PREFIX}/lib/cmake/Qt5LinguistTools/Qt5LinguistToolsConfig.cmake
+  sed -i "s|lupdate.exe|lupdate-qt5.exe|g" "${pkgdir}"${MINGW_PREFIX}/lib/cmake/Qt5LinguistTools/Qt5LinguistToolsConfig.cmake
+}
+
+package_qt5-tools-debug() {
+  depends=("${MINGW_PACKAGE_PREFIX}-qt5-base-debug"
+           "${MINGW_PACKAGE_PREFIX}-${_realname}")
+  groups=("${MINGW_PACKAGE_PREFIX}-qt5-debug")
+  options=('!strip')
+
+  cp -rf "${srcdir}"/${MSYSTEM}-debug${MINGW_PREFIX} "${pkgdir}"/
+
+  # Avoid conflict with qt6-{tools/base}-debug
+  for _tool in assistant designer qdistancefieldgenerator lconvert linguist lrelease lupdate pixeltool qdbus qdbusviewer qdoc qtdiag qtplugininfo qtpaths windeployqt; do
+    mv "${pkgdir}"${MINGW_PREFIX}/bin/${_tool}{,-qt5}.exe.debug
+  done
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;

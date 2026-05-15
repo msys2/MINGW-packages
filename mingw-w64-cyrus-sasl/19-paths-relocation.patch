@@ -1,0 +1,131 @@
+diff -Naur cyrus-sasl-2.1.26-orig/m4/varexpand.m4 cyrus-sasl-2.1.26/m4/varexpand.m4
+--- cyrus-sasl-2.1.26-orig/m4/varexpand.m4	1970-01-01 03:00:00.000000000 +0300
++++ cyrus-sasl-2.1.26/m4/varexpand.m4	2014-12-16 00:22:11.487600000 +0300
+@@ -0,0 +1,8 @@
++AC_DEFUN([FULL_EXPAND_VARIABLE], [
++  $1=$2
++  $1=`(
++       test "x$prefix" = xNONE && prefix="$ac_default_prefix"
++       test "x$exec_prefix" = xNONE && exec_prefix="${prefix}"
++       eval echo \""[$]$1"\"
++      )`
++])
+diff -Naur cyrus-sasl-2.1.26-orig/configure.ac cyrus-sasl-2.1.26/configure.ac
+--- cyrus-sasl-2.1.26-orig/configure.ac	2014-12-15 23:10:23.125400000 +0300
++++ cyrus-sasl-2.1.26/configure.ac	2014-12-16 00:23:05.167200000 +0300
+@@ -1102,6 +1102,8 @@
+   configdir=$withval,
+   configdir='${plugindir}:${sysconfdir}/sasl2')
+ AC_SUBST(configdir)
++FULL_EXPAND_VARIABLE(sasl_bindir, "$bindir")
++AC_DEFINE_UNQUOTED(BINDIR, "$sasl_bindir", [Runtime executables location])
+ 
+ dnl look for rc4 libraries. we accept the CMU one or one from openSSL
+ AC_ARG_WITH(rc4, [  --with-rc4              use internal rc4 routines [[yes]] ],
+diff -Naur cyrus-sasl-2.1.26-orig/include/sasl.h cyrus-sasl-2.1.26/include/sasl.h
+--- cyrus-sasl-2.1.26-orig/include/sasl.h	2014-12-15 23:10:22.454600000 +0300
++++ cyrus-sasl-2.1.26/include/sasl.h	2014-12-15 23:43:10.374600000 +0300
+@@ -669,6 +669,8 @@
+ #define SASL_PATH_TYPE_PLUGIN	0
+ #define SASL_PATH_TYPE_CONFIG	1
+ 
++LIBSASL_API char * sasl_path_relocation(const char *from, const char *to);
++LIBSASL_API char * sasl_pathlist_relocation(const char *from_path, const char *to_path_list);
+ /* a simpler way to set plugin path or configuration file path
+  * without the need to set sasl_getpath_t callback.
+  *
+--- cyrus-sasl-2.1.28/lib/common.c.orig	2022-02-18 22:50:42.000000000 +0100
++++ cyrus-sasl-2.1.28/lib/common.c	2023-03-11 17:33:24.741917800 +0100
+@@ -59,11 +59,38 @@
+ #include <saslutil.h>
+ #include <saslplug.h>
+ #include "saslint.h"
++#include "pathtools.h"
+ 
+ #ifdef HAVE_UNISTD_H
+ #include <unistd.h>
+ #endif
+ 
++char *
++sasl_path_relocation(const char *from, const char *to)
++{
++  return single_path_relocation(from, to);
++}
++
++char *
++sasl_pathlist_relocation(const char *from_path, const char *to_path_list)
++{
++#if defined(__MINGW32__)
++  static char stored_path[PATH_MAX];
++  static int stored = 0;
++  if (stored == 0)
++  {
++    char const * relocated = get_relocated_path_list(from_path, to_path_list);
++    strncpy (stored_path, relocated, PATH_MAX);
++    stored_path[PATH_MAX-1] = '\0';
++    free ((void *)relocated);
++    stored = 1;
++  }
++  return stored_path;
++#else
++  return (to_path_list);
++#endif
++}
++
+ static const char *implementation_string = "Cyrus SASL";
+ 
+ #define	VSTR0(maj, min, step)	#maj "." #min "." #step
+@@ -1586,9 +1613,13 @@
+ 
+ #if defined(WIN32)
+         /* NB: On Windows platforms this value is always allocated */
++#  ifdef __MINGW32__
++        default_plugin_path = sasl_path_relocation(BINDIR, PLUGINDIR);
++#  else
+         default_plugin_path = _sasl_get_default_win_path(context,
+                                                          SASL_PLUGIN_PATH_ATTR,
+                                                          PLUGINDIR);
++#  endif
+ #else
+         /* NB: On Unix platforms this value is never allocated */
+         path = _sasl_get_default_unix_path(context,
+@@ -1641,9 +1672,13 @@
+ 
+ #if defined(WIN32)
+         /* NB: On Windows platforms this value is always allocated */
++#  ifdef __MINGW32__
++        default_conf_path = sasl_pathlist_relocation(BINDIR, CONFIGDIR);
++#  else
+         default_conf_path = _sasl_get_default_win_path(context,
+                                                        SASL_CONF_PATH_ATTR,
+                                                        CONFIGDIR);
++#  endif
+ #else
+         /* NB: On Unix platforms this value is never allocated */
+         path = _sasl_get_default_unix_path(context,
+diff -Naur cyrus-sasl-2.1.26-orig/lib/Makefile.am cyrus-sasl-2.1.26/lib/Makefile.am
+--- cyrus-sasl-2.1.26-orig/lib/Makefile.am	2014-12-15 23:10:23.094200000 +0300
++++ cyrus-sasl-2.1.26/lib/Makefile.am	2014-12-15 23:24:10.600800000 +0300
+@@ -62,8 +62,8 @@
+ DLOPEN_C = dlopen.c
+ endif
+ 
+-common_headers = saslint.h
+-common_sources = auxprop.c canonusr.c checkpw.c client.c common.c config.c external.c md5.c saslutil.c server.c seterror.c $(DLOPEN_C)
++common_headers = saslint.h pathtools.h
++common_sources = auxprop.c canonusr.c checkpw.c client.c common.c config.c external.c md5.c pathtools.c saslutil.c server.c seterror.c $(DLOPEN_C)
+ 
+ LTLIBOBJS = @LTLIBOBJS@
+ LIB_DOOR= @LIB_DOOR@
+diff -Naur cyrus-sasl-2.1.26-orig/utils/pluginviewer.c cyrus-sasl-2.1.26/utils/pluginviewer.c
+--- cyrus-sasl-2.1.26-orig/utils/pluginviewer.c	2014-12-15 23:10:22.407800000 +0300
++++ cyrus-sasl-2.1.26/utils/pluginviewer.c	2014-12-15 23:45:36.037600000 +0300
+@@ -197,7 +197,7 @@
+     if (searchpath) {
+         *path = searchpath;
+     } else {
+-        *path = PLUGINDIR;
++        *path = sasl_path_relocation(BINDIR, PLUGINDIR);
+     }
+ 
+     return SASL_OK;

@@ -1,0 +1,103 @@
+# Maintainer: Alexey Pavlov <alexpux@gmail.com>
+# Contributor: Mario Emmenlauer <memmenlauer@biodataanalysis.de>
+
+_realname=ccache
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=4.13.6
+pkgrel=2
+pkgdesc="Compiler cache that speeds up recompilation by caching previous compilations (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw64' 'mingw32' 'ucrt64' 'clang64' 'clangarm64')
+url="https://ccache.dev/"
+msys2_repository_url="https://github.com/ccache/ccache"
+msys2_changelog_url="https://ccache.dev/releasenotes.html"
+msys2_references=(
+  'anitya: 257'
+  'archlinux: ccache'
+  'gentoo: dev-util/ccache'
+)
+license=("spdx:GPL-3.0-or-later")
+replaces=("${MINGW_PACKAGE_PREFIX}-${_realname}-git")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             $([[ ${CARCH} == i686 ]] || echo "${MINGW_PACKAGE_PREFIX}-asciidoctor")
+             "${MINGW_PACKAGE_PREFIX}-pkgconf")
+depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
+         "${MINGW_PACKAGE_PREFIX}-fmt"
+         "${MINGW_PACKAGE_PREFIX}-xxhash"
+         "${MINGW_PACKAGE_PREFIX}-zstd"
+         $([[ ${CARCH} == i686 ]] || echo \
+           "${MINGW_PACKAGE_PREFIX}-hiredis" \
+           "${MINGW_PACKAGE_PREFIX}-libblake3"))
+source=("https://github.com/ccache/ccache/releases/download/v${pkgver}/${_realname}-${pkgver}.tar.xz"{,.minisig}
+        "0001-generate-docs-bash.patch")
+sha256sums=('a7de667ca08cf67c3c8af9f213f6aa701a1188a2b3163fb74483858ce5e79fbb'
+            'a45a1b58566df6c648dc0b4473ed12d8fc077137e46e4ccea96c64f784b091fc'
+            '55e60c7413774387f0b2b36f654fa5ad736e828c95372d85a65d15c8a784fb12')
+validpgpkeys=('5A939A71A46792CF57866A51996DDA075594ADB8') # Joel Rosdahl <joel@rosdahl.net>
+
+prepare() {
+  cd "${_realname}-${pkgver}"
+  patch -p1 -i "${srcdir}/0001-generate-docs-bash.patch"
+
+}
+build() {
+  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
+
+  declare -a extra_config
+  if check_option "debug" "n"; then
+    extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  if [[ ${CARCH} == x86_64 ]]; then
+    extra_config+=("-DENABLE_DOCUMENTATION=ON")
+  else
+    extra_config+=("-DENABLE_DOCUMENTATION=OFF")
+  fi
+
+  if [[ ${CARCH} == i686 ]]; then
+    extra_config+=("-DREDIS_STORAGE_BACKEND=OFF")
+  else
+    extra_config+=("-DREDIS_STORAGE_BACKEND=ON")
+  fi
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    ${MINGW_PREFIX}/bin/cmake \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+      "${extra_config[@]}" \
+      -DBUILD_SHARED_LIBS=ON \
+      -DSTATIC_LINK=OFF \
+      -DENABLE_TESTING=OFF \
+      -DCCACHE_DEV_MODE=OFF \
+      -DWARNINGS_AS_ERRORS=OFF \
+      ../${_realname}-${pkgver}
+
+  ${MINGW_PREFIX}/bin/cmake --build .
+}
+
+check() {
+  # run unittest to verify that the program is not broken
+  cd "${srcdir}"/build-${MSYSTEM}
+  ${MINGW_PREFIX}/bin/cmake -DENABLE_TESTING=ON ../${_realname}-${pkgver}
+  ${MINGW_PREFIX}/bin/cmake --build .
+  ${MINGW_PREFIX}/bin/ctest -R unittest
+}
+
+package() {
+  cd "${srcdir}/build-${MSYSTEM}"
+
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
+
+  # hack: use bash scripts as shortcuts since we cannot use symlinks
+  install -d "${pkgdir}"${MINGW_PREFIX}/lib/ccache/bin
+  cd "${pkgdir}"${MINGW_PREFIX}/lib/ccache/bin
+  scripts=(c++ cc cpp ${CC} ${CXX} ${MINGW_CHOST}-${CXX} ${MINGW_CHOST}-c++ ${MINGW_CHOST}-${CC})
+  for fn in ${scripts[*]}; do
+    echo -e '#!/bin/bash\n\nccache '${MINGW_PREFIX}'/bin/'$fn' "$@"' > $fn
+  done
+}

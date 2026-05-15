@@ -1,0 +1,158 @@
+# Maintainer: Alexey Pavlov <alexpux@gmail.com>
+
+_realname=make
+# NOTE: The name of the target executable (_prog_name) MUST remain unchanged
+#       when installed, otherwise GNU make's dll load feature in connection
+#       with the target executable breaks.  The reason is that the executable
+#       name is part of the import library (libgnumake-1.dll.a) used to link
+#       customized dll's.
+#       General information at https://www.gnu.org/software/make/manual/html_node/Loading-Objects.html#Loading-Objects.
+_autotools=yes
+_prog_name=mingw32-make
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+pkgver=4.4.1
+pkgrel=4
+pkgdesc="GNU make utility to maintain groups of programs (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url="https://www.gnu.org/software/make"
+msys2_repository_url='https://cgit.git.savannah.gnu.org/cgit/make.git'
+msys2_references=(
+  "cpe: cpe:/a:gnu:make"
+)
+license=('spdx:GPL-3.0-or-later')
+groups=("${MINGW_PACKAGE_PREFIX}-toolchain")
+depends=("${MINGW_PACKAGE_PREFIX}-gettext-runtime")
+makedepends=("${MINGW_PACKAGE_PREFIX}-autotools"
+             "${MINGW_PACKAGE_PREFIX}-gcc"
+             "${MINGW_PACKAGE_PREFIX}-gettext-tools")
+source=("https://ftp.gnu.org/gnu/${_realname}/${_realname}-${pkgver}.tar.gz"
+        'make-linebuf-mingw.patch'
+        'make-4.3_undef-HAVE_STRUCT_DIRENT_D_TYPE.patch'
+        'make-4.4-timestamps.patch'
+        'make-4.2.1-Makefile.am-gcc-only-link-libgnumake-1.dll.a.patch'
+        '005-fix-default-cxx.patch'
+        '006-fix-build-with-gcc-15.patch'
+        'make-check-load-feature.mak'
+        'mk_temp.c')
+sha256sums=('dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3'
+            '578860779efd8aedfd7362b2f6bb73bf1a5ca57ee1d9f4a7d26b83c570d92db1'
+            '952b8decffb25b6083bbda262578f93f2b480789b9d0baaabb7b3a77d7b86fc1'
+            'd13abf8697abaca71634f7de302d14e65b9236b0181a3ac081663d33e647d303'
+            'f28d1596ac8f60bbe6042f3467627646ae7e7243e4f73652f9682255758ecdb9'
+            'bd6a597d76b35a48020dc335040c96f562439970595a21014469b73b3b6c805a'
+            'c5125d642ca6ae9b5788648aa51ecc7a44e829cf443b44768c9a66c85d85689d'
+            '3d6ece384425ff1c3f691efeb7c97e89bb11825bb6648995552dfcb52afe661d'
+            '61d4f57c311cf2e27ccf4d1da847216730f304cf17c5c386721182ffe2d4b1aa')
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying $_patch"
+    patch -Np1 -i "${srcdir}/$_patch"
+  done
+}
+
+# helper function
+get_exe_dir() {
+  if test ${_autotools} = yes; then
+     echo "${srcdir}/build-${MSYSTEM}"
+  else
+    echo "${srcdir}/${_realname}-${pkgver}/GccRel"
+  fi
+}
+
+
+prepare() {
+  cd "${srcdir}"/${_realname}-${pkgver}
+
+  apply_patch_with_msg \
+    make-linebuf-mingw.patch \
+    make-4.3_undef-HAVE_STRUCT_DIRENT_D_TYPE.patch \
+    005-fix-default-cxx.patch \
+    006-fix-build-with-gcc-15.patch
+  # https://lists.gnu.org/archive/html/bug-make/2022-11/msg00017.html
+  apply_patch_with_msg \
+    make-4.4-timestamps.patch
+
+  if test "${_autotools}" = "yes"; then
+    apply_patch_with_msg \
+      make-4.2.1-Makefile.am-gcc-only-link-libgnumake-1.dll.a.patch
+    # 1 - The import library libgnumake-1.dll.a contains the name of the program to be
+    #     installed.  This requires autotools to be informed about the installed program
+    #     name in case it is different from the standard name 'make' hardcoded in the GNU
+    #     Make package.
+    # 2 - automake requires hardcoded program names in any Makefile.am, i.e. in the
+    #     variable bin_PROGRAMS and the induced variables derived from the program
+    #     name.  We use sed to change the program name from 'make' to the customized
+    #     name in Makefile.am, if different from 'make'.
+    # 3 - After packaging we run a test if the dll load feature for the installed
+    #     program works.  See function 'package()'.
+    if test ${_prog_name} != make; then
+      msg2 "Changing the program name from 'make' to '${_prog_name}' in Makefile.am."
+      test -f Makefile.am.orig || mv Makefile.am Makefile.am.orig
+      local _prog_name_am=${_prog_name//[^a-zA-Z0-9@]/_}
+      sed -e "/bin_PROGRAMS/ { s:\bmake\b:${_prog_name}:g };
+              s:\bmake_\(SOURCES\|LDADD\|LDFLAGS\)\b:${_prog_name_am}_\1:g ;
+              s:\bEXTRA_make_\([A-Z]\+\):EXTRA_${_prog_name_am}_\1:g ;" \
+            Makefile.am.orig > Makefile.am
+      # log the changes made to Makefile.am by sed
+      diff -u Makefile.am.orig Makefile.am > Makefile.am.diff || true
+      cat Makefile.am.diff
+    fi
+    autoreconf -vfi
+  else
+    sed "/^set MAKE=gnumake/ s/gnumake/${_prog_name}/" build_w32.bat > build_w32-PKGBUILD.bat
+    # make sure that the batch file has CRLF as EOL for reliable processing by cmd
+    unix2dos build_w32-PKGBUILD.bat
+  fi
+}
+
+build() {
+  if test "${_autotools}" = "yes"; then
+    mkdir -vp build-${MSYSTEM} && cd build-${MSYSTEM}
+    ../${_realname}-${pkgver}/configure \
+      -C \
+      --prefix=${MINGW_PREFIX} \
+      --without-libintl-prefix \
+      --without-libiconv-prefix \
+      CPPFLAGS=-DMAKE_LOAD \
+      CFLAGS=-mthreads \
+      MAKECXX=${CXX} \
+      ac_cv_dos_paths=yes
+    make -j1
+  else
+    cd "${srcdir}"/${_realname}-${pkgver}
+    ./build_w32-PKGBUILD.bat --without-guile gcc
+  fi
+}
+
+check() {
+  _exe_dir=$(get_exe_dir)
+  msg "Checking if GNU Make's dll loading feature we compiled into ${_prog_name}.exe works ..."
+  cd "${srcdir}"
+  rm -fv ./*.dll
+  if "${_exe_dir}"/${_prog_name}.exe -f ./make-check-load-feature.mak \
+      --debug=v \
+      CFLAGS="-I${srcdir}/${_realname}-${pkgver}/src" \
+      LIBS="${_exe_dir}/libgnumake-1.dll.a"
+  then
+    msg2 "PASSED"
+  else
+    error "FAILED"
+    exit 1
+  fi
+}
+
+package() {
+  _exe_dir=$(get_exe_dir)
+  mkdir -pv "${pkgdir}${MINGW_PREFIX}"/{bin,lib,include}
+  cd "${srcdir}/${_realname}-${pkgver}"
+  cp -fv "${_exe_dir}/${_prog_name}.exe"                    "${pkgdir}${MINGW_PREFIX}/bin/"
+  cp -fv "${_exe_dir}/libgnumake-1.dll.a"                   "${pkgdir}${MINGW_PREFIX}/lib/"
+  cp -fv "${srcdir}/${_realname}-${pkgver}/src/gnumake.h"   "${pkgdir}${MINGW_PREFIX}/include/"
+
+  install -Dm644 "${srcdir}"/${_realname}-${pkgver}/COPYING \
+        "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/COPYING
+}

@@ -1,0 +1,109 @@
+Fix dangling pointer returned by PySide QUiLoader methods on MinGW/UCRT64.
+
+On MinGW, Qt's C++ QUiLoader isn't built as a usable library, so the
+FreeCAD UiLoader delegates to PySide's Python QUiLoader via
+uiloader.callMemberFunction(...). PySide returns a Python wrapper that
+owns the underlying C++ widget. When the local Py::Object goes out of
+scope at the end of each method, Py_DECREF deletes the C++ widget and
+the caller receives a dangling pointer. Subsequent access later crashes
+in Shiboken (e.g. getWrapperName() / Object::newObject()) with heap
+corruption (0xc0000374) or SIGSEGV.
+
+Symptoms: clicking BIM Views / New Arch File or Arch Wall on Windows
+crashes with 'libshiboken: Internal C++ object (QWidget) already
+deleted.' or a raw SIGSEGV with freed vtable bytes.
+
+Fix: call Shiboken::Object::releaseOwnership() on the returned wrapper
+so Py_DECREF destroys only the Python wrapper, not the C++ widget. The
+caller then re-wraps the surviving raw pointer via fromQWidget() +
+WrapperManager with ownership=false, which is the intended lifecycle.
+
+Add a reusable helper PythonWrapper::releaseOwnership() and apply it to
+all 5 UiLoader methods that delegate to PySide and return raw pointers:
+load, createWidget, createLayout, createActionGroup, createAction.
+
+--- a/src/Gui/PythonWrapper.h	2026-04-19 08:27:34.866578428 +0200
++++ b/src/Gui/PythonWrapper.h	2026-04-19 08:28:10.535179322 +0200
+@@ -55,6 +55,11 @@
+ 
+     bool toCString(const Py::Object&, std::string&);
+     QObject* toQObject(const Py::Object&);
++    // Tell Shiboken that Python no longer owns the C++ object wrapped by
++    // pyobject. Use when a Python method returns a wrapper with ownership but
++    // we need the underlying C++ object to outlive the wrapper (e.g. raw
++    // pointers returned to caller after the PyCXX handle goes out of scope).
++    void releaseOwnership(const Py::Object&);
+     qsizetype toEnum(PyObject* pyPtr);
+     qsizetype toEnum(const Py::Object& pyobject);
+     Py::Object toStandardButton(qsizetype);
+--- a/src/Gui/PythonWrapper.cpp	2026-04-19 08:27:34.858578293 +0200
++++ b/src/Gui/PythonWrapper.cpp	2026-04-19 08:28:18.410311927 +0200
+@@ -592,6 +592,18 @@
+     return qt_getCppType<QObject>(pyobject.ptr());
+ }
+ 
++void PythonWrapper::releaseOwnership(const Py::Object& pyobject)
++{
++#if defined(HAVE_SHIBOKEN) && defined(HAVE_PYSIDE)
++    PyObject* raw = pyobject.ptr();
++    if (raw && Shiboken::Object::checkType(raw)) {
++        Shiboken::Object::releaseOwnership(reinterpret_cast<SbkObject*>(raw));
++    }
++#else
++    Q_UNUSED(pyobject);
++#endif
++}
++
+ qsizetype PythonWrapper::tryEnum(PyObject* pyPtr)
+ {
+     if (PyObject* number = PyNumber_Long(pyPtr)) {
+--- a/src/Gui/UiLoader.cpp	2026-04-19 08:27:34.850578158 +0200
++++ b/src/Gui/UiLoader.cpp	2026-04-19 08:28:42.497717383 +0200
+@@ -292,6 +292,11 @@
+         args[0] = wrap.fromQObject(device);
+         args[1] = wrap.fromQObject(parentWidget);
+         Py::Object form(uiloader.callMemberFunction("load", args));
++        // PySide returns a wrapper that owns the C++ widget. Disown it before
++        // `form` goes out of scope, otherwise Py_DECREF would delete the
++        // widget and we'd return a dangling pointer. The caller re-wraps the
++        // raw pointer via fromQWidget()+WrapperManager with ownership=false.
++        wrap.releaseOwnership(form);
+         return qobject_cast<QWidget*>(wrap.toQObject(form));
+     }
+     catch (Py::Exception& e) {
+@@ -344,6 +349,8 @@
+         args[1] = wrap.fromQObject(parent);
+         args[2] = Py::String(name.toStdString());
+         Py::Object form(uiloader.callMemberFunction("createWidget", args));
++        // See QUiLoader::load() for ownership rationale.
++        wrap.releaseOwnership(form);
+         return qobject_cast<QWidget*>(wrap.toQObject(form));
+     }
+     catch (Py::Exception& e) {
+@@ -362,6 +369,8 @@
+         args[1] = wrap.fromQObject(parent);
+         args[2] = Py::String(name.toStdString());
+         Py::Object form(uiloader.callMemberFunction("createLayout", args));
++        // See QUiLoader::load() for ownership rationale.
++        wrap.releaseOwnership(form);
+         return qobject_cast<QLayout*>(wrap.toQObject(form));
+     }
+     catch (Py::Exception& e) {
+@@ -379,6 +388,8 @@
+         args[0] = wrap.fromQObject(parent);
+         args[1] = Py::String(name.toStdString());
+         Py::Object action(uiloader.callMemberFunction("createActionGroup", args));
++        // See QUiLoader::load() for ownership rationale.
++        wrap.releaseOwnership(action);
+         return qobject_cast<QActionGroup*>(wrap.toQObject(action));
+     }
+     catch (Py::Exception& e) {
+@@ -396,6 +407,8 @@
+         args[0] = wrap.fromQObject(parent);
+         args[1] = Py::String(name.toStdString());
+         Py::Object action(uiloader.callMemberFunction("createAction", args));
++        // See QUiLoader::load() for ownership rationale.
++        wrap.releaseOwnership(action);
+         return qobject_cast<QAction*>(wrap.toQObject(action));
+     }
+     catch (Py::Exception& e) {

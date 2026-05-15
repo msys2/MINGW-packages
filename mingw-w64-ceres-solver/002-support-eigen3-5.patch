@@ -1,0 +1,68 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -180,9 +180,34 @@ endif (IOS)
+ 
+ unset(CERES_COMPILE_OPTIONS)
+ 
++# We call find_package multiple time with different versioning scheme to support
++# both Eigen3 3.x and 5.x. If the first invocation fails and Eigen3_DIR was set
++# to a possible location, e.g., during cross-compilation, failure to locate the
++# package will unset the variable. To avoid losing the path hint, we save it and
++# reuse it in the second find_package call.
++set (_Ceres_Eigen3_DIR)
++
++if (Eigen3_DIR)
++  set (_Ceres_Eigen3_DIR "${Eigen3_DIR}")
++endif (Eigen3_DIR)
++
+ # Eigen.
+ # Eigen delivers Eigen3Config.cmake since v3.3.3
+-find_package(Eigen3 3.3.4 REQUIRED NO_MODULE)
++find_package(Eigen3 NO_MODULE)
++
++if (NOT Eigen3_FOUND)
++  if (_Ceres_Eigen3_DIR)
++    set (Eigen3_DIR "${_Ceres_Eigen3_DIR}")
++  endif (_Ceres_Eigen3_DIR)
++  # Eigen3's CMake package config prior to 5.0.0 does not support version ranges
++  # with different major version components. To ensure backward compatibility,
++  # we locate the package using the previous version scheme as a fallback
++  # mechanism.
++  find_package(Eigen3 3.3.4 REQUIRED NO_MODULE)
++endif (NOT Eigen3_FOUND)
++
++unset (_Ceres_Eigen3_DIR)
++
+ if (Eigen3_FOUND)
+   message("-- Found Eigen version ${Eigen3_VERSION}: ${Eigen3_DIR}")
+   if (EIGENSPARSE)
+--- a/internal/ceres/covariance_impl.cc
++++ b/internal/ceres/covariance_impl.cc
+@@ -723,8 +723,13 @@ bool CovarianceImpl::ComputeCovarianceValuesUsingDenseSVD() {
+   }
+   event_logger.AddEvent("ConvertToDenseMatrix");
+ 
++#if EIGEN_VERSION_AT_LEAST(5, 0, 0)
++  Eigen::BDCSVD<Matrix, Eigen::ComputeThinU | Eigen::ComputeThinV> svd(
++      dense_jacobian);
++#else   // !EIGEN_VERSION_AT_LEAST(5, 0, 0)
+   Eigen::BDCSVD<Matrix> svd(dense_jacobian,
+                             Eigen::ComputeThinU | Eigen::ComputeThinV);
++#endif  // EIGEN_VERSION_AT_LEAST(5, 0, 0)
+ 
+   event_logger.AddEvent("SingularValueDecomposition");
+ 
+--- a/internal/ceres/invert_psd_matrix.h
++++ b/internal/ceres/invert_psd_matrix.h
+@@ -68,7 +68,11 @@ typename EigenTypes<kSize, kSize>::Matrix InvertPSDMatrix(
+ 
+   // For a thin SVD the number of columns of the matrix need to be dynamic.
+   using SVDMType = typename EigenTypes<kSize, Eigen::Dynamic>::Matrix;
++#if EIGEN_VERSION_AT_LEAST(5, 0, 0)
++  Eigen::JacobiSVD<SVDMType, Eigen::ComputeThinU | Eigen::ComputeThinV> svd(m);
++#else   // !EIGEN_VERSION_AT_LEAST(5, 0, 0)
+   Eigen::JacobiSVD<SVDMType> svd(m, Eigen::ComputeThinU | Eigen::ComputeThinV);
++#endif  // EIGEN_VERSION_AT_LEAST(5, 0, 0)
+   return svd.solve(MType::Identity(size, size));
+ }
+ 

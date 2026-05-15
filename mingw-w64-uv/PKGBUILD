@@ -1,0 +1,113 @@
+# Maintainer: Maksim Bondarenkov <maksapple2306@gmail.com>
+
+_realname=uv
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-python-${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-python-${_realname}-build")
+pkgver=0.11.14
+pkgrel=1
+pkgdesc='An extremely fast Python package installer and resolver, written in Rust (mingw-w64)'
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url="https://github.com/astral-sh/uv"
+msys2_repository_url='https://github.com/astral-sh/uv'
+license=('spdx:Apache-2.0 OR MIT')
+msys2_changelog_url='https://github.com/astral-sh/uv/blob/main/CHANGELOG.md'
+msys2_references=(
+  'archlinux: uv'
+  'purl: pkg:pypi/uv'
+)
+depends=("${MINGW_PACKAGE_PREFIX}-bzip2"
+         "${MINGW_PACKAGE_PREFIX}-zstd")
+makedepends=("${MINGW_PACKAGE_PREFIX}-rust"
+             "${MINGW_PACKAGE_PREFIX}-rust-bindgen"
+             "${MINGW_PACKAGE_PREFIX}-nasm"
+             "${MINGW_PACKAGE_PREFIX}-maturin"
+             "${MINGW_PACKAGE_PREFIX}-python-installer"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-xz"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             'git')
+options=('!strip')
+source=("git+${url}.git#tag=${pkgver}"
+        "bzip2-sys.tar.gz::https://crates.io/api/v1/crates/bzip2-sys/0.1.13+1.0.8/download"
+        "zstd-sys.tar.gz::https://crates.io/api/v1/crates/zstd-sys/2.0.16+zstd.1.5.7/download"
+        "bzip2-use-pkgconfig.patch"
+        "link-zstd-dynamically.patch")
+sha256sums=('573c3fcfcc79f7eac5c1fdc46c20b52fc35724d6d424631d25e0c5a913abaa73'
+            '225bff33b2141874fe80d71e07d6eec4f85c5c216453dd96388240f96e1acc14'
+            '91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748'
+            'f73309fb98b89b2085bccee6ffb66820082628d096bc989922b25d33a1f5f378'
+            '48f4900ceb02d3aaf9a1020f33d56629156e96759f456c0e7ca18bfcf910767b')
+
+prepare() {
+  cd "${_realname}"
+
+  patch -d "../zstd-sys-2.0.16+zstd.1.5.7" -i "../link-zstd-dynamically.patch"
+  patch -d "../bzip2-sys-0.1.13+1.0.8" -i "../bzip2-use-pkgconfig.patch"
+  cat >> Cargo.toml <<END
+
+[patch.crates-io]
+zstd-sys.path = "../zstd-sys-2.0.16+zstd.1.5.7"
+bzip2-sys.path = "../bzip2-sys-0.1.13+1.0.8"
+END
+
+  rm rust-toolchain.toml
+  cargo update -p zstd-sys -p bzip2-sys
+  cargo fetch --locked
+}
+
+build() {
+  cd "${_realname}"
+
+  export PKG_CONFIG_ALL_DYNAMIC=1
+  export ZSTD_SYS_USE_PKG_CONFIG=1
+  export WINAPI_NO_BUNDLED_LIBRARIES=1
+  export RUSTFLAGS="${RUSTFLAGS/+crt-static/-crt-static}"
+  export _PYTHON_HOST_PLATFORM=$(python -c "import sysconfig, sys; sys.stdout.write(sysconfig.get_platform())")
+  maturin build --frozen --strip --release --all-features
+  maturin build --frozen --strip --release --all-features -m crates/uv-build/Cargo.toml
+}
+
+package_uv() {
+  install -Dm755 "${_realname}/target/release/uv"{,x} -t "${pkgdir}${MINGW_PREFIX}/bin/"
+
+  local _complete="${_realname}/target/release/uv generate-shell-completion"
+  $_complete bash | install -Dm644 /dev/stdin "${pkgdir}${MINGW_PREFIX}/share/bash-completion/completions/uv"
+  $_complete fish | install -Dm644 /dev/stdin "${pkgdir}${MINGW_PREFIX}/share/fish/vendor_completions.d/uv.fish"
+  $_complete zsh | install -Dm644 /dev/stdin "${pkgdir}${MINGW_PREFIX}/share/zsh/site-functions/_uv"
+
+  install -Dm644 "${_realname}"/LICENSE-{MIT,APACHE} -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/"
+}
+
+package_python-uv() {
+  desc+=' (python wrapper)'
+  depends=("${MINGW_PACKAGE_PREFIX}-python" "${MINGW_PACKAGE_PREFIX}-uv")
+
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+    python -m installer --prefix=${MINGW_PREFIX} \
+    --destdir="${pkgdir}" "${_realname}"/target/wheels/uv-$pkgver-*.whl
+
+  rm -rf "${pkgdir}${MINGW_PREFIX}/bin"
+}
+
+package_python-uv-build() {
+  desc+=' (python build backend)'
+  depends+=("${MINGW_PACKAGE_PREFIX}-python")
+
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+    python -m installer --prefix=${MINGW_PREFIX} \
+    --destdir="${pkgdir}" "${_realname}"/target/wheels/uv_build-$pkgver-*.whl
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;

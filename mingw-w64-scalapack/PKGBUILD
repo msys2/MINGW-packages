@@ -1,0 +1,106 @@
+# Contributor: Oleg A. Khlybov <fougas@mail.ru>
+
+_realname=scalapack
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=2.2.2
+pkgrel=1
+pkgdesc="Scalable Linear Algebra PACKage (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64')
+url="https://www.netlib.org/scalapack"
+msys2_repository_url="https://github.com/Reference-ScaLAPACK/scalapack/"
+license=('spdx:BSD-3-Clause')
+depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
+         $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] || echo "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran")
+         "${MINGW_PACKAGE_PREFIX}-openblas")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-fc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-msmpi")
+source=("https://github.com/Reference-ScaLAPACK/scalapack/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz"
+        '0001-fix-building-with-flang.patch'
+        '0002-scalapack-fix-bindir.patch'
+        '0004-fix-pc.patch'
+        '0005-fix-version.patch')
+sha256sums=('a2f0c9180a210bf7ffe126c9cb81099cf337da1a7120ddb4cbe4894eb7b7d022'
+            'cecb30a91e059c1b61628ed45c8cb5a0fdc865b5594016d443719b3bba1b5380'
+            '9d763267c1dbe494eef426d7d662cf5da736b96693ee51c9d2c099167e179662'
+            'aaebad1d632e3f4483bf7468f72b6c37ea34f98fc0f4705bdb9ebddd18c3e3b0'
+            'd9b2f19cb84403bd7831b05c40451edd0b8b6122d10e1e72a5c428ddafd5ffad')
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying $_patch"
+    patch -Nbp1 -i "${srcdir}/$_patch"
+  done
+}
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+    apply_patch_with_msg \
+      '0001-fix-building-with-flang.patch'
+  fi
+  apply_patch_with_msg \
+    '0002-scalapack-fix-bindir.patch' \
+    '0004-fix-pc.patch' \
+    '0005-fix-version.patch'
+}
+
+build() {
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  export FC=mpifort
+  CFLAGS+=" -Wno-implicit-function-declaration"
+  if [[ ${MINGW_PACKAGE_PREFIX} != *-clang-* ]]; then
+    export FFLAGS="-fallow-argument-mismatch"    
+  fi
+
+  # static
+  mkdir -p build-${MSYSTEM}s && cd build-${MSYSTEM}s
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    ${MINGW_PREFIX}/bin/cmake \
+      -G"Ninja" \
+      -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+      "${_extra_config[@]}" \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DSCALAPACK_BUILD_TESTS=OFF \
+      ../${_realname}-${pkgver}
+  ${MINGW_PREFIX}/bin/cmake --build .
+
+  # shared
+  cd "${srcdir}"
+  mkdir -p build-${MSYSTEM} && cd build-${MSYSTEM}
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    ${MINGW_PREFIX}/bin/cmake \
+      -G"Ninja" \
+      -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+      "${_extra_config[@]}" \
+      -DBUILD_SHARED_LIBS=ON \
+      -DSCALAPACK_BUILD_TESTS=OFF \
+      ../${_realname}-${pkgver}
+  ${MINGW_PREFIX}/bin/cmake --build .
+}
+
+package() {
+  cd "${srcdir}/build-${MSYSTEM}s"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
+  cd "${srcdir}/build-${MSYSTEM}"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
+
+  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
+  for _f in "${pkgdir}${MINGW_PREFIX}"/lib/cmake/scalapack-${pkgver}/*.cmake; do
+    sed -e "s|${PREFIX_WIN}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
+  done
+
+  install -Dm644 "${srcdir}"/${_realname}-${pkgver}/LICENSE \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
+}

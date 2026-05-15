@@ -1,0 +1,178 @@
+--- a/src/ipi_server.F
++++ b/src/ipi_server.F
+@@ -150,6 +150,12 @@
+    SUBROUTINE shutdown_server(ipi_env)
+       TYPE(ipi_environment_type), POINTER                :: ipi_env
+ 
++#ifdef __NO_SOCKETS
++      CHARACTER(len=*), PARAMETER :: routineN = 'shutdown_server'
++      INTEGER                                  :: handle
++      CALL timeset(routineN, handle)
++      CPABORT("CP2K was compiled with the __NO_SOCKETS option!")
++#else
+       CHARACTER(len=msglength), PARAMETER                :: msg = "EXIT"
+ 
+       INTEGER                                            :: output_unit
+@@ -158,6 +164,7 @@
+       WRITE (output_unit, *) "@ i–PI: Shutting down server."
+       CALL writebuffer(ipi_env%sockfd, msg, msglength)
+       CALL close_socket(ipi_env%sockfd)
++#endif
+    END SUBROUTINE shutdown_server
+ 
+ ! **************************************************************************************************
+@@ -168,6 +175,12 @@
+    SUBROUTINE request_forces(ipi_env)
+       TYPE(ipi_environment_type), POINTER                :: ipi_env
+ 
++#ifdef __NO_SOCKETS
++      CHARACTER(len=*), PARAMETER :: routineN = 'request_forces'
++      INTEGER                                  :: handle
++      CALL timeset(routineN, handle)
++      CPABORT("CP2K was compiled with the __NO_SOCKETS option!")
++#else
+       CHARACTER(len=msglength)                           :: msgbuffer
+       INTEGER                                            :: comm_socket, i, nAtom, p, xyz
+       REAL(kind=dp)                                      :: energy
+@@ -206,8 +219,9 @@
+          END DO
+       END DO
+       CALL ipi_env_set(ipi_env=ipi_env, ipi_energy=energy, ipi_forces=forces)
++#endif
+    END SUBROUTINE request_forces
+-
++#ifndef __NO_SOCKETS
+ ! **************************************************************************************************
+ !> \brief ...
+ !> \param sockfd ...
+@@ -238,7 +252,7 @@
+       CALL writebuffer(sockfd, msg, msglength)
+       CALL get_header(sockfd, buffer)
+    END SUBROUTINE ask_status
+-
++#endif
+ ! **************************************************************************************************
+ !> \brief ...
+ !> \param sockfd ...
+@@ -256,6 +270,12 @@
+          OPTIONAL                                        :: virial
+       CHARACTER(len=:), INTENT(OUT), OPTIONAL, POINTER   :: extra
+ 
++#ifdef __NO_SOCKETS
++      CHARACTER(len=*), PARAMETER :: routineN = 'ask_getforce'
++      INTEGER                                  :: handle
++      CALL timeset(routineN, handle)
++      CPABORT("CP2K was compiled with the __NO_SOCKETS option!")
++#else
+       CHARACTER(len=msglength), PARAMETER                :: msg = "GETFORCE"
+ 
+       CHARACTER(len=:), ALLOCATABLE                      :: extra_buffer
+@@ -285,6 +305,7 @@
+       IF (PRESENT(forces)) forces = RESHAPE(forces_buffer, shape=[3, nAtom])
+       IF (PRESENT(virial)) virial = RESHAPE(virial_buffer, shape=[3, 3])
+       IF (PRESENT(extra)) extra = extra_buffer
++#endif
+    END SUBROUTINE ask_getforce
+ 
+ ! **************************************************************************************************
+@@ -296,6 +317,12 @@
+       INTEGER, INTENT(IN)                                :: sockfd
+       TYPE(cp_subsys_type), POINTER                      :: subsys
+ 
++#ifdef __NO_SOCKETS
++      CHARACTER(len=*), PARAMETER :: routineN = 'send_posdata'
++      INTEGER                                  :: handle
++      CALL timeset(routineN, handle)
++      CPABORT("CP2K was compiled with the __NO_SOCKETS option!")
++#else
+       CHARACTER(len=msglength), PARAMETER                :: msg = "POSDATA"
+ 
+       INTEGER                                            :: i, nAtom, p, xyz
+@@ -323,7 +350,7 @@
+          END DO
+       END DO
+       CALL writebuffer(sockfd, particle_buffer, nAtom*3)
+-
++#endif
+    END SUBROUTINE send_posdata
+ 
+ END MODULE ipi_server
+--- a/src/base/machine.F
++++ b/src/base/machine.F
+@@ -87,10 +87,13 @@
+    PRIVATE
+ 
+    PUBLIC :: m_walltime, m_timestamp, m_hostnm, m_flush, &
+-             m_getcwd, m_getlog, m_getpid, m_procrun, m_abort, &
++             m_getcwd, m_getlog, m_getpid, m_abort, &
+              m_chdir, m_mov, m_memory, m_memory_details, m_energy, &
+              m_cpuinfo, m_cpuid_static, m_cpuid, m_cpuid_name, &
+              m_cpuid_vlen, m_omp_get_stacksize, m_omp_trace_issues
++#ifndef __NO_SOCKETS
++             & m_procrun
++#endif
+ 
+    INTERFACE
+       ! **********************************************************************************************
+@@ -413,6 +416,7 @@
+       CALL abort()
+    END SUBROUTINE m_abort
+ 
++#ifndef __NO_SOCKETS
+ ! **************************************************************************************************
+ !> \brief Returns if a process is running on the local machine
+ !>        1 if yes and 0 if not
+@@ -443,6 +447,7 @@
+          run_on = 0 ! error, process probably does not exist
+       END IF
+    END FUNCTION m_procrun
++#endif
+ 
+ ! **************************************************************************************************
+ !> \brief Returns the total amount of memory [bytes] in use, if known, zero otherwise
+@@ -601,7 +606,7 @@
+             INTEGER(KIND=C_INT)                      :: errno
+          END FUNCTION gethostname
+       END INTERFACE
+-
++#ifndef __NO_SOCKETS
+       istat = gethostname(buf, LEN(buf))
+       IF (istat /= 0) THEN
+          WRITE (*, *) "m_hostnm failed"
+@@ -609,6 +614,9 @@
+       END IF
+       i = INDEX(buf, c_null_char) - 1
+       hname = buf(1:i)
++#else
++      hname = "Windows"
++#endif
+    END SUBROUTINE m_hostnm
+ 
+ ! **************************************************************************************************
+--- a/src/environment.F
++++ b/src/environment.F
+@@ -89,7 +89,10 @@
+    USE local_gemm_api,                  ONLY: local_gemm_set_library
+    USE machine,                         ONLY: &
+         flush_should_flush, m_cpuid, m_cpuid_name, m_cpuid_static, m_cpuid_vlen, m_cpuinfo, &
+-        m_energy, m_memory_details, m_omp_get_stacksize, m_omp_trace_issues, m_procrun
++        m_energy, m_memory_details, m_omp_get_stacksize, m_omp_trace_issues
++#ifndef __NO_SOCKETS
++        &,m_procrun
++#endif
+    USE message_passing,                 ONLY: mp_collect_timings,&
+                                               mp_para_env_type
+    USE mp_perf_env,                     ONLY: add_mp_perf_env,&
+@@ -300,10 +303,12 @@
+       ALLOCATE (all_host(30, para_env%num_pe), SOURCE=0)
+       ALLOCATE (all_pid(para_env%num_pe), SOURCE=0)
+ 
++#ifndef __NO_SOCKETS
+       IF (m_procrun(r_pid) == 1) THEN
+          CALL string_to_ascii(r_host_name, all_host(:, para_env%mepos + 1))
+          CALL para_env%sum(all_host)
+       END IF
++#endif
+ 
+       nr_dist = 0
+       IF (output_unit > 0) WRITE (UNIT=output_unit, FMT="(T2,A)") ""

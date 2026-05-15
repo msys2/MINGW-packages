@@ -1,0 +1,28 @@
+include(CMakeFindDependencyMacro)
+
+find_dependency(aws-c-s3)
+
+macro(dispatch type)
+    include(${CMAKE_CURRENT_LIST_DIR}/${type}/hdf5-config.cmake)
+endmacro()
+
+# try to load the lib follow BUILD_SHARED_LIBS. Fall back if not exist.
+if (BUILD_SHARED_LIBS)
+    find_dependency(libaec)
+    find_dependency(zlib-ng)
+    if (EXISTS "${CMAKE_CURRENT_LIST_DIR}/shared")
+        dispatch(shared)
+    else()
+        dispatch(static)
+    endif()
+else()
+    set(libaec_USE_STATIC_LIBS ON)
+    set(zlib-ng_USE_STATIC_LIBS ON)
+    find_dependency(libaec)
+    find_dependency(zlib-ng)
+    if (EXISTS "${CMAKE_CURRENT_LIST_DIR}/static")
+        dispatch(static)
+    else()
+        dispatch(shared)
+    endif()
+endif()

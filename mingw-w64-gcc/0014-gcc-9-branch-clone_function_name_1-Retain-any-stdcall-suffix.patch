@@ -1,0 +1,108 @@
+From 8b5e94ebdce49fc8f7a0926a695110e83cc408ad Mon Sep 17 00:00:00 2001
+From: Ray Donnelly <mingw.android@gmail.com>
+Date: Mon, 17 Aug 2015 22:57:46 +0100
+Subject: [PATCH 11/16] clone_function_name_1: Retain any stdcall suffix
+
+Previously, clone_function_name_1 would add a suffix after
+any existing stdcall suffix, for example ipa-split.c would
+clone test@4 as test@4.part.0.
+
+Later, i386_pe_strip_name_encoding_full would come along
+and strip off everything from the last @ onwards which had
+the effect of generating incorrect section names which
+would then fall over with errors such as:
+
+error: void test() causes a section type conflict with \
+  void test@4.part.0()
+
+The following testcase, reduced from Firefox can be used
+to reproduce this.
+
+test.ii:
+class ClassA {
+public:
+  virtual int __attribute__((__stdcall__)) Dispatch() = 0;
+};
+class ClassB {
+public:
+  ClassA* __attribute__((__stdcall__)) operator->();
+};
+class ClassC : ClassA {
+  int *some_int_ptr_variable;
+  int __attribute__((__stdcall__)) Dispatch() {
+    return some_int_ptr_variable
+           ? 42
+           : m_ClassInstanceB->Dispatch();
+  }
+  ClassB m_ClassInstanceB;
+};
+ClassC ClassInstanceC;
+
+Compile for i686-w64-mingw32 with:
+cc1plus -O -fpartial-inlining -fdevirtualize \
+  -fdevirtualize-speculatively test.ii
+
+Outputs:
+test.ii: In member function 'virtual int ClassC::Dispatch()':
+test.ii:11:36: error: virtual int ClassC::Dispatch() causes \
+  a section type conflict with int ClassC::_ZN6ClassC8DispatchEv@4.part.0()
+   int __attribute__((CALLTYPE)) Dispatch() {
+                                    ^
+test.ii:11:36: note: \
+  'int ClassC::_ZN6ClassC8DispatchEv@4.part.0()' was declared here
+---
+ gcc/cgraphclones.cc | 13 ++++++++++++-
+ gcc/defaults.h      |  2 +-
+ 2 files changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/gcc/cgraphclones.cc b/gcc/cgraphclones.cc
+index eb0fa87b554..3bde7e6957e 100644
+--- a/gcc/cgraphclones.cc
++++ b/gcc/cgraphclones.cc
+@@ -470,7 +470,8 @@ static GTY(()) hash_map<const char *, unsigned> *clone_fn_ids;
+    each NAME) unspecified number.  If clone numbering is not needed
+    then the two argument clone_function_name should be used instead.
+    Should not be called directly except for by
+-   lto-partition.cc:privatize_symbol_name_1.  */
++   lto-partition.cc:privatize_symbol_name_1.  Final stdcall @N suffixes
++   are maintained.  */
+ 
+ tree
+ clone_function_name_numbered (const char *name, const char *suffix)
+@@ -511,10 +512,20 @@ clone_function_name (const char *name, const char *suffix,
+   char *tmp_name, *prefix;
+ 
+   prefix = XALLOCAVEC (char, len + strlen (suffix) + 2);
++  /* name + 1 to skip fastcall which begins with '@' */
++  const char *at_suffix = strchr (name + 1, '@');
++  size_t at_suffix_len = 0;
++  if (at_suffix)
++    {
++      at_suffix_len = strlen (at_suffix);
++      len -= at_suffix_len;
++    }
+   memcpy (prefix, name, len);
+   strcpy (prefix + len + 1, suffix);
+   prefix[len] = symbol_table::symbol_suffix_separator ();
+   ASM_FORMAT_PRIVATE_NAME (tmp_name, prefix, number);
++  if (at_suffix)
++    strcat (tmp_name, at_suffix);
+   return get_identifier (tmp_name);
+ }
+ 
+diff --git a/gcc/defaults.h b/gcc/defaults.h
+index 376687d91b1..be29e4b7c60 100644
+--- a/gcc/defaults.h
++++ b/gcc/defaults.h
+@@ -51,7 +51,7 @@ see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
+ # define ASM_FORMAT_PRIVATE_NAME(OUTPUT, NAME, LABELNO) \
+   do { const char *const name_ = (NAME); \
+        char *const output_ = (OUTPUT) = \
+-	 (char *) alloca (strlen (name_) + 32); \
++	 (char *) alloca (strlen (name_) + 35); \
+        sprintf (output_, ASM_PN_FORMAT, name_, (unsigned long)(LABELNO)); \
+   } while (0)
+ #endif
+-- 
+2.38.1
+

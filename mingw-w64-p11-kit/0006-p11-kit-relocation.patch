@@ -1,0 +1,202 @@
+--- p11-kit-0.25.2/common/Makefile.am.orig	2023-11-11 11:43:16.608629300 +0100
++++ p11-kit-0.25.2/common/Makefile.am	2023-11-11 11:43:38.533598600 +0100
+@@ -29,6 +29,7 @@
+ 	common/lexer.c common/lexer.h \
+ 	common/message.c common/message.h \
+ 	common/path.c common/path.h \
++	common/pathtools.c common/pathtools.h \
+ 	common/pem.c common/pem.h \
+ 	common/pkcs11.h common/pkcs11x.h common/pkcs11i.h \
+ 	common/runtime.c common/runtime.h \
+--- p11-kit-0.25.2/common/meson.build.orig	2023-11-11 11:44:36.581083300 +0100
++++ p11-kit-0.25.2/common/meson.build	2023-11-11 12:41:35.074565900 +0100
+@@ -15,6 +15,7 @@
+   'lexer.c',
+   'message.c',
+   'path.c',
++  'pathtools.c',
+   'pem.c',
+   'runtime.c',
+   'url.c',
+--- p11-kit-0.24.1/common/path.c.orig	2023-03-11 16:50:12.430699600 +0100
++++ p11-kit-0.24.1/common/path.c	2023-03-11 16:54:03.572901200 +0100
+@@ -59,6 +59,7 @@
+ #include <shlobj.h>
+ #endif
+ 
++#include "pathtools.h"
+ 
+ char *
+ p11_path_base (const char *path)
+@@ -375,3 +376,29 @@
+ {
+ 	return (char *) p11_url_decode (path, path + strlen (path), "", NULL);
+ }
++
++char *
++p11_path_relocation(const char *path)
++{
++  return single_path_relocation(BINDIR, path);
++}
++
++char *
++p11_path_trust_paths(void)
++{
++#if defined(__MINGW32__)
++  static char stored_path[PATH_MAX];
++  static int stored = 0;
++  if (stored == 0)
++  {
++    char const * relocated = get_relocated_path_list(BINDIR, TRUST_PATHS);
++    strncpy (stored_path, relocated, PATH_MAX);
++    stored_path[PATH_MAX-1] = '\0';
++    free ((void *)relocated);
++    stored = 1;
++  }
++  return stored_path;
++#else
++  return (TRUST_PATHS);
++#endif
++}
+diff -Naur p11-kit-0.20.3-orig/common/path.h p11-kit-0.20.3/common/path.h
+--- p11-kit-0.20.3-orig/common/path.h	2014-02-13 11:36:36.000000000 +0400
++++ p11-kit-0.20.3/common/path.h	2014-08-07 21:09:52.753000000 +0400
+@@ -66,4 +66,7 @@
+ 
+ void         p11_path_canon     (char *name);
+ 
++char *       p11_path_relocation(const char *path);
++char *       p11_path_trust_paths(void);
++
+ #endif /* P11_PATH_H__ */
+diff -Naur p11-kit-0.20.3-orig/p11-kit/modules.c p11-kit-0.20.3/p11-kit/modules.c
+--- p11-kit-0.20.3-orig/p11-kit/modules.c	2014-07-04 17:48:45.000000000 +0400
++++ p11-kit-0.20.3/p11-kit/modules.c	2014-08-07 21:07:43.886200000 +0400
+@@ -348,8 +348,9 @@
+ 	return_val_if_fail (mod != NULL, CKR_HOST_MEMORY);
+ 
+ 	if (!p11_path_absolute (path)) {
+-		p11_debug ("module path is relative, loading from: %s", p11_module_path);
+-		path = expand = p11_path_build (p11_module_path, path, NULL);
++		char * mods_path = p11_path_relocation(p11_module_path);
++		p11_debug ("module path is relative, loading from: %s", mods_path);
++		path = expand = p11_path_build (mods_path, path, NULL);
+ 		return_val_if_fail (path != NULL, CKR_HOST_MEMORY);
+ 	}
+ 
+@@ -567,15 +568,18 @@
+ 		return CKR_OK;
+ 
+ 	/* Load the global configuration files */
+-	config = _p11_conf_load_globals (p11_config_system_file, p11_config_user_file, &mode);
++	char * system_conf = p11_path_relocation(p11_config_system_file);
++	config = _p11_conf_load_globals (system_conf, p11_config_user_file, &mode);
+ 	if (config == NULL)
+ 		return CKR_GENERAL_ERROR;
+ 
+ 	assert (mode != CONF_USER_INVALID);
+ 
++  char * pack_mod_path = p11_path_relocation(p11_config_package_modules);
++  char * sys_mod_path = p11_path_relocation(p11_config_system_modules);
+ 	configs = _p11_conf_load_modules (mode,
+-	                                  p11_config_package_modules,
+-	                                  p11_config_system_modules,
++	                                  pack_mod_path,
++	                                  sys_mod_path,
+ 	                                  p11_config_user_modules);
+ 	if (configs == NULL) {
+ 		rv = CKR_GENERAL_ERROR;
+diff -Naur p11-kit-0.20.3-orig/trust/module.c p11-kit-0.20.3/trust/module.c
+--- p11-kit-0.20.3-orig/trust/module.c	2014-02-13 11:36:36.000000000 +0400
++++ p11-kit-0.20.3/trust/module.c	2014-08-07 21:08:57.310600000 +0400
+@@ -195,14 +195,16 @@
+ 	 * strings will not change arbitrarily.
+ 	 */
+ 
++    const char * _datadir = p11_path_relocation(P11_DEFAULT_TRUST_PREFIX);
++    const char * _sysconfigir = p11_path_relocation(P11_SYSTEM_TRUST_PREFIX);
+ 	struct {
+ 		const char *prefix;
+ 		const char *label;
+ 		int flags;
+ 	} labels[] = {
+ 		{ "~/", "User Trust", P11_TOKEN_FLAG_NONE },
+-		{ P11_DEFAULT_TRUST_PREFIX, "Default Trust", P11_TOKEN_FLAG_WRITE_PROTECTED },
+-		{ P11_SYSTEM_TRUST_PREFIX, "System Trust", P11_TOKEN_FLAG_NONE },
++		{ _datadir, "Default Trust", P11_TOKEN_FLAG_WRITE_PROTECTED },
++		{ _sysconfigir, "System Trust", P11_TOKEN_FLAG_NONE },
+ 		{ NULL },
+ 	};
+ 
+@@ -391,7 +393,8 @@
+ 			                            NULL, p11_session_free);
+ 
+ 			gl.tokens = p11_array_new ((p11_destroyer)p11_token_free);
+-			if (gl.tokens && !create_tokens_inlock (gl.tokens, gl.paths ? gl.paths : TRUST_PATHS))
++			char * tr_path = p11_path_trust_paths();
++			if (gl.tokens && !create_tokens_inlock (gl.tokens, gl.paths ? gl.paths : tr_path))
+ 				gl.tokens = NULL;
+ 
+ 			if (gl.sessions == NULL || gl.tokens == NULL) {
+--- p11-kit-0.25.0/trust/extract.c.orig	2023-07-31 08:29:50.653517400 +0200
++++ p11-kit-0.25.0/trust/extract.c	2023-07-31 08:31:08.482475500 +0200
+@@ -315,7 +315,8 @@
+ 	 * For compatibility with people who deployed p11-kit 0.18.x
+ 	 * before trust stuff was put into its own branch.
+ 	 */
+-	path = p11_path_build (PRIVATEDIR, "p11-kit-extract-trust" EXEEXT, NULL);
++	const char * _privdir = p11_path_relocation(PRIVATEDIR);
++	path = p11_path_build (_privdir, "p11-kit-extract-trust" EXEEXT, NULL);
+ 	return_val_if_fail (path != NULL, 1);
+ 	execv (path, argv);
+ 	error = errno;
+@@ -323,7 +324,7 @@
+ 	if (error == ENOENT) {
+ 		free (path);
+ 		/* "trust-extract-compat" is supposed to be a script, not a binary */
+-		path = p11_path_build (PRIVATEDIR, "trust-extract-compat", NULL);
++		path = p11_path_build (_privdir, "trust-extract-compat", NULL);
+ 		return_val_if_fail (path != NULL, 1);
+ 		execv (path, argv);
+ 		error = errno;
+diff -Naur p11-kit-0.20.3-orig/trust/p11-kit-trust.module p11-kit-0.20.3/trust/p11-kit-trust.module
+--- p11-kit-0.20.3-orig/trust/p11-kit-trust.module	2013-06-21 20:49:16.000000000 +0400
++++ p11-kit-0.20.3/trust/p11-kit-trust.module	2014-08-07 11:59:59.028400000 +0400
+@@ -1,7 +1,7 @@
+ # See pkcs11.conf(5) to understand this file
+
+ # This is a module config for the 'included' p11-kit trust module
+-module: p11-kit-trust.so
++module: p11-kit-trust.dll
+ 
+ # This setting affects the order that trust policy and other information
+ # is looked up when going across various modules. Other trust policy modules
+diff -Naur p11-kit-0.20.3-orig/p11-kit/p11-kit.c p11-kit-0.20.3/p11-kit/p11-kit.c
+--- p11-kit-0.20.3-orig/p11-kit/p11-kit.c	2014-07-04 14:48:45.000000000 +0100
++++ p11-kit-0.20.3/p11-kit/p11-kit.c	2014-08-27 17:42:24.949805700 +0100
+@@ -74,7 +74,7 @@
+ 	args = calloc (argc + 2, sizeof (char *));
+ 	return_val_if_fail (args != NULL, 1);
+ 
+-	args[0] = BINDIR "/trust" EXEEXT;
++	args[0] = p11_path_relocation(BINDIR "/trust" EXEEXT);
+ 	memcpy (args + 1, argv, sizeof (char *) * argc);
+ 	args[argc + 1] = NULL;
+ 
+@@ -83,6 +83,7 @@
+ 	/* At this point we have no command */
+ 	p11_message_err (errno, "couldn't run trust tool");
+ 
++	free (argv[0]);
+ 	free (args);
+ 	return 2;
+ }
+@@ -113,7 +113,7 @@
+ 
+ 	private_dir = secure_getenv ("P11_KIT_PRIVATEDIR");
+ 	if (!private_dir || !private_dir[0])
+-		private_dir = PRIVATEDIR;
++		private_dir = p11_path_relocation(PRIVATEDIR);
+ 
+ 	/* Add our libexec directory to the path */
+ 	path = p11_path_build (private_dir, filename, NULL);

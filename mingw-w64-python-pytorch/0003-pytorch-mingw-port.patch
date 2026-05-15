@@ -1,0 +1,736 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 188f08bb27..3653fa2544 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -403,7 +403,7 @@ option(USE_MIMALLOC "Use mimalloc" OFF)
+ # Enable third party mimalloc library to improve memory allocation performance
+ # on Windows and AArch64.
+ option(USE_MIMALLOC_ON_MKL "Use mimalloc on MKL" OFF)
+-if(WIN32 OR (CPU_AARCH64 AND NOT APPLE))
++if((WIN32 OR (CPU_AARCH64 AND NOT APPLE)) AND NOT "$ENV{USE_MIMALLOC}" STREQUAL "0")
+   set(USE_MIMALLOC ON)
+   # Disable OPT flags for mimalloc on aarch64 as it breaks ARMv8.0
+   # See https://github.com/pytorch/pytorch/issues/174344
+diff --git a/aten/src/ATen/native/quantized/cpu/qlinear.h b/aten/src/ATen/native/quantized/cpu/qlinear.h
+index 60501c6b53..e4b148e293 100644
+--- a/aten/src/ATen/native/quantized/cpu/qlinear.h
++++ b/aten/src/ATen/native/quantized/cpu/qlinear.h
+@@ -42,7 +42,11 @@ C10_API static Tensor run_pointwise_binary_tensor(
+       std::string_view unary_post_op_algorithm);
+ };
+ 
++#if defined(__MINGW32__)
++Tensor _weight_int4pack_mm_cpu_tensor(
++#else
+ C10_API Tensor _weight_int4pack_mm_cpu_tensor(
++#endif
+     const Tensor& A,
+     const Tensor& B,
+     const Tensor& qGroupSize,
+diff --git a/c10/CMakeLists.txt b/c10/CMakeLists.txt
+index f82e460caf..ea5e52efe6 100644
+--- a/c10/CMakeLists.txt
++++ b/c10/CMakeLists.txt
+@@ -110,13 +110,17 @@ if(NOT BUILD_LIBTORCHLESS)
+     target_link_libraries(c10 PRIVATE cpuinfo)
+   endif()
+ 
+-  find_package(Backtrace)
+-  if(Backtrace_FOUND)
+-    target_include_directories(c10 PRIVATE ${Backtrace_INCLUDE_DIRS})
+-    target_link_libraries(c10 PRIVATE ${Backtrace_LIBRARIES})
+-    target_compile_definitions(c10 PRIVATE SUPPORTS_BACKTRACE=1)
+-  else()
++  if(MINGW)
+     target_compile_definitions(c10 PRIVATE SUPPORTS_BACKTRACE=0)
++  else()
++    find_package(Backtrace)
++    if(Backtrace_FOUND)
++      target_include_directories(c10 PRIVATE ${Backtrace_INCLUDE_DIR})
++      target_link_libraries(c10 PRIVATE ${Backtrace_LIBRARY})
++      target_compile_definitions(c10 PRIVATE SUPPORTS_BACKTRACE=1)
++    else()
++      target_compile_definitions(c10 PRIVATE SUPPORTS_BACKTRACE=0)
++    endif()
+   endif()
+ 
+   if(USE_MIMALLOC)
+diff --git a/c10/core/impl/LocalDispatchKeySet.cpp b/c10/core/impl/LocalDispatchKeySet.cpp
+index 0b3d87fce2..a80ecedca7 100644
+--- a/c10/core/impl/LocalDispatchKeySet.cpp
++++ b/c10/core/impl/LocalDispatchKeySet.cpp
+@@ -13,11 +13,11 @@ namespace c10::impl {
+ // logic is encapsulated in struct PODLocalDispatchKeySet.
+ thread_local PODLocalDispatchKeySet raw_local_dispatch_key_set;
+ 
+-#if defined(_MSC_VER) || defined(C10_ANDROID) || defined(C10_IPHONE)
++#if defined(_WIN32) || defined(C10_ANDROID) || defined(C10_IPHONE)
+ LocalDispatchKeySet tls_local_dispatch_key_set() {
+   return raw_local_dispatch_key_set;
+ }
+-#endif // defined(_MSC_VER) || defined(C10_ANDROID) || defined(C10_IPHONE)
++#endif // defined(_WIN32) || defined(C10_ANDROID) || defined(C10_IPHONE)
+ 
+ void _force_tls_local_dispatch_key_set(LocalDispatchKeySet key_set) {
+   raw_local_dispatch_key_set.set_included(key_set.included_);
+diff --git a/c10/core/impl/LocalDispatchKeySet.h b/c10/core/impl/LocalDispatchKeySet.h
+index bba089bb2a..b9f04ea693 100644
+--- a/c10/core/impl/LocalDispatchKeySet.h
++++ b/c10/core/impl/LocalDispatchKeySet.h
+@@ -62,9 +62,9 @@ struct C10_API LocalDispatchKeySet {
+ 
+ // thread_local variables cannot be C10_API on Windows.
+ // Inlining this seems to break AutoDispatchBelowAutograd on Android.
+-#if defined(_MSC_VER) || defined(C10_ANDROID) || defined(C10_IPHONE)
++#if defined(_WIN32) || defined(C10_ANDROID) || defined(C10_IPHONE)
+ C10_API LocalDispatchKeySet tls_local_dispatch_key_set();
+-#else // defined(_MSC_VER) || defined(C10_ANDROID) || defined(C10_IPHONE)
++#else // defined(_WIN32) || defined(C10_ANDROID) || defined(C10_IPHONE)
+ extern C10_API thread_local PODLocalDispatchKeySet raw_local_dispatch_key_set;
+ 
+ inline C10_API LocalDispatchKeySet tls_local_dispatch_key_set() {
+@@ -72,7 +72,7 @@ inline C10_API LocalDispatchKeySet tls_local_dispatch_key_set() {
+   // because they include this header.
+   return raw_local_dispatch_key_set;
+ }
+-#endif // defined(_MSC_VER) || defined(C10_ANDROID) || defined(C10_IPHONE)
++#endif // defined(_WIN32) || defined(C10_ANDROID) || defined(C10_IPHONE)
+ 
+ // Internal, use ThreadLocalStateGuard
+ C10_API void _force_tls_local_dispatch_key_set(LocalDispatchKeySet key_set);
+diff --git a/c10/core/impl/alloc_cpu.cpp b/c10/core/impl/alloc_cpu.cpp
+index d48a6251ed..ebb4067656 100644
+--- a/c10/core/impl/alloc_cpu.cpp
++++ b/c10/core/impl/alloc_cpu.cpp
+@@ -8,6 +8,9 @@
+ #include <c10/util/irange.h>
+ #include <c10/util/numa.h>
+ #include <cstring>
++#ifdef _WIN32
++#include <malloc.h>
++#endif
+ 
+ #ifdef USE_MIMALLOC
+ #include <mimalloc.h>
+@@ -69,7 +72,7 @@ inline bool is_thp_alloc(size_t nbytes) {
+   return (is_thp_alloc_enabled() && (nbytes >= gAlloc_threshold_thp));
+ }
+ 
+-#elif !defined(__ANDROID__) && !defined(_MSC_VER)
++#elif !defined(__ANDROID__) && !defined(_WIN32)
+ constexpr size_t c10_compute_alignment(size_t /*nbytes*/) {
+   return gAlignment;
+ }
+@@ -115,7 +118,7 @@ void* alloc_cpu(size_t nbytes) {
+       "DefaultCPUAllocator: not enough memory: you tried to allocate ",
+       nbytes,
+       " bytes.");
+-#elif defined(_MSC_VER)
++#elif defined(_WIN32)
+   data = _aligned_malloc(nbytes, gAlignment);
+   CAFFE_ENFORCE(
+       data,
+@@ -165,7 +168,7 @@ void* alloc_cpu(size_t nbytes) {
+ void free_cpu(void* data) {
+ #ifdef USE_MIMALLOC
+   mi_free(data);
+-#elif defined(_MSC_VER)
++#elif defined(_WIN32)
+   _aligned_free(data);
+ #else
+   // NOLINTNEXTLINE(cppcoreguidelines-no-malloc)
+diff --git a/c10/util/Flags.h b/c10/util/Flags.h
+index 0d460db224..ede60e8105 100644
+--- a/c10/util/Flags.h
++++ b/c10/util/Flags.h
+@@ -215,7 +215,11 @@ C10_DECLARE_REGISTRY(C10FlagsRegistry, C10FlagParser, const std::string&);
+   C10_DEFINE_typed_var(std::string, name, default_value, help_str)
+ 
+ // DECLARE_typed_var should be used in header files and in the global namespace.
++#if defined(__MINGW32__)
++#define C10_DECLARE_typed_var(type, name) extern type FLAGS_##name
++#else
+ #define C10_DECLARE_typed_var(type, name) C10_API extern type FLAGS_##name
++#endif
+ 
+ #define C10_DECLARE_int(name) C10_DECLARE_typed_var(int, name)
+ #define C10_DECLARE_int32(name) C10_DECLARE_int(name)
+diff --git a/c10/util/env.cpp b/c10/util/env.cpp
+index 673c7d1c2c..2df3a7d227 100644
+--- a/c10/util/env.cpp
++++ b/c10/util/env.cpp
+@@ -15,25 +15,28 @@ static std::shared_mutex& get_env_mutex() {
+ // Set an environment variable.
+ void set_env(const char* name, const char* value, bool overwrite) {
+   std::lock_guard lk(get_env_mutex());
++#ifdef _WIN32
+ #ifdef _MSC_VER
+ #pragma warning(push)
+ #pragma warning(disable : 4996)
++#endif
+   if (!overwrite) {
+     // NOLINTNEXTLINE(concurrency-mt-unsafe)
+     if (std::getenv(name) != nullptr) {
+       return;
+     }
+   }
+-  auto full_env_variable = fmt::format("{}={}", name, value);
+   // NOLINTNEXTLINE(concurrency-mt-unsafe)
+-  auto err = putenv(full_env_variable.c_str());
++  auto err = _putenv_s(name, value);
+   TORCH_INTERNAL_ASSERT(
+       err == 0,
+-      "putenv failed for environment \"",
++      "_putenv_s failed for environment \"",
+       name,
+       "\", the error is: ",
+       err);
++#ifdef _MSC_VER
+ #pragma warning(pop)
++#endif
+ #else
+   // NOLINTNEXTLINE(concurrency-mt-unsafe)
+   auto err = setenv(name, value, static_cast<int>(overwrite));
+diff --git a/c10/util/tempfile.cpp b/c10/util/tempfile.cpp
+index 86a7b75f97..fcd3fcee7e 100644
+--- a/c10/util/tempfile.cpp
++++ b/c10/util/tempfile.cpp
+@@ -12,6 +12,8 @@
+ #include <fcntl.h>
+ #include <fileapi.h>
+ #include <io.h>
++#include <share.h>
++#include <sys/stat.h>
+ #endif // defined(_WIN32)
+ 
+ // Creates the filename pattern passed to and completed by `mkstemp`.
+diff --git a/caffe2/CMakeLists.txt b/caffe2/CMakeLists.txt
+index 0a419e46a5..3040a9f55d 100644
+--- a/caffe2/CMakeLists.txt
++++ b/caffe2/CMakeLists.txt
+@@ -1586,6 +1586,12 @@ if(MSVC AND BUILD_SHARED_LIBS)
+   target_compile_options(torch_cpu PRIVATE "-DONNX_BUILD_MAIN_LIB")
+ endif()
+ 
++if(MINGW AND BUILD_SHARED_LIBS)
++  # ONNX is linked statically into torch_cpu. Export the small ONNX surface used
++  # by torch_python so it does not carry a second protobuf registry.
++  target_sources(torch_cpu PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/torch_cpu_mingw_exports.def")
++endif()
++
+ caffe2_interface_library(torch_cpu torch_cpu_library)
+ 
+ if(USE_CUDA)
+diff --git a/caffe2/torch_cpu_mingw_exports.def b/caffe2/torch_cpu_mingw_exports.def
+new file mode 100644
+index 0000000000..180cd89240
+--- /dev/null
++++ b/caffe2/torch_cpu_mingw_exports.def
+@@ -0,0 +1,11 @@
++EXPORTS
++  _ZN10onnx_torch10GraphProtoC1EPN6google8protobuf5ArenaE
++  _ZN10onnx_torch15shape_inference11InferShapesERNS_10ModelProtoEPKNS_15ISchemaRegistryERKNS_21ShapeInferenceOptionsEPSt13unordered_mapINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEENS_16TensorShapeProtoESt4hashISF_ESt8equal_toISF_ESaISt4pairIKSF_SG_EEE
++  _ZN10onnx_torch16OpSchemaRegistry8InstanceEv
++  _ZN10onnx_torch16TensorShapeProto8CopyFromERKS0_
++  _ZN10onnx_torch16TensorShapeProtoC1EPN6google8protobuf5ArenaE
++  _ZN10onnx_torch16TensorShapeProtoD1Ev
++  _ZN10onnx_torch28_TypeProto_default_instance_E DATA
++  _ZN10onnx_torch29_GraphProto_default_instance_E DATA
++  _ZN10onnx_torch35_TensorShapeProto_default_instance_E DATA
++  _ZN10onnx_torch9TypeProto5ClearEv
+diff --git a/caffe2/utils/string_utils.h b/caffe2/utils/string_utils.h
+index 6bf3b867b5..12bfd23783 100644
+--- a/caffe2/utils/string_utils.h
++++ b/caffe2/utils/string_utils.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <algorithm>
++#include <cstdint>
+ #include <memory>
+ #include <string>
+ #include <vector>
+diff --git a/caffe2/utils/threadpool/WorkersPool.h b/caffe2/utils/threadpool/WorkersPool.h
+index 6504d70c25..87bb1cc6bc 100644
+--- a/caffe2/utils/threadpool/WorkersPool.h
++++ b/caffe2/utils/threadpool/WorkersPool.h
+@@ -7,9 +7,12 @@
+ #include <c10/util/irange.h>
+ #include <c10/util/Logging.h>
+ 
++#if defined(_WIN32)
++#include <malloc.h>
+ #if defined(_MSC_VER)
+ #include <intrin.h>
+ #endif
++#endif
+ 
+ namespace caffe2 {
+ 
+@@ -36,7 +39,7 @@ struct AllocAligned {
+ 
+ #if defined(__ANDROID__)
+     p = memalign(kGEMMLOWPCacheLineSize, sizeof(T));
+-#elif defined(_MSC_VER)
++#elif defined(_WIN32)
+     p = _aligned_malloc(sizeof(T), kGEMMLOWPCacheLineSize);
+ #else
+     auto res = posix_memalign(&p, kGEMMLOWPCacheLineSize, sizeof(T));
+@@ -54,7 +57,7 @@ struct AllocAligned {
+   static void release(T* p) {
+     if (p) {
+       p->~T();
+-#if defined(_MSC_VER)
++#if defined(_WIN32)
+       _aligned_free((void*)p);
+ #else
+       free((void*)p);
+diff --git a/cmake/public/utils.cmake b/cmake/public/utils.cmake
+index 731bbe7d21..90c2690449 100644
+--- a/cmake/public/utils.cmake
++++ b/cmake/public/utils.cmake
+@@ -120,7 +120,7 @@ endfunction()
+ macro(caffe2_update_option variable value)
+   if(CAFFE2_CMAKE_BUILDING_WITH_MAIN_REPO)
+     get_property(__help_string CACHE ${variable} PROPERTY HELPSTRING)
+-    set(${variable} ${value} CACHE BOOL ${__help_string} FORCE)
++    set(${variable} ${value} CACHE BOOL "${__help_string}" FORCE)
+   else()
+     set(${variable} ${value})
+   endif()
+diff --git a/tools/build_pytorch_libs.py b/tools/build_pytorch_libs.py
+index 9d43de80f1..d54166247f 100644
+--- a/tools/build_pytorch_libs.py
++++ b/tools/build_pytorch_libs.py
+@@ -69,9 +69,10 @@ def _create_build_env() -> dict[str, str]:
+     # you should NEVER add something to this list. It is bad practice to
+     # have cmake read the environment
+     my_env = os.environ.copy()
+-    if IS_WINDOWS and USE_NINJA:
++    if IS_WINDOWS and USE_NINJA and "MSYSTEM" not in my_env:
+         # When using Ninja under Windows, the gcc toolchain will be chosen as
+         # default. But it should be set to MSVC as the user's first choice.
++        # MSYS2 MinGW builds already provide the intended compiler environment.
+         my_env = _overlay_windows_vcvars(my_env)
+         my_env.setdefault("CC", "cl")
+         my_env.setdefault("CXX", "cl")
+diff --git a/torch/CMakeLists.txt b/torch/CMakeLists.txt
+index 471fe0c9c1..86e2931a03 100644
+--- a/torch/CMakeLists.txt
++++ b/torch/CMakeLists.txt
+@@ -20,7 +20,7 @@ if(NOT TORCH_INSTALL_LIB_DIR)
+   set(TORCH_INSTALL_LIB_DIR lib)
+ endif()
+ 
+-if(MSVC)
++if(WIN32)
+     set(LIBSHM_SUBDIR libshm_windows)
+ else()
+     set(LIBSHM_SUBDIR libshm)
+diff --git a/torch/__init__.py b/torch/__init__.py
+index 9f34460679..74abfd3189 100644
+--- a/torch/__init__.py
++++ b/torch/__init__.py
+@@ -20,6 +20,7 @@ import math
+ import os
+ import platform
+ import sys
++import sysconfig
+ import textwrap
+ import threading
+ import warnings
+@@ -45,6 +46,10 @@ def _running_with_deploy() -> builtins.bool:
+     return False
+ 
+ 
++def _running_with_mingw_python() -> builtins.bool:
++    return sysconfig.get_platform().startswith("mingw_")
++
++
+ from torch._utils import (
+     _functionalize_sync as _sync,
+     _import_dotted_name,
+@@ -238,20 +243,21 @@ if sys.platform == "win32":
+         for dll_path in dll_paths:
+             os.add_dll_directory(dll_path)
+ 
+-        try:
+-            ctypes.CDLL("vcruntime140.dll")
+-            ctypes.CDLL("msvcp140.dll")
+-            if platform.machine() != "ARM64":
+-                ctypes.CDLL("vcruntime140_1.dll")
+-        except OSError:
+-            print(
+-                textwrap.dedent(
+-                    """
+-                    Microsoft Visual C++ Redistributable is not installed, this may lead to the DLL load failure.
+-                    It can be downloaded at https://aka.ms/vs/17/release/vc_redist.x64.exe
+-                    """
+-                ).strip()
+-            )
++        if not _running_with_mingw_python():
++            try:
++                ctypes.CDLL("vcruntime140.dll")
++                ctypes.CDLL("msvcp140.dll")
++                if platform.machine() != "ARM64":
++                    ctypes.CDLL("vcruntime140_1.dll")
++            except OSError:
++                print(
++                    textwrap.dedent(
++                        """
++                        Microsoft Visual C++ Redistributable is not installed, this may lead to the DLL load failure.
++                        It can be downloaded at https://aka.ms/vs/17/release/vc_redist.x64.exe
++                        """
++                    ).strip()
++                )
+ 
+         dlls = glob.glob(os.path.join(th_dll_path, "*.dll"))
+         path_patched = False
+diff --git a/torch/csrc/Module.cpp b/torch/csrc/Module.cpp
+index 56bce2ba96..dea9b529fc 100644
+--- a/torch/csrc/Module.cpp
++++ b/torch/csrc/Module.cpp
+@@ -5,7 +5,7 @@
+ #include <csignal>
+ #include <optional>
+ 
+-#ifndef _MSC_VER
++#ifndef _WIN32
+ #include <sys/socket.h>
+ #endif
+ 
+diff --git a/torch/csrc/dynamo/eval_frame.c b/torch/csrc/dynamo/eval_frame.c
+index 58cb48de66..a362c06c7f 100644
+--- a/torch/csrc/dynamo/eval_frame.c
++++ b/torch/csrc/dynamo/eval_frame.c
+@@ -710,7 +710,7 @@ static PyObject* set_guard_complete_hook(PyObject* dummy, PyObject* obj) {
+ // program, and that breakpoint would be hit every time Python makes a function
+ // call, leading to a spammy debugging experience.
+ static PyObject* raise_sigtrap(PyObject* dummy, PyObject* obj) {
+-#ifdef __GNUC__
++#if defined(__GNUC__) && !defined(_WIN32)
+   raise(SIGTRAP);
+ #endif
+   Py_RETURN_NONE;
+diff --git a/torch/csrc/jit/codegen/fuser/cpu/temp_file.h b/torch/csrc/jit/codegen/fuser/cpu/temp_file.h
+index dd21f7573f..833f6251bd 100644
+--- a/torch/csrc/jit/codegen/fuser/cpu/temp_file.h
++++ b/torch/csrc/jit/codegen/fuser/cpu/temp_file.h
+@@ -24,7 +24,7 @@
+ 
+ namespace torch::jit::fuser::cpu {
+ 
+-#ifdef _MSC_VER
++#ifdef _WIN32
+ inline int wmkstemps(wchar_t* tmpl, int suffix_len) {
+   int len;
+   wchar_t* name;
+@@ -61,7 +61,7 @@ struct TempFile {
+   AT_DISALLOW_COPY_AND_ASSIGN(TempFile);
+ 
+   TempFile(const std::string& t, int suffix) {
+-#ifdef _MSC_VER
++#ifdef _WIN32
+     auto wt = c10::u8u16(t);
+     std::vector<wchar_t> tt(wt.c_str(), wt.c_str() + wt.size() + 1);
+     int fd = wmkstemps(tt.data(), suffix);
+@@ -95,7 +95,7 @@ struct TempFile {
+     AT_ASSERT(str.size() == result);
+   }
+ 
+-#ifdef _MSC_VER
++#ifdef _WIN32
+   void close() {
+     if (file_ != nullptr) {
+       fclose(file_);
+@@ -109,7 +109,7 @@ struct TempFile {
+   }
+ 
+   ~TempFile() {
+-#ifdef _MSC_VER
++#ifdef _WIN32
+     if (file_ != nullptr) {
+       fclose(file_);
+     }
+diff --git a/torch/csrc/jit/frontend/strtod.cpp b/torch/csrc/jit/frontend/strtod.cpp
+index daf768ee62..ae8a72d009 100644
+--- a/torch/csrc/jit/frontend/strtod.cpp
++++ b/torch/csrc/jit/frontend/strtod.cpp
+@@ -26,7 +26,7 @@
+ 
+ namespace torch::jit {
+ 
+-#ifdef _MSC_VER
++#ifdef _WIN32
+ double strtod_c(const char* nptr, char** endptr) {
+   static _locale_t loc = _create_locale(LC_ALL, "C");
+   return _strtod_l(nptr, endptr, loc);
+diff --git a/torch/csrc/jit/ir/ir.h b/torch/csrc/jit/ir/ir.h
+index 57c6d9ef89..9915024bcd 100644
+--- a/torch/csrc/jit/ir/ir.h
++++ b/torch/csrc/jit/ir/ir.h
+@@ -297,7 +297,7 @@ struct Value {
+ 
+   TORCH_API Value* copyMetadata(Value* from);
+ 
+-  TORCH_API std::shared_ptr<Wrap<Value>> wrap() {
++  std::shared_ptr<Wrap<Value>> wrap() {
+     if (!wrap_) {
+       wrap_ = std::make_shared<Wrap<Value>>(this);
+     }
+@@ -1133,7 +1133,7 @@ struct Block {
+   TORCH_API void cloneFrom(Block* src, std::function<Value*(Value*)> value_map);
+   TORCH_API void remapTypes(const std::function<TypePtr(TypePtr)>& type_map);
+ 
+-  TORCH_API std::shared_ptr<Wrap<Block>> wrap() {
++  std::shared_ptr<Wrap<Block>> wrap() {
+     if (!wrap_) {
+       wrap_ = std::make_shared<Wrap<Block>>(this);
+     }
+diff --git a/torch/csrc/jit/python/init.cpp b/torch/csrc/jit/python/init.cpp
+index 931d80ffd6..d9fb2a9621 100644
+--- a/torch/csrc/jit/python/init.cpp
++++ b/torch/csrc/jit/python/init.cpp
+@@ -1802,7 +1802,7 @@ void initJITBindings(PyObject* module) {
+           const auto sortedOps = getAllSortedOperatorsFor(symbol);
+           if (sortedOps.empty()) {
+             // No such operator
+-            return py::make_tuple(py::none(), py::none());
++            return py::make_tuple(py::object(), py::object());
+           }
+ 
+           std::ostringstream docstring;
+@@ -1829,7 +1829,7 @@ void initJITBindings(PyObject* module) {
+               },
+               py::name(symbol.toUnqualString()),
+               py::doc(docstring.str().c_str()));
+-          return py::make_tuple(func, overload_names);
++          return py::make_tuple(py::object(func), py::object(overload_names));
+         } catch (const c10::Error& e) {
+           auto msg = torch::get_cpp_stacktraces_enabled()
+               ? e.what()
+@@ -1854,9 +1854,9 @@ void initJITBindings(PyObject* module) {
+             args,
+             kwargs);
+         if (res) {
+-          return py::make_tuple(true, *res);
++          return py::make_tuple(true, py::object(*res));
+         } else {
+-          return py::make_tuple(false, py::none());
++          return py::make_tuple(false, py::object());
+         }
+       });
+ 
+diff --git a/torch/csrc/jit/serialization/mobile_bytecode_generated.h b/torch/csrc/jit/serialization/mobile_bytecode_generated.h
+index 06f527d56a..ddbfa317b9 100644
+--- a/torch/csrc/jit/serialization/mobile_bytecode_generated.h
++++ b/torch/csrc/jit/serialization/mobile_bytecode_generated.h
+@@ -6,12 +6,11 @@
+ 
+ #include "flatbuffers/flatbuffers.h"
+ 
+-// Ensure the included flatbuffers.h is the same version as when this file was
+-// generated, otherwise it may not be compatible.
+-static_assert(FLATBUFFERS_VERSION_MAJOR == 24 &&
+-              FLATBUFFERS_VERSION_MINOR == 12 &&
+-              FLATBUFFERS_VERSION_REVISION == 23,
+-             "Non-compatible flatbuffers version included");
++// PyTorch ships this generated header, but distro builds use the system
++// flatbuffers headers. Keep the upstream minimum while allowing newer
++// flatbuffers releases packaged by MSYS2.
++static_assert(FLATBUFFERS_VERSION_MAJOR >= 24,
++              "Non-compatible flatbuffers version included");
+ 
+ namespace torch {
+ namespace jit {
+diff --git a/torch/csrc/lazy/core/ir.h b/torch/csrc/lazy/core/ir.h
+index b55745fc96..ce8d64b55b 100644
+--- a/torch/csrc/lazy/core/ir.h
++++ b/torch/csrc/lazy/core/ir.h
+@@ -208,7 +208,7 @@ const T* NodeCast(const Node* node) {
+ // can be composed by multiple outputs, the node+index coordinates fully qualify
+ // each single output.
+ struct TORCH_API Output {
+-  struct Hasher {
++  struct TORCH_API Hasher {
+     size_t operator()(const Output& output) const;
+   };
+ 
+diff --git a/torch/csrc/lazy/ts_backend/ts_backend_impl.h b/torch/csrc/lazy/ts_backend/ts_backend_impl.h
+index a44334c54f..701176c079 100644
+--- a/torch/csrc/lazy/ts_backend/ts_backend_impl.h
++++ b/torch/csrc/lazy/ts_backend/ts_backend_impl.h
+@@ -47,6 +47,6 @@ class TORCH_API TSData : public torch::lazy::BackendData {
+ 
+ TORCH_API torch::lazy::BackendImplInterface* GetTSBackendImpl();
+ 
+-TORCH_PYTHON_API void InitTorchScriptBackend();
++TORCH_API void InitTorchScriptBackend();
+ 
+ } // namespace torch::lazy
+diff --git a/torch/csrc/profiler/kineto_shim.h b/torch/csrc/profiler/kineto_shim.h
+index c4efd7785b..d518194fe1 100644
+--- a/torch/csrc/profiler/kineto_shim.h
++++ b/torch/csrc/profiler/kineto_shim.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++#include <cstdint>
+ #include <memory>
+ #include <string>
+ 
+@@ -12,7 +13,38 @@
+ #undef USE_KINETO
+ #endif
+ 
++#ifdef USE_KINETO
+ #include <ActivityType.h>
++#else
++namespace libkineto {
++enum class ActivityType : uint8_t {
++  CPU_OP,
++  CPU_INSTANT_EVENT,
++  USER_ANNOTATION,
++  EXTERNAL_CORRELATION,
++  XPU_RUNTIME,
++  XPU_DRIVER,
++  CUDA_RUNTIME,
++  CUDA_DRIVER,
++  PYTHON_FUNCTION,
++  PRIVATEUSE1_RUNTIME,
++  PRIVATEUSE1_DRIVER,
++  GPU_MEMCPY,
++  GPU_MEMSET,
++  GPU_USER_ANNOTATION,
++  CONCURRENT_KERNEL,
++  GLOW_RUNTIME,
++  OVERHEAD,
++  MTIA_CCP_EVENTS,
++  MTIA_RUNTIME,
++  MTIA_INSIGHT,
++  HPU_OP,
++  CUDA_PROFILER_RANGE,
++  CUDA_SYNC,
++  COLLECTIVE_COMM,
++};
++} // namespace libkineto
++#endif
+ 
+ #include <torch/csrc/Export.h>
+ #include <torch/csrc/profiler/api.h>
+diff --git a/torch/csrc/utils/python_arg_parser.cpp b/torch/csrc/utils/python_arg_parser.cpp
+index 999bd00b3b..d1264c2303 100644
+--- a/torch/csrc/utils/python_arg_parser.cpp
++++ b/torch/csrc/utils/python_arg_parser.cpp
+@@ -756,8 +756,8 @@ auto handle_torch_function_indexing(
+   py::object func =
+       PyObject_FastGetAttrString(THPVariableClass, (char*)func_name);
+   py::object args = (val == nullptr)
+-      ? py::make_tuple(py::handle(self), py::handle(index))
+-      : py::make_tuple(py::handle(self), py::handle(index), py::handle(val));
++      ? py::object(py::make_tuple(py::handle(self), py::handle(index)))
++      : py::object(py::make_tuple(py::handle(self), py::handle(index), py::handle(val)));
+   return handle_torch_function_no_python_arg_parser(
+       overridable_args,
+       args.ptr(),
+diff --git a/torch/headeronly/macros/Export.h b/torch/headeronly/macros/Export.h
+index 14b26c18e7..c877efa1ef 100644
+--- a/torch/headeronly/macros/Export.h
++++ b/torch/headeronly/macros/Export.h
+@@ -87,14 +87,14 @@
+ // and export.
+ 
+ // This one is being used by libc10.so
+-#ifdef C10_BUILD_MAIN_LIB
++#if defined(C10_BUILD_MAIN_LIB) || defined(CAFFE2_BUILD_MAIN_LIB)
+ #define C10_API C10_EXPORT
+ #else
+ #define C10_API C10_IMPORT
+ #endif
+ 
+ // This one is being used by libtorch.so
+-#ifdef CAFFE2_BUILD_MAIN_LIB
++#if defined(CAFFE2_BUILD_MAIN_LIB) || defined(THP_BUILD_MAIN_LIB)
+ #define TORCH_API C10_EXPORT
+ #else
+ #define TORCH_API C10_IMPORT
+diff --git a/torch/headeronly/macros/Macros.h b/torch/headeronly/macros/Macros.h
+index 63aa0d20d8..d05480c237 100644
+--- a/torch/headeronly/macros/Macros.h
++++ b/torch/headeronly/macros/Macros.h
+@@ -374,7 +374,7 @@ static inline int C10_WARP_SIZE_INTERNAL() {
+ #define CUDA_KERNEL_ASSERT_MSG(cond, msg)
+ #define CUDA_KERNEL_ASSERT_PRINTF(cond, msg, ...)
+ #define SYCL_KERNEL_ASSERT(cond)
+-#elif defined(_MSC_VER)
++#elif defined(_WIN32)
+ #if defined(NDEBUG)
+ extern "C" {
+ C10_IMPORT
+diff --git a/torch/nativert/common/FileUtil.h b/torch/nativert/common/FileUtil.h
+index 6fa82347ac..da62c48d52 100644
+--- a/torch/nativert/common/FileUtil.h
++++ b/torch/nativert/common/FileUtil.h
+@@ -17,7 +17,9 @@
+ // This is a massive pain to have be an `int` due to the pthread implementation
+ // we support, but it's far more compatible with the rest of the windows world
+ // as an `int` than it would be as a `void*`
++#ifndef __MINGW32__
+ using pid_t = int;
++#endif
+ 
+ using uid_t = int;
+ using gid_t = int;
+@@ -31,8 +33,10 @@ using ssize_t = SSIZE_T;
+ #define HAVE_MODE_T 1
+ // The Windows headers don't define this anywhere, nor do any of the libs
+ // that Folly depends on, so define it here.
++#ifndef __MINGW32__
+ using mode_t = unsigned int;
+ #endif
++#endif
+ 
+ // Copied from folly/portability/Fcntl.h
+ #define O_CLOEXEC _O_NOINHERIT
+diff --git a/setup.py b/setup.py
+index 0decaf66ed..fccea1225c 100644
+--- a/setup.py
++++ b/setup.py
+@@ -1339,7 +1339,7 @@ class build_ext(setuptools.command.build_ext.build_ext):
+             self._embed_libomp()
+ 
+         # Copy the essential export library to compile C++ extensions.
+-        if IS_WINDOWS:
++        if IS_WINDOWS and "MSYSTEM" not in os.environ:
+             build_temp = Path(self.build_temp)
+             build_lib = Path(self.build_lib)
+ 
+@@ -1526,7 +1526,9 @@ def configure_extension_build() -> tuple[
+     library_dirs: list[str] = [str(TORCH_LIB_DIR)]
+     extra_install_requires: list[str] = []
+ 
+-    if IS_WINDOWS:
++    is_msvc = IS_WINDOWS and "MSYSTEM" not in os.environ
++
++    if is_msvc:
+         # /NODEFAULTLIB makes sure we only link to DLL runtime
+         # and matches the flags set for protobuf and ONNX
+         extra_link_args: list[str] = ["/NODEFAULTLIB:LIBCMT.LIB"]
+@@ -1560,7 +1562,7 @@ def configure_extension_build() -> tuple[
+         main_sources = []
+ 
+     if build_type.is_debug():
+-        if IS_WINDOWS:
++        if is_msvc:
+             extra_compile_args += ["/Z7"]
+             extra_link_args += ["/DEBUG:FULL"]
+         else:
+@@ -1568,7 +1570,7 @@ def configure_extension_build() -> tuple[
+             extra_link_args += ["-O0", "-g"]
+ 
+     if build_type.is_rel_with_deb_info():
+-        if IS_WINDOWS:
++        if is_msvc:
+             extra_compile_args += ["/Z7"]
+             extra_link_args += ["/DEBUG:FULL"]
+         else:

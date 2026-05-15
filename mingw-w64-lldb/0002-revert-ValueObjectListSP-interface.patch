@@ -1,0 +1,249 @@
+From 10f2611c2173783efae8aebc32d1515013271b64 Mon Sep 17 00:00:00 2001
+From: Aman LaChapelle <aman.lachapelle@gmail.com>
+Date: Thu, 29 Jan 2026 21:24:17 -0800
+Subject: [PATCH] [lldb] Add support for ScriptedFrame to provide
+ values/variables. (#178575)
+
+This patch adds plumbing to support the implementations of StackFrame::Get{*}Variable{*} on ScriptedFrame. The major pieces required are:
+- A modification to ScriptedFrameInterface, so that we can actually call the python methods.
+- A corresponding update to the python implementation to call the python methods.
+- An implementation in ScriptedFrame that can get the variable list on construction inside ScriptedFrame::Create, and pass that list into the ScriptedFrame so it can get those values on request.
+
+There is a major caveat, which is that if the values from the python side don't have variables attached, right now, they won't be passed into the scripted frame to be stored in the variable list. Future discussions around adding support for 'extended variables' when printing frame variables may create a reason to change the VariableListSP into a ValueObjectListSP, and generate the VariableListSP on the fly, but that should be addressed at a later time.
+
+This patch also adds tests to the frame provider test suite to prove these changes all plumb together correctly.
+
+Related radar: rdar://165708771
+---
+ .../Interfaces/ScriptedFrameInterface.h       |  9 ++
+ .../Process/scripted/ScriptedFrame.cpp        | 66 +++++++++++++++
+ .../Plugins/Process/scripted/ScriptedFrame.h  | 21 +++++
+ .../ScriptedFramePythonInterface.cpp          | 28 +++++++
+ .../Interfaces/ScriptedFramePythonInterface.h |  6 ++
+ .../TestScriptedFrameProvider.py              | 53 ++++++++++++
+ .../scripted_frame_provider/main.cpp          |  4 +
+ .../test_frame_providers.py                   | 82 +++++++++++++++++++
+ 8 files changed, 269 insertions(+)
+
+diff --git a/lldb/include/lldb/Interpreter/Interfaces/ScriptedFrameInterface.h b/lldb/include/lldb/Interpreter/Interfaces/ScriptedFrameInterface.h
+index 8ef4b37d6ba12..00994d65fd601 100644
+--- a/lldb/include/lldb/Interpreter/Interfaces/ScriptedFrameInterface.h
++++ b/lldb/include/lldb/Interpreter/Interfaces/ScriptedFrameInterface.h
+@@ -10,6 +10,7 @@
+ #define LLDB_INTERPRETER_INTERFACES_SCRIPTEDFRAMEINTERFACE_H
+ 
+ #include "ScriptedInterface.h"
++#include "lldb/API/SBValueList.h"
+ #include "lldb/Core/StructuredDataImpl.h"
+ #include "lldb/Symbol/SymbolContext.h"
+ #include "lldb/lldb-private.h"
+@@ -49,6 +50,14 @@ class ScriptedFrameInterface : virtual public ScriptedInterface {
+   virtual std::optional<std::string> GetRegisterContext() {
+     return std::nullopt;
+   }
++
++  virtual lldb::ValueObjectListSP GetVariables() { return nullptr; }
++
++  virtual lldb::ValueObjectSP
++  GetValueObjectForVariableExpression(llvm::StringRef expr, uint32_t options,
++                                      Status &error) {
++    return nullptr;
++  }
+ };
+ } // namespace lldb_private
+ 
+diff --git a/lldb/source/Plugins/Process/scripted/ScriptedFrame.cpp b/lldb/source/Plugins/Process/scripted/ScriptedFrame.cpp
+index 70ce101c6c834..7462c467eb7da 100644
+--- a/lldb/source/Plugins/Process/scripted/ScriptedFrame.cpp
++++ b/lldb/source/Plugins/Process/scripted/ScriptedFrame.cpp
+@@ -9,6 +9,7 @@
+ #include "ScriptedFrame.h"
+ #include "Plugins/Process/Utility/RegisterContextMemory.h"
+ 
++#include "lldb/API/SBDeclaration.h"
+ #include "lldb/Core/Address.h"
+ #include "lldb/Core/Debugger.h"
+ #include "lldb/Core/Module.h"
+@@ -20,6 +21,7 @@
+ #include "lldb/Symbol/CompileUnit.h"
+ #include "lldb/Symbol/SymbolContext.h"
+ #include "lldb/Symbol/SymbolFile.h"
++#include "lldb/Symbol/VariableList.h"
+ #include "lldb/Target/ExecutionContext.h"
+ #include "lldb/Target/Process.h"
+ #include "lldb/Target/RegisterContext.h"
+@@ -28,6 +30,8 @@
+ #include "lldb/Utility/LLDBLog.h"
+ #include "lldb/Utility/Log.h"
+ #include "lldb/Utility/StructuredData.h"
++#include "lldb/ValueObject/ValueObject.h"
++#include "lldb/ValueObject/ValueObjectList.h"
+ 
+ using namespace lldb;
+ using namespace lldb_private;
+@@ -265,3 +269,65 @@ lldb::RegisterContextSP ScriptedFrame::GetRegisterContext() {
+ 
+   return m_reg_context_sp;
+ }
++
++VariableList *ScriptedFrame::GetVariableList(bool get_file_globals,
++                                             Status *error_ptr) {
++  PopulateVariableListFromInterface();
++  return m_variable_list_sp.get();
++}
++
++lldb::VariableListSP
++ScriptedFrame::GetInScopeVariableList(bool get_file_globals,
++                                      bool must_have_valid_location) {
++  PopulateVariableListFromInterface();
++  return m_variable_list_sp;
++}
++
++void ScriptedFrame::PopulateVariableListFromInterface() {
++  // Fetch values from the interface.
++  ValueObjectListSP value_list_sp = GetInterface()->GetVariables();
++  if (!value_list_sp)
++    return;
++
++  // Convert what we can into a variable.
++  m_variable_list_sp = std::make_shared<VariableList>();
++  for (uint32_t i = 0, e = value_list_sp->GetSize(); i < e; ++i) {
++    ValueObjectSP v = value_list_sp->GetValueObjectAtIndex(i);
++    if (!v)
++      continue;
++
++    VariableSP var = v->GetVariable();
++    // TODO: We could in theory ask the scripted frame to *produce* a
++    //       variable for this value object.
++    if (!var)
++      continue;
++
++    m_variable_list_sp->AddVariable(var);
++  }
++}
++
++lldb::ValueObjectSP ScriptedFrame::GetValueObjectForFrameVariable(
++    const lldb::VariableSP &variable_sp, lldb::DynamicValueType use_dynamic) {
++  // Fetch values from the interface.
++  ValueObjectListSP values = m_scripted_frame_interface_sp->GetVariables();
++  if (!values)
++    return {};
++
++  return values->FindValueObjectByValueName(variable_sp->GetName().AsCString());
++}
++
++lldb::ValueObjectSP ScriptedFrame::GetValueForVariableExpressionPath(
++    llvm::StringRef var_expr, lldb::DynamicValueType use_dynamic,
++    uint32_t options, lldb::VariableSP &var_sp, Status &error) {
++  // Unless the frame implementation knows how to create variables (which it
++  // doesn't), we can't construct anything for the variable. This may seem
++  // somewhat out of place, but it's basically because of how this API is used -
++  // the print command uses this API to fill in var_sp; and this implementation
++  // can't do that!
++  // FIXME: We should make it possible for the frame implementation to create
++  //        Variable objects.
++  (void)var_sp;
++  // Otherwise, delegate to the scripted frame interface pointer.
++  return m_scripted_frame_interface_sp->GetValueObjectForVariableExpression(
++      var_expr, options, error);
++}
+diff --git a/lldb/source/Plugins/Process/scripted/ScriptedFrame.h b/lldb/source/Plugins/Process/scripted/ScriptedFrame.h
+index 0545548e912e6..fe154792c745b 100644
+--- a/lldb/source/Plugins/Process/scripted/ScriptedFrame.h
++++ b/lldb/source/Plugins/Process/scripted/ScriptedFrame.h
+@@ -63,6 +63,21 @@ class ScriptedFrame : public lldb_private::StackFrame {
+ 
+   lldb::RegisterContextSP GetRegisterContext() override;
+ 
++  VariableList *GetVariableList(bool get_file_globals,
++                                lldb_private::Status *error_ptr) override;
++
++  lldb::VariableListSP
++  GetInScopeVariableList(bool get_file_globals,
++                         bool must_have_valid_location = false) override;
++
++  lldb::ValueObjectSP
++  GetValueObjectForFrameVariable(const lldb::VariableSP &variable_sp,
++                                 lldb::DynamicValueType use_dynamic) override;
++
++  lldb::ValueObjectSP GetValueForVariableExpressionPath(
++      llvm::StringRef var_expr, lldb::DynamicValueType use_dynamic,
++      uint32_t options, lldb::VariableSP &var_sp, Status &error) override;
++
+   bool isA(const void *ClassID) const override {
+     return ClassID == &ID || StackFrame::isA(ClassID);
+   }
+@@ -75,6 +90,11 @@ class ScriptedFrame : public lldb_private::StackFrame {
+   CreateRegisterContext(ScriptedFrameInterface &interface, Thread &thread,
+                         lldb::user_id_t frame_id);
+ 
++  // Populate m_variable_list_sp from the scripted frame interface. Right now
++  // this doesn't take any options because the implementation can't really do
++  // anything with those options anyway, so there's no point.
++  void PopulateVariableListFromInterface();
++
+   ScriptedFrame(const ScriptedFrame &) = delete;
+   const ScriptedFrame &operator=(const ScriptedFrame &) = delete;
+ 
+@@ -82,6 +102,7 @@ class ScriptedFrame : public lldb_private::StackFrame {
+ 
+   lldb::ScriptedFrameInterfaceSP m_scripted_frame_interface_sp;
+   lldb_private::StructuredData::GenericSP m_script_object_sp;
++  lldb::VariableListSP m_variable_list_sp;
+ 
+   static char ID;
+ };
+diff --git a/lldb/source/Plugins/ScriptInterpreter/Python/Interfaces/ScriptedFramePythonInterface.cpp b/lldb/source/Plugins/ScriptInterpreter/Python/Interfaces/ScriptedFramePythonInterface.cpp
+index 20ca7a2c01356..9cc7b04fc9dba 100644
+--- a/lldb/source/Plugins/ScriptInterpreter/Python/Interfaces/ScriptedFramePythonInterface.cpp
++++ b/lldb/source/Plugins/ScriptInterpreter/Python/Interfaces/ScriptedFramePythonInterface.cpp
+@@ -154,4 +154,32 @@ std::optional<std::string> ScriptedFramePythonInterface::GetRegisterContext() {
+   return obj->GetAsString()->GetValue().str();
+ }
+ 
++lldb::ValueObjectListSP ScriptedFramePythonInterface::GetVariables() {
++  Status error;
++  auto vals = Dispatch<lldb::ValueObjectListSP>("get_variables", error);
++
++  if (error.Fail()) {
++    return ErrorWithMessage<lldb::ValueObjectListSP>(LLVM_PRETTY_FUNCTION,
++                                                     error.AsCString(), error);
++  }
++
++  return vals;
++}
++
++lldb::ValueObjectSP
++ScriptedFramePythonInterface::GetValueObjectForVariableExpression(
++    llvm::StringRef expr, uint32_t options, Status &status) {
++  Status dispatch_error;
++  auto val = Dispatch<lldb::ValueObjectSP>("get_value_for_variable_expression",
++                                           dispatch_error, expr.data(), options,
++                                           status);
++
++  if (dispatch_error.Fail()) {
++    return ErrorWithMessage<lldb::ValueObjectSP>(
++        LLVM_PRETTY_FUNCTION, dispatch_error.AsCString(), dispatch_error);
++  }
++
++  return val;
++}
++
+ #endif
+diff --git a/lldb/source/Plugins/ScriptInterpreter/Python/Interfaces/ScriptedFramePythonInterface.h b/lldb/source/Plugins/ScriptInterpreter/Python/Interfaces/ScriptedFramePythonInterface.h
+index 3aff237ae65d5..d8ac093106bbd 100644
+--- a/lldb/source/Plugins/ScriptInterpreter/Python/Interfaces/ScriptedFramePythonInterface.h
++++ b/lldb/source/Plugins/ScriptInterpreter/Python/Interfaces/ScriptedFramePythonInterface.h
+@@ -52,6 +52,12 @@ class ScriptedFramePythonInterface : public ScriptedFrameInterface,
+   StructuredData::DictionarySP GetRegisterInfo() override;
+ 
+   std::optional<std::string> GetRegisterContext() override;
++
++  lldb::ValueObjectListSP GetVariables() override;
++
++  lldb::ValueObjectSP
++  GetValueObjectForVariableExpression(llvm::StringRef expr, uint32_t options,
++                                      Status &status) override;
+ };
+ } // namespace lldb_private
+ 

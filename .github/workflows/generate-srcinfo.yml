@@ -1,0 +1,129 @@
+name: generate-srcinfo
+
+concurrency: ci-${{ github.ref }}
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  update-srcinfo-win:
+    runs-on: windows-2022
+    if: ${{ github.repository == 'msys2/MINGW-packages' || github.event_name == 'workflow_dispatch' }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          filter: tree:0
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        id: setup-python
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          cache-dependency-glob: .github/workflows/generate-srcinfo.yml
+
+      - name: Install dependencies
+        run: |
+          uv tool install --python '${{ steps.setup-python.outputs.python-path }}' 'msys2-devtools[srcinfo-cache] @ git+https://github.com/msys2/msys2-devtools'
+
+      - uses: msys2/setup-msys2@e9898307ac31d1a803454791be09ab9973336e1c # v2.31.1
+        id: msys2
+        with:
+          msystem: MSYS
+          update: true
+
+      - name: Download srcinfo.json.gz and set up the environment
+        shell: msys2 {0}
+        run: |
+          # makepkg requires strip in PATH even if it wont be used
+          touch /usr/bin/strip.exe
+          curl --fail -L --retry 5 -o srcinfo.json.gz "https://github.com/$GITHUB_REPOSITORY/releases/download/srcinfo-cache/srcinfo.json.gz"
+
+      - name: Parse PKGBUILDs and update srcinfo.json.gz
+        run: |
+          msys2-srcinfo-cache --time-limit 19800 mingw '${{ steps.msys2.outputs.msys2-location }}' . srcinfo.json.gz
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: result-win
+          path: |
+            srcinfo.json.gz
+
+  update-srcinfo-linux:
+    needs: update-srcinfo-win
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: result-win
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        id: setup-python
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          cache-dependency-glob: .github/workflows/generate-srcinfo.yml
+
+      - name: Install dependencies
+        run: |
+          uv tool install --python '${{ steps.setup-python.outputs.python-path }}' 'msys2-devtools[pypi-cache,sbom] @ git+https://github.com/msys2/msys2-devtools'
+
+      - name: Update the PyPI cache
+        run: |
+          curl --fail -L --retry 5 -o pypi.json.gz "https://github.com/$GITHUB_REPOSITORY/releases/download/srcinfo-cache/pypi.json.gz" || true
+          msys2-pypi-cache srcinfo.json.gz pypi.json.gz
+
+      - name: Install grype
+        run: |
+          curl --retry 5 -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s --
+          ./bin/grype db list --output json > grype-db.json
+
+      - name: Cache grype DB
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/grype
+          key: grype-db-${{ runner.os }}-${{ hashFiles('grype-db.json') }}
+          restore-keys: |
+            grype-db-${{ runner.os }}-
+
+      - name: Update vulnerability database
+        run: |
+          msys2-sbom create srcinfo.json.gz sbom.cdx.json
+          ./bin/grype sbom:sbom.cdx.json -o cyclonedx-json=sbom.vuln.cdx.json -o json=sbom.grype.json
+          msys2-sbom fixup sbom.vuln.cdx.json --grype-json sbom.grype.json --srcinfo-cache srcinfo.json.gz
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: result-linux
+          path: |
+            pypi.json.gz
+            sbom.cdx.json
+            sbom.vuln.cdx.json
+
+  upload-srcinfo:
+    needs: [update-srcinfo-win, update-srcinfo-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: result-*
+          merge-multiple: true
+
+      - name: Upload srcinfo.json.gz
+        run: |
+          gh release upload srcinfo-cache srcinfo.json.gz pypi.json.gz sbom.cdx.json sbom.vuln.cdx.json --clobber --repo "$GITHUB_REPOSITORY"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - run: |
+          curl -X POST 'https://packages.msys2.org/api/trigger_update'

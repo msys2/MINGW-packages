@@ -1,0 +1,103 @@
+--- libsigsegv-2.11/src/handler-win32-orig.c	2017-11-30 17:36:43.362197800 -0500
++++ libsigsegv-2.11/src/handler-win32.c	2017-11-30 17:42:56.526459500 -0500
+@@ -167,6 +167,91 @@
+       )
+ #endif
+      )
++#ifdef _WIN64
++    {
++#if 0 /* for debugging only */
++      printf ("Exception!\n");
++      printf ("Code = 0x%x\n",
++              ExceptionInfo->ExceptionRecord->ExceptionCode);
++      printf ("Flags = 0x%x\n",
++              ExceptionInfo->ExceptionRecord->ExceptionFlags);
++      printf ("Address = 0x%x\n",
++              ExceptionInfo->ExceptionRecord->ExceptionAddress);
++      printf ("Params:");
++      {
++        DWORD i;
++        for (i = 0; i < ExceptionInfo->ExceptionRecord->NumberParameters; i++)
++          printf (" 0x%x,",
++                  ExceptionInfo->ExceptionRecord->ExceptionInformation[i]);
++      }
++      printf ("\n");
++      printf ("Registers:\n");
++      printf ("rip = 0x%x\n", ExceptionInfo->ContextRecord->Rip);
++      printf ("rax = 0x%x, ", ExceptionInfo->ContextRecord->Rax);
++      printf ("rbx = 0x%x, ", ExceptionInfo->ContextRecord->Rbx);
++      printf ("rcx = 0x%x, ", ExceptionInfo->ContextRecord->Rcx);
++      printf ("rdx = 0x%x\n", ExceptionInfo->ContextRecord->Rdx);
++      printf ("rsi = 0x%x, ", ExceptionInfo->ContextRecord->Rsi);
++      printf ("rdi = 0x%x, ", ExceptionInfo->ContextRecord->Rdi);
++      printf ("rbp = 0x%x, ", ExceptionInfo->ContextRecord->Rbp);
++      printf ("rsp = 0x%x\n", ExceptionInfo->ContextRecord->Rsp);
++#endif
++      if (ExceptionInfo->ExceptionRecord->NumberParameters == 2)
++        {
++          if (stk_user_handler
++              && ExceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW)
++            {
++              char *address = (char *) ExceptionInfo->ExceptionRecord->ExceptionInformation[1];
++              /* Restart the program, giving it a sane value for %esp.
++                 At the same time, copy the contents of
++                 ExceptionInfo->ContextRecord (which, on Windows XP, happens
++                 to be allocated in the guard page, where it will be
++                 inaccessible as soon as we restore the PAGE_GUARD bit!) to
++                 this new stack.  */
++              uintptr_t faulting_page_address = (uintptr_t)address & -0x1000;
++              uintptr_t new_safe_rsp = ((stk_extra_stack + stk_extra_stack_size) & -16);
++              CONTEXT *orig_context = ExceptionInfo->ContextRecord;
++              CONTEXT *safe_context = (CONTEXT *) (new_safe_rsp -= sizeof (CONTEXT)); /* make room */
++              memcpy (safe_context, orig_context, sizeof (CONTEXT));
++              new_safe_rsp -= 8; /* make room for arguments */
++              new_safe_rsp &= -16; /* align */
++              new_safe_rsp -= 4; /* make room for (unused) return address slot */
++              ExceptionInfo->ContextRecord->Rsp = new_safe_rsp;
++              /* Call stack_overflow_handler(faulting_page_address,safe_context).  */
++              ExceptionInfo->ContextRecord->Rip = (uintptr_t)&stack_overflow_handler;
++              *(uintptr_t *)(new_safe_rsp + 4) = faulting_page_address;
++              *(uintptr_t *)(new_safe_rsp + 8) = (uintptr_t) safe_context;
++              return EXCEPTION_CONTINUE_EXECUTION;
++            }
++#if !MIXING_UNIX_SIGSEGV_AND_WIN32_STACKOVERFLOW_HANDLING || OLD_CYGWIN_WORKAROUND
++          if (ExceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION)
++            {
++#if MIXING_UNIX_SIGSEGV_AND_WIN32_STACKOVERFLOW_HANDLING
++              /* Store the fault address.  Then pass control to Cygwin's
++                 exception filter, which will decide whether to recognize
++                 a fault inside a "system call" (and return errno = EFAULT)
++                 or to pass it on to the program (by invoking the Unix signal
++                 handler).  */
++              last_seen_fault_address = (void *) ExceptionInfo->ExceptionRecord->ExceptionInformation[1];
++#else
++              if (user_handler != (sigsegv_handler_t) NULL)
++                {
++                  /* ExceptionInfo->ExceptionRecord->ExceptionInformation[0] is
++                     1 if it's a write access, 0 if it's a read access. But we
++                     don't need this info because we don't have it on Unix
++                     either.  */
++                  void *address = (void *) ExceptionInfo->ExceptionRecord->ExceptionInformation[1];
++                  if ((*user_handler) (address, 1))
++                    return EXCEPTION_CONTINUE_EXECUTION;
++                }
++#endif
++            }
++#endif
++        }
++    }
++  return EXCEPTION_CONTINUE_SEARCH;
++}
++#else
+     {
+ #if 0 /* for debugging only */
+       printf ("Exception!\n");
+@@ -250,7 +335,7 @@
+     }
+   return EXCEPTION_CONTINUE_SEARCH;
+ }
+-
++#endif
+ #if defined __CYGWIN__ && defined __i386__
+ 
+ /* In Cygwin programs, SetUnhandledExceptionFilter has no effect because Cygwin
