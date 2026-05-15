@@ -1,0 +1,625 @@
+From cc1444754d1ac68c59acb91f60bfb22ac2b34acf Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Wed, 6 May 2026 20:33:46 +0200
+Subject: [PATCH 08/11] Add support for the Inno Setup 6.5.0 entry stream
+ rework
+
+Inno Setup 6.5.0 made several invasive changes to the on-disk
+serialisation that go well beyond the SetupID magic and the new
+SevenZipLibraryName header field that the previous patch picked up. To
+actually parse a 6.5.0 installer, four further changes are needed.
+
+First, a new TSetupEncryptionHeader record now sits on the outer
+stream, between the version magic and the first compressed block
+(Projects/Src/Shared.Struct.pas at tag is-6_5_0 in
+https://github.com/jrsoftware/issrc). It carries a 4-byte expected
+CRC32, a 1-byte EncryptionUse flag, a 16-byte KDFSalt, the KDF
+iteration count, the 24-byte BaseNonce triple
+(RandomXorStartOffset / RandomXorFirstSlice / RemainingRandom) and a
+4-byte PasswordTest, with the CRC32 covering the 49 bytes after
+itself. Read it on the outer stream so the block reader starts at the
+right offset; if the EncryptionUse byte is non-zero, log a warning
+that decrypting 6.5.0+ encrypted installers is not yet supported.
+Validate the CRC32 against expected_crc and warn on mismatch.
+
+Second, the matching encryption fields move out of TSetupHeader. The
+4-byte SHA-256 digest prefix and the 44-byte salt-plus-nonce blob that
+6.4.0 added directly to the header are no longer present in 6.5.0; the
+shEncryptionUsed flag is also dropped from TSetupHeaderOption. Gate
+the existing 6.4.x reads to ``< 6.5.0`` and clear the
+header.password / password_salt members for 6.5.0+ so that downstream
+code sees the same "no embedded password" state.
+
+Third, the new TSetupISSigKeyEntry array sits between the directory
+and file entry streams. Read NumISSigKeyEntries (already wired up by
+the 6.5.0 magic patch as a placeholder, now actually stored in the
+new header.issig_key_count). After the directory entries, load
+exactly that many records via the standard load_entries helper,
+mirroring how component_entry, task_entry, etc. are handled. Each
+record holds three binary strings (PublicX, PublicY, RuntimeID)
+naming an Ed25519 public key the installer trusts; the new
+issig_key_entry struct exposes them so callers that opt in via the
+ISSigKeys entry-type flag can inspect them.
+
+Fourth, when a 6.5.0+ installer sets [Setup] SevenZipLibraryName
+(supporting Extract7ZipArchive that was added in 6.4.0), an additional
+binary string appears on the wizard / decompressor stream after the
+decompressor DLL and before the decryptor DLL slot. Skip past it so
+later reads of decrypt_dll align correctly.
+
+In TSetupFileEntry, 6.5.0 appended five new expression strings
+(Excludes, DownloadISSigSource, DownloadUserName, DownloadPassword,
+ExtractArchivePassword) and a per-file Verification packed record
+made of an ISSigAllowedKeys ansi string, a 32-byte SHA-256 digest, and
+a TSetupFileVerificationType byte enum (none / hash / IS sig); these
+sit between BeforeInstall and MinVersion. Two new flag bits
+foDownload and foExtractArchive were added to TSetupFileEntryOption
+for the new [Files] flags `download` and `extractarchive`. Add the
+matching members and stored_enum mapping, gated to `>= 6.5.0`. The
+SHA-256 digest is stored in the existing file_entry::checksum field
+(unused before 6.5.0 in upstream innoextract); the trailing
+unconditional reset of that field is gated to `< 6.5.0` so the
+verification hash survives.
+
+In TSetupFileLocationEntry, Inno Setup 6.4.3 (issrc commits 6aec0a55
+"Distinguish file options (fo) and file location options (flo)." and
+00d335b7 "Cleanup: TSetupFileLocationEntry contained a few things
+which Setup doesn't need and are only for the compiler.", both first
+tagged in is-6_4_3) had already dropped four flags
+(foVersionInfoNotValid, foIsUninstExe, foApplyTouchDateTime,
+foSolidBreak) from the Flags bitset and removed the standalone Sign
+field entirely; the [Files] `signonce` and `signcheck` directives
+still record a per-file location signing intent at compile time but
+the result is no longer serialised. Gate the four obsolete flag adds
+to `< 6.4.3` and short-circuit the Sign read for `>= 6.4.3` to
+NoSetting.
+
+Assisted-by: Claude Opus 4.7
+Signed-off-by: Johannes Schindelin <johannes.schindelin@gmx.de>
+---
+ CMakeLists.txt         |  2 ++
+ src/setup/data.cpp     | 27 ++++++++++++++++----
+ src/setup/file.cpp     | 58 +++++++++++++++++++++++++++++++++++++++++-
+ src/setup/file.hpp     | 19 +++++++++++++-
+ src/setup/header.cpp   | 29 ++++++++++++++++-----
+ src/setup/header.hpp   |  1 +
+ src/setup/info.cpp     | 49 +++++++++++++++++++++++++++++++++++
+ src/setup/info.hpp     |  3 +++
+ src/setup/issigkey.cpp | 38 +++++++++++++++++++++++++++
+ src/setup/issigkey.hpp | 55 +++++++++++++++++++++++++++++++++++++++
+ 10 files changed, 267 insertions(+), 14 deletions(-)
+ create mode 100644 src/setup/issigkey.cpp
+ create mode 100644 src/setup/issigkey.hpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6995610..cd21eaf 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -416,6 +416,8 @@ set(INNOEXTRACT_SOURCES
+ 	src/setup/info.cpp
+ 	src/setup/ini.hpp
+ 	src/setup/ini.cpp
++	src/setup/issigkey.hpp
++	src/setup/issigkey.cpp
+ 	src/setup/item.hpp
+ 	src/setup/item.cpp
+ 	src/setup/language.hpp
+diff --git a/src/setup/data.cpp b/src/setup/data.cpp
+index 4444ce2..a269c3c 100644
+--- a/src/setup/data.cpp
++++ b/src/setup/data.cpp
+@@ -136,20 +136,28 @@ void data_entry::load(std::istream & is, const info & i) {
+ 	stored_flag_reader<flags> flagreader(is, i.version.bits());
+ 	
+ 	flagreader.add(VersionInfoValid);
+-	flagreader.add(VersionInfoNotValid);
++	if(i.version < INNO_VERSION(6, 4, 3)) {
++		// Inno Setup 6.4.3 dropped foVersionInfoNotValid, foIsUninstExe,
++		// foApplyTouchDateTime and foSolidBreak from
++		// TSetupFileLocationEntry.Flags. See
++		// Projects/Src/Shared.Struct.pas at tag is-6_4_3 in
++		// https://github.com/jrsoftware/issrc (issrc commit 6aec0a55,
++		// "Distinguish file options (fo) and file location options (flo).").
++		flagreader.add(VersionInfoNotValid);
++	}
+ 	if(i.version >= INNO_VERSION(2, 0, 17) && i.version < INNO_VERSION(4, 0, 1)) {
+ 		flagreader.add(BZipped);
+ 	}
+ 	if(i.version >= INNO_VERSION(4, 0, 10)) {
+ 		flagreader.add(TimeStampInUTC);
+ 	}
+-	if(i.version >= INNO_VERSION(4, 1, 0)) {
++	if(i.version >= INNO_VERSION(4, 1, 0) && i.version < INNO_VERSION(6, 4, 3)) {
+ 		flagreader.add(IsUninstallerExe);
+ 	}
+ 	if(i.version >= INNO_VERSION(4, 1, 8)) {
+ 		flagreader.add(CallInstructionOptimized);
+ 	}
+-	if(i.version >= INNO_VERSION(4, 2, 0)) {
++	if(i.version >= INNO_VERSION(4, 2, 0) && i.version < INNO_VERSION(6, 4, 3)) {
+ 		flagreader.add(Touch);
+ 	}
+ 	if(i.version >= INNO_VERSION(4, 2, 2)) {
+@@ -160,7 +168,7 @@ void data_entry::load(std::istream & is, const info & i) {
+ 	} else {
+ 		options |= ChunkCompressed;
+ 	}
+-	if(i.version >= INNO_VERSION(5, 1, 13)) {
++	if(i.version >= INNO_VERSION(5, 1, 13) && i.version < INNO_VERSION(6, 4, 3)) {
+ 		flagreader.add(SolidBreak);
+ 	}
+ 	if(i.version >= INNO_VERSION(5, 5, 7) && i.version < INNO_VERSION(6, 3, 0)) {
+@@ -171,7 +179,16 @@ void data_entry::load(std::istream & is, const info & i) {
+ 	
+ 	options |= flagreader.finalize();
+ 	
+-	if(i.version >= INNO_VERSION(6, 3, 0)) {
++	if(i.version >= INNO_VERSION(6, 4, 3)) {
++		// Inno Setup 6.4.3 dropped the standalone Sign field from
++		// TSetupFileLocationEntry. The compiler still records the source
++		// signing intent in the [Files] section, but it is no longer
++		// serialised per-file-location. See issrc commit 00d335b7
++		// ("Cleanup: TSetupFileLocationEntry contained a few things which
++		// Setup doesn't need and are only for the compiler.") first
++		// tagged in is-6_4_3.
++		sign = NoSetting;
++	} else if(i.version >= INNO_VERSION(6, 3, 0)) {
+ 		sign = stored_enum<stored_sign_mode>(is).get();
+ 	} else if(options & SignOnce) {
+ 		sign = Once;
+diff --git a/src/setup/file.cpp b/src/setup/file.cpp
+index a2e917e..f886409 100644
+--- a/src/setup/file.cpp
++++ b/src/setup/file.cpp
+@@ -56,6 +56,14 @@ STORED_ENUM_MAP(stored_file_type_1, file_entry::UserFile,
+ 	file_entry::RegSvrExe,
+ );
+ 
++// Inno Setup 6.5.0 introduced the per-file verification kind alongside
++// the SHA-256 hash and ISSig allowed-keys list appended to TSetupFileEntry.
++STORED_ENUM_MAP(stored_file_verification_type, file_entry::FileVerificationNone,
++	file_entry::FileVerificationNone,
++	file_entry::FileVerificationHash,
++	file_entry::FileVerificationISSig,
++);
++
+ } // anonymous namespace
+ 
+ } // namespace setup
+@@ -69,6 +77,12 @@ NAMES(setup::file_copy_mode, "File Copy Mode",
+ 	"always skip if same or older",
+ )
+ 
++NAMES(setup::file_entry::file_verification_type, "File Verification Type",
++	"none",
++	"hash",
++	"IS sig",
++)
++
+ namespace setup {
+ 
+ void file_entry::load(std::istream & is, const info & i) {
+@@ -92,6 +106,34 @@ void file_entry::load(std::istream & is, const info & i) {
+ 	
+ 	load_condition_data(is, i);
+ 	
++	if(i.version >= INNO_VERSION(6, 5, 0)) {
++		// Inno Setup 6.5.0 appended five new expression strings (Excludes,
++		// DownloadISSigSource, DownloadUserName, DownloadPassword,
++		// ExtractArchivePassword) and a per-file Verification packed
++		// record (ISSigAllowedKeys ansi string, 32-byte SHA-256 digest,
++		// TSetupFileVerificationType byte enum) to TSetupFileEntry, after
++		// the BeforeInstall string and before MinVersion. See
++		// Projects/Src/Shared.Struct.pas at tag is-6_5_0 in
++		// https://github.com/jrsoftware/issrc.
++		is >> util::encoded_string(excludes, i.codepage, i.header.lead_bytes);
++		is >> util::encoded_string(download_source, i.codepage, i.header.lead_bytes);
++		is >> util::encoded_string(download_user, i.codepage, i.header.lead_bytes);
++		is >> util::encoded_string(download_password, i.codepage, i.header.lead_bytes);
++		is >> util::encoded_string(archive_password, i.codepage, i.header.lead_bytes);
++		is >> util::ansi_string(issig_allowed_keys);
++		is.read(checksum.sha256, std::streamsize(sizeof(checksum.sha256)));
++		checksum.type = crypto::SHA256;
++		verification = stored_enum<stored_file_verification_type>(is).get();
++	} else {
++		excludes.clear();
++		download_source.clear();
++		download_user.clear();
++		download_password.clear();
++		archive_password.clear();
++		issig_allowed_keys.clear();
++		verification = FileVerificationNone;
++	}
++	
+ 	load_version_data(is, i.version);
+ 	
+ 	location = util::load<boost::uint32_t>(is, i.version.bits());
+@@ -189,6 +231,14 @@ void file_entry::load(std::istream & is, const info & i) {
+ 	if(i.version >= INNO_VERSION(5, 2, 5)) {
+ 		flagreader.add(GacInstall);
+ 	}
++	if(i.version >= INNO_VERSION(6, 5, 0)) {
++		// Inno Setup 6.5.0 added two flags at the end of the bitset for
++		// the new [Files] flags `download` and `extractarchive`
++		// (TSetupFileEntry.Options in Projects/Src/Shared.Struct.pas at
++		// tag is-6_5_0 in https://github.com/jrsoftware/issrc).
++		flagreader.add(Download);
++		flagreader.add(ExtractArchive);
++	}
+ 	
+ 	options |= flagreader.finalize();
+ 	
+@@ -199,7 +249,11 @@ void file_entry::load(std::istream & is, const info & i) {
+ 	}
+ 	
+ 	additional_locations.clear();
+-	checksum.type = crypto::None;
++	if(i.version < INNO_VERSION(6, 5, 0)) {
++		// For Inno Setup 6.5.0+, file_entry::checksum carries the SHA-256
++		// from the per-file ISSig Verification block, populated above.
++		checksum.type = crypto::None;
++	}
+ 	size = 0;
+ 	
+ }
+@@ -239,6 +293,8 @@ NAMES(setup::file_entry::flags, "File Option",
+ 	"set ntfs compression",
+ 	"unset ntfs compression",
+ 	"gac install",
++	"download",
++	"extract archive",
+ 	"readme",
+ )
+ 
+diff --git a/src/setup/file.hpp b/src/setup/file.hpp
+index 604b2ae..9f306bf 100644
+--- a/src/setup/file.hpp
++++ b/src/setup/file.hpp
+@@ -77,11 +77,19 @@ struct file_entry : public item {
+ 		SetNtfsCompression,
+ 		UnsetNtfsCompression,
+ 		GacInstall,
++		Download,
++		ExtractArchive,
+ 		
+ 		// obsolete options:
+ 		IsReadmeFile
+ 	);
+ 	
++	enum file_verification_type {
++		FileVerificationNone,
++		FileVerificationHash,
++		FileVerificationISSig,
++	};
++	
+ 	enum file_type {
+ 		UserFile,
+ 		UninstExe,
+@@ -96,6 +104,14 @@ struct file_entry : public item {
+ 	std::string destination;
+ 	std::string install_font_name;
+ 	std::string strong_assembly_name;
++	std::string excludes;                  //!< Inno Setup 6.5.0+
++	std::string download_source;           //!< DownloadISSigSource, 6.5.0+
++	std::string download_user;             //!< DownloadUserName, 6.5.0+
++	std::string download_password;         //!< 6.5.0+
++	std::string archive_password;          //!< ExtractArchivePassword, 6.5.0+
++	std::string issig_allowed_keys;        //!< 6.5.0+
++	
++	file_verification_type verification;   //!< 6.5.0+
+ 	
+ 	boost::uint32_t location; //!< index into the data entry list
+ 	boost::uint32_t attributes;
+@@ -110,7 +126,7 @@ struct file_entry : public item {
+ 	// Information about GOG Galaxy multi-part files
+ 	// These are not used in normal Inno Setup installers
+ 	std::vector<boost::uint32_t> additional_locations;
+-	crypto::checksum checksum;
++	crypto::checksum checksum; //!< Inno Setup 6.5.0+: SHA-256 from the per-file ISSig Verification block
+ 	boost::uint64_t size;
+ 	
+ 	void load(std::istream & is, const info & i);
+@@ -121,5 +137,6 @@ struct file_entry : public item {
+ 
+ NAMED_FLAGS(setup::file_entry::flags)
+ NAMED_ENUM(setup::file_entry::file_type)
++NAMED_ENUM(setup::file_entry::file_verification_type)
+ 
+ #endif // INNOEXTRACT_SETUP_FILE_HPP
+diff --git a/src/setup/header.cpp b/src/setup/header.cpp
+index 87b30b2..1babfbe 100644
+--- a/src/setup/header.cpp
++++ b/src/setup/header.cpp
+@@ -338,10 +338,14 @@ void header::load(std::istream & is, const version & version) {
+ 	if(version >= INNO_VERSION(6, 5, 0)) {
+ 		// Inno Setup 6.5.0 inserted a NumISSigKeyEntries: Integer field
+ 		// between NumDirEntries and NumFileEntries
+-		// (Projects/Src/Shared.Struct.pas at tag is-6_5_0). innoextract
+-		// does not yet use the count, but the bytes must be consumed to
+-		// keep the stream position correct.
+-		(void)util::load<boost::uint32_t>(is, version.bits());
++		// (Projects/Src/Shared.Struct.pas at tag is-6_5_0). Each entry is a
++		// triple of binary strings (PublicX, PublicY, RuntimeID) describing
++		// an ISSigTool-issued public key the installer trusts; innoextract
++		// does not yet make use of the keys themselves but stores the count
++		// so info::try_load can skip the right number of entries.
++		issig_key_count = util::load<boost::uint32_t>(is, version.bits());
++	} else {
++		issig_key_count = 0;
+ 	}
+ 	file_count = util::load<boost::uint32_t>(is, version.bits());
+ 	data_entry_count = util::load<boost::uint32_t>(is, version.bits());
+@@ -436,7 +440,16 @@ void header::load(std::istream & is, const version & version) {
+ 		wizard_image_opacity = 0xff;
+ 	}
+ 	
+-	if(version >= INNO_VERSION(6, 4, 0)) {
++	if(version >= INNO_VERSION(6, 5, 0)) {
++		// Inno Setup 6.5.0 moved the encryption fields (password test, KDF
++		// salt, KDF iterations, base nonce) out of TSetupHeader and into a
++		// separate TSetupEncryptionHeader stored elsewhere. innoextract
++		// does not yet parse encrypted 6.5.0+ installers; for unencrypted
++		// ones the right thing is to read no encryption bytes from the
++		// header stream at all.
++		password.type = crypto::None;
++		password_salt.clear();
++	} else if(version >= INNO_VERSION(6, 4, 0)) {
+ 		is.read(password.sha256, 4);
+ 		password.type = crypto::PBKDF2_SHA256_XChaCha20;
+ 	} else if(version >= INNO_VERSION(5, 3, 9)) {
+@@ -449,7 +462,9 @@ void header::load(std::istream & is, const version & version) {
+ 		password.crc32 = util::load<boost::uint32_t>(is);
+ 		password.type = crypto::CRC32;
+ 	}
+-	if(version >= INNO_VERSION(6, 4, 0)) {
++	if(version >= INNO_VERSION(6, 5, 0)) {
++		// Already cleared above; nothing to read.
++	} else if(version >= INNO_VERSION(6, 4, 0)) {
+ 		password_salt.resize(44); // PBKDF2 salt + iteration count + ChaCha2 base nonce
+ 		is.read(&password_salt[0], std::streamsize(password_salt.length()));
+ 	} else if(version >= INNO_VERSION(4, 2, 2)) {
+@@ -749,7 +764,7 @@ header::flags header::load_flags(std::istream & is, const version & version) {
+ 		flagreader.add(AppendDefaultDirName);
+ 		flagreader.add(AppendDefaultGroupName);
+ 	}
+-	if(version >= INNO_VERSION(4, 2, 2)) {
++	if(version >= INNO_VERSION(4, 2, 2) && version < INNO_VERSION(6, 5, 0)) {
+ 		flagreader.add(EncryptionUsed);
+ 	}
+ 	if(version >= INNO_VERSION(5, 0, 4) && version < INNO_VERSION(5, 6, 1)) {
+diff --git a/src/setup/header.hpp b/src/setup/header.hpp
+index 77fa651..a0211fc 100644
+--- a/src/setup/header.hpp
++++ b/src/setup/header.hpp
+@@ -188,6 +188,7 @@ struct header {
+ 	size_t component_count;
+ 	size_t task_count;
+ 	size_t directory_count;
++	size_t issig_key_count;
+ 	size_t file_count;
+ 	size_t data_entry_count;
+ 	size_t icon_count;
+diff --git a/src/setup/info.cpp b/src/setup/info.cpp
+index d696924..0678f36 100644
+--- a/src/setup/info.cpp
++++ b/src/setup/info.cpp
+@@ -27,6 +27,7 @@
+ #include <boost/foreach.hpp>
+ 
+ #include "crypto/hasher.hpp"
++#include "crypto/crc32.hpp"
+ #include "crypto/pbkdf2.hpp"
+ #include "crypto/sha256.hpp"
+ #include "crypto/xchacha20.hpp"
+@@ -37,6 +38,7 @@
+ #include "setup/file.hpp"
+ #include "setup/icon.hpp"
+ #include "setup/ini.hpp"
++#include "setup/issigkey.hpp"
+ #include "setup/item.hpp"
+ #include "setup/language.hpp"
+ #include "setup/message.hpp"
+@@ -123,6 +125,16 @@ void load_wizard_and_decompressor(std::istream & is, const setup::version & vers
+ 		}
+ 	}
+ 	
++	if(version >= INNO_VERSION(6, 5, 0) && !header.seven_zip_library_name.empty()) {
++		// Inno Setup 6.5.0 added an embedded 7-Zip decoder DLL stream
++		// after the decompressor DLL block, present whenever the [Setup]
++		// directive SevenZipLibraryName is set (which Setup uses to
++		// implement Extract7ZipArchive support added in 6.4.0). Skip it;
++		// innoextract does not need to decode 7-Zip archives during a
++		// listing.
++		util::binary_string::skip(is);
++	}
++	
+ 	info.decrypt_dll.clear();
+ 	if((header.options & header::EncryptionUsed) && version < INNO_VERSION(6, 4, 0)) {
+ 		if(entries & (info::DecryptDll | info::NoSkip)) {
+@@ -204,6 +216,8 @@ void info::try_load(std::istream & is, entry_types entries, util::codepage_id fo
+ 	load_entries(*reader, entries, header.task_count, tasks, Tasks);
+ 	debug("loading directories");
+ 	load_entries(*reader, entries, header.directory_count, directories, Directories);
++	debug("loading issig keys");
++	load_entries(*reader, entries, header.issig_key_count, issig_keys, ISSigKeys);
+ 	debug("loading files");
+ 	load_entries(*reader, entries, header.file_count, files, Files);
+ 	debug("loading icons");
+@@ -263,6 +277,41 @@ void info::load(std::istream & is, entry_types entries, util::codepage_id force_
+ 		entries |= NoSkip;
+ 	}
+ 	
++	if(version >= INNO_VERSION(6, 5, 0)) {
++		// Inno Setup 6.5.0 split the encryption metadata out of
++		// TSetupHeader into a standalone TSetupEncryptionHeader stored on
++		// the outer stream between the version magic and the first block
++		// (Projects/Src/Shared.Struct.pas at tag is-6_5_0 in
++		// https://github.com/jrsoftware/issrc). Read it here so the block
++		// reader starts at the right offset; innoextract does not yet
++		// support actually decrypting 6.5.0+ encrypted installers.
++		boost::uint32_t expected_crc = util::load<boost::uint32_t>(is);
++		crypto::crc32 checksum;
++		checksum.init();
++		boost::uint8_t encryption_use = checksum.load<boost::uint8_t>(is);
++		if(encryption_use != 0) {
++			log_warning << "Encrypted setup not supported; cannot decrypt files";
++		}
++		// 16-byte KDFSalt + 4-byte KDFIterations
++		// + 8-byte BaseNonce.RandomXorStartOffset
++		// + 4-byte BaseNonce.RandomXorFirstSlice
++		// + 12-byte BaseNonce.RemainingRandom (3 x 4 bytes)
++		// + 4-byte PasswordTest = 48 bytes after encryption_use.
++		for(int i = 0; i < 16; i++) {
++			(void)checksum.load<boost::uint8_t>(is);
++		}
++		(void)checksum.load<boost::uint32_t>(is);
++		(void)checksum.load<boost::uint64_t>(is);
++		(void)checksum.load<boost::uint32_t>(is);
++		for(int i = 0; i < 3; i++) {
++			(void)checksum.load<boost::uint32_t>(is);
++		}
++		(void)checksum.load<boost::uint32_t>(is);
++		if(checksum.finalize() != expected_crc) {
++			log_warning << "Encryption header checksum mismatch!";
++		}
++	}
++	
+ 	bool parsed_without_errors = false;
+ 	std::streampos start = is.tellg();
+ 	for(;;) {
+diff --git a/src/setup/info.hpp b/src/setup/info.hpp
+index e08cfd4..fb8d57b 100644
+--- a/src/setup/info.hpp
++++ b/src/setup/info.hpp
+@@ -43,6 +43,7 @@ struct directory_entry;
+ struct file_entry;
+ struct icon_entry;
+ struct ini_entry;
++struct issig_key_entry;
+ struct language_entry;
+ struct message_entry;
+ struct permission_entry;
+@@ -69,6 +70,7 @@ struct info {
+ 		Files,
+ 		Icons,
+ 		IniEntries,
++		ISSigKeys,
+ 		Languages,
+ 		Messages,
+ 		Permissions,
+@@ -98,6 +100,7 @@ struct info {
+ 	std::vector<file_entry>       files;                    //! \c Files
+ 	std::vector<icon_entry>       icons;                    //! \c Icons
+ 	std::vector<ini_entry>        ini_entries;              //! \c IniEntries
++	std::vector<issig_key_entry>  issig_keys;               //! \c ISSigKeys
+ 	std::vector<language_entry>   languages;                //! \c Languages
+ 	std::vector<message_entry>    messages;                 //! \c Messages
+ 	std::vector<permission_entry> permissions;              //! \c Permissions
+diff --git a/src/setup/issigkey.cpp b/src/setup/issigkey.cpp
+new file mode 100644
+index 0000000..7d3bfc0
+--- /dev/null
++++ b/src/setup/issigkey.cpp
+@@ -0,0 +1,38 @@
++/*
++ * Copyright (C) 2011-2019 Daniel Scharrer
++ *
++ * This software is provided 'as-is', without any express or implied
++ * warranty.  In no event will the author(s) be held liable for any damages
++ * arising from the use of this software.
++ *
++ * Permission is granted to anyone to use this software for any purpose,
++ * including commercial applications, and to alter it and redistribute it
++ * freely, subject to the following restrictions:
++ *
++ * 1. The origin of this software must not be misrepresented; you must not
++ *    claim that you wrote the original software. If you use this software
++ *    in a product, an acknowledgment in the product documentation would be
++ *    appreciated but is not required.
++ * 2. Altered source versions must be plainly marked as such, and must not be
++ *    misrepresented as being the original software.
++ * 3. This notice may not be removed or altered from any source distribution.
++ */
++
++#include "setup/issigkey.hpp"
++
++#include "util/load.hpp"
++
++namespace setup {
++
++void issig_key_entry::load(std::istream & is, const info & /* i */) {
++	
++	// TSetupISSigKeyEntry: PublicX, PublicY, RuntimeID
++	// (Projects/Src/Shared.Struct.pas at tag is-6_5_0 in
++	// https://github.com/jrsoftware/issrc).
++	is >> util::binary_string(public_x);
++	is >> util::binary_string(public_y);
++	is >> util::binary_string(runtime_id);
++	
++}
++
++} // namespace setup
+diff --git a/src/setup/issigkey.hpp b/src/setup/issigkey.hpp
+new file mode 100644
+index 0000000..e027d43
+--- /dev/null
++++ b/src/setup/issigkey.hpp
+@@ -0,0 +1,55 @@
++/*
++ * Copyright (C) 2011-2019 Daniel Scharrer
++ *
++ * This software is provided 'as-is', without any express or implied
++ * warranty.  In no event will the author(s) be held liable for any damages
++ * arising from the use of this software.
++ *
++ * Permission is granted to anyone to use this software for any purpose,
++ * including commercial applications, and to alter it and redistribute it
++ * freely, subject to the following restrictions:
++ *
++ * 1. The origin of this software must not be misrepresented; you must not
++ *    claim that you wrote the original software. If you use this software
++ *    in a product, an acknowledgment in the product documentation would be
++ *    appreciated but is not required.
++ * 2. Altered source versions must be plainly marked as such, and must not be
++ *    misrepresented as being the original software.
++ * 3. This notice may not be removed or altered from any source distribution.
++ */
++
++/*!
++ * \file
++ *
++ * Structures for ISSig public key entries stored in Inno Setup 6.5.0+ files.
++ */
++#ifndef INNOEXTRACT_SETUP_ISSIGKEY_HPP
++#define INNOEXTRACT_SETUP_ISSIGKEY_HPP
++
++#include <string>
++#include <iosfwd>
++
++namespace setup {
++
++struct info;
++
++struct issig_key_entry {
++	
++	// introduced in 6.5.0
++	
++	// X coordinate of the Ed25519 public key, as raw bytes.
++	std::string public_x;
++	
++	// Y coordinate of the Ed25519 public key, as raw bytes.
++	std::string public_y;
++	
++	// Tool-supplied identifier (typically the ISSigTool key file name).
++	std::string runtime_id;
++	
++	void load(std::istream & is, const info & i);
++	
++};
++
++} // namespace setup
++
++#endif // INNOEXTRACT_SETUP_ISSIGKEY_HPP
+-- 
+2.54.0.windows.1
+

@@ -1,0 +1,320 @@
+From 37c2d6eed1fe0041fdd270f005022d4a10cd2437 Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Tue, 5 May 2026 12:42:56 +0200
+Subject: [PATCH 05/11] refactor: widen seekable offset and size types to
+ 64-bit
+
+Inno Setup 6.7.0 widens several on-disk size and offset fields from
+32 to 64 bits (TSetupLdrOffsetTable.OffsetEXE/Offset0/Offset1, the
+block-header stored_size, and the new "idskb32" disk-slice header), to
+allow setup binaries larger than 4 GiB. The current "loader: support
+setup loader offset table revision 2" code path already reads the
+widened TSetupLdrOffsetTable fields as Int64, but truncates them back
+to 32 bits with a warning when storing into `loader::offsets` because
+the struct still holds them in `boost::uint32_t`.
+
+Widen the affected types now, ahead of consuming the new on-disk
+formats, so that the follow-up commit can drop the truncations and
+read the wider on-disk fields natively without churn in the call
+sites. The fields touched are:
+
+  - `loader::offsets::{exe_offset, exe_compressed_size,
+    exe_uncompressed_size, message_offset, header_offset,
+    data_offset}` and the matching argument of `load_offsets_at`.
+  - `stream::chunk::{sort_offset, offset}` (chunk byte offsets within
+    a slice; `size` was already 64-bit).
+  - `stream::slice_reader::{data_offset, slice_size}`, the matching
+    argument of the embedded-data constructor, and the offset
+    parameter of `seek(slice, offset)`. The local `read_pos`/
+    `remaining` in `slice_reader::read` follow `slice_size`.
+  - `cli/extract.cpp`'s local `sort_offset` mirror of
+    `chunk::sort_offset`.
+
+The on-disk reads themselves are unchanged: every site still pulls in
+the same number of bytes as before, just into wider locals or members,
+and the existing `boost::uint32_t(...)` truncation in the loader-v2
+path remains in place so behaviour is bit-identical for installers up
+to 4 GiB. Where `streampos` / `seekg(off_t)` interactions now produce
+unsigned-to-signed warnings on the wider integers, wrap with
+`std::streamoff(...)` to keep the conversion explicit and silent.
+
+A follow-up commit drops the loader-v2 truncation and the
+"exceeds 4 GiB" warning so installers above the legacy limit are
+parsed natively; another follow-up reads the new 64-bit
+block-header `stored_size` for Inno Setup 6.7.0 and later.
+
+Assisted-by: Claude Opus 4.7
+Signed-off-by: Johannes Schindelin <johannes.schindelin@gmx.de>
+---
+ src/cli/debug.cpp      |  2 +-
+ src/cli/extract.cpp    |  6 +++---
+ src/loader/offsets.cpp |  4 ++--
+ src/loader/offsets.hpp | 14 +++++++-------
+ src/stream/chunk.hpp   |  4 ++--
+ src/stream/slice.cpp   | 22 +++++++++++-----------
+ src/stream/slice.hpp   |  8 ++++----
+ 7 files changed, 30 insertions(+), 30 deletions(-)
+
+diff --git a/src/cli/debug.cpp b/src/cli/debug.cpp
+index c4e4cd3..78d1c35 100644
+--- a/src/cli/debug.cpp
++++ b/src/cli/debug.cpp
+@@ -652,7 +652,7 @@ static void dump_headers(std::istream & is, const setup::version & version, cons
+ void dump_headers(std::istream & is, const loader::offsets & offsets, const extract_options & o) {
+ 	
+ 	setup::version version;
+-	is.seekg(offsets.header_offset);
++	is.seekg(std::streamoff(offsets.header_offset));
+ 	version.load(is);
+ 	
+ 	dump_headers(is, version, o, 0);
+diff --git a/src/cli/extract.cpp b/src/cli/extract.cpp
+index 4989311..ccff1bb 100644
+--- a/src/cli/extract.cpp
++++ b/src/cli/extract.cpp
+@@ -946,7 +946,7 @@ void process_file(const fs::path & installer, const extract_options & o) {
+ 	
+ 	if(o.data_version)  {
+ 		setup::version version;
+-		ifs.seekg(offsets.header_offset);
++		ifs.seekg(std::streamoff(offsets.header_offset));
+ 		version.load(ifs);
+ 		if(o.silent) {
+ 			std::cout << version << '\n';
+@@ -985,7 +985,7 @@ void process_file(const fs::path & installer, const extract_options & o) {
+ 	}
+ #endif
+ 	
+-	ifs.seekg(offsets.header_offset);
++	ifs.seekg(std::streamoff(offsets.header_offset));
+ 	setup::info info;
+ 	try {
+ 		info.load(ifs, entries, o.codepage);
+@@ -1100,7 +1100,7 @@ void process_file(const fs::path & installer, const extract_options & o) {
+ 		if(o.test || o.extract) {
+ 			boost::uint64_t offset = info.data_entries[file.entry().location].uncompressed_size;
+ 			boost::uint32_t sort_slice = info.data_entries[file.entry().location].chunk.first_slice;
+-			boost::uint32_t sort_offset = info.data_entries[file.entry().location].chunk.sort_offset;
++			boost::uint64_t sort_offset = info.data_entries[file.entry().location].chunk.sort_offset;
+ 			BOOST_FOREACH(boost::uint32_t location, file.entry().additional_locations) {
+ 				setup::data_entry & data = info.data_entries[location];
+ 				files_for_location[location].push_back(output_location(&file, offset));
+diff --git a/src/loader/offsets.cpp b/src/loader/offsets.cpp
+index 80bcdc4..6285f0c 100644
+--- a/src/loader/offsets.cpp
++++ b/src/loader/offsets.cpp
+@@ -109,9 +109,9 @@ bool offsets::load_from_exe_resource(std::istream & is) {
+ 	return load_offsets_at(is, resource.offset);
+ }
+ 
+-bool offsets::load_offsets_at(std::istream & is, boost::uint32_t pos) {
++bool offsets::load_offsets_at(std::istream & is, boost::uint64_t pos) {
+ 	
+-	if(is.seekg(pos).fail()) {
++	if(is.seekg(std::streamoff(pos)).fail()) {
+ 		is.clear();
+ 		debug("could not seek to loader header");
+ 		return false;
+diff --git a/src/loader/offsets.hpp b/src/loader/offsets.hpp
+index f49bd91..cefefb2 100644
+--- a/src/loader/offsets.hpp
++++ b/src/loader/offsets.hpp
+@@ -60,17 +60,17 @@ struct offsets {
+ 	 *
+ 	 * A value of \c 0 means there is no setup.e32 embedded in this file
+ 	 */
+-	boost::uint32_t exe_offset;
++	boost::uint64_t exe_offset;
+ 	
+ 	/*!
+ 	 * Size of `setup.e32` after compression, in bytes
+ 	 *
+ 	 * A value of \c 0 means the executable size is not known
+ 	 */
+-	boost::uint32_t exe_compressed_size;
++	boost::uint64_t exe_compressed_size;
+ 	
+ 	//! Size of `setup.e32` before compression, in bytes
+-	boost::uint32_t exe_uncompressed_size;
++	boost::uint64_t exe_uncompressed_size;
+ 	
+ 	/*!
+ 	 * Checksum of `setup.e32` before compression
+@@ -80,7 +80,7 @@ struct offsets {
+ 	crypto::checksum exe_checksum;
+ 	
+ 	//! Offset of embedded setup messages
+-	boost::uint32_t message_offset;
++	boost::uint64_t message_offset;
+ 	
+ 	/*!
+ 	 * Offset of embedded `setup-0.bin` data (the setup headers)
+@@ -93,7 +93,7 @@ struct offsets {
+ 	 *
+ 	 * Loading the version and headers is done in \ref setup::info.
+ 	 */
+-	boost::uint32_t header_offset;
++	boost::uint64_t header_offset;
+ 	
+ 	/*!
+ 	 * Offset of embedded `setup-1.bin` data
+@@ -109,7 +109,7 @@ struct offsets {
+ 	 * The layout of the chunks and files is stored in the \ref setup::data_entry headers
+ 	 * while the \ref setup::file_entry headers provide the filenames and meta information.
+ 	 */
+-	boost::uint32_t data_offset;
++	boost::uint64_t data_offset;
+ 	
+ 	/*!
+ 	 * \brief Find the setup loader offsets in a file
+@@ -128,7 +128,7 @@ private:
+ 	
+ 	bool load_from_exe_resource(std::istream & is);
+ 	
+-	bool load_offsets_at(std::istream & is, boost::uint32_t pos);
++	bool load_offsets_at(std::istream & is, boost::uint64_t pos);
+ 	
+ };
+ 
+diff --git a/src/stream/chunk.hpp b/src/stream/chunk.hpp
+index fae3484..16c3ccb 100644
+--- a/src/stream/chunk.hpp
++++ b/src/stream/chunk.hpp
+@@ -81,9 +81,9 @@ struct chunk {
+ 	boost::uint32_t first_slice;    //!< Slice where the chunk starts.
+ 	boost::uint32_t last_slice;     //!< Slice where the chunk ends.
+ 	
+-	boost::uint32_t sort_offset;
++	boost::uint64_t sort_offset;
+ 	
+-	boost::uint32_t offset;         //!< Offset of the compressed chunk in firstSlice.
++	boost::uint64_t offset;         //!< Offset of the compressed chunk in firstSlice.
+ 	boost::uint64_t size;           //! Total compressed size of the chunk.
+ 	
+ 	compression_method compression; //!< Compression method used by the chunk.
+diff --git a/src/stream/slice.cpp b/src/stream/slice.cpp
+index c638f40..6e28db0 100644
+--- a/src/stream/slice.cpp
++++ b/src/stream/slice.cpp
+@@ -50,7 +50,7 @@ const char slice_ids[][8] = {
+ 
+ } // anonymous namespace
+ 
+-slice_reader::slice_reader(std::istream * istream, boost::uint32_t offset)
++slice_reader::slice_reader(std::istream * istream, boost::uint64_t offset)
+ 	: data_offset(offset),
+ 	  slices_per_disk(1), current_slice(0), slice_size(0),
+ 	  is(istream) {
+@@ -59,8 +59,8 @@ slice_reader::slice_reader(std::istream * istream, boost::uint32_t offset)
+ 	
+ 	std::streampos file_size = is->seekg(0, std::ios_base::end).tellg();
+ 	
+-	slice_size = boost::uint32_t(std::min(file_size, max_size));
+-	if(is->seekg(data_offset).fail()) {
++	slice_size = boost::uint64_t(std::min(file_size, max_size));
++	if(is->seekg(std::streamoff(data_offset)).fail()) {
+ 		throw slice_error("could not seek to data");
+ 	}
+ }
+@@ -125,12 +125,12 @@ bool slice_reader::open_file(const path_type & file) {
+ 	if(ifs.fail()) {
+ 		ifs.close();
+ 		throw slice_error("could not read slice size in \"" + file.string() + "\"");
+-	} else if(std::streampos(slice_size) > file_size) {
++	} else if(std::streampos(std::streamoff(slice_size)) > file_size) {
+ 		ifs.close();
+ 		std::ostringstream oss;
+ 		oss << "bad slice size in " << file << ": " << slice_size << " > " << file_size;
+ 		throw slice_error(oss.str());
+-	} else if(std::streampos(slice_size) < ifs.tellg()) {
++	} else if(std::streampos(std::streamoff(slice_size)) < ifs.tellg()) {
+ 		ifs.close();
+ 		std::ostringstream oss;
+ 		oss << "bad slice size in " << file << ": " << slice_size << " < " << ifs.tellg();
+@@ -208,7 +208,7 @@ void slice_reader::open(size_t slice) {
+ 	throw slice_error(oss.str());
+ }
+ 
+-bool slice_reader::seek(size_t slice, boost::uint32_t offset) {
++bool slice_reader::seek(size_t slice, boost::uint64_t offset) {
+ 	
+ 	seek(slice);
+ 	
+@@ -218,7 +218,7 @@ bool slice_reader::seek(size_t slice, boost::uint32_t offset) {
+ 		return false;
+ 	}
+ 	
+-	if(is->seekg(offset).fail()) {
++	if(is->seekg(std::streamoff(offset)).fail()) {
+ 		return false;
+ 	}
+ 	
+@@ -233,21 +233,21 @@ std::streamsize slice_reader::read(char * buffer, std::streamsize bytes) {
+ 	
+ 	while(bytes > 0) {
+ 		
+-		boost::uint32_t read_pos = boost::uint32_t(is->tellg());
++		boost::uint64_t read_pos = boost::uint64_t(is->tellg());
+ 		if(read_pos > slice_size) {
+ 			break;
+ 		}
+-		boost::uint32_t remaining = slice_size - read_pos;
++		boost::uint64_t remaining = slice_size - read_pos;
+ 		if(!remaining) {
+ 			seek(current_slice + 1);
+-			read_pos = boost::uint32_t(is->tellg());
++			read_pos = boost::uint64_t(is->tellg());
+ 			if(read_pos > slice_size) {
+ 				break;
+ 			}
+ 			remaining = slice_size - read_pos;
+ 		}
+ 		
+-		boost::uint64_t toread = std::min(boost::uint64_t(remaining), boost::uint64_t(bytes));
++		boost::uint64_t toread = std::min(remaining, boost::uint64_t(bytes));
+ 		toread = std::min(toread, boost::uint64_t(std::numeric_limits<std::streamsize>::max()));
+ 		if(is->read(buffer, std::streamsize(toread)).fail()) {
+ 			break;
+diff --git a/src/stream/slice.hpp b/src/stream/slice.hpp
+index b2ec52c..d0b3bc0 100644
+--- a/src/stream/slice.hpp
++++ b/src/stream/slice.hpp
+@@ -59,7 +59,7 @@ class slice_reader : public boost::iostreams::source {
+ 	typedef boost::filesystem::path path_type;
+ 	
+ 	// Information for reading embedded setup data
+-	const boost::uint32_t data_offset;
++	const boost::uint64_t data_offset;
+ 	
+ 	// Information for eading external setup data
+ 	path_type    dir;             //!< Slice directory specified at construction.
+@@ -69,7 +69,7 @@ class slice_reader : public boost::iostreams::source {
+ 	
+ 	// Information about the current slice
+ 	size_t          current_slice; //!< Number of the currently opened slice.
+-	boost::uint32_t slice_size;    //!< Size in bytes of the currently opened slice.
++	boost::uint64_t slice_size;    //!< Size in bytes of the currently opened slice.
+ 	
+ 	// Streams
+ 	util::ifstream ifs; //!< File input stream used when reading from external slices.
+@@ -97,7 +97,7 @@ public:
+ 	 * The constructed reader will allow reading the byte range [data_offset, file end)
+ 	 * from the setup executable and provide this as the range [0, file end - data_offset).
+ 	 */
+-	slice_reader(std::istream * istream, boost::uint32_t offset);
++	slice_reader(std::istream * istream, boost::uint64_t offset);
+ 	
+ 	/*!
+ 	 * Construct a \ref slice_reader to read from external data slices (aka disks).
+@@ -126,7 +126,7 @@ public:
+ 	 * \return \c false if the requested slice could not be opened, or if the requested
+ 	 *         offset is not a valid position in that slice - \c true otherwise.
+ 	 */
+-	bool seek(size_t slice, boost::uint32_t offset);
++	bool seek(size_t slice, boost::uint64_t offset);
+ 	
+ 	/*!
+ 	 * Read a number of bytes starting at the current slice and offset within that slice.
+-- 
+2.54.0.windows.1
+

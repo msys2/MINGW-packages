@@ -1,0 +1,121 @@
+From b7388dfd161f8de29085e68fafbc32d0250c8924 Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Tue, 5 May 2026 13:07:43 +0200
+Subject: [PATCH 06/11] loader, block: consume native 64-bit offsets and sizes
+
+Now that loader::offsets, stream::chunk, stream::slice_reader and the
+block-reader local size hold their values in uint64_t, drop the
+truncating uint32_t casts that the previous "loader: support setup
+loader offset table revision 2" commit had to use as a placeholder.
+The loader-revision-2 path stores the full 64-bit OffsetEXE / Offset0
+/ Offset1 directly, and the warning about offsets exceeding 4 GiB is
+gone because there is no longer any truncation happening; only a
+much narrower sanity check for negative values remains, since the
+on-disk fields are signed Int64 in Inno Setup's struct.
+
+stream/block.cpp grows a 6.7.0+ branch in block_reader::get that
+loads stored_size as uint64_t to match the on-disk widening
+introduced in Inno Setup 6.7.0 (TSetupLdrCompressedBlockHeader's
+StoredSize was bumped from LongWord to Int64 in
+Projects/Src/Stream.BlockReader.pas at tag is-6_7_0 in
+https://github.com/jrsoftware/issrc). With the local stored_size
+already widened by the previous refactor, the rest of block_reader
+needs no change: the boost::iostreams::restrict slice still receives
+the value unchanged via std::streamoff, and the per-4 KiB-subblock
+checksum-overhead arithmetic now operates on uint64_t directly so
+the explicit uint32_t cast falls away.
+
+Without this commit we observed `block header CRC32 mismatch` on
+6.7.0 installers because the older code read just 4 bytes of a
+freshly-widened 8-byte StoredSize and then mistook the next 4 bytes
+(actually the upper half of StoredSize) for the compressed flag and
+the trailing CRC, causing the actual_checksum.finalize() check to
+fail. The mismatch is what motivated the type-widening refactor in
+the previous commit.
+
+Assisted-by: Claude Opus 4.7
+Signed-off-by: Johannes Schindelin <johannes.schindelin@gmx.de>
+---
+ src/loader/offsets.cpp | 13 +++++--------
+ src/stream/block.cpp   | 17 +++++++++++++----
+ 2 files changed, 18 insertions(+), 12 deletions(-)
+
+diff --git a/src/loader/offsets.cpp b/src/loader/offsets.cpp
+index 6285f0c..2e30a44 100644
+--- a/src/loader/offsets.cpp
++++ b/src/loader/offsets.cpp
+@@ -172,20 +172,17 @@ bool offsets::load_offsets_at(std::istream & is, boost::uint64_t pos) {
+ 				debug("could not read loader header (revision 2)");
+ 				return false;
+ 			}
+-			boost::int64_t max_uint32 = boost::int64_t(std::numeric_limits<boost::uint32_t>::max());
+-			if(offset_exe < 0 || offset_exe > max_uint32 ||
+-			   offset0    < 0 || offset0    > max_uint32 ||
+-			   offset1    < 0 || offset1    > max_uint32) {
+-				log_warning << "Loader header offsets exceed 4 GiB; truncating to 32-bit";
++			if(offset_exe < 0 || offset0 < 0 || offset1 < 0) {
++				log_warning << "Loader header has negative offset(s)";
+ 			}
+-			exe_offset = boost::uint32_t(offset_exe);
++			exe_offset = boost::uint64_t(offset_exe);
+ 			exe_compressed_size = 0;
+ 			exe_uncompressed_size = uncompressed_exe;
+ 			exe_checksum.type = crypto::CRC32;
+ 			exe_checksum.crc32 = crc_exe;
+ 			message_offset = 0;
+-			header_offset = boost::uint32_t(offset0);
+-			data_offset = boost::uint32_t(offset1);
++			header_offset = boost::uint64_t(offset0);
++			data_offset = boost::uint64_t(offset1);
+ 			boost::uint32_t expected = util::load<boost::uint32_t>(is);
+ 			if(is.fail()) {
+ 				is.clear();
+diff --git a/src/stream/block.cpp b/src/stream/block.cpp
+index 2a90c20..9a7d958 100644
+--- a/src/stream/block.cpp
++++ b/src/stream/block.cpp
+@@ -158,12 +158,21 @@ block_reader::pointer block_reader::get(std::istream & base, const setup::versio
+ 	crypto::crc32 actual_checksum;
+ 	actual_checksum.init();
+ 	
+-	boost::uint32_t stored_size;
++	boost::uint64_t stored_size;
+ 	block_compression compression;
+ 	
+ 	if(version >= INNO_VERSION(4, 0, 9)) {
+ 		
+-		stored_size = actual_checksum.load<boost::uint32_t>(base);
++		if(version >= INNO_VERSION(6, 7, 0)) {
++			// Inno Setup 6.7.0 widened the block-header stored_size field
++			// from 4 to 8 bytes; the on-disk struct is now Int64 instead of
++			// LongWord, allowing data blocks larger than 4 GiB. See
++			// Projects/Src/Stream.BlockReader.pas at tag is-6_7_0 in
++			// https://github.com/jrsoftware/issrc.
++			stored_size = actual_checksum.load<boost::uint64_t>(base);
++		} else {
++			stored_size = actual_checksum.load<boost::uint32_t>(base);
++		}
+ 		boost::uint8_t compressed = actual_checksum.load<boost::uint8_t>(base);
+ 		
+ 		compression = compressed ? (version >= INNO_VERSION(4, 1, 6) ? LZMA1 : Zlib) : Stored;
+@@ -180,7 +189,7 @@ block_reader::pointer block_reader::get(std::istream & base, const setup::versio
+ 		}
+ 		
+ 		// Add the size of a CRC32 checksum for each 4KiB subblock.
+-		stored_size += boost::uint32_t(util::ceildiv<boost::uint64_t>(stored_size, 4096) * 4);
++		stored_size += util::ceildiv<boost::uint64_t>(stored_size, 4096) * 4;
+ 	}
+ 	
+ 	if(actual_checksum.finalize() != expected_checksum) {
+@@ -204,7 +213,7 @@ block_reader::pointer block_reader::get(std::istream & base, const setup::versio
+ 	
+ 	fis->push(inno_block_filter(), 4096);
+ 	
+-	fis->push(io::restrict(base, 0, stored_size));
++	fis->push(io::restrict(base, std::streamoff(0), std::streamoff(stored_size)));
+ 	
+ 	fis->exceptions(std::ios_base::badbit | std::ios_base::failbit);
+ 	
+-- 
+2.54.0.windows.1
+

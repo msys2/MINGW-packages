@@ -1,0 +1,246 @@
+From 65c61e140738ffebf45083a10b6a2cb835f130b2 Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Tue, 5 May 2026 01:49:32 +0200
+Subject: [PATCH 04/11] Add support for Inno Setup 6.6.0 and 6.6.1
+
+Inno Setup 6.6.0 made several rearrangements in TSetupHeader's wizard
+section (Projects/Src/Shared.Struct.pas at tag is-6_6_0 in
+https://github.com/jrsoftware/issrc):
+
+  - Removed WizardStyle. The classic/modern toggle was always going to
+    end up as ModernStyle for any installer reaching modern Inno Setup
+    versions, so 6.6.0 dropped the field on disk entirely.
+  - Added WizardDarkStyle: TSetupWizardDarkStyle (light / dark /
+    dynamic), serialised AFTER the WizardSizePercentX/Y pair instead
+    of where WizardStyle used to sit.
+  - Added WizardImageBackColorDynamicDark and
+    WizardSmallImageBackColorDynamicDark, the dark-mode counterparts
+    of the colours added back in 6.5.2.
+
+6.6.1 then added one more field at the same position:
+
+  - WizardImageOpacity: Byte. Defaults to 0xff (fully opaque) for
+    older installers.
+
+In innoextract these changes are not purely additive: the wizard read
+block has to take a 6.6.0+ branch that omits the WizardStyle byte,
+and the new colour and opacity fields land between the old
+WizardImageAlphaFormat and the rest of the wizard scalars. Add a
+stored_dark_style enum mapping (analogous to stored_setup_style),
+declare it as a NAMED_ENUM and provide its NAMES so that
+stored_enum<>::get()'s warning path can reference its name at compile
+time, and add new header fields image_back_color_dynamic_dark,
+small_image_back_color_dynamic_dark and wizard_image_opacity.
+
+TSetupHeaderOption itself was reshuffled at the same time. The
+shWizardResizable bit was removed (the new modern wizard is always
+resizable, so the flag became redundant) and four new wizard-styling
+bits were appended at the same position: shWizardModern,
+shWizardBorderStyled, shWizardKeepAspectRatio and
+shWizardLightButtonsUnstyled. Mirror this in header::flags by adding
+the four new enum values, gating the existing WizardResizable add to
+``< 6.6.0`` and adding the four new flags for ``>= 6.6.0`` so that
+the on-disk bit positions stay aligned. Provide NAMES strings for the
+new flags. shWizardLightButtonsUnstyled is later dropped again in
+6.7.0; that gate is added in the 6.7.0 patch so that this commit
+remains self-contained for installers compiled with 6.6.0 or 6.6.1.
+
+Add the SetupID magic strings 'Inno Setup Setup Data (6.6.0)' and
+'Inno Setup Setup Data (6.6.1)'. (Each 6.6.x point release carries a
+distinct magic, unlike 6.5.0/.1 and 6.5.2/.3/.4.)
+
+Assisted-by: Claude Opus 4.7
+Signed-off-by: Johannes Schindelin <johannes.schindelin@gmx.de>
+---
+ src/setup/header.cpp  | 68 ++++++++++++++++++++++++++++++++++++++++++-
+ src/setup/header.hpp  | 14 +++++++++
+ src/setup/version.cpp |  2 ++
+ 3 files changed, 83 insertions(+), 1 deletion(-)
+
+diff --git a/src/setup/header.cpp b/src/setup/header.cpp
+index 65c6603..87b30b2 100644
+--- a/src/setup/header.cpp
++++ b/src/setup/header.cpp
+@@ -56,6 +56,12 @@ STORED_ENUM_MAP(stored_setup_style, header::ClassicStyle,
+ 	header::ModernStyle
+ );
+ 
++STORED_ENUM_MAP(stored_dark_style, header::LightStyle,
++	header::LightStyle,
++	header::DarkStyle,
++	header::DynamicStyle
++);
++
+ STORED_ENUM_MAP(stored_bool_auto_no_yes, header::Auto,
+ 	header::Auto,
+ 	header::No,
+@@ -379,14 +385,25 @@ void header::load(std::istream & is, const version & version) {
+ 		small_image_back_color = 0;
+ 	}
+ 	
+-	if(version >= INNO_VERSION(6, 0, 0)) {
++	if(version >= INNO_VERSION(6, 6, 0)) {
++		// Inno Setup 6.6.0 removed WizardStyle (the classic/modern toggle is
++		// gone) and added WizardDarkStyle (light/dark/dynamic) in its place,
++		// after the WizardSizePercentX/Y pair instead of before it. See
++		// TSetupHeader in Projects/Src/Shared.Struct.pas at tag is-6_6_0.
++		wizard_style = ModernStyle;
++		wizard_resize_percent_x = util::load<boost::uint32_t>(is);
++		wizard_resize_percent_y = util::load<boost::uint32_t>(is);
++		wizard_dark_style = stored_enum<stored_dark_style>(is).get();
++	} else if(version >= INNO_VERSION(6, 0, 0)) {
+ 		wizard_style = stored_enum<stored_setup_style>(is).get();
+ 		wizard_resize_percent_x = util::load<boost::uint32_t>(is);
+ 		wizard_resize_percent_y = util::load<boost::uint32_t>(is);
++		wizard_dark_style = LightStyle;
+ 	} else {
+ 		wizard_style = ClassicStyle;
+ 		wizard_resize_percent_x = 0;
+ 		wizard_resize_percent_y = 0;
++		wizard_dark_style = LightStyle;
+ 	}
+ 	
+ 	if(version >= INNO_VERSION(5, 5, 7)) {
+@@ -395,6 +412,30 @@ void header::load(std::istream & is, const version & version) {
+ 		image_alpha_format = AlphaIgnored;
+ 	}
+ 	
++	if(version >= INNO_VERSION(6, 5, 2)) {
++		// Inno Setup 6.5.2 re-introduced WizardImageBackColor and
++		// WizardSmallImageBackColor as serialised header fields after
++		// WizardImageAlphaFormat; before 5.5.7 they sat much earlier
++		// in the struct (handled above).
++		image_back_color = util::load<boost::uint32_t>(is);
++		small_image_back_color = util::load<boost::uint32_t>(is);
++	}
++	if(version >= INNO_VERSION(6, 6, 0)) {
++		// 6.6.0 added the DynamicDark variants.
++		image_back_color_dynamic_dark = util::load<boost::uint32_t>(is);
++		small_image_back_color_dynamic_dark = util::load<boost::uint32_t>(is);
++	} else {
++		image_back_color_dynamic_dark = 0;
++		small_image_back_color_dynamic_dark = 0;
++	}
++	if(version >= INNO_VERSION(6, 6, 1)) {
++		// 6.6.1 added WizardImageOpacity (Byte). Default for older versions
++		// is fully opaque.
++		wizard_image_opacity = util::load<boost::uint8_t>(is);
++	} else {
++		wizard_image_opacity = 0xff;
++	}
++	
+ 	if(version >= INNO_VERSION(6, 4, 0)) {
+ 		is.read(password.sha256, 4);
+ 		password.type = crypto::PBKDF2_SHA256_XChaCha20;
+@@ -742,11 +783,26 @@ header::flags header::load_flags(std::istream & is, const version & version) {
+ 	if(version >= INNO_VERSION(6, 0, 0)) {
+ 		flagreader.add(AppNameHasConsts);
+ 		flagreader.add(UsePreviousPrivileges);
++	}
++	if(version >= INNO_VERSION(6, 0, 0) && version < INNO_VERSION(6, 6, 0)) {
++		// Inno Setup 6.6.0 dropped shWizardResizable from
++		// TSetupHeaderOption (the wizard is unconditionally resizable in
++		// the new modern style; the four flags appended at the same
++		// position in the enum take its slot).
+ 		flagreader.add(WizardResizable);
+ 	}
+ 	if(version >= INNO_VERSION(6, 3, 0)) {
+ 		flagreader.add(UninstallLogging);
+ 	}
++	if(version >= INNO_VERSION(6, 6, 0)) {
++		// Inno Setup 6.6.0 added four new wizard-styling flags after
++		// shUninstallLogging. WizardLightButtonsUnstyled is later
++		// dropped again in 6.7.0 (handled in the 6.7.0 patch).
++		flagreader.add(WizardModern);
++		flagreader.add(WizardBorderStyled);
++		flagreader.add(WizardKeepAspectRatio);
++		flagreader.add(WizardLightButtonsUnstyled);
++	}
+ 	
+ 	return flagreader.finalize();
+ }
+@@ -843,6 +899,10 @@ NAMES(setup::header::flags, "Setup Option",
+ 	"use_previous_privileges",
+ 	"wizard_resizable",
+ 	"uninstall_logging",
++	"wizard modern",
++	"wizard border styled",
++	"wizard keep aspect ratio",
++	"wizard light buttons unstyled",
+ 	"uninstallable",
+ 	"disable dir page",
+ 	"disable program group page",
+@@ -895,6 +955,12 @@ NAMES(setup::header::style, "Style",
+ 	"modern",
+ )
+ 
++NAMES(setup::header::dark_style, "Dark Style",
++	"light",
++	"dark",
++	"dynamic",
++)
++
+ NAMES(setup::header::auto_bool, "Auto Boolean",
+ 	"auto",
+ 	"no",
+diff --git a/src/setup/header.hpp b/src/setup/header.hpp
+index fa47892..77fa651 100644
+--- a/src/setup/header.hpp
++++ b/src/setup/header.hpp
+@@ -102,6 +102,10 @@ struct header {
+ 		UsePreviousPrivileges,
+ 		WizardResizable,
+ 		UninstallLogging,
++		WizardModern,
++		WizardBorderStyled,
++		WizardKeepAspectRatio,
++		WizardLightButtonsUnstyled,
+ 		
+ 		// Obsolete flags
+ 		Uninstallable,
+@@ -201,12 +205,21 @@ struct header {
+ 	Color back_color2;
+ 	Color image_back_color;
+ 	Color small_image_back_color;
++	Color image_back_color_dynamic_dark;
++	Color small_image_back_color_dynamic_dark;
++	boost::uint8_t wizard_image_opacity;
+ 	
+ 	enum style {
+ 		ClassicStyle,
+ 		ModernStyle
+ 	};
+ 	style wizard_style;
++	enum dark_style {
++		LightStyle,
++		DarkStyle,
++		DynamicStyle
++	};
++	dark_style wizard_dark_style;
+ 	boost::uint32_t wizard_resize_percent_x;
+ 	boost::uint32_t wizard_resize_percent_y;
+ 	
+@@ -300,6 +313,7 @@ NAMED_ENUM(setup::header::alpha_format)
+ NAMED_ENUM(setup::header::install_verbosity)
+ NAMED_ENUM(setup::header::log_mode)
+ NAMED_ENUM(setup::header::style)
++NAMED_ENUM(setup::header::dark_style)
+ NAMED_ENUM(setup::header::auto_bool)
+ NAMED_ENUM(setup::header::privilege_level)
+ NAMED_ENUM(setup::header::language_detection_method)
+diff --git a/src/setup/version.cpp b/src/setup/version.cpp
+index 2911396..4aadc56 100644
+--- a/src/setup/version.cpp
++++ b/src/setup/version.cpp
+@@ -190,6 +190,8 @@ const known_version versions[] = {
+ 	{ "Inno Setup Setup Data (6.4.3)",                      INNO_VERSION_EXT(6, 4,  3, 0), version::Unicode },
+ 	{ "Inno Setup Setup Data (6.5.0)",                      INNO_VERSION_EXT(6, 5,  0, 0), version::Unicode },
+ 	{ "Inno Setup Setup Data (6.5.2)",                      INNO_VERSION_EXT(6, 5,  2, 0), version::Unicode },
++	{ "Inno Setup Setup Data (6.6.0)",                      INNO_VERSION_EXT(6, 6,  0, 0), version::Unicode },
++	{ "Inno Setup Setup Data (6.6.1)",                      INNO_VERSION_EXT(6, 6,  1, 0), version::Unicode },
+ };
+ 
+ } // anonymous namespace
+-- 
+2.54.0.windows.1
+
