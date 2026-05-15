@@ -1,0 +1,146 @@
+# Maintainer: Alexey Pavlov <alexpux@gmail.com>
+# Contributor: Ignacio Casal Quinteiro <icq@gnome.org>
+# Contributor: Renato Silva <br.renatosilva@gmail.com>
+# Contributor: Ray Donnelly <mingw.android@gmail.com>
+
+# Disable this for bootstrapping
+_enable_gir=yes
+
+_realname=glib2
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=2.88.1
+pkgrel=1
+url="https://gitlab.gnome.org/GNOME/glib"
+msys2_repository_url='https://gitlab.gnome.org/GNOME/glib'
+msys2_references=(
+  "cpe: cpe:/a:gnome:glib"
+)
+arch=('any')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
+pkgdesc="Common C routines used by GTK+ 3 and other libs (mingw-w64)"
+license=('spdx:LGPL-2.1-or-later')
+depends=("${MINGW_PACKAGE_PREFIX}-gettext-runtime"
+         "${MINGW_PACKAGE_PREFIX}-libffi"
+         "${MINGW_PACKAGE_PREFIX}-pcre2"
+         "${MINGW_PACKAGE_PREFIX}-python"
+         "${MINGW_PACKAGE_PREFIX}-python-packaging"
+         "${MINGW_PACKAGE_PREFIX}-zlib")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-meson"
+             "${MINGW_PACKAGE_PREFIX}-gettext-tools"
+             $([[ "$_enable_gir" == "yes" ]] && echo "${MINGW_PACKAGE_PREFIX}-gobject-introspection")
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-python-setuptools"
+             "${MINGW_PACKAGE_PREFIX}-python-docutils")
+source=("https://download.gnome.org/sources/glib/${pkgver%.*}/glib-${pkgver}.tar.xz"
+        https://gitlab.gnome.org/GNOME/glib/-/commit/7e69f88480a4bf8d9653efd0310c4c25390a0c8b.patch
+        0002-disable_glib_compile_schemas_warning.patch
+        0004-disable-explicit-ms-bitfields.patch
+        glib-compile-schemas.hook.in
+        gio-querymodules.hook.in
+        pyscript2exe.py)
+noextract=("glib-${pkgver}.tar.xz")
+sha256sums=('51ab804c56f6eab3e5045c774d1290ac5e4c923d4f9a3d8e33123bee45c1840e'
+            '4902e5748c6954ed38f690f27954db96709e705ff83bbdb4ebf7392a21f65824'
+            '396c25cfd740ffbb72209133c7b9453173167577265a4bb14502678de8d5a8f9'
+            '48e94a9e61f8db9a2dc66556f12c725efe5e247a9ddc5b491f8cb8310a387293'
+            '0c3d54636407e0e13429b73959cace626253cd772e1d4870de0fb92b0b99545a'
+            'f18d27d98709dba8c5f9756672baaf0158fb4353c9edbdc2e80021f88ff34ced'
+            '3c65bc3dd7337877e14b19bc7c42918bde664a11a860cfc0b9db891f8a1052db')
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Np1 -i "${srcdir}/${_patch}"
+  done
+}
+
+
+prepare() {
+  tar -xf "glib-${pkgver}.tar.xz" || true
+  cd "${srcdir}/glib-${pkgver}"
+
+  apply_patch_with_msg \
+    7e69f88480a4bf8d9653efd0310c4c25390a0c8b.patch \
+    0002-disable_glib_compile_schemas_warning.patch \
+    0004-disable-explicit-ms-bitfields.patch
+}
+
+build() {
+  msg "Build static version"
+  mkdir "${srcdir}"/build-${MSYSTEM}-static && cd "${srcdir}"/build-${MSYSTEM}-static
+
+  declare -a extra_config
+  if check_option "debug" "n"; then
+    extra_config+=("--buildtype=release")
+  else
+    extra_config+=("--buildtype=debug")
+  fi
+
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+  ${MINGW_PREFIX}/bin/meson.exe setup \
+    -Dlibelf=disabled \
+    --prefix="${MINGW_PREFIX}" \
+    "${extra_config[@]}" \
+    --wrap-mode=nodownload \
+    --auto-features=enabled \
+    --default-library=static \
+    -Dintrospection=disabled \
+    -Ddtrace=disabled \
+    -Dsystemtap=disabled \
+    -Dsysprof=disabled \
+    -Dglib_debug=disabled \
+    "../glib-${pkgver}"
+
+  ${MINGW_PREFIX}/bin/meson.exe compile
+
+  msg "Build shared version"
+  mkdir "${srcdir}"/build-${MSYSTEM}-shared && cd "${srcdir}"/build-${MSYSTEM}-shared
+
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+  ${MINGW_PREFIX}/bin/meson.exe setup \
+    -Dlibelf=disabled \
+    --prefix="${MINGW_PREFIX}" \
+    "${extra_config[@]}" \
+    --wrap-mode=nodownload \
+    --auto-features=enabled \
+    -Ddefault_library=shared \
+    -Ddtrace=disabled \
+    -Dsystemtap=disabled \
+    -Dsysprof=disabled \
+    -Dglib_debug=disabled \
+    $([[ "$_enable_gir" == "yes" ]] || echo "-Dintrospection=disabled") \
+    "../glib-${pkgver}"
+
+  ${MINGW_PREFIX}/bin/meson.exe compile
+}
+
+package() {
+  cd "${srcdir}/build-${MSYSTEM}-static"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/meson.exe install
+
+  cd "${srcdir}/build-${MSYSTEM}-shared"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/meson.exe install
+
+  for hook in glib-compile-schemas gio-querymodules; do
+    local hook_path="${srcdir}/${MINGW_PACKAGE_PREFIX}-${hook}.hook";
+    cp "${srcdir}/${hook}.hook.in" "${hook_path}"
+    sed -s "s|@MINGW_HOOK_TARGET_PREFIX@|${MINGW_PREFIX:1}|g" -i "${hook_path}"
+    sed -s "s|@MINGW_PREFIX@|${MINGW_PREFIX}|g" -i "${hook_path}"
+    install -Dt "$pkgdir/usr/share/libalpm/hooks" -m644 "${hook_path}"
+  done
+
+  install -Dm644 "${srcdir}/glib-${pkgver}/LICENSES/LGPL-2.1-or-later.txt" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING"
+
+  for name in glib-mkenums glib-genmarshal gdbus-codegen gtester-report; do
+    ${MINGW_PREFIX}/bin/python3 \
+      "${srcdir}/pyscript2exe.py" "${pkgdir}${MINGW_PREFIX}/bin/${name}"
+
+        # https://github.com/mesonbuild/meson/issues/12271#issuecomment-1741381750
+        for pcfile in  "${pkgdir}${MINGW_PREFIX}"/lib/pkgconfig/*.pc; do
+          sed -s "s|/${name}\$|/${name}.exe|g" -i "${pcfile}"
+        done
+  done
+}

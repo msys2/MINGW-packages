@@ -1,0 +1,799 @@
+--- a/src/Image/Image_VideoRecorder.cxx
++++ b/src/Image/Image_VideoRecorder.cxx
+@@ -13,18 +13,13 @@
+ // Alternatively, this file may be used under the terms of Open CASCADE
+ // commercial license or contractual agreement.
+ 
+-// activate some C99 macros like UINT64_C in "stdint.h" which used by FFmpeg
+-#ifndef __STDC_CONSTANT_MACROS
+-  #define __STDC_CONSTANT_MACROS
+-#endif
+-
+ #include <Image_VideoRecorder.hxx>
++#include "../Media/Media_FFmpegCompatibility.pxx"
+ 
+ #include <Message.hxx>
+ #include <Message_Messenger.hxx>
+ 
+ #ifdef HAVE_FFMPEG
+-
+   // Suppress deprecation warnings - it is difficult to provide compatibility with old and new API
+   // at once since new APIs are introduced too often. Should be disabled from time to time to clean
+   // up usage of old APIs.
+@@ -34,22 +29,6 @@ _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+ Standard_DISABLE_DEPRECATION_WARNINGS
+   #endif
+ 
+-  extern "C" {
+-  #ifdef _MSC_VER
+-    // suppress some common warnings in FFmpeg headers
+-    #pragma warning(disable : 4244)
+-  #endif
+-
+-  #include <libavcodec/avcodec.h>
+-  #include <libavformat/avformat.h>
+-  #include <libswscale/swscale.h>
+-  #include <libavutil/imgutils.h>
+-
+-  #ifdef _MSC_VER
+-    #pragma warning(default : 4244)
+-  #endif
+-  };
+-
+   // Undefine macro that clashes with name used by field of Image_VideoParams;
+   // this macro is defined in headers of older versions of libavutil
+   // (see definition of macro FF_API_PIX_FMT in version.h)
+@@ -59,14 +38,15 @@ Standard_DISABLE_DEPRECATION_WARNINGS
+ 
+ #endif
+ 
+-IMPLEMENT_STANDARD_RTTIEXT(Image_VideoRecorder, Standard_Transient)
++  IMPLEMENT_STANDARD_RTTIEXT(Image_VideoRecorder, Standard_Transient)
+ 
+-//=================================================================================================
++  //=================================================================================================
+ 
+-Image_VideoRecorder::Image_VideoRecorder()
++  Image_VideoRecorder::Image_VideoRecorder()
+     : myAVContext(NULL),
+       myVideoStream(NULL),
+       myVideoCodec(NULL),
++      myCodecCtx(NULL),
+       myFrame(NULL),
+       myScaleCtx(NULL),
+       myFrameCount(0)
+@@ -76,7 +56,7 @@ Image_VideoRecorder::Image_VideoRecorder()
+ 
+ #ifdef HAVE_FFMPEG
+   // initialize libavcodec, and register all codecs and formats, should be done once
+-  av_register_all();
++  ffmpeg_register_all();
+ #endif
+ }
+ 
+@@ -102,6 +82,21 @@ TCollection_AsciiString Image_VideoRecorder::formatAvError(const int theError) c
+ 
+ //=================================================================================================
+ 
++AVCodecContext* Image_VideoRecorder::getCodecContext() const
++{
++#ifdef HAVE_FFMPEG
++  #if FFMPEG_HAVE_AVCODEC_PARAMETERS
++  return myCodecCtx;
++  #else
++  return myVideoStream != NULL ? myVideoStream->codec : NULL;
++  #endif
++#else
++  return NULL;
++#endif
++}
++
++//=================================================================================================
++
+ void Image_VideoRecorder::Close()
+ {
+ #ifdef HAVE_FFMPEG
+@@ -129,7 +124,15 @@ void Image_VideoRecorder::Close()
+   // close each codec
+   if (myVideoStream != NULL)
+   {
++  #if FFMPEG_HAVE_AVCODEC_PARAMETERS
++    if (myCodecCtx != NULL)
++    {
++      avcodec_free_context(&myCodecCtx);
++      myCodecCtx = NULL;
++    }
++  #else
+     avcodec_close(myVideoStream->codec);
++  #endif
+     myVideoStream = NULL;
+   }
+   if (myFrame != NULL)
+@@ -235,12 +238,12 @@ Standard_Boolean Image_VideoRecorder::addVideoStream(const Image_VideoParams& th
+   TCollection_AsciiString aCodecName;
+   if (!theParams.VideoCodec.IsEmpty())
+   {
+-    myVideoCodec = avcodec_find_encoder_by_name(theParams.VideoCodec.ToCString());
++    myVideoCodec = ffmpeg_find_encoder_by_name(theParams.VideoCodec.ToCString());
+     aCodecName   = theParams.VideoCodec;
+   }
+   else
+   {
+-    myVideoCodec = avcodec_find_encoder((AVCodecID)theDefCodecId);
++    myVideoCodec = ffmpeg_find_encoder((AVCodecID)theDefCodecId);
+     aCodecName   = avcodec_get_name((AVCodecID)theDefCodecId);
+   }
+   if (myVideoCodec == NULL)
+@@ -258,8 +261,21 @@ Standard_Boolean Image_VideoRecorder::addVideoStream(const Image_VideoParams& th
+   }
+   myVideoStream->id = myAVContext->nb_streams - 1;
+ 
++  #if FFMPEG_HAVE_AVCODEC_PARAMETERS
++  // For FFmpeg 5.0+, allocate and use separate codec context
++  myCodecCtx = avcodec_alloc_context3(myVideoCodec);
++  if (myCodecCtx == NULL)
++  {
++    ::Message::SendFail("Error: can not allocate codec context");
++    return Standard_False;
++  }
++  AVCodecContext* aCodecCtx = myCodecCtx;
++  #else
++  // For FFmpeg 4.x, use stream's codec context
+   AVCodecContext* aCodecCtx = myVideoStream->codec;
+-  aCodecCtx->codec_id       = aCodecId;
++  #endif
++
++  aCodecCtx->codec_id = aCodecId;
+   // resolution must be a multiple of two
+   aCodecCtx->width  = theParams.Width;
+   aCodecCtx->height = theParams.Height;
+@@ -275,6 +291,15 @@ Standard_Boolean Image_VideoRecorder::addVideoStream(const Image_VideoParams& th
+   {
+     aCodecCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+   }
++
++  #if FFMPEG_HAVE_AVCODEC_PARAMETERS
++  // Copy codec context parameters to stream
++  if (avcodec_parameters_from_context(myVideoStream->codecpar, aCodecCtx) < 0)
++  {
++    ::Message::SendFail("Error: can not copy codec parameters to stream");
++    return Standard_False;
++  }
++  #endif
+   return Standard_True;
+ #else
+   (void)theParams;
+@@ -289,37 +314,43 @@ Standard_Boolean Image_VideoRecorder::openVideoCodec(const Image_VideoParams& th
+ {
+ #ifdef HAVE_FFMPEG
+   AVDictionary*   anOptions = NULL;
+-  AVCodecContext* aCodecCtx = myVideoStream->codec;
++  AVCodecContext* aCodecCtx = getCodecContext();
++
++  if (aCodecCtx == NULL)
++  {
++    ::Message::SendFail("Error: codec context is not available");
++    return Standard_False;
++  }
+ 
+   // setup default values
+   aCodecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
+   // av_dict_set (&anOptions, "threads", "auto", 0);
+-  if (aCodecCtx->codec == avcodec_find_encoder_by_name("mpeg2video"))
++  if (myVideoCodec == ffmpeg_find_encoder_by_name("mpeg2video"))
+   {
+     // just for testing, we also add B frames
+     aCodecCtx->max_b_frames = 2;
+     aCodecCtx->bit_rate     = 6000000;
+   }
+-  else if (aCodecCtx->codec == avcodec_find_encoder_by_name("mpeg4"))
++  else if (myVideoCodec == ffmpeg_find_encoder_by_name("mpeg4"))
+   {
+     //
+   }
+-  else if (aCodecCtx->codec == avcodec_find_encoder_by_name("mjpeg"))
++  else if (myVideoCodec == ffmpeg_find_encoder_by_name("mjpeg"))
+   {
+     aCodecCtx->pix_fmt = AV_PIX_FMT_YUVJ420P;
+     aCodecCtx->qmin = aCodecCtx->qmax = 5;
+   }
+-  else if (aCodecCtx->codec == avcodec_find_encoder_by_name("huffyuv"))
++  else if (myVideoCodec == ffmpeg_find_encoder_by_name("huffyuv"))
+   {
+     aCodecCtx->pix_fmt = AV_PIX_FMT_RGB24;
+   }
+-  else if (aCodecCtx->codec == avcodec_find_encoder_by_name("png"))
++  else if (myVideoCodec == ffmpeg_find_encoder_by_name("png"))
+   {
+     aCodecCtx->pix_fmt           = AV_PIX_FMT_RGB24;
+     aCodecCtx->compression_level = 9; // 0..9
+   }
+-  else if (aCodecCtx->codec == avcodec_find_encoder_by_name("h264")
+-           || aCodecCtx->codec == avcodec_find_encoder_by_name("libx264"))
++  else if (myVideoCodec == ffmpeg_find_encoder_by_name("h264")
++           || myVideoCodec == ffmpeg_find_encoder_by_name("libx264"))
+   {
+     // use CRF (Constant Rate Factor) as best single-pass compressing method
+     // clang-format off
+@@ -335,8 +366,8 @@ Standard_Boolean Image_VideoRecorder::openVideoCodec(const Image_VideoParams& th
+     // av_dict_set (&anOptions, "profile", "baseline",  0);
+     // av_dict_set (&anOptions, "level",   "3.0",       0);
+   }
+-  else if (aCodecCtx->codec == avcodec_find_encoder_by_name("vp8")
+-           || aCodecCtx->codec == avcodec_find_encoder_by_name("vp9"))
++  else if (myVideoCodec == ffmpeg_find_encoder_by_name("vp8")
++           || myVideoCodec == ffmpeg_find_encoder_by_name("vp9"))
+   {
+     av_dict_set(&anOptions, "crf", "20", 0); // quality 4-63, 10 is normal
+   }
+@@ -445,7 +476,7 @@ Standard_Boolean Image_VideoRecorder::writeVideoFrame(const Standard_Boolean the
+   }
+ 
+   int             aResAv    = 0;
+-  AVCodecContext* aCodecCtx = myVideoStream->codec;
++  AVCodecContext* aCodecCtx = getCodecContext();
+   if (!theToFlush)
+   {
+     uint8_t* aSrcData[4]     = {(uint8_t*)myImgSrcRgba.ChangeData(), NULL, NULL, NULL};
+@@ -459,12 +490,77 @@ Standard_Boolean Image_VideoRecorder::writeVideoFrame(const Standard_Boolean the
+               myFrame->linesize);
+   }
+ 
++  #if FFMPEG_HAVE_NEW_DECODE_API
++  // New API: use avcodec_send_frame/avcodec_receive_packet
++  if (!theToFlush)
++  {
++    myFrame->pts = myFrameCount;
++    aResAv       = avcodec_send_frame(aCodecCtx, myFrame);
++  }
++  else
++  {
++    aResAv = avcodec_send_frame(aCodecCtx, NULL); // flush
++  }
++
++  if (aResAv < 0)
++  {
++    ::Message::SendFail(TCollection_AsciiString("Error: can not send frame to encoder, ")
++                        + formatAvError(aResAv));
++    return Standard_False;
++  }
++
++  while (aResAv >= 0)
++  {
++    AVPacket* aPacket = av_packet_alloc();
++    aResAv            = avcodec_receive_packet(aCodecCtx, aPacket);
++    if (aResAv == AVERROR(EAGAIN) || aResAv == AVERROR_EOF)
++    {
++      av_packet_free(&aPacket);
++      break; // need more input or end of stream
++    }
++    else if (aResAv < 0)
++    {
++      av_packet_free(&aPacket);
++      ::Message::SendFail(TCollection_AsciiString("Error: can not encode video frame, ")
++                          + formatAvError(aResAv));
++      return Standard_False;
++    }
++
++    // rescale output packet timestamp values from codec to stream timebase
++    aPacket->pts = av_rescale_q_rnd(aPacket->pts,
++                                    aCodecCtx->time_base,
++                                    myVideoStream->time_base,
++                                    AVRounding(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
++    aPacket->dts = av_rescale_q_rnd(aPacket->dts,
++                                    aCodecCtx->time_base,
++                                    myVideoStream->time_base,
++                                    AVRounding(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
++    aPacket->duration =
++      av_rescale_q(aPacket->duration, aCodecCtx->time_base, myVideoStream->time_base);
++    aPacket->stream_index = myVideoStream->index;
++
++    // write the compressed frame to the media file
++    aResAv = av_interleaved_write_frame(myAVContext, aPacket);
++    av_packet_free(&aPacket);
++
++    if (aResAv < 0)
++    {
++      ::Message::SendFail(TCollection_AsciiString("Error: can not write video frame, ")
++                          + formatAvError(aResAv));
++      return Standard_False;
++    }
++  }
++  #else
++  // Old API: use avcodec_encode_video2
+   AVPacket aPacket;
+   memset(&aPacket, 0, sizeof(aPacket));
+   av_init_packet(&aPacket);
+   {
+     // encode the image
+-    myFrame->pts    = myFrameCount;
++    if (!theToFlush)
++    {
++      myFrame->pts = myFrameCount;
++    }
+     int isGotPacket = 0;
+     aResAv = avcodec_encode_video2(aCodecCtx, &aPacket, theToFlush ? NULL : myFrame, &isGotPacket);
+     if (aResAv < 0)
+@@ -506,6 +602,7 @@ Standard_Boolean Image_VideoRecorder::writeVideoFrame(const Standard_Boolean the
+                         + formatAvError(aResAv));
+     return Standard_False;
+   }
++  #endif
+ 
+   ++myFrameCount;
+   return Standard_True;
+--- a/src/Image/Image_VideoRecorder.hxx
++++ b/src/Image/Image_VideoRecorder.hxx
+@@ -23,6 +23,7 @@
+ 
+ // forward declarations
+ struct AVFormatContext;
++struct AVCodecContext;
+ struct AVStream;
+ struct AVCodec;
+ struct AVFrame;
+@@ -111,6 +112,9 @@ protected:
+   //! Wrapper for av_strerror().
+   Standard_EXPORT TCollection_AsciiString formatAvError(const int theError) const;
+ 
++  //! Get codec context compatible with both old and new FFmpeg API.
++  Standard_EXPORT AVCodecContext* getCodecContext() const;
++
+   //! Append video stream.
+   //! theParams[in]      video parameters
+   //! theDefCodecId[in]  identifier of codec managed by FFmpeg library (AVCodecID enum)
+@@ -135,6 +139,7 @@ protected:
+   AVFormatContext* myAVContext;   //!< video context
+   AVStream*        myVideoStream; //!< video stream
+   AVCodec*         myVideoCodec;  //!< video codec
++  AVCodecContext*  myCodecCtx;    //!< codec context (for FFmpeg 5.0+)
+   AVFrame*         myFrame;       //!< frame to record
+   SwsContext*      myScaleCtx;    //!< scale context for conversion from RGBA to YUV
+ 
+--- a/src/Media/FILES
++++ b/src/Media/FILES
+@@ -2,6 +2,7 @@
+ Media_BufferPool.hxx
+ Media_CodecContext.cxx
+ Media_CodecContext.hxx
++Media_FFmpegCompatibility.pxx
+ Media_FormatContext.cxx
+ Media_FormatContext.hxx
+ Media_Frame.cxx
+--- a/src/Media/Media_CodecContext.cxx
++++ b/src/Media/Media_CodecContext.cxx
+@@ -18,6 +18,7 @@
+ #endif
+ 
+ #include <Media_CodecContext.hxx>
++#include "../Media/Media_FFmpegCompatibility.pxx"
+ 
+ #include <Media_Frame.hxx>
+ #include <Media_FormatContext.hxx>
+@@ -26,15 +27,6 @@
+ #include <Message_Messenger.hxx>
+ #include <OSD_Parallel.hxx>
+ 
+-#ifdef HAVE_FFMPEG
+-  #include <Standard_WarningsDisable.hxx>
+-extern "C"
+-{
+-  #include <libavformat/avformat.h>
+-};
+-  #include <Standard_WarningsRestore.hxx>
+-#endif
+-
+ IMPLEMENT_STANDARD_RTTIEXT(Media_CodecContext, Standard_Transient)
+ 
+ //=================================================================================================
+@@ -80,20 +72,35 @@ bool Media_CodecContext::Init(const AVStream& theStream,
+ {
+ #ifdef HAVE_FFMPEG
+   myStreamIndex = theStream.index;
++  #if FFMPEG_HAVE_AVCODEC_PARAMETERS
+   if (avcodec_parameters_to_context(myCodecCtx, theStream.codecpar) < 0)
+   {
+     Message::SendFail("Internal error: unable to copy codec parameters");
+     Close();
+     return false;
+   }
++  #else
++  // For older FFmpeg, copy from stream's codec context
++  if (avcodec_copy_context(myCodecCtx, theStream.codec) < 0)
++  {
++    Message::SendFail("Internal error: unable to copy codec context");
++    Close();
++    return false;
++  }
++  #endif
+ 
+   myTimeBase       = av_q2d(theStream.time_base);
+   myPtsStartBase   = thePtsStartBase;
+   myPtsStartStream = Media_FormatContext::StreamUnitsToSeconds(theStream, theStream.start_time);
+ 
++  #if FFMPEG_HAVE_AVCODEC_PARAMETERS
+   const AVCodecID aCodecId =
+     theCodecId != AV_CODEC_ID_NONE ? (AVCodecID)theCodecId : theStream.codecpar->codec_id;
+-  myCodec = avcodec_find_decoder(aCodecId);
++  #else
++  const AVCodecID aCodecId = theCodecId != 0 ? (AVCodecID)theCodecId : theStream.codec->codec_id;
++  #endif
++
++  myCodec = ffmpeg_find_decoder(aCodecId);
+   if (myCodec == NULL)
+   {
+     Message::Send("FFmpeg: unable to find decoder", Message_Fail);
+@@ -104,7 +111,12 @@ bool Media_CodecContext::Init(const AVStream& theStream,
+   myCodecCtx->codec_id = aCodecId;
+   AVDictionary* anOpts = NULL;
+   av_dict_set(&anOpts, "refcounted_frames", "1", 0);
++
++  #if FFMPEG_HAVE_AVCODEC_PARAMETERS
+   if (theStream.codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
++  #else
++  if (theStream.codec->codec_type == AVMEDIA_TYPE_VIDEO)
++  #endif
+   {
+     myCodecCtx->thread_count =
+       theNbThreads <= -1 ? OSD_Parallel::NbLogicalProcessors() : theNbThreads;
+@@ -119,7 +131,7 @@ bool Media_CodecContext::Init(const AVStream& theStream,
+ 
+   myPixelAspectRatio = 1.0f;
+   if (theStream.sample_aspect_ratio.num
+-      && av_cmp_q(theStream.sample_aspect_ratio, myCodecCtx->sample_aspect_ratio))
++      && av_cmp_q(theStream.sample_aspect_ratio, myCodecCtx->sample_aspect_ratio) != 0)
+   {
+     myPixelAspectRatio =
+       float(theStream.sample_aspect_ratio.num) / float(theStream.sample_aspect_ratio.den);
+@@ -137,8 +149,13 @@ bool Media_CodecContext::Init(const AVStream& theStream,
+     }
+   }
+ 
++  #if FFMPEG_HAVE_AVCODEC_PARAMETERS
+   if (theStream.codecpar->codec_type == AVMEDIA_TYPE_VIDEO
+       && (myCodecCtx->width <= 0 || myCodecCtx->height <= 0))
++  #else
++  if (theStream.codec->codec_type == AVMEDIA_TYPE_VIDEO
++      && (myCodecCtx->width <= 0 || myCodecCtx->height <= 0))
++  #endif
+   {
+     Message::SendFail("FFmpeg: video stream has invalid dimensions");
+     Close();
+@@ -162,7 +179,13 @@ void Media_CodecContext::Close()
+   if (myCodecCtx != NULL)
+   {
+ #ifdef HAVE_FFMPEG
++  #if FFMPEG_NEW_API
+     avcodec_free_context(&myCodecCtx);
++  #else
++    avcodec_close(myCodecCtx);
++    av_free(myCodecCtx);
++    myCodecCtx = NULL;
++  #endif
+ #endif
+   }
+ }
+@@ -218,12 +241,22 @@ bool Media_CodecContext::SendPacket(const Handle(Media_Packet)& thePacket)
+   }
+ 
+ #ifdef HAVE_FFMPEG
++  #if FFMPEG_HAVE_NEW_DECODE_API
++  const int aRes = avcodec_send_packet(myCodecCtx, thePacket->Packet());
++  if (aRes < 0 && aRes != AVERROR_EOF)
++  {
++    return false;
++  }
++  return true;
++  #else
++  // For older FFmpeg versions, fallback to older decode API if needed
+   const int aRes = avcodec_send_packet(myCodecCtx, thePacket->Packet());
+   if (aRes < 0 && aRes != AVERROR_EOF)
+   {
+     return false;
+   }
+   return true;
++  #endif
+ #else
+   return false;
+ #endif
+@@ -239,6 +272,20 @@ bool Media_CodecContext::ReceiveFrame(const Handle(Media_Frame)& theFrame)
+   }
+ 
+ #ifdef HAVE_FFMPEG
++  #if FFMPEG_HAVE_NEW_DECODE_API
++  const int aRes2 = avcodec_receive_frame(myCodecCtx, theFrame->ChangeFrame());
++  if (aRes2 < 0)
++  {
++    return false;
++  }
++
++  const int64_t aPacketPts =
++    theFrame->BestEffortTimestamp() != AV_NOPTS_VALUE ? theFrame->BestEffortTimestamp() : 0;
++  const double aFramePts = double(aPacketPts) * myTimeBase - myPtsStartBase;
++  theFrame->SetPts(aFramePts);
++  return true;
++  #else
++  // For older FFmpeg, use the older decoding API
+   const int aRes2 = avcodec_receive_frame(myCodecCtx, theFrame->ChangeFrame());
+   if (aRes2 < 0)
+   {
+@@ -250,6 +297,7 @@ bool Media_CodecContext::ReceiveFrame(const Handle(Media_Frame)& theFrame)
+   const double aFramePts = double(aPacketPts) * myTimeBase - myPtsStartBase;
+   theFrame->SetPts(aFramePts);
+   return true;
++  #endif
+ #else
+   return false;
+ #endif
+--- /dev/null
++++ b/src/Media/Media_FFmpegCompatibility.pxx
+@@ -0,0 +1,179 @@
++// Created on: 2025-06-22
++// Copyright (c) 2025 OPEN CASCADE SAS
++//
++// This file is part of Open CASCADE Technology software library.
++//
++// This library is free software; you can redistribute it and/or modify it under
++// the terms of the GNU Lesser General Public License version 2.1 as published
++// by the Free Software Foundation, with special exception defined in the file
++// OCCT_LGPL_EXCEPTION.txt. Consult the file LICENSE_LGPL_21.txt included in OCCT
++// distribution for complete text of the license and disclaimer of any warranty.
++//
++// Alternatively, this file may be used under the terms of Open CASCADE
++// commercial license or contractual agreement.
++
++//! FFmpeg compatibility layer for OCCT
++//!
++//! Provides compatibility between FFmpeg 4.4.x and 7.1.x by wrapping
++//! deprecated/removed functions and handling API changes automatically.
++
++#ifndef _FFmpeg_Compatibility_HeaderFile
++#define _FFmpeg_Compatibility_HeaderFile
++
++#ifdef HAVE_FFMPEG
++
++  // activate some C99 macros like UINT64_C in "stdint.h" which used by FFmpeg
++  #ifndef __STDC_CONSTANT_MACROS
++    #define __STDC_CONSTANT_MACROS
++  #endif
++
++  // Standard C headers needed for compilation
++  #include <stdint.h>
++
++  #include <Standard_WarningsDisable.hxx>
++extern "C"
++{
++  #include <libavcodec/avcodec.h>
++  #include <libavformat/avformat.h>
++  #include <libavutil/imgutils.h>
++  #include <libswscale/swscale.h>
++};
++  #include <Standard_WarningsRestore.hxx>
++
++  // Version detection macros
++  #define FFMPEG_VERSION_4_4 AV_VERSION_INT(58, 0, 0)
++  #define FFMPEG_VERSION_5_0 AV_VERSION_INT(59, 0, 0)
++  #define FFMPEG_VERSION_6_0 AV_VERSION_INT(60, 0, 0)
++  #define FFMPEG_VERSION_7_0 AV_VERSION_INT(61, 0, 0)
++
++  // Check if we're using FFmpeg 5.0+ (major API change point)
++  #if LIBAVCODEC_VERSION_INT >= FFMPEG_VERSION_5_0
++    #define FFMPEG_NEW_API 1
++  #else
++    #define FFMPEG_NEW_API 0
++  #endif
++
++  // Additional version checks for specific functions
++  #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 37, 100)
++    #define FFMPEG_HAVE_NEW_DECODE_API 1
++  #else
++    #define FFMPEG_HAVE_NEW_DECODE_API 0
++  #endif
++
++  #if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(58, 0, 0)
++    #define FFMPEG_HAVE_AVCODEC_PARAMETERS 1
++  #else
++    #define FFMPEG_HAVE_AVCODEC_PARAMETERS 0
++  #endif
++
++  // Constant compatibility for different FFmpeg versions
++
++  // Error buffer size might be different
++  #ifndef AV_ERROR_MAX_STRING_SIZE
++    #define AV_ERROR_MAX_STRING_SIZE 64
++  #endif
++
++  // Codec flags compatibility
++  #ifndef AV_CODEC_FLAG_GLOBAL_HEADER
++    #define AV_CODEC_FLAG_GLOBAL_HEADER CODEC_FLAG_GLOBAL_HEADER
++  #endif
++
++  // Pixel format compatibility - old names to new names
++  #ifndef AV_PIX_FMT_YUV420P
++    #define AV_PIX_FMT_YUV420P PIX_FMT_YUV420P
++  #endif
++  #ifndef AV_PIX_FMT_RGBA
++    #define AV_PIX_FMT_RGBA PIX_FMT_RGBA
++  #endif
++  #ifndef AV_PIX_FMT_RGB24
++    #define AV_PIX_FMT_RGB24 PIX_FMT_RGB24
++  #endif
++  #ifndef AV_PIX_FMT_NONE
++    #define AV_PIX_FMT_NONE PIX_FMT_NONE
++  #endif
++  #ifndef AV_PIX_FMT_YUVJ420P
++    #define AV_PIX_FMT_YUVJ420P PIX_FMT_YUVJ420P
++  #endif
++
++  // For old FFmpeg versions that don't have AV_PIX_FMT_* constants
++  #ifndef PIX_FMT_YUV420P
++    #define PIX_FMT_YUV420P AV_PIX_FMT_YUV420P
++  #endif
++  #ifndef PIX_FMT_RGBA
++    #define PIX_FMT_RGBA AV_PIX_FMT_RGBA
++  #endif
++  #ifndef PIX_FMT_RGB24
++    #define PIX_FMT_RGB24 AV_PIX_FMT_RGB24
++  #endif
++  #ifndef PIX_FMT_NONE
++    #define PIX_FMT_NONE AV_PIX_FMT_NONE
++  #endif
++  #ifndef PIX_FMT_YUVJ420P
++    #define PIX_FMT_YUVJ420P AV_PIX_FMT_YUVJ420P
++  #endif
++
++  // AVRounding compatibility - handle missing AV_ prefix
++  #ifndef AV_ROUND_NEAR_INF
++    #ifdef AVROUND_NEAR_INF
++      #define AV_ROUND_NEAR_INF AVROUND_NEAR_INF
++    #else
++      #define AV_ROUND_NEAR_INF 5
++    #endif
++  #endif
++  #ifndef AV_ROUND_PASS_MINMAX
++    #ifdef AVROUND_PASS_MINMAX
++      #define AV_ROUND_PASS_MINMAX AVROUND_PASS_MINMAX
++    #else
++      #define AV_ROUND_PASS_MINMAX 8192
++    #endif
++  #endif
++
++  // Also define the old names for compatibility
++  #ifndef AVROUND_NEAR_INF
++    #define AVROUND_NEAR_INF AV_ROUND_NEAR_INF
++  #endif
++  #ifndef AVROUND_PASS_MINMAX
++    #define AVROUND_PASS_MINMAX AV_ROUND_PASS_MINMAX
++  #endif
++
++// Compatibility functions and macros
++
++// av_register_all() - deprecated/removed in FFmpeg 4.0+
++inline void ffmpeg_register_all()
++{
++  #if !FFMPEG_NEW_API
++  av_register_all();
++  #endif
++}
++
++// AVCodec constness changes
++inline AVCodec* ffmpeg_find_encoder(enum AVCodecID id)
++{
++  #if FFMPEG_NEW_API
++  return const_cast<AVCodec*>(avcodec_find_encoder(id));
++  #else
++  return avcodec_find_encoder(id);
++  #endif
++}
++
++inline AVCodec* ffmpeg_find_encoder_by_name(const char* name)
++{
++  #if FFMPEG_NEW_API
++  return const_cast<AVCodec*>(avcodec_find_encoder_by_name(name));
++  #else
++  return avcodec_find_encoder_by_name(name);
++  #endif
++}
++
++inline AVCodec* ffmpeg_find_decoder(enum AVCodecID id)
++{
++  #if FFMPEG_NEW_API
++  return const_cast<AVCodec*>(avcodec_find_decoder(id));
++  #else
++  return avcodec_find_decoder(id);
++  #endif
++}
++
++#endif // HAVE_FFMPEG
++
++#endif // _FFmpeg_Compatibility_HeaderFile
+--- a/src/Media/Media_FormatContext.cxx
++++ b/src/Media/Media_FormatContext.cxx
+@@ -18,19 +18,11 @@
+ #endif
+ 
+ #include <Media_FormatContext.hxx>
++#include "../Media/Media_FFmpegCompatibility.pxx"
+ 
+ #include <Message.hxx>
+ #include <Message_Messenger.hxx>
+ 
+-#ifdef HAVE_FFMPEG
+-  #include <Standard_WarningsDisable.hxx>
+-extern "C"
+-{
+-  #include <libavformat/avformat.h>
+-};
+-  #include <Standard_WarningsRestore.hxx>
+-#endif
+-
+ IMPLEMENT_STANDARD_RTTIEXT(Media_FormatContext, Standard_Transient)
+ 
+ namespace
+@@ -374,16 +366,53 @@ TCollection_AsciiString Media_FormatContext::StreamInfo(unsigned int    theIndex
+   AVCodecContext* aCodecCtx = theCodecCtx;
+   if (aCodecCtx == NULL)
+   {
++  #if FFMPEG_HAVE_AVCODEC_PARAMETERS
++    // For new API, need to allocate context and copy parameters
++    aCodecCtx = avcodec_alloc_context3(NULL);
++    if (aCodecCtx != NULL && avcodec_parameters_to_context(aCodecCtx, aStream.codecpar) < 0)
++    {
++      avcodec_free_context(&aCodecCtx);
++      aCodecCtx = NULL;
++    }
++  #else
+     Standard_DISABLE_DEPRECATION_WARNINGS aCodecCtx = aStream.codec;
+     Standard_ENABLE_DEPRECATION_WARNINGS
++  #endif
+   }
+ 
+   char aFrmtBuff[4096] = {};
++  #if FFMPEG_NEW_API
++  // avcodec_string was removed in newer FFmpeg versions
++  if (aCodecCtx != NULL)
++  {
++    Sprintf(aFrmtBuff,
++            "Stream #%d: %s",
++            theIndex,
++            aCodecCtx->codec ? aCodecCtx->codec->long_name : "Unknown");
++  }
++  else
++  {
++    Sprintf(aFrmtBuff, "Stream #%d: Unknown", theIndex);
++  }
++  #else
+   avcodec_string(aFrmtBuff, sizeof(aFrmtBuff), aCodecCtx, 0);
++  #endif
+   TCollection_AsciiString aStreamInfo(aFrmtBuff);
+ 
++  #if FFMPEG_HAVE_AVCODEC_PARAMETERS
++  // Clean up allocated context if we created it
++  if (theCodecCtx == NULL && aCodecCtx != NULL)
++  {
++    avcodec_free_context(&aCodecCtx);
++  }
++  #endif
++
+   if (aStream.sample_aspect_ratio.num
+-      && av_cmp_q(aStream.sample_aspect_ratio, aStream.codecpar->sample_aspect_ratio))
++  #if FFMPEG_HAVE_AVCODEC_PARAMETERS
++      && av_cmp_q(aStream.sample_aspect_ratio, aStream.codecpar->sample_aspect_ratio) != 0)
++  #else
++      && av_cmp_q(aStream.sample_aspect_ratio, aStream.codec->sample_aspect_ratio) != 0)
++  #endif
+   {
+     AVRational aDispAspectRatio;
+     av_reduce(&aDispAspectRatio.num,
+@@ -468,7 +497,11 @@ bool Media_FormatContext::SeekStream(unsigned int theStreamId,
+   // try 10 more times in backward direction to work-around huge duration between key frames
+   // will not work for some streams with undefined cur_dts (AV_NOPTS_VALUE)!!!
+   for (int aTries = 10;
++  #if FFMPEG_NEW_API
++       isSeekDone && theToSeekBack && aTries > 0; // cur_dts removed in newer FFmpeg
++  #else
+        isSeekDone && theToSeekBack && aTries > 0 && (aStream.cur_dts > aSeekTarget);
++  #endif
+        --aTries)
+   {
+     aSeekTarget -= StreamSecondsToUnits(aStream, 1.0);

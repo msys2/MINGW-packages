@@ -1,0 +1,155 @@
+name: main
+
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master'}}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          [
+            { msystem: UCRT64, runner: windows-2022 },
+            { msystem: CLANG64, runner: windows-2022 },
+            { msystem: MINGW64, runner: windows-2022 },
+            { msystem: MINGW32, runner: windows-2022 },
+            { msystem: CLANGARM64, runner: windows-11-arm },
+          ]
+    name: ${{ matrix.msystem }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Gather Facts
+        id: facts
+        run: |
+          Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize -Wrap
+          Get-CIMInstance -Class Win32_Processor | Select-Object -Property Name
+          Get-CIMInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum | Format-Table @{n="TotalPhysicalMemory";e={$_.Sum}}
+          $BUILD_DRIVE = Split-Path $env:GITHUB_WORKSPACE -Qualifier
+          echo "drive=$BUILD_DRIVE" >> $env:GITHUB_OUTPUT
+
+      - name: Configure Pagefile
+        if: ${{ matrix.msystem != 'CLANGARM64' }}
+        # https://github.com/al-cheb/configure-pagefile-action/issues/16
+        continue-on-error: true
+        uses: al-cheb/configure-pagefile-action@9b6da52fb72a3c6147c1aad2df22d8d905681adc # v1.5
+        with:
+          minimum-size: 4GB
+          maximum-size: 16GB
+          # Needs to be C:, see https://github.com/al-cheb/configure-pagefile-action/issues/18
+          disk-root: "C:"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: temp
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      - uses: msys2/setup-msys2@e9898307ac31d1a803454791be09ab9973336e1c # v2.31.1
+        with:
+          msystem: ${{ matrix.msystem }}
+          install: git python base-devel
+          update: true
+          location: '${{ steps.facts.outputs.drive }}\M'
+
+      - name: Add staging repo
+        shell: msys2 {0}
+        run: |
+          cp /etc/pacman.conf /etc/pacman.conf.bak
+          grep -qFx '[staging]' /etc/pacman.conf || sed -i '/^# \[staging\]/,/^$/ s|^# ||g' /etc/pacman.conf
+
+      - name: Update using staging
+        run: |
+          msys2 -c 'pacman --noconfirm -Suuy'
+          msys2 -c 'pacman --noconfirm -Suu'
+
+      - name: Move Checkout
+        run: |
+          $path = "${{ steps.facts.outputs.drive }}\_"
+          If (Test-Path "$path") { rm -r -fo "$path" }
+          Move-Item -Path ".\temp" -Destination "$path"
+
+      - name: CI-Build
+        shell: msys2 {0}
+        id: build
+        run: |
+          cd "$(cygpath '${{ steps.facts.outputs.drive }}/_')"
+          MINGW_ARCH=${{ matrix.msystem }} ./.ci/ci-build.sh
+
+      - name: "Upload binaries"
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.msystem }}-packages
+          path: ${{ steps.facts.outputs.drive }}/_/artifacts/*.pkg.tar.*
+          if-no-files-found: ignore
+
+  check:
+    needs: [build]
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          name: UCRT64-packages
+          path: ${{ runner.temp }}/artifacts
+      - name: Check whether to Run
+        id: check-run
+        run: |
+          python .ci/ci-check.py --whether-to-run "${{ runner.temp }}/artifacts"
+      - uses: msys2/setup-msys2@e9898307ac31d1a803454791be09ab9973336e1c # v2.31.1
+        if: steps.check-run.outputs.run == 'true'
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-python-pip mingw-w64-ucrt-x86_64-python-pacdb
+      - name: Add staging repo
+        if: steps.check-run.outputs.run == 'true'
+        shell: msys2 {0}
+        run: |
+          sed -i '1s|^|[staging]\nServer = https://repo.msys2.org/staging/\nSigLevel = Never\n|' /etc/pacman.conf
+      - name: Update using staging
+        if: steps.check-run.outputs.run == 'true'
+        run: |
+          msys2 -c 'pacman --noconfirm -Suuy'
+          msys2 -c 'pacman --noconfirm -Suu'
+      - name: Run Checks
+        if: steps.check-run.outputs.run == 'true'
+        shell: msys2 {0}
+        run: |
+          python .ci/ci-check.py "${{ runner.temp }}/artifacts"
+
+  package-grokker:
+    runs-on: ubuntu-latest
+    needs: build
+    name: package-grokker-${{ matrix.msystem }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - msystem: UCRT64
+            repo: ucrt64
+          - msystem: CLANG64
+            repo: clang64
+
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        id: artifacts
+        continue-on-error: true
+        with:
+          name: ${{ matrix.msystem }}-packages
+          path: artifacts
+      - name: Grok packages
+        uses: msys2/package-grokker/grok-artifacts@a976a49de6f306122b7b603d1212782a900fa8fd # v0.1.0
+        if: steps.artifacts.outcome == 'success'
+        with:
+          repo: ${{ matrix.repo }}
+          path: artifacts

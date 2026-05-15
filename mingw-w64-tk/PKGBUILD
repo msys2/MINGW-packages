@@ -1,0 +1,114 @@
+# Maintainer: Alexey Pavlov <alexpux@gmail.com>
+# Contributor: Ray Donnelly <mingw.android@gmail.com>
+
+_realname=tk
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+_basever=8.6.17
+_patch=
+pkgver=${_basever}${_patch}
+pkgrel=2
+pkgdesc="A windowing toolkit for use with tcl (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url="https://tcl-lang.org/"
+license=("custom")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc" "${MINGW_PACKAGE_PREFIX}-autotools")
+depends=("${MINGW_PACKAGE_PREFIX}-tcl>=${_basever}")
+options=() # '!strip' 'debug')
+source=("https://downloads.sourceforge.net/sourceforge/tcl/${_realname}${pkgver}-src.tar.gz"
+        004-install-man.mingw.patch
+        005-install-pkgconf.mingw.patch
+        avoid-segmentation-fault.patch)
+sha256sums=('e4982df6f969c08bf9dd858a6891059b4a3f50dc6c87c10abadbbe2fc4838946'
+            'e6e843eff45b2cd2e371bb732209a0d65dcb23ddcd51bc1d2e372efc071a6c37'
+            'b968a0fdeacb01f920759fa7e04628a2b08a22b5db4ae9022dfae153e0a3d36a'
+            '8a16bd2c11eb3595f1356da9fd876e4b5c4e6eb77c32c7e58ccf6b0d6b2fd6eb')
+
+_apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -p1 -i "${srcdir}/${_patch}"
+  done
+}
+
+prepare() {
+  cd "${srcdir}/${_realname}${_basever}"
+  _apply_patch_with_msg \
+    004-install-man.mingw.patch \
+    005-install-pkgconf.mingw.patch \
+    avoid-segmentation-fault.patch
+
+  # Using the static libgcc library is problematic when sharing
+  # resources across dynamic link libraries, so we must use
+  # libgcc*.dll everywhere:
+  echo "Removing -static-libgcc from configure files"
+  find "${srcdir}/${_realname}${_basever}" -type f \( -name "tcl.m4" -o -name "configure*" \) -print0 | xargs -0 sed -i 's/-static-libgcc//g'
+
+  cd win && autoreconf -fi
+}
+
+build() {
+   local extra_config=
+  if check_option "debug" "y"; then
+    extra_config="--enable-symbols"
+  fi
+  local enable64bit=
+  [[ "${MINGW_CHOST}" = 'x86_64-w64-mingw32' ]] && enable64bit='--enable-64bit'
+  [[ "${MINGW_CHOST}" = 'aarch64-w64-mingw32' ]] && enable64bit='--enable-64bit=arm64'
+
+  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}/build-${MSYSTEM}"
+
+  "${srcdir}"/tk${_basever}/win/configure \
+    --prefix=${MINGW_PREFIX} \
+    --build=${MINGW_CHOST} \
+    --host=${MINGW_CHOST} \
+    --target=${MINGW_CHOST} \
+    --with-tcl=${MINGW_PREFIX}/lib \
+    ${extra_config} \
+    ${enable64bit}
+
+  make
+}
+
+package() {
+  local debug_suffix=
+  if check_option "debug" "y"; then
+    debug_suffix="g"
+  fi
+  cd "${srcdir}/build-${MSYSTEM}"
+  make install INSTALL_ROOT="${pkgdir}"
+  cp "${pkgdir}${MINGW_PREFIX}/bin/wish86${debug_suffix}.exe" "${pkgdir}${MINGW_PREFIX}/bin/wish.exe"
+  find "${pkgdir}${MINGW_PREFIX}" -name '*.def' -o -name '*.exp' | xargs -rtl1 rm
+  find "${pkgdir}${MINGW_PREFIX}" -name '*.sh' -o -name '*.dll' -o -name '*.exe' | xargs -rtl1 chmod 755
+
+  ln -s "${pkgdir}${MINGW_PREFIX}/lib/libtk86${debug_suffix}.dll.a" "${pkgdir}${MINGW_PREFIX}/lib/libtk.dll.a"
+  mkdir -p "${pkgdir}${MINGW_PREFIX}/include/tk${_basever%.*}/tk-private/"{generic/ttk,win}
+
+  cd "${srcdir}"/tk${_basever}
+  find generic win -name "*.h" -exec cp -p '{}' "${pkgdir}${MINGW_PREFIX}"/include/tk${_basever%.*}/tk-private/'{}' ';'
+  ( cd "${pkgdir}${MINGW_PREFIX}/include"
+    for header in *.h ; do
+      cp -f ${header} "${pkgdir}"${MINGW_PREFIX}/include/tk${_basever%.*}/tk-private/generic/
+    done
+  )
+  chmod a-x "${pkgdir}${MINGW_PREFIX}/lib/"*/pkgIndex.tcl
+
+  local _libver=${_basever%.*}
+  _libver=${_libver//./}
+  sed -i \
+    -e "s|^\(TK_BUILD_LIB_SPEC\)='.*|\1='-Wl,${MINGW_PREFIX}/lib/libtk${_libver}.dll.a'|" \
+    -e "s|^\(TK_SRC_DIR\)='.*'|\1='${MINGW_PREFIX}/include/tk${_basever%.*}/tk-private'|" \
+    -e "s|^\(TK_BUILD_STUB_LIB_SPEC\)='.*|\1='-Wl,${MINGW_PREFIX}/lib/libtkstub${_libver}.a'|" \
+    -e "s|^\(TK_BUILD_STUB_LIB_PATH\)='.*|\1='${MINGW_PREFIX}/lib/libtkstub${_libver}.a'|" \
+    -e "s|^\(TK_STUB_LIB_SPEC\)='.*|\1='-L${MINGW_PREFIX}/lib -ltkstub${_libver}'|" \
+    "${pkgdir}"${MINGW_PREFIX}/lib/tkConfig.sh
+
+  # Add missing entry to tkConfig.sh
+  echo "# String to pass to the compiler so that an extension can" >> "${pkgdir}"${MINGW_PREFIX}/lib/tkConfig.sh
+  echo "# find installed Tcl headers." >> "${pkgdir}"${MINGW_PREFIX}/lib/tkConfig.sh
+  echo "TK_INCLUDE_SPEC='-I${MINGW_PREFIX}/include/tk${_basever%.*}'" >> "${pkgdir}"${MINGW_PREFIX}/lib/tkConfig.sh
+
+  rm "${pkgdir}${MINGW_PREFIX}/lib/tk${_basever%.*}/tkAppInit.c"
+}

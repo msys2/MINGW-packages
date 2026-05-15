@@ -1,0 +1,158 @@
+# Maintainer: Haroogan <Haroogan@gmail.com>
+# Maintainer: Oscar Fuentes <ofv@wanadoo.es>
+
+_enable_jit=$([[ "${MSYSTEM}" == CLANG* ]] || echo yes)
+_sanity_check=$([[ "${MSYSTEM}" != MINGW* ]] || echo yes)
+
+_realname=emacs
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=30.2
+pkgrel=8
+pkgdesc="The extensible, customizable, self-documenting, real-time display editor (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url="https://www.gnu.org/software/${_realname}/"
+msys2_repository_url="https://cgit.git.savannah.gnu.org/cgit/emacs.git"
+msys2_references=(
+  'archlinux: emacs'
+  "cpe: cpe:/a:gnu:emacs"
+)
+license=('spdx:GPL-3.0-or-later')
+depends=("${MINGW_PACKAGE_PREFIX}-ctags"
+         $([[ "$_enable_jit" == "yes" ]] && echo "${MINGW_PACKAGE_PREFIX}-libgccjit")
+         "${MINGW_PACKAGE_PREFIX}-texinfo" # solves https://github.com/msys2/MINGW-packages/issues/631
+         "${MINGW_PACKAGE_PREFIX}-zlib"
+         "${MINGW_PACKAGE_PREFIX}-xpm-nox"
+         "${MINGW_PACKAGE_PREFIX}-freetype"
+         "${MINGW_PACKAGE_PREFIX}-harfbuzz"
+         "${MINGW_PACKAGE_PREFIX}-jansson"
+         "${MINGW_PACKAGE_PREFIX}-gnutls"
+         "${MINGW_PACKAGE_PREFIX}-libtree-sitter"
+         "${MINGW_PACKAGE_PREFIX}-libwinpthread")
+optdepends=("${MINGW_PACKAGE_PREFIX}-giflib"
+            "${MINGW_PACKAGE_PREFIX}-libjpeg-turbo"
+            "${MINGW_PACKAGE_PREFIX}-libpng"
+            "${MINGW_PACKAGE_PREFIX}-librsvg"
+            "${MINGW_PACKAGE_PREFIX}-libtiff"
+            "${MINGW_PACKAGE_PREFIX}-libxml2")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-autotools"
+             "${optdepends[@]}")
+# Don't zip info files because the built-in info reader uses gzip to
+# decompress them. gzip is not available as a mingw binary.
+options=('!zipman')
+source=("https://ftp.gnu.org/gnu/${_realname}/${_realname}-${pkgver}.tar.xz"{,.sig}
+        "001-ucrt.patch"
+        "002-clang-fixes.patch"
+        "003-aarch64-fixes.patch"
+        "004-dll-versions.patch"
+        "005-lseek.patch"
+        "006-tree-sitter-0.26.patch"
+        "007-all_ts-query-pred.patch"
+        "008-strerror.patch"
+        "emacs-ARM64.manifest")
+# source=("https://alpha.gnu.org/gnu/${_realname}/pretest/${_realname}-${pkgver}.tar.xz"{,.sig})
+sha256sums=('b3f36f18a6dd2715713370166257de2fae01f9d38cfe878ced9b1e6ded5befd9'
+            'SKIP'
+            '8093c4c6dc8006c11fd33a78c5aefcb2b5b1f05e5afb9bd3da7d5b146dfc112c'
+            'd8732584a8f3bfd0badbd16d15384b7098e25c5df48632beb02d35f6050c358b'
+            'd128982d87af1e524ae809147613168153f0e5c1efb0ef633793df47b762c9e1'
+            '1fcba307b278a7794ecca4f09e7ce1a715b4ee255badd3fa376ca1ef1aa7246f'
+            'b91e8a63f6afef93fad119f5b4b5bca132bb7f5564df6f26d085dcfa9e28c64c'
+            '347865464b588212d77851741f2675efa852a9d5ba0d2922e23231ebaa1f2985'
+            'db3ac5fa8b4d652b34626189c3a5afba94f26d8015a40ae3dadf06f873d1fb0f'
+            'a22651194e4e14102f608a90a29ba8ad06319803fb4be1f901f5d902f8849df4'
+            'bfe64602dbeeec85799c1156ca4f3837fdac42a076e83a4221768db3417220e1')
+validpgpkeys=('28D3BED851FDF3AB57FEF93C233587A47C207910'
+              '17E90D521672C04631B1183EE78DAE0F3115E06B'
+              'E6C9029C363AD41D787A8EBB91C1262F01EB8D39'
+              'CEA1DE21AB108493CC9C65742E82323B8F4353EE')
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying $_patch"
+    patch -Np1 -i "${srcdir}/$_patch"
+  done
+}
+
+prepare() {
+  cp "${srcdir}/emacs-ARM64.manifest" "${_realname}-${pkgver}/nt"
+
+  cd "${_realname}-${pkgver}"
+
+  apply_patch_with_msg \
+    001-ucrt.patch \
+    002-clang-fixes.patch \
+    003-aarch64-fixes.patch \
+    004-dll-versions.patch \
+    005-lseek.patch \
+    006-tree-sitter-0.26.patch \
+    007-all_ts-query-pred.patch \
+    008-strerror.patch
+
+  # Fail if 004-dll-versions.patch needs to be updated
+  _dllname_xml=$(dlltool --identify "${MINGW_PREFIX}/lib/libxml2.dll.a")
+  _dllname_tree_sitter=$(dlltool --identify "${MINGW_PREFIX}/lib/libtree-sitter.dll.a")
+  grep -Fq "$_dllname_xml" lisp/term/w32-win.el || { echo "$_dllname_xml not found" >&2; return 1; }
+  grep -Fq "$_dllname_tree_sitter" lisp/term/w32-win.el || { echo "$_dllname_tree_sitter not found" >&2; return 1; }
+
+  ./autogen.sh
+}
+
+build() {
+  mkdir -p "build-${MSYSTEM}" && cd "build-${MSYSTEM}"
+
+  _extra_cfg=""
+  if [[ "$_enable_jit" == "yes" ]] ; then
+      _extra_cfg="$_extra_cfg --with-native-compilation=aot"
+  fi
+
+  # Required for nanosleep with clang
+  export LDFLAGS="${LDFLAGS} -lpthread"
+  # -D_FORTIFY_SOURCE produces a broken emacs. See
+  # https://github.com/msys2/MINGW-packages/issues/17343
+  # https://github.com/msys2/MINGW-packages/issues/24539
+  CFLAGS=${CFLAGS//"-Wp,-D_FORTIFY_SOURCE=2"}
+
+  CFLAGS+=" -Wno-incompatible-pointer-types"
+
+  ../${_realname}-${pkgver}/configure \
+    --prefix="${MINGW_PREFIX}" \
+    --host="${MINGW_CHOST}" \
+    --build="${MINGW_CHOST}" \
+    --with-modules \
+    --without-dbus \
+    --without-compress-install \
+    --with-tree-sitter \
+    $_extra_cfg
+
+  # --without-compress-install is needed because we don't have gzip in
+  # the mingw binaries and it is also required by native compilation.
+
+  # 001-ucrt.patch breaks stdout, causing make sanity-check to fail
+  if [[ "$_sanity_check" == "yes" ]] ; then
+    make
+  else
+    make actual-all
+  fi
+}
+
+package() {
+  cd "build-${MSYSTEM}"
+  make DESTDIR="${pkgdir}" install
+  rm -f "${pkgdir}${MINGW_PREFIX}/bin/ctags.exe"
+  rm -f "${pkgdir}${MINGW_PREFIX}/share/man/man1/ctags.1.gz"
+
+  local dir="${pkgdir}${MINGW_PREFIX}/share/${_realname}"
+        dir="${dir}/$(ls -1 ${dir} | grep -E '([0-9]+\.[0-9]+)(\.[0-9]+)?')/src"
+
+  mkdir -p "${dir}"
+  cd "${srcdir}/${_realname}-${pkgver}/src"
+  cp *.c *.h *.m "${dir}"
+}
+
+# TODO:
+# Patch `shell-file-name' default in the C source code similarly to
+# `source-directory'.

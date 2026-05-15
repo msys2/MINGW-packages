@@ -1,0 +1,122 @@
+# Maintainer: Alexey Pavlov <Alexpux@gmail.com>
+
+_realname=openssl
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+pkgver=3.6.2
+pkgrel=2
+pkgdesc="The Open Source toolkit for Secure Sockets Layer and Transport Layer Security (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw32' 'mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url='https://openssl-library.org'
+msys2_repository_url="https://github.com/openssl/openssl"
+msys2_references=(
+  'archlinux: openssl'
+  "cpe: cpe:/a:openssl:openssl"
+)
+license=("spdx:Apache-2.0")
+optdepends=("${MINGW_PACKAGE_PREFIX}-ca-certificates")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-autotools")
+options=('!buildflags')
+source=("https://github.com/openssl/openssl/releases/download/openssl-${pkgver}/openssl-${pkgver}.tar.gz"{,.asc}
+        '002-relocation.patch'
+        '004-arch-suffix.patch'
+        'pathtools.c'
+        'pathtools.h')
+sha256sums=('aaf51a1fe064384f811daeaeb4ec4dce7340ec8bd893027eee676af31e83a04f'
+            'SKIP'
+            '3e9a8abb6ff5fb7bdb450742fb7bd85513a4abbe85594228620379bcac7c02ef'
+            '6a686ef69c2b196fb1420389ccd0db84582fd288942560d5eba963c11ce8595a'
+            'ebf471173f5ee9c4416c10a78760cea8afaf1a4a6e653977321e8547ce7bf3c0'
+            '1585ef1b61cf53a2ca27049c11d49e0834683dfda798f03547761375df482a90')
+# https://openssl-library.org/source/index.html
+validpgpkeys=(
+  'BA5473A2B0587B07FB27CF2D216094DFD0CB81EF' # openssl@openssl.org
+)
+
+# Helper macros to help make tasks easier #
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying $_patch"
+    patch -Nbp1 -i "${srcdir}/$_patch"
+  done
+}
+# =========================================== #
+
+prepare() {
+  cd "${srcdir}"/${_realname}-${pkgver}
+
+  apply_patch_with_msg \
+     002-relocation.patch \
+     004-arch-suffix.patch
+
+  test ! -d "${startdir}/../mingw-w64-pathtools" || {
+    cmp "${startdir}/../mingw-w64-pathtools/pathtools.c" "${srcdir}/pathtools.c" &&
+    cmp "${startdir}/../mingw-w64-pathtools/pathtools.h" "${srcdir}/pathtools.h"
+  } || exit 1
+
+  cp -fHv "${srcdir}"/pathtools.c crypto/
+  cp -fHv "${srcdir}"/pathtools.h ./
+
+  msg2 "Using sed to force makepkg-mingw CFLAGS instead of hardcoded ones"
+  cd "${srcdir}/${_realname}-${pkgver}/Configurations"
+  sed -i -e "/^[[:space:]]*\"mingw-common\"/,/release/ s/-O3/${CFLAGS}/" 10-main.conf
+  grep -q --fixed-strings -- "${CFLAGS}" 10-main.conf  || { echo "...sed failed"; return 1; }
+}
+
+build() {
+  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
+
+  case "${CARCH}" in
+    i?86)
+      _mingw=mingw
+      ;;
+    x86_64)
+      _mingw=mingw64
+      ;;
+    aarch64)
+      _mingw=mingwarm64
+      ;;
+  esac
+
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+  /usr/bin/perl ../"${_realname}-${pkgver}"/Configure \
+    --prefix="${MINGW_PREFIX}" \
+    --libdir=lib \
+    --openssldir=etc/ssl \
+    ${_mingw} \
+    shared \
+    zlib-dynamic \
+    enable-camellia \
+    enable-capieng \
+    enable-idea \
+    enable-mdc2 \
+    enable-rc5  \
+    enable-rfc3779 \
+    -DOPENSSLBIN=\"\\\"${MINGW_PREFIX}/bin\\\"\"
+
+  MSYS2_ARG_CONV_EXCL="-DENGINESDIR=;-DMODULESDIR=;-DOPENSSLDIR=;-DINSTALLTOP=;-DOPENSSLBIN=" \
+  make
+}
+
+check() {
+  cd "${srcdir}/build-${MSYSTEM}"
+
+  make VERBOSE=1 test
+}
+
+package() {
+  cd "${srcdir}/build-${MSYSTEM}"
+
+  make -j1 install DESTDIR="${pkgdir}"
+
+  # https://github.com/openssl/openssl/issues/24298
+  for pcfile in "${pkgdir}${MINGW_PREFIX}"/lib/pkgconfig/*.pc; do
+    sed -s "s|${MINGW_PREFIX}|\${prefix}|g" -i "${pcfile}"
+    sed -i "1s|^|prefix=${MINGW_PREFIX}\\n|" "${pcfile}"
+  done
+
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE.txt" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+}

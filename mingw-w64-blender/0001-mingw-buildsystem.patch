@@ -1,0 +1,277 @@
+diff -Naur blender-5.1.1/CMakeLists.txt blender-5.1.1-patched/CMakeLists.txt
+--- blender-5.1.1/CMakeLists.txt	2026-03-09 14:35:12.000000000 +0300
++++ blender-5.1.1-patched/CMakeLists.txt	2026-04-27 11:53:03.976612900 +0300
+@@ -442,7 +442,7 @@
+   option(WITH_X11_XFIXES "Enable X11 XWayland cursor warping workaround" ON)
+ endif()
+ 
+-if(UNIX AND NOT APPLE)
++if((UNIX AND NOT APPLE) OR MINGW)
+   option(WITH_SYSTEM_FREETYPE "Use the freetype library provided by the operating system" OFF)
+ else()
+   set(WITH_SYSTEM_FREETYPE OFF)
+@@ -561,7 +561,7 @@
+ option(WITH_FREESTYLE "Enable Freestyle (advanced edges rendering)" ON)
+ 
+ # Libraries.
+-if(UNIX AND NOT APPLE)
++if((UNIX AND NOT APPLE) OR MINGW)
+   # Optionally build without pre-compiled libraries.
+   # NOTE: this could be supported on all platforms however in practice UNIX is the only platform
+   # that has good support for detecting installed libraries.
+@@ -589,7 +589,7 @@
+ option(WITH_INPUT_NDOF "Enable NDOF input devices (SpaceNavigator and friends)" ON)
+ # On Windows and for the Blender application on macOS, portable install
+ # is the only supported installation type, so there is no option.
+-if(UNIX AND (NOT APPLE OR WITH_PYTHON_MODULE))
++if((UNIX AND (NOT APPLE OR WITH_PYTHON_MODULE)) OR MINGW)
+   option(WITH_INSTALL_PORTABLE "\
+ Install redistributable runtime, otherwise install into CMAKE_INSTALL_PREFIX"
+     ON
+@@ -937,7 +937,7 @@
+ 
+ 
+ # Documentation
+-if(UNIX AND NOT APPLE)
++if((UNIX AND NOT APPLE) OR MINGW)
+   option(WITH_DOC_MANPAGE "Create a manual page (Unix manpage)" OFF)
+ endif()
+ 
+@@ -1003,7 +1003,7 @@
+   set(WITH_METAL_BACKEND OFF)
+ endif()
+ 
+-if(WIN32)
++if(MSVC)
+   getDefaultWindowsPrefixBase(CMAKE_GENERIC_PROGRAM_FILES)
+   set(CPACK_INSTALL_PREFIX ${CMAKE_GENERIC_PROGRAM_FILES}/${})
+ endif()
+@@ -1179,7 +1179,7 @@
+   mark_as_advanced(WITH_COMPILER_SHORT_FILE_MACRO)
+ endif()
+ 
+-if(WIN32)
++if(MSVC)
+   # Use hardcoded paths or find_package to find externals
+   option(WITH_WINDOWS_FIND_MODULES "Use find_package to locate libraries" OFF)
+   mark_as_advanced(WITH_WINDOWS_FIND_MODULES)
+@@ -1587,8 +1587,10 @@
+ 
+ if(UNIX AND NOT APPLE)
+   include(platform_unix)
+-elseif(WIN32)
++elseif(MSVC)
+   include(platform_win32)
++elseif(MINGW)
++  include(platform_win32_mingw64)
+ elseif(APPLE)
+   include(platform_apple)
+ endif()
+@@ -1625,7 +1627,7 @@
+ 
+ if(WITH_IMAGE_OPENJPEG)
+   # Special handling of Windows platform where openjpeg is always static.
+-  if(WIN32)
++  if(WIN32 AND WITH_STATIC_LIBS)
+     set(OPENJPEG_DEFINES "-DOPJ_STATIC")
+   else()
+     set(OPENJPEG_DEFINES "")
+@@ -1687,8 +1687,6 @@
+     if(NOT GFLAGS_FOUND)
+       message(FATAL_ERROR "System wide Gflags is requested but was not found")
+     endif()
+-    # `FindGflags` does not define this, and we are not even sure what to use here.
+-    set(GFLAGS_DEFINES "")
+   else()
+     set(GFLAGS_DEFINES
+       -DGFLAGS_DLL_DEFINE_FLAG=
+@@ -1711,12 +1712,14 @@
+   endif()
+ 
+   if(WITH_SYSTEM_GLOG)
+-    find_package(Glog)
++    find_package(Glog CONFIG)
++    set(GLOG_FOUND ${glog_FOUND})
+     if(NOT GLOG_FOUND)
+       message(FATAL_ERROR "System wide Glog is requested but was not found")
+     endif()
+-    # `FindGlog` does not define this, and we are not even sure what to use here.
+-    set(GLOG_DEFINES "")
++    set(GLOG_INCLUDE_DIR ${glog_INCLUDE_DIR})
++    set(GLOG_LIBRARIES ${glog_LIBRARIES})
++    get_target_property(GLOG_DEFINES glog::glog INTERFACE_COMPILE_DEFINITIONS)
+   else()
+     set(GLOG_DEFINES
+       -DGOOGLE_GLOG_DLL_DECL=
+@@ -2597,7 +2599,7 @@
+     )
+   endif()
+ 
+-  if(WIN32)
++  if(MSVC)
+     # Always use numpy bundled in precompiled libs.
+   elseif((WITH_PYTHON_INSTALL AND WITH_PYTHON_INSTALL_NUMPY) OR WITH_PYTHON_NUMPY)
+     if(("${PYTHON_NUMPY_PATH}" STREQUAL "") OR (${PYTHON_NUMPY_PATH} MATCHES NOTFOUND))
+@@ -2607,13 +2609,13 @@
+     endif()
+   endif()
+ 
+-  if(WIN32 OR APPLE)
++  if(MSVC OR APPLE)
+     # Always copy from precompiled libs.
+   elseif(WITH_PYTHON_INSTALL_REQUESTS)
+     find_python_package(requests "")
+   endif()
+ 
+-  if(WIN32 OR APPLE)
++  if(MSVC OR APPLE)
+     # Always copy from precompiled libs.
+   elseif(WITH_PYTHON_INSTALL_ZSTANDARD)
+     find_python_package(zstandard "")
+diff -Naur blender-5.1.1/build_files/cmake/Modules/FindPythonLibsUnix.cmake blender-5.1.1-patched/build_files/cmake/Modules/FindPythonLibsUnix.cmake
+--- blender-5.1.1/build_files/cmake/Modules/FindPythonLibsUnix.cmake	2026-02-07 04:33:42.000000000 +0300
++++ blender-5.1.1-patched/build_files/cmake/Modules/FindPythonLibsUnix.cmake	2026-04-27 11:53:03.980955800 +0300
+@@ -50,7 +50,9 @@
+   endif()
+ else()
+   # See: http://docs.python.org/extending/embedding.html#linking-requirements
+-  set(PYTHON_LINKFLAGS "-Xlinker -export-dynamic" CACHE STRING "Linker flags for python")
++  if(NOT MINGW)
++    set(PYTHON_LINKFLAGS "-Xlinker -export-dynamic" CACHE STRING "Linker flags for python")
++  endif()
+   mark_as_advanced(PYTHON_LINKFLAGS)
+ endif()
+ 
+diff -Naur blender-5.1.1/build_files/cmake/macros.cmake blender-5.1.1-patched/build_files/cmake/macros.cmake
+--- blender-5.1.1/build_files/cmake/macros.cmake	2026-02-07 04:33:42.000000000 +0300
++++ blender-5.1.1-patched/build_files/cmake/macros.cmake	2026-04-27 11:53:03.984307600 +0300
+@@ -1556,7 +1556,7 @@
+ 
+ macro(optimize_debug_target executable)
+   if(WITH_OPTIMIZED_BUILD_TOOLS)
+-    if(WIN32)
++    if(MSVC)
+       remove_cc_flag(${executable} "/Od" "/RTC1")
+       target_compile_options(${executable} PRIVATE "/Ox")
+       target_compile_definitions(${executable} PRIVATE "_ITERATOR_DEBUG_LEVEL=0")
+diff -Naur blender-5.1.1/build_files/cmake/platform/dependency_targets.cmake blender-5.1.1-patched/build_files/cmake/platform/dependency_targets.cmake
+--- blender-5.1.1/build_files/cmake/platform/dependency_targets.cmake	2026-02-07 04:33:42.000000000 +0300
++++ blender-5.1.1-patched/build_files/cmake/platform/dependency_targets.cmake	2026-04-27 11:53:03.995900500 +0300
+@@ -29,7 +29,7 @@
+ add_library(bf_deps_optional_manifold INTERFACE)
+ add_library(bf::dependencies::optional::manifold ALIAS bf_deps_optional_manifold)
+ if(WITH_MANIFOLD)
+-  if(WIN32)
++  if(MSVC)
+     target_compile_definitions(bf_deps_optional_manifold INTERFACE WITH_MANIFOLD)
+     target_include_directories(bf_deps_optional_manifold SYSTEM INTERFACE ${MANIFOLD_INCLUDE_DIRS})
+     target_link_libraries(bf_deps_optional_manifold INTERFACE ${MANIFOLD_LIBRARIES} bf::dependencies::optional::tbb)
+diff -Naur blender-5.1.1/intern/cycles/app/CMakeLists.txt blender-5.1.1-patched/intern/cycles/app/CMakeLists.txt
+--- blender-5.1.1/intern/cycles/app/CMakeLists.txt	2026-02-11 09:18:42.000000000 +0300
++++ blender-5.1.1-patched/intern/cycles/app/CMakeLists.txt	2026-04-27 11:53:03.987805700 +0300
+@@ -65,6 +65,8 @@
+ if(APPLE AND NOT CYCLES_STANDALONE_REPOSITORY)
+   set(app_output_dir Blender.app/Contents/MacOS)
+   set(app_install_dir Blender.app/Contents/MacOS)
++elseif(MINGW)
++  set(app_install_dir ${CMAKE_INSTALL_PREFIX}/bin)
+ else()
+   set(app_install_dir ${CMAKE_INSTALL_PREFIX})
+ endif()
+diff -Naur blender-5.1.1/extern/CMakeLists.txt blender-5.1.1-patched/extern/CMakeLists.txt
+--- blender-5.1.1/extern/CMakeLists.txt	2026-04-28 14:54:17.512119600 +0300
++++ blender-5.1.1-patched/extern/CMakeLists.txt	2026-04-28 14:54:40.396093100 +0300
+@@ -79,7 +79,9 @@
+   if(NOT WITH_SYSTEM_GFLAGS)
+     add_subdirectory(gflags)
+   endif()
+-  add_subdirectory(glog)
++  if(NOT WITH_SYSTEM_GLOG)
++    add_subdirectory(glog)
++  endif()
+ endif()
+ 
+ if(WITH_GTESTS)
+diff -Naur blender-5.1.1/source/blender/blentranslation/msgfmt/CMakeLists.txt blender-5.1.1-patched/source/blender/blentranslation/msgfmt/CMakeLists.txt
+--- blender-5.1.1/source/blender/blentranslation/msgfmt/CMakeLists.txt	2026-02-07 04:33:43.000000000 +0300
++++ blender-5.1.1-patched/source/blender/blentranslation/msgfmt/CMakeLists.txt	2026-04-27 11:53:03.989801800 +0300
+@@ -26,7 +26,9 @@
+ add_cc_flags_custom_test(msgfmt)
+ 
+ if(WIN32)
++  if(MSVC)
+   string(APPEND CMAKE_EXE_LINKER_FLAGS_DEBUG " /nodefaultlib:MSVCRT.lib")
++  endif()
+   list(APPEND LIB bf_intern_utfconv)
+ endif()
+ 
+diff -Naur blender-5.1.1/source/creator/CMakeLists.txt blender-5.1.1-patched/source/creator/CMakeLists.txt
+--- blender-5.1.1/source/creator/CMakeLists.txt	2026-02-07 04:33:44.000000000 +0300
++++ blender-5.1.1-patched/source/creator/CMakeLists.txt	2026-04-27 11:53:03.992834400 +0300
+@@ -383,7 +383,7 @@
+ #
+ # Setup version directory, libraries, `bpy` & text files.
+ 
+-if(UNIX AND NOT APPLE)
++if((UNIX AND NOT APPLE) OR MINGW)
+   if(WITH_PYTHON_MODULE)
+     if(WITH_INSTALL_PORTABLE)
+       set(TARGETDIR_BPY "bpy")
+@@ -556,7 +556,7 @@
+     DESTINATION ${TARGETDIR_VER}/datafiles
+   )
+ endif()
+-if(WIN32)
++if(MSVC)
+   if(EXISTS ${LIBDIR}/osl/lib/python${PYTHON_VERSION}/site-packages/oslquery) # 4.4+
+     install(
+       DIRECTORY ${LIBDIR}/osl/lib/python${PYTHON_VERSION}/site-packages/oslquery
+@@ -728,7 +728,7 @@
+ # -----------------------------------------------------------------------------
+ # Install Targets (Platform Specific)
+ 
+-if(UNIX AND NOT APPLE)
++if((UNIX AND NOT APPLE) OR MINGW)
+ 
+   if(PLATFORM_BUNDLED_LIBRARIES AND TARGETDIR_LIB)
+     install(
+@@ -2080,13 +2080,17 @@
+   install(
+     TARGETS blender blender-launcher
+     COMPONENT Blender
+-    DESTINATION "."
++    RUNTIME DESTINATION bin
++    ARCHIVE DESTINATION lib
++    LIBRARY DESTINATION lib
+   )
+   if(WITH_CPU_CHECK)
+     install(
+       TARGETS blender_cpu_check
+       COMPONENT Blender
+-      DESTINATION "."
++      RUNTIME DESTINATION bin
++      ARCHIVE DESTINATION lib
++      LIBRARY DESTINATION lib
+     )
+   endif()
+   set_target_properties(
+@@ -2108,7 +2112,7 @@
+ # As executing Blender is needed - it's important this operation runs after the shared
+ # libraries have been installed to their destination.
+ 
+-if(UNIX AND NOT APPLE)
++if((UNIX AND NOT APPLE) OR MINGW)
+   if(NOT WITH_PYTHON_MODULE)
+     if(WITH_DOC_MANPAGE)
+       # Only run the command to generate the man-page when it may be outdated.
+diff -Naur blender-5.1.1/build_files/cmake/Modules/FindGflags.cmake blender-5.1.1-patched/build_files/cmake/Modules/FindGflags.cmake
+--- blender-5.1.1/build_files/cmake/Modules/FindGflags.cmake	2026-04-28 18:49:54.256923400 +0300
++++ blender-5.1.1-patched/build_files/cmake/Modules/FindGflags.cmake	2026-04-28 20:34:01.347996000 +0300
+@@ -377,6 +377,7 @@
+     message(STATUS "Detected gflags version: ${gflags_VERSION}")
+     set(GFLAGS_FOUND ${gflags_FOUND})
+     set(GFLAGS_INCLUDE_DIR ${gflags_INCLUDE_DIR})
++    get_target_property(GFLAGS_DEFINES ${GFLAGS_TARGET} INTERFACE_COMPILE_DEFINITIONS)
+     set(GFLAGS_LIBRARY ${gflags_LIBRARIES})
+ 
+     # gflags does not export the namespace in their CMake configuration, so

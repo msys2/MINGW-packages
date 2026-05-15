@@ -1,0 +1,282 @@
+# Maintainer: Maksim Bondarenkov <maksapple2306@gmail.com>
+# Maintainer: Alexey Pavlov <alexpux@gmail.com>
+# Contributor: Zion Nimchuk <zionnimchuk@gmail.com>
+# Contributor: Mateusz Mikuła <mati865@gmail.com
+# Contributor: Philippe Renon <philippe_renon@yahoo.fr>
+
+_bootstrapping=yes
+_pgo=1
+if [[ ${MSYSTEM} != MINGW64 ]]; then
+  _wasm=1
+fi
+
+rust_dist_server=https://static.rust-lang.org/dist
+#rust_dist_server=https://dev-static.rust-lang.org/dist/2026-04-13
+
+_realname=rust
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-rust-src"
+         $((( _wasm )) && echo \
+           "${MINGW_PACKAGE_PREFIX}-rust-wasm" \
+           "${MINGW_PACKAGE_PREFIX}-rust-emscripten"))
+pkgver=1.95.0
+pkgrel=5
+pkgdesc="Systems programming language focused on safety, speed and concurrency (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url="https://www.rust-lang.org/"
+msys2_repository_url="https://github.com/rust-lang/rust"
+msys2_references=(
+  'anitya: 7635'
+  'archlinux: rust'
+  "cpe: cpe:/a:rust-lang:rust"
+  'gentoo: dev-lang/rust'
+)
+license=('spdx:Apache-2.0 AND MIT')
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-clang"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-compiler-rt"
+             "${MINGW_PACKAGE_PREFIX}-curl"
+             "${MINGW_PACKAGE_PREFIX}-libffi"
+             "${MINGW_PACKAGE_PREFIX}-libgit2"
+             "${MINGW_PACKAGE_PREFIX}-libssh2"
+             "${MINGW_PACKAGE_PREFIX}-llvm"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-openssl"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-python"
+             "${MINGW_PACKAGE_PREFIX}-sqlite3"
+             $([[ "$_bootstrapping" == "no" ]] && echo "${MINGW_PACKAGE_PREFIX}-rust")
+             "${MINGW_PACKAGE_PREFIX}-xz"
+             "${MINGW_PACKAGE_PREFIX}-zstd"
+             "${MINGW_PACKAGE_PREFIX}-zlib"
+             $((( _wasm )) && echo \
+               "${MINGW_PACKAGE_PREFIX}-emscripten" \
+               "${MINGW_PACKAGE_PREFIX}-wasi-libc" \
+               "${MINGW_PACKAGE_PREFIX}-wasm-component-ld")
+             $((( _pgo )) && echo "${MINGW_PACKAGE_PREFIX}-lld"))
+source=("${rust_dist_server}/${_realname}c-${pkgver}-src.tar.xz"{,.asc}
+        "bootstrap.toml"
+        "bootstrap-wasm.toml"
+        "0002-bootstrap-Change-bash-completion-dir.patch"
+        "0004-compiler-Use-wasm-ld-for-wasm-targets.patch"
+        "0008-disable-self-contained-for-gnu-targets.patch"
+        "0016-allow-shared-llvm-for-all.patch"
+        # patches in case of doing PGO for LLVM with opt-dist
+        #"0015-lesser-llvm-build.patch"
+)
+noextract=(${_realname}c-${pkgver}-src.tar.xz)
+sha256sums=('62b67230754da642a264ca0cb9fc08820c54e2ed7b3baba0289876d4cdb48c08'
+            'SKIP'
+            '3a6f3b19e5e42e2372b6a231e2fc46d1a8342fd1f8d3bdaf165e508fe229c30c'
+            'a76bb1118bcbb14affd6627fdfeccbf491c2d480a3aa0ec5db6c5938e6758c93'
+            'db5d0dbeaaab5bd22c71ef35d1978960dd7e79cc153e5eeb72a5f635255991de'
+            '56882f1a0f1404c10c7726d6cc37444f2b343e72b969badfcb43760f80db0f32'
+            '767db21e86364eb6777404ba6eee94133b5878ad42fa34afa9aea641ab533759'
+            '691f9dcaeb8a340fd279eea1d54a9077305e0a74a32d8cf020a85e50b1956553')
+validpgpkeys=('108F66205EAEB0AAA8DD5E1C85AB96E6FA1BE5FE'  # Rust Language (Tag and Release Signing Key) <rust-key@rust-lang.org>
+              '474E22316ABF4785A88C6E8EA2C794A986419D8A'  # Tom Stellard <tstellar@redhat.com>
+              'B6C8F98282B944E3B0D5C2530FC3042E345AD05D') # Hans Wennborg <hans@chromium.org>
+
+# =========================================== #
+#   Helper macros to help make tasks easier   #
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+# =========================================== #
+
+# Make sure the duplication in rust-wasm is found
+COMPRESSZST+=(--long)
+
+prepare() {
+  plain "Extracting ${_realname}c-${pkgver}-src.tar.xz"
+  tar -xJf ${_realname}c-${pkgver}-src.tar.xz || true
+
+  cd ${_realname}c-${pkgver}-src
+
+  # 0008-disable-self-contained-for-gnu-targets.patch allows self-contained for non-windows-gnu targets
+  apply_patch_with_msg \
+    0002-bootstrap-Change-bash-completion-dir.patch \
+    0008-disable-self-contained-for-gnu-targets.patch \
+    0004-compiler-Use-wasm-ld-for-wasm-targets.patch \
+    0016-allow-shared-llvm-for-all.patch
+}
+
+build() {
+  cd "${_realname}c-${pkgver}-src"
+
+  # We have to do the following because rust doesn't count x86_64-w64-mingw32 as a target triple
+  if [[ $MINGW_PACKAGE_PREFIX == *-clang-* ]]; then
+    export OSTYPE="$CARCH-pc-windows-gnullvm"
+  else
+    export OSTYPE="$CARCH-pc-windows-gnu"
+  fi
+
+  export RUST_BACKTRACE=1
+  export RUST_LOG=warn
+  # force some system libraries
+  export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+  export LIBSSH2_SYS_USE_PKG_CONFIG=1
+
+  # they're managed by bootstrap.toml
+  unset RUSTFLAGS
+
+  # substitute the values in bootstrap.toml
+  export MSYS2_ENV_CONV_EXCL='INSTALL_PREFIX'
+  export INSTALL_PREFIX="${MINGW_PREFIX}"
+  export PKGREL="${pkgrel}"
+  # use our compiler-rt for host target
+  #export COMPILER_RT_PATH="$(clang -print-resource-dir)/lib/windows/libclang_rt.builtins-${CARCH}.a"
+  envsubst < ../bootstrap.toml > bootstrap.toml
+  envsubst < ../bootstrap-wasm.toml > bootstrap-wasm.toml
+
+  if [ "${_bootstrapping}" = "no" ]; then
+    sed -i '/^\[build\]/,/^$/ s|^#||g' bootstrap{,-wasm}.toml
+  fi
+  # generate debuginfo
+  if check_option "debug" "y"; then
+    sed -i 's/^#debug/debug/g' bootstrap{,-wasm}.toml
+  fi
+
+  if (( _pgo )); then
+    sed -i -e 's/#bootstrap-override-lld/bootstrap-override-lld/' bootstrap.toml
+    # build opt-dist tool which manages PGO build
+    python x.py build opt-dist --target="$OSTYPE"
+    local _pgo_opts=(--target-triple="$OSTYPE"
+                     --checkout-dir="$PWD"
+                     --llvm-dir="${MINGW_PREFIX}"
+                     --build-llvm=false
+                     --python="${MINGW_PREFIX}/bin/python.exe"
+                     --artifact-dir=opt-artifacts-${MSYSTEM}
+                     --build-dir=build-${MSYSTEM})
+    if [[ ${_bootstrapping} == no ]]; then
+      _pgo_opts+=(--stage0-root="${MINGW_PREFIX}")
+    fi
+    # run opt-dist to get rustc optimized with PGO
+    CXXFLAGS="$CXXFLAGS -fuse-ld=lld" \
+    DESTDIR="$PWD/build-$MSYSTEM/dest-rust" \
+    build-${MSYSTEM}/${OSTYPE}/stage1-tools-bin/opt-dist local "${_pgo_opts[@]}" -- \
+      python x.py install
+  else
+    DESTDIR="$PWD/build-$MSYSTEM/dest-rust" \
+      python x.py install --stage 2
+  fi
+
+  # Add wasm32-* targets
+  if (( _wasm )); then
+    # empty flags for correct wasm build
+    CFLAGS="" \
+    CXXFLAGS="" \
+    LDFLAGS="" \
+    DESTDIR="$PWD/build-$MSYSTEM/dest-wasm" \
+      python x.py install \
+        --stage 1 \
+        --keep-stage 0 \
+        --exclude compiler/rustc \
+        --config "$PWD"/bootstrap-wasm.toml \
+        library/std
+    # move wasm32-unknown-emscripten out of the way for splitting
+    mkdir -p build-${MSYSTEM}/dest-emscripten${MINGW_PREFIX}/lib/rustlib
+    mv build-${MSYSTEM}/dest-wasm${MINGW_PREFIX}/lib/rustlib/wasm32-unknown-emscripten \
+      build-${MSYSTEM}/dest-emscripten${MINGW_PREFIX}/lib/rustlib
+    (
+      cd build-${MSYSTEM}/dest-wasm${MINGW_PREFIX}/lib/rustlib
+      rm -v components install.log rust-installer-version uninstall.sh manifest-*
+    )
+  fi
+  # move src out of the way for splitting
+  mkdir -p build-${MSYSTEM}/dest-src${MINGW_PREFIX}/lib/rustlib
+  mv build-${MSYSTEM}/dest-rust${MINGW_PREFIX}/lib/rustlib/src \
+    build-${MSYSTEM}/dest-src${MINGW_PREFIX}/lib/rustlib
+
+  # delete unnecessary files, e.g. components and manifest files only used for the uninstall script
+  # and self-contained objects
+  cd build-${MSYSTEM}/dest-rust${MINGW_PREFIX}
+  rm -v etc/target-spec-json-schema.json
+  rm -v lib/rustlib/{components,install.log,rust-installer-version,uninstall.sh}
+  rm -v lib/rustlib/manifest-*
+  rm -v lib/rustlib/$OSTYPE/lib/self-contained/*
+}
+
+check() {
+  cd "${_realname}c-${pkgver}-src"
+  python x.py test --stage 2 --exclude src/test/debuginfo
+}
+
+package_rust() {
+  depends=("${MINGW_PACKAGE_PREFIX}-cc"
+           "${MINGW_PACKAGE_PREFIX}-libgit2"
+           "${MINGW_PACKAGE_PREFIX}-libssh2"
+           "${MINGW_PACKAGE_PREFIX}-llvm-libs"
+           "${MINGW_PACKAGE_PREFIX}-sqlite3"
+           "${MINGW_PACKAGE_PREFIX}-zlib")
+  optdepends=("${MINGW_PACKAGE_PREFIX}-gdb: for rust-gdb script"
+              "${MINGW_PACKAGE_PREFIX}-lldb: for rust-lldb script")
+  conflicts=("${MINGW_PACKAGE_PREFIX}-rust-docs")
+  replaces=("${MINGW_PACKAGE_PREFIX}-rust-docs")
+
+  cp -a "${_realname}c-${pkgver}-src/build-${MSYSTEM}"/dest-rust/* "${pkgdir}"
+}
+
+package_rust-wasm() {
+  pkgdesc="WebAssembly targets for Rust (mingw-w64)"
+  depends=("${MINGW_PACKAGE_PREFIX}-lld"
+           "${MINGW_PACKAGE_PREFIX}-rust"
+           "${MINGW_PACKAGE_PREFIX}-wasm-component-ld")
+  options=('!strip')
+
+  cd "${_realname}c-${pkgver}-src/build-${MSYSTEM}"
+
+  cp -a dest-wasm/* "${pkgdir}"
+
+  install -Dm644 ../LICENSE-{APACHE,MIT} -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}-wasm"
+}
+
+package_rust-emscripten() {
+  pkgdesc="Emscripten target for Rust (mingw-w64)"
+  depends=("${MINGW_PACKAGE_PREFIX}-rust"
+           "${MINGW_PACKAGE_PREFIX}-emscripten"
+           "${MINGW_PACKAGE_PREFIX}-cc-libs"
+           "${MINGW_PACKAGE_PREFIX}-llvm-libs"
+           "${MINGW_PACKAGE_PREFIX}-zlib"
+           "${MINGW_PACKAGE_PREFIX}-zstd")
+  options=('!strip')
+
+  cd "${_realname}c-${pkgver}-src/build-${MSYSTEM}"
+
+  cp -a dest-emscripten/* "${pkgdir}"
+
+  # manually add self-contained linkers to make emscripten target happy
+  mkdir -pv "${pkgdir}${MINGW_PREFIX}/lib/rustlib/$OSTYPE/bin/gcc-ld/"
+  cp -v "${MINGW_PREFIX}"/bin/{ld{,64}.lld,lld-link,wasm-ld} \
+    "${pkgdir}${MINGW_PREFIX}/lib/rustlib/$OSTYPE/bin/gcc-ld/"
+
+  install -Dm644 ../LICENSE-{APACHE,MIT} -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}-emscripten"
+}
+
+package_rust-src() {
+  pkgdesc='Source code for the Rust standard library (mingw-w64)'
+  depends=("${MINGW_PACKAGE_PREFIX}-rust")
+
+  cd "${_realname}c-${pkgver}-src/build-${MSYSTEM}"
+
+  cp -a dest-src/* "${pkgdir}"
+  install -Dm644 ../LICENSE-{APACHE,MIT} -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}-src"
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;

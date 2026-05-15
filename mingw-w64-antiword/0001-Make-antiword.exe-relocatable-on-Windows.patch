@@ -1,0 +1,144 @@
+From 80bde3fbfa74a884b71e6900b9b0be79fbbce35b Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Thu, 1 Oct 2015 14:59:12 +0200
+Subject: [PATCH] Make antiword.exe relocatable on Windows
+
+This change allows antiword to find its resource files relative to the
+executable file: it is expected to live in `<prefix>/bin/antiword.exe`
+and the resource files will be found in `<prefix>/share/antiword/`.
+
+Signed-off-by: Johannes Schindelin <johannes.schindelin@gmx.de>
+---
+ antiword.h |  1 +
+ fonts_u.c  |  2 +-
+ misc.c     | 63 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ options.c  | 17 +++--------------
+ 4 files changed, 68 insertions(+), 15 deletions(-)
+
+diff --git a/antiword.h b/antiword.h
+index 3f4aad5..d24b640 100644
+--- a/antiword.h
++++ b/antiword.h
+@@ -454,6 +454,7 @@ extern BOOL	bAllZero(const UCHAR *, size_t);
+ extern BOOL	bGetNormalizedCodeset(char *, size_t, BOOL *);
+ extern const char	*szGetDefaultMappingFile(void);
+ extern time_t	tConvertDTTM(ULONG);
++extern FILE     *fOpenResource(const char *szFilename, const char *szSuffix);
+ /* notes.c */
+ extern void	vDestroyNotesInfoLists(void);
+ extern void	vGetNotesInfo(FILE *, const pps_info_type *,
+diff --git a/fonts_u.c b/fonts_u.c
+index a99f7d2..280a7f2 100644
+--- a/fonts_u.c
++++ b/fonts_u.c
+@@ -78,7 +78,7 @@ pOpenFontTableFile(void)
+ 	szGlobalFile = GLOBAL_ANTIWORD_DIR FILE_SEPARATOR FONTNAMES_FILE;
+ 	DBG_MSG(szGlobalFile);
+ 
+-	pFile = fopen(szGlobalFile, "r");
++	pFile = fOpenResource(FONTNAMES_FILE, "r");
+ 	if (pFile != NULL) {
+ 		return pFile;
+ 	}
+diff --git a/misc.c b/misc.c
+index 609a2f0..a9610d0 100644
+--- a/misc.c
++++ b/misc.c
+@@ -892,3 +892,66 @@ tConvertDTTM(ULONG ulDTTM)
+ 	NO_DBG_MSG(ctime(&tResult));
+ 	return tResult;
+ } /* end of tConvertDTTM */
++
++#ifdef __MINGW64_VERSION_MAJOR
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++#endif
++
++/*
++ * Opens an Antiword resource file
++ *
++ * returns the handle for the file, or NULL
++  */
++FILE
++*fOpenResource(const char *szFilename, const char *szSuffix)
++{
++#ifndef __MINGW64_VERSION_MAJOR
++	static char szPath[PATH_MAX+1];
++
++	snprintf(szPath, sizeof(szPath),
++		GLOBAL_ANTIWORD_DIR FILE_SEPARATOR "%s%s",
++		szFilename, szSuffix ? szSuffix : "");
++#else
++	static char szPath[32768];
++	static size_t tPrefixLen = (size_t)-1;
++
++	if (tPrefixLen == (size_t)-1) {
++		tPrefixLen = (size_t)
++			GetModuleFileName(NULL, szPath, sizeof(szPath));
++		if (tPrefixLen && tPrefixLen < sizeof(szPath)) {
++			const char *dir = GLOBAL_ANTIWORD_DIR;
++
++			/* Strip suffix `antiword.exe` */
++			while (tPrefixLen > 0 && szPath[tPrefixLen-1] != '\\') {
++				tPrefixLen--;
++			}
++			/* Strip `bin/` directory */
++			if (tPrefixLen > 5 && !memcmp(szPath+(tPrefixLen-5),
++					"\\bin\\",5)) {
++				tPrefixLen -= 4;
++			}
++			/* Append GLOBAL_ANTIWORD_DIR, skipping /usr/ or / */
++			if (*dir && *dir == '/') {
++				dir++;
++				if (!memcmp(dir, "usr/", 4))
++					dir += 4;
++			}
++			while (*dir && tPrefixLen < sizeof(szPath)-1) {
++				char c = *(dir++);
++				szPath[tPrefixLen++] = c == '/' ? '\\' : c;
++			}
++			/* Make sure the prefix ends in a file separator */
++			if (tPrefixLen && tPrefixLen < sizeof(szPath)-1 &&
++					szPath[tPrefixLen-1] != '\\') {
++				szPath[tPrefixLen++] = '\\';
++			}
++			szPath[tPrefixLen]='\0';
++		}
++	}
++
++	snprintf(szPath + tPrefixLen, sizeof(szPath) - tPrefixLen,
++		"%s%s", szFilename, szSuffix ? szSuffix : "");
++#endif
++	return fopen(szPath, "r");
++} /* end of fOpenResource */
+diff --git a/options.c b/options.c
+index 8379fef..dd6ced9 100644
+--- a/options.c
++++ b/options.c
+@@ -236,20 +236,9 @@ pOpenCharacterMappingFile(const char *szLeafname)
+ 	}
+ 
+ 	/* Try the global version of the mapping file */
+-	if (tFilenameLen <
+-	    sizeof(szMappingFile) -
+-	    sizeof(GLOBAL_ANTIWORD_DIR) -
+-	    sizeof(FILE_SEPARATOR)) {
+-		sprintf(szMappingFile,
+-			GLOBAL_ANTIWORD_DIR FILE_SEPARATOR "%s%s",
+-			szLeafname, szSuffix);
+-		DBG_MSG(szMappingFile);
+-		pFile = fopen(szMappingFile, "r");
+-		if (pFile != NULL) {
+-			return pFile;
+-		}
+-	} else {
+-		werr(0, "Global mappingfilename too long, ignored");
++	pFile = fOpenResource(szLeafname, szSuffix);
++	if (pFile != NULL) {
++		return pFile;
+ 	}
+ 	werr(0, "I can't open your mapping file (%s%s)\n"
+ 		"It is not in '%s" FILE_SEPARATOR ANTIWORD_DIR "' nor in '"
+-- 
+2.5.3.windows.1
+

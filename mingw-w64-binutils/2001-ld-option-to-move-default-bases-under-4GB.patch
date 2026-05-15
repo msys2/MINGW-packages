@@ -1,0 +1,143 @@
+From 374e07b7e16c2ced0e533c590a5b5511b7d9768c Mon Sep 17 00:00:00 2001
+From: Jeremy Drake <github@jdrake.com>
+Date: Thu, 10 Sep 2020 10:28:28 -0700
+Subject: [PATCH] ld option to move default bases under 4GB.
+
+Some (buggy) programs have 'latent pointer truncation' issues, and
+setting the ImageBase below 4GB indicates to Windows that it's not safe
+to relocate these using ASLR in such a way as to trigger them.
+---
+ ld/emultempl/pep.em | 46 +++++++++++++++++++++++++++++++++++++++++++--
+ ld/ldlex.h          |  2 ++
+ 2 files changed, 46 insertions(+), 2 deletions(-)
+
+diff --git a/ld/emultempl/pep.em b/ld/emultempl/pep.em
+index 00c4ea9e15a..439e2eb83d4 100644
+--- a/ld/emultempl/pep.em
++++ b/ld/emultempl/pep.em
+@@ -137,18 +137,26 @@ fragment <<EOF
+ #define NT_EXE_IMAGE_BASE \
+   ((bfd_vma) (${move_default_addr_high} ? 0x100400000LL \
+ 					: 0x140000000LL))
++#undef NT_EXE_IMAGE_BASE_LOW
++#define NT_EXE_IMAGE_BASE_LOW ((bfd_vma) 0x400000LL)
+ #undef NT_DLL_IMAGE_BASE
+ #define NT_DLL_IMAGE_BASE \
+   ((bfd_vma) (${move_default_addr_high} ? 0x400000000LL \
+ 					: 0x180000000LL))
++#undef NT_DLL_IMAGE_BASE_LOW
++#define NT_DLL_IMAGE_BASE_LOW ((bfd_vma) 0x10000000LL)
+ #undef NT_DLL_AUTO_IMAGE_BASE
+ #define NT_DLL_AUTO_IMAGE_BASE \
+   ((bfd_vma) (${move_default_addr_high} ? 0x400000000LL \
+ 					: 0x1C0000000LL))
++#undef NT_DLL_AUTO_IMAGE_BASE_LOW
++#define NT_DLL_AUTO_IMAGE_BASE_LOW ((bfd_vma) 0x61300000LL)
+ #undef NT_DLL_AUTO_IMAGE_MASK
+ #define NT_DLL_AUTO_IMAGE_MASK \
+   ((bfd_vma) (${move_default_addr_high} ? 0x1ffff0000LL \
+ 					: 0x1ffff0000LL))
++#undef NT_DLL_AUTO_IMAGE_MASK_LOW
++#define NT_DLL_AUTO_IMAGE_MASK_LOW ((bfd_vma) 0x0ffc0000LL)
+ #else
+ #undef  NT_EXE_IMAGE_BASE
+ #define NT_EXE_IMAGE_BASE \
+@@ -181,6 +189,7 @@
+ static lang_assignment_statement_type *image_base_statement = 0;
+ static unsigned short pe_dll_characteristics = DEFAULT_DLL_CHARACTERISTICS;
+ static bool insert_timestamp = true;
++static bool high_default_bases = true;
+ static bool orphan_init_done;
+ static const char *emit_build_id;
+ #ifdef PDB_H
+@@ -334,6 +343,10 @@ gld${EMULATION_NAME}_add_options
+     {"disable-no-bind", no_argument, NULL, OPTION_DISABLE_NO_BIND},
+     {"disable-wdmdriver", no_argument, NULL, OPTION_DISABLE_WDM_DRIVER},
+     {"disable-tsaware", no_argument, NULL, OPTION_DISABLE_TERMINAL_SERVER_AWARE},
++#if defined(TARGET_IS_i386pep) || ! defined(DLL_SUPPORT)
++    {"default-image-base-low", no_argument, NULL, OPTION_DEFAULT_IMAGE_BASE_LOW},
++    {"default-image-base-high", no_argument, NULL, OPTION_DEFAULT_IMAGE_BASE_HIGH},
++#endif
+     {NULL, no_argument, NULL, 0}
+   };
+ 
+@@ -470,6 +483,10 @@ gld${EMULATION_NAME}_list_options (FILE *file)
+   fprintf (file, _("  --[disable-]wdmdriver              Driver uses the WDM model\n"));
+   fprintf (file, _("  --[disable-]tsaware                Image is Terminal Server aware\n"));
+   fprintf (file, _("  --build-id[=STYLE]                 Generate build ID\n"));
++#if defined(TARGET_IS_i386pep) || ! defined(DLL_SUPPORT)
++  fprintf (file, _("  --default-image-base-low           Default image bases under 4GB\n"));
++  fprintf (file, _("  --default-image-base-high          Default image bases over  4GB\n"));
++#endif
+ #ifdef PDB_H
+   fprintf (file, _("  --pdb=[FILENAME]                   Generate PDB file\n"));
+ #endif
+@@ -884,6 +901,12 @@ gld${EMULATION_NAME}_handle_option (int optc)
+       if (strcmp (optarg, "none"))
+ 	emit_build_id = xstrdup (optarg);
+       break;
++    case OPTION_DEFAULT_IMAGE_BASE_LOW:
++      high_default_bases = false;
++      break;
++    case OPTION_DEFAULT_IMAGE_BASE_HIGH:
++      high_default_bases = true;
++      break;
+ #ifdef PDB_H
+     case OPTION_PDB:
+       pdb = 1;
+@@ -930,7 +953,14 @@ static bfd_vma
+ compute_dll_image_base (const char *ofile)
+ {
+   bfd_vma hash = (bfd_vma) strhash (ofile);
+-  return NT_DLL_AUTO_IMAGE_BASE + ((hash << 16) & NT_DLL_AUTO_IMAGE_MASK);
++#ifdef TARGET_IS_i386pep
++  if (high_default_bases)
++#endif
++    return NT_DLL_AUTO_IMAGE_BASE + ((hash << 16) & NT_DLL_AUTO_IMAGE_MASK);
++#ifdef TARGET_IS_i386pep
++  else
++    return NT_DLL_AUTO_IMAGE_BASE_LOW + ((hash << 16) & NT_DLL_AUTO_IMAGE_MASK_LOW);
++#endif
+ }
+ #endif
+ 
+@@ -955,13 +985,25 @@ gld${EMULATION_NAME}_set_symbols (void)
+ #ifdef DLL_SUPPORT
+ 	  init[IMAGEBASEOFF].value = (pep_enable_auto_image_base
+ 				      ? compute_dll_image_base (output_filename)
++#ifdef TARGET_IS_i386pep
++				      : (high_default_bases
++					? NT_DLL_IMAGE_BASE
++					: NT_DLL_IMAGE_BASE_LOW));
++#else
+ 				      : NT_DLL_IMAGE_BASE);
++#endif
+ #else
+-	  init[IMAGEBASEOFF].value = NT_DLL_IMAGE_BASE;
++	  init[IMAGEBASEOFF].value = (high_default_bases ? NT_DLL_IMAGE_BASE : NT_DLL_IMAGE_BASE_LOW);
+ #endif
+ 	}
+       else
++#if defined(TARGET_IS_i386pep) || ! defined(DLL_SUPPORT)
++	init[IMAGEBASEOFF].value = (high_default_bases
++				    ? NT_EXE_IMAGE_BASE
++				    : NT_EXE_IMAGE_BASE_LOW);
++#else
+ 	init[IMAGEBASEOFF].value = NT_EXE_IMAGE_BASE;
++#endif
+       init[MSIMAGEBASEOFF].value = init[IMAGEBASEOFF].value;
+     }
+ 
+diff --git a/ld/ldlex.h b/ld/ldlex.h
+index defe3fcbbb9..6a9f112d7a7 100644
+--- a/ld/ldlex.h
++++ b/ld/ldlex.h
+@@ -390,6 +390,8 @@ enum option_values
+   OPTION_DISABLE_WDM_DRIVER,
+   OPTION_DISABLE_TERMINAL_SERVER_AWARE,
+   /* Used by emultempl/pep.em.  */
++  OPTION_DEFAULT_IMAGE_BASE_LOW,
++  OPTION_DEFAULT_IMAGE_BASE_HIGH,
+   OPTION_DISABLE_HIGH_ENTROPY_VA,
+   OPTION_HIGH_ENTROPY_VA,
+   /* Used by emultempl/ppc32elf.em.  */

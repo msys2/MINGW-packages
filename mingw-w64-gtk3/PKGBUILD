@@ -1,0 +1,170 @@
+# Maintainer: Alexey Pavlov <alexpux@gmail.com>
+
+_realname=gtk3
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}" "${MINGW_PACKAGE_PREFIX}-gtk-update-icon-cache")
+pkgver=3.24.52
+pkgrel=1
+pkgdesc="GObject-based multi-platform GUI toolkit (v3) (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url="https://www.gtk.org/"
+msys2_repository_url="https://gitlab.gnome.org/GNOME/gtk/-/tree/gtk-3-24"
+msys2_references=(
+  'archlinux: gtk3'
+  "cpe: cpe:/a:gnome:gtk"
+  "cpe: cpe:/a:gtk:gtk%2b"
+)
+license=("spdx:LGPL-2.1-or-later")
+depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
+         "${MINGW_PACKAGE_PREFIX}-adwaita-icon-theme"
+         "${MINGW_PACKAGE_PREFIX}-atk"
+         "${MINGW_PACKAGE_PREFIX}-cairo"
+         "${MINGW_PACKAGE_PREFIX}-gdk-pixbuf2"
+         "${MINGW_PACKAGE_PREFIX}-gettext-runtime"
+         "${MINGW_PACKAGE_PREFIX}-glib2"
+         "${MINGW_PACKAGE_PREFIX}-json-glib"
+         "${MINGW_PACKAGE_PREFIX}-libepoxy"
+         "${MINGW_PACKAGE_PREFIX}-pango"
+         "${MINGW_PACKAGE_PREFIX}-shared-mime-info")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-meson"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-gtk-doc"
+             "${MINGW_PACKAGE_PREFIX}-gobject-introspection"
+             "${MINGW_PACKAGE_PREFIX}-sassc"
+             "${MINGW_PACKAGE_PREFIX}-libxslt")
+source=("https://download.gnome.org/sources/gtk/${pkgver%.*}/gtk-${pkgver}.tar.xz"
+        "0003-gtkwindow-Don-t-force-enable-CSD-under-Windows.patch"
+        "0004-Disable-low-level-keyboard-hook.patch"
+        "0005-meson-fix-linker-flags-pkgconfig.patch"
+        "gtk-query-immodules-3.0.hook.in"
+        "gtk-update-icon-cache.hook.in"
+        "gtk-update-icon-cache.script.in")
+sha256sums=('80931fa472a77b9a164f6740e3c0b444fac6770054632d35a7ff9d679e5e7b9f'
+            'b84a7f38f0af80680bee143d431f2a7bae53899efb337de0f67a1b4d9b59fa02'
+            'e553083298495f9581ae1454b1046a22b83e81862311b30de984057eec859708'
+            'f006498eaf5e93a927f1ee966512f7f059e66d3f47433eedab5c0f08692bdfac'
+            'adbe57eb726d882bba7a031ab8fb1788e7cd03cbf713823fd0f99d3cb380b97c'
+            '56a566739c4f153f3c924b2bfe5ec7aaca469e15c023810cd7c5f57036d1a258'
+            'ad431cedaa2c4a20db35c753c89b85b45c67872004255762094277d27eb7c18a')
+
+# Helper macros to help make tasks easier #
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying $_patch"
+    patch -Np1 -i "${srcdir}/$_patch"
+  done
+}
+
+prepare() {
+  cd "${srcdir}/gtk-${pkgver}"
+
+  # https://gitlab.gnome.org/GNOME/gtk/issues/760
+  apply_patch_with_msg \
+    0003-gtkwindow-Don-t-force-enable-CSD-under-Windows.patch
+
+  apply_patch_with_msg \
+    0004-Disable-low-level-keyboard-hook.patch
+
+  # https://gitlab.gnome.org/GNOME/gtk/-/merge_requests/5458
+  apply_patch_with_msg \
+    0005-meson-fix-linker-flags-pkgconfig.patch
+}
+
+build() {
+  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
+
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("--buildtype=release")
+  else
+    _extra_config+=("--buildtype=debug")
+  fi
+
+  if [[ ${CARCH} != aarch64 ]]; then
+    _extra_config+=("-Dman=true")
+  fi
+
+  CFLAGS+=" -DG_ENABLE_DEBUG"  # so the GTK_DEBUG env var works
+  CFLAGS+=" -Wno-deprecated-declarations"
+
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+  ${MINGW_PREFIX}/bin/meson setup \
+    --prefix="${MINGW_PREFIX}" \
+    --wrap-mode=nodownload \
+    --default-library=both \
+    --auto-features=enabled \
+    "${_extra_config[@]}" \
+    -Dbroadway_backend=true \
+    "../gtk-${pkgver}"
+
+  ${MINGW_PREFIX}/bin/meson compile
+}
+
+package_gtk3() {
+  depends+=("${MINGW_PACKAGE_PREFIX}-gtk-update-icon-cache")
+
+  cd "${srcdir}/build-${MSYSTEM}"
+
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/meson install
+
+  # the hook needs this directory to exist, even if empty
+  mkdir -p "${pkgdir}"${MINGW_PREFIX}/lib/gtk-3.0/3.0.0/immodules
+  for hook in gtk-query-immodules-3.0; do
+    local hook_path="${srcdir}/${MINGW_PACKAGE_PREFIX}-${hook}.hook";
+    cp "${srcdir}/${hook}.hook.in" "${hook_path}"
+    sed -s "s|@MINGW_HOOK_TARGET_PREFIX@|${MINGW_PREFIX:1}|g" -i "${hook_path}"
+    sed -s "s|@MINGW_PREFIX@|${MINGW_PREFIX}|g" -i "${hook_path}"
+    sed -s "s|@MINGW_PACKAGE_PREFIX@|${MINGW_PACKAGE_PREFIX}|g" -i "${hook_path}"
+    install -Dt "$pkgdir/usr/share/libalpm/hooks" -m644 "${hook_path}"
+  done
+
+  mv "${pkgdir}"${MINGW_PREFIX}/bin/gtk-update-icon-cache "$srcdir"
+  if [[ ${CARCH} != aarch64 ]]; then
+    mv "${pkgdir}"${MINGW_PREFIX}/share/man/man1/gtk-update-icon-cache.1 "$srcdir"
+  fi
+
+  install -Dm644 "${srcdir}/gtk-${pkgver}/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING"
+}
+
+package_gtk-update-icon-cache() {
+  pkgdesc="GTK+ icon cache updater (mingw-w64)"
+  depends=("${MINGW_PACKAGE_PREFIX}-gdk-pixbuf2"
+           "${MINGW_PACKAGE_PREFIX}-librsvg"
+           "${MINGW_PACKAGE_PREFIX}-hicolor-icon-theme")
+
+  for hook in gtk-update-icon-cache; do
+    local hook_path="${srcdir}/${MINGW_PACKAGE_PREFIX}-${hook}.hook";
+    cp "${srcdir}/${hook}.hook.in" "${hook_path}"
+    sed -s "s|@MINGW_HOOK_TARGET_PREFIX@|${MINGW_PREFIX:1}|g" -i "${hook_path}"
+    sed -s "s|@MINGW_PREFIX@|${MINGW_PREFIX}|g" -i "${hook_path}"
+    sed -s "s|@MINGW_PACKAGE_PREFIX@|${MINGW_PACKAGE_PREFIX}|g" -i "${hook_path}"
+    install -Dt "$pkgdir/usr/share/libalpm/hooks" -m644 "${hook_path}"
+  done
+
+  for script in gtk-update-icon-cache; do
+    local script_path="${srcdir}/${MINGW_PACKAGE_PREFIX}-${script}.script";
+    cp "${srcdir}/${script}.script.in" "${script_path}"
+    sed -s "s|@MINGW_PREFIX@|${MINGW_PREFIX}|g" -i "${script_path}"
+    install -Dt "$pkgdir/usr/share/libalpm/scripts" -m644 "${script_path}"
+  done
+
+  install -Dt "${pkgdir}${MINGW_PREFIX}/bin" gtk-update-icon-cache
+  if [[ ${CARCH} != aarch64 ]]; then
+    install -Dt "${pkgdir}${MINGW_PREFIX}/share/man/man1" gtk-update-icon-cache.1
+  fi
+  cp "${pkgdir}"${MINGW_PREFIX}/bin/gtk-update-icon-cache{,-3.0}.exe
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;

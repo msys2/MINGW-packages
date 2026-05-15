@@ -1,0 +1,209 @@
+# Contributor: Oleg A. Khlybov <fougas@mail.ru>
+
+# This package provides multiple library build flavors differentiated by
+# the 3-character suffix XYZ as follows:
+#
+#  * X is the scalar type based on the Netlib's SDCZ notation:
+#    - A for multiprecision or precision-neutral build
+#    - S for single precision real
+#    - D for double precision real
+#    - C for single precision complex
+#    - Z for double precision complex
+#
+#  * Y is the execution model:
+#    - S for sequential code
+#    - M for MPI parallel code
+#    - T for multithreaded code, either bare threading or OpenMP, OpenACC etc.
+#    - H for heterogeneous code with CUDA, OpenCL etc.
+#
+#  * Z is the build type:
+#    - O for optimized build
+#    - G for debugging build
+#
+# The suffix is used in the static and dynamic libraires as well as in PkgConfig .pc files.
+# That is the ZMO suffix designates the optimized MPI parallel double precision complex library flavor.
+# Consider the `pkg-config mumps-zmo --cflags` command to obtain the build-specific compilation flags.
+
+# There is a Tcl integration test suite for both packagers and end users to ensure the installed package is intact.
+# The test suite performs a series of compile+run tests for multiple configurations from the build matrix.
+# Basic usage: tclsh $MINGW_PREFIX/share/test/mumps/mumps.tcl
+
+_realname=mumps
+
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=5.9.0
+pkgrel=2
+pkgdesc="MUltifrontal Massively Parallel sparse direct solver (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url="https://mumps-solver.org"
+license=('spdx:CECILL-C')
+depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
+         $([[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] && echo "${MINGW_PACKAGE_PREFIX}-flang-rt" || echo "${MINGW_PACKAGE_PREFIX}-gcc-libgfortran")
+         "${MINGW_PACKAGE_PREFIX}-openblas"
+         "${MINGW_PACKAGE_PREFIX}-metis"
+         $([[ ${CARCH} == aarch64 ]] || echo "${MINGW_PACKAGE_PREFIX}-parmetis")
+         "${MINGW_PACKAGE_PREFIX}-scotch"
+         $([[ ${CARCH} == aarch64 ]] || echo "${MINGW_PACKAGE_PREFIX}-scalapack"))
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-fc"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+              $([[ ${CARCH} == aarch64 ]] || echo "${MINGW_PACKAGE_PREFIX}-msmpi"))
+optdepends=("${MINGW_PACKAGE_PREFIX}-tcl: build & run test suite")
+source=("https://mumps-solver.org/MUMPS_${pkgver}.tar.gz"
+        "0001-makefile.inc.patch"
+        "0002-skip-examples.patch"
+        "0003-fix-win32.patch"
+        "mumps.tcl"
+        "testme-0.tm"
+        "buildme-0.tm"
+        "xyz-0.tm")
+sha256sums=('02c6efdb91749ec0f82351d40f3f860547272a1eb1d899126a4265b4d6bcc4ca'
+            '9d6df2d18a2fbf512a5808168335b712a1728a6979c5bc8b977ac73d7a0a6da1'
+            'bbefd4a5f841536132f32c1ffc684a58b778901cd777445ca817dbb34d983450'
+            '357c13b985e75604fd9f59f2f174e6c75fd9133d0806e2db2d584d33e32b108d'
+            'e967554f139833fe6f10ccc5fcd82a346b480b2827475ea9bd50eeb5d017b2b0'
+            '47aa9a8a03627ffeb299191ede391f5aa96071c1b09fb294ec6712e3beb0b799'
+            'e9585cccd9269c9ff3d68a6f9bb313d4cd64b86e5cc8d7b1f2db585e53c7a04d'
+            'b32516dbdf0db3007092cb7b31a0d42034b26e333212860d50d5e866cb346afe')
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+
+prepare() {
+  cd "${srcdir}/${_realname}_${pkgver}"
+  apply_patch_with_msg \
+    "0001-makefile.inc.patch" \
+    "0002-skip-examples.patch" \
+    "0003-fix-win32.patch"
+}
+
+seq_pc="metis scotch openblas"
+shm_pc=$seq_pc
+mpi_pc="parmetis metis ptscotch scalapack openblas msmpi" # FIXME metis should come from parmetis
+
+build() {
+  cd "${srcdir}/${_realname}_${pkgver}"
+  if [[ ${MINGW_PACKAGE_PREFIX} != *-clang-* ]]; then
+    export FC=gfortran
+    export FFLAGS="${CFLAGS} -fallow-argument-mismatch -fallow-invalid-boz"
+  else
+    export FC=flang
+    export FFLAGS="-O2"
+  fi
+  declare -a _mods=(SEQ SHM)
+  [[ ${CARCH} == aarch64 ]] || _mods+=(PAR)
+  for mod in ${_mods[@]}; do
+    cp Makefile.inc.${mod} Makefile.inc
+    for x in clean s d c z; do make -j $x; done
+    if [[ $mod == SEQ ]]; then
+      cp libseq/libmpiseq_seq.a lib/libmumps_mpi_seq.a
+      cp PORD/lib/libpord_seq.a lib/libmumps_pord.a
+    fi
+  done
+  cd lib
+  rm -rf libmumps-*.a
+  strip -S *.a # Thin archives require the constituent archives to be stripped beforehand
+  for x in s d c z; do
+    (
+      rm -rf .a; mkdir .a; cd .a
+      for a in lib${x}mumps_seq.a libmumps_common_seq.a libmumps_pord.a libmumps_mpi_seq.a; do ar x ../$a; done
+    )
+    ar cr libmumps-${x}so.a .a/*.o
+    (
+      rm -rf .a; mkdir .a; cd .a
+      for a in lib${x}mumps_shm.a libmumps_common_shm.a libmumps_pord.a libmumps_mpi_seq.a; do ar x ../$a; done
+    )
+    ar cr libmumps-${x}to.a .a/*.o
+    # TODO export only the required driver routine to reduce the exported symbol table size
+    ${FC} -shared -Wl,--enable-auto-import -Wl,--export-all-symbols -o libmumps-${x}so.dll -Wl,--out-implib,libmumps-${x}so.dll.a -Wl,--whole-archive libmumps-${x}so.a -Wl,--no-whole-archive -lesmumps $(pkg-config ${seq_pc} --libs)
+    ${FC} -shared -fopenmp -Wl,--enable-auto-import -Wl,--export-all-symbols -o libmumps-${x}to.dll -Wl,--out-implib,libmumps-${x}to.dll.a -Wl,--whole-archive libmumps-${x}to.a -Wl,--no-whole-archive -lesmumps $(pkg-config ${shm_pc} --libs)
+    if [[ ${CARCH} != aarch64 ]]; then
+      (
+        rm -rf .a; mkdir .a; cd .a
+        for a in lib${x}mumps_mpi.a libmumps_common_mpi.a libmumps_pord.a; do ar x ../$a; done
+      )
+      ar cr libmumps-${x}mo.a .a/*.o
+      mpifort -shared -fopenmp -Wl,--enable-auto-import -Wl,--export-all-symbols -o libmumps-${x}mo.dll -Wl,--out-implib,libmumps-${x}mo.dll.a -Wl,--whole-archive libmumps-${x}mo.a -Wl,--no-whole-archive -lptesmumps $(pkg-config ${mpi_pc} --libs)
+    fi
+  done
+}
+
+package() {
+  cd "$srcdir/${_realname}_${pkgver}"
+  mkdir -p "${pkgdir}"${MINGW_PREFIX}/{bin,lib,include/mumps/mpi_seq} "${pkgdir}"${MINGW_PREFIX}/lib/pkgconfig "${pkgdir}"${MINGW_PREFIX}/share/test/mumps
+  (
+    cd libseq
+    install -m644 mpi*.h "${pkgdir}${MINGW_PREFIX}/include/mumps/mpi_seq"
+  )
+  (
+    cd lib
+    install -m644 libmumps-*.a "${pkgdir}${MINGW_PREFIX}/lib"
+    install -m644 *.dll "${pkgdir}${MINGW_PREFIX}/bin"
+  )
+  (
+    cd include
+    install -m644 *.h "${pkgdir}${MINGW_PREFIX}/include"
+  )
+  (
+    cp "${srcdir}"/{*.tcl,*.tm} "${pkgdir}"${MINGW_PREFIX}/share/test/mumps
+    cd "$srcdir/${_realname}_${pkgver}/examples"
+    cp c_example.c ?simpletest.F input_simpletest_* "${pkgdir}"${MINGW_PREFIX}/share/test/mumps
+  )
+  [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]] && _fc_libs="-lflang_rt.runtime" || _fc_libs="-lgfortran -lquadmath"
+  for x in c z s d; do
+    case $x in
+      c) scalar='single precision complex';;
+      z) scalar='double precision complex';;
+      s) scalar='single precision';;
+      d) scalar='double precision';;
+    esac
+    echo "
+      prefix=${MINGW_PREFIX}
+      libdir=\${prefix}/lib
+      includedir=\${prefix}/include
+      Name: ${_realname}
+      URL: ${url}
+      Version: ${pkgver}
+      Description: Sequential $scalar MUMPS build
+      Requires.private: ${seq_pc}
+      Cflags: -I\${includedir} -I\${includedir}/mumps/mpi_seq
+      Libs.private: -lmumps-${x}so -lesmumps ${_fc_libs}
+      Libs: -lmumps-${x}so
+    " | sed '/^\s*$/d;s/^\s*//' > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/${_realname}-${x}so.pc"
+    echo "
+      prefix=${MINGW_PREFIX}
+      libdir=\${prefix}/lib
+      includedir=\${prefix}/include
+      Name: ${_realname}
+      URL: ${url}
+      Version: ${pkgver}
+      Description: OpenMP $scalar MUMPS build
+      Requires.private: ${shm_pc}
+      Cflags: -I\${includedir} -I\${includedir}/mumps/mpi_seq
+      Libs.private: -fopenmp -lmumps-${x}to -lesmumps ${_fc_libs}
+      Libs: -lmumps-${x}to
+    " | sed '/^\s*$/d;s/^\s*//' > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/${_realname}-${x}to.pc"
+    if [[ ${CARCH} != aarch64 ]]; then
+      echo "
+        prefix=${MINGW_PREFIX}
+        libdir=\${prefix}/lib
+        includedir=\${prefix}/include
+        Name: ${_realname}
+        URL: ${url}
+        Version: ${pkgver}
+        Description: MPI+OpenMP $scalar MUMPS build
+        Cflags: -I\${includedir}
+        Requires.private: ${mpi_pc}
+        Libs.private: -fopenmp -lmumps-${x}mo -lptesmumps ${_fc_libs}
+        Libs: -lmumps-${x}mo
+      " | sed '/^\s*$/d;s/^\s*//' > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/${_realname}-${x}mo.pc"
+    fi
+  done
+}

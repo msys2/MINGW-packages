@@ -1,0 +1,131 @@
+From 45ca3b9cdd964ec448c2ca56d5258983aef2722b Mon Sep 17 00:00:00 2001
+From: Ray Donnelly <mingw.android@gmail.com>
+Date: Wed, 5 Aug 2015 23:36:07 +0100
+Subject: [PATCH 02/16] Windows: Follow Posix dir-exists semantics more closely
+
+Make Windows behave the same as Posix in the consideration
+of whether folder "/doesnt-exist/.." is a valid
+path. In Posix, it isn't.
+
+A concrete instance of when this matters is when cross
+compiling GNU/Linux glibc on Windows.
+---
+ libcpp/files.cc | 87 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 87 insertions(+)
+
+diff --git a/libcpp/files.cc b/libcpp/files.cc
+index 24208f7b0f8..a740d7a778c 100644
+--- a/libcpp/files.cc
++++ b/libcpp/files.cc
+@@ -30,6 +30,14 @@ along with this program; see the file COPYING3.  If not see
+ #include "md5.h"
+ #include <dirent.h>
+ 
++/* Needed for stat_st_mode_symlink below */
++#if defined(_WIN32)
++#  define WIN32_LEAN_AND_MEAN
++#  include <windows.h>
++#  define S_IFLNK 0xF000
++#  define S_ISLNK(m) (((m) & S_IFMT) == S_IFLNK)
++#endif
++
+ /* Variable length record files on VMS will have a stat size that includes
+    record control characters that won't be included in the read size.  */
+ #ifdef VMS
+@@ -200,6 +207,49 @@ static int pchf_save_compare (const void *e1, const void *e2);
+ static int pchf_compare (const void *d_p, const void *e_p);
+ static bool check_file_against_entries (cpp_reader *, _cpp_file *, bool);
+ 
++#if defined(_WIN32)
++
++static int stat_st_mode_symlink (char const* path, struct stat* buf)
++{
++  WIN32_FILE_ATTRIBUTE_DATA attr;
++  memset(buf,0,sizeof(*buf));
++  int err = GetFileAttributesExA (path, GetFileExInfoStandard, &attr) ? 0 : 1;
++  if (!err)
++    {
++      WIN32_FIND_DATAA finddata;
++      HANDLE h = FindFirstFileA (path, &finddata);
++      if (h != INVALID_HANDLE_VALUE)
++        {
++          FindClose (h);
++          if ((finddata.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
++              (finddata.dwReserved0 == IO_REPARSE_TAG_SYMLINK))
++              buf->st_mode = S_IFLNK;
++          else if (finddata.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
++              buf->st_mode = S_IFDIR;
++          else if (finddata.dwFileAttributes & FILE_ATTRIBUTE_ARCHIVE)
++              buf->st_mode = S_IFDIR;
++          else
++              buf->st_mode = S_IFREG;
++          buf->st_mode |= S_IREAD;
++          if (!(finddata.dwFileAttributes & FILE_ATTRIBUTE_READONLY))
++              buf->st_mode |= S_IWRITE;
++        }
++      else
++        {
++          buf->st_mode = S_IFDIR;
++        }
++      return 0;
++    }
++  return -1;
++}
++
++#else
++
++#define stat_st_mode_symlink (_name, _buf) stat ((_name), (_buf))
++
++#endif
++
++
+ /* Given a filename in FILE->PATH, with the empty string interpreted
+    as <stdin>, open it.
+ 
+@@ -229,6 +279,43 @@ open_file (_cpp_file *file)
+     }
+   else
+     file->fd = open (file->path, O_RDONLY | O_NOCTTY | O_BINARY, 0666);
++#if defined(_WIN32) || defined(__CYGWIN__)
++  /* Windows and Posix differ in the face of paths of the form:
++     nonexistantdir/.. in that Posix will return ENOENT whereas
++     Windows won't care that we stepped into a non-existant dir
++     Only do these slow checks if ".." appears in file->path.
++     Cygwin also suffers from the same problem (but doesn't need
++     a new stat function):
++     http://cygwin.com/ml/cygwin/2013-05/msg00222.html
++  */
++  if (file->fd > 0)
++    {
++      char filepath[MAX_PATH];
++      strncpy (filepath, file->path, sizeof(filepath) - 1);
++      char* dirsep = &filepath[0];
++      while ( (dirsep = strchr (dirsep, '\\')) != NULL)
++        *dirsep = '/';
++      if (strstr(file->path, "/../"))
++	{
++	  dirsep = &filepath[0];
++	  char dirsepc;
++	  /* Check each directory in the chain. */
++	  while ( (dirsep = strpbrk (dirsep, "\\/")) != NULL)
++	    {
++	      dirsepc = *(++dirsep);
++	      *dirsep = '\0';
++	      if (stat_st_mode_symlink (filepath, &file->st) == -1)
++	        {
++	          *dirsep = dirsepc;
++	          close (file->fd);
++	          file->fd = -1;
++	          return false;
++	        }
++	      *dirsep++ = dirsepc;
++	    }
++	}
++    }
++#endif
+ 
+   if (file->fd != -1)
+     {
+-- 
+2.38.1
+

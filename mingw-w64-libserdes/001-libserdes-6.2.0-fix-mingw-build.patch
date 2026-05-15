@@ -1,0 +1,292 @@
+diff --git a/mklove/modules/configure.lib b/mklove/modules/configure.lib
+index 49ed293681f9cc10cca6b7bc8dd17e4c6f4b6a71..fea2be71a0b4ec9074e80162468f1ff4a08d64a9 100644
+--- a/mklove/modules/configure.lib
++++ b/mklove/modules/configure.lib
+@@ -14,7 +14,12 @@ function checks {
+     mkl_meta_set gnulib name "GNU-compatible linker options"
+     mkl_meta_set osxlib name "OSX linker options"
+ 
+-    if mkl_compile_check gnulib WITH_GNULD cont CC \
++    if mkl_compile_check mgwlib WITH_MGWLD cont CC \
++	"-shared -Wl,--out-implib,mkltest.0" "" ; then
++	# MinGW linker
++	mkl_mkvar_append LIB_LDFLAGS LIB_LDFLAGS '-Wl,--out-implib,$(LIBFILENAMELINK)'
++
++    elif mkl_compile_check gnulib WITH_GNULD cont CC \
+ 	"-shared -Wl,-soname,mkltest.0" "" ; then
+ 	# GNU linker
+ 	mkl_mkvar_append LIB_LDFLAGS LIB_LDFLAGS '-Wl,-soname,$(LIBFILENAME)'
+diff --git a/mklove/modules/configure.socket b/mklove/modules/configure.socket
+index f0777ab3b697a1b010a7fea90756ce7108a94baa..419dfbb1d712895aa4ee1345cddf76f351ee9fd3 100644
+--- a/mklove/modules/configure.socket
++++ b/mklove/modules/configure.socket
+@@ -6,15 +6,21 @@ function checks {
+ 
+     local src="
+ #include <sys/types.h>
++#ifdef WIN32
++#include <winsock2.h>
++#else
+ #include <sys/socket.h>
++#endif
+ #include <unistd.h>
+ void foo (void) {
+    int s = socket(0, 0, 0);
+    close(s);
+ }"
+     if ! mkl_compile_check socket "" cont CC "" "$src"; then
+-	if mkl_compile_check --ldflags="-lsocket -lnsl" socket_nsl "" fail CC "" "$src"; then
++	if mkl_compile_check --ldflags="-lsocket -lnsl" socket_nsl "" cont CC "" "$src"; then
+ 	    mkl_mkvar_append socket_nsl LIBS "-lsocket -lnsl"
++	elif mkl_compile_check --ldflags="-lws2_32" winsock "" fail CC "" "$src"; then
++	    mkl_mkvar_append winsock LIBS "-lws2_32"
+ 	fi
+     fi
+ }
+diff --git a/mklove/Makefile.base b/mklove/Makefile.base
+index 783b3a6bba1a471f74816d69c8f3d6768e006ff0..e33c58aebabc4ea913b454f2ec1e71e18f71ec3c 100755
+--- a/mklove/Makefile.base
++++ b/mklove/Makefile.base
+@@ -26,9 +26,13 @@ ifndef MKL_MAKEFILE_CONFIG
+ endif
+ 
+ _UNAME_S := $(shell uname -s)
++_UNAME_O := $(shell uname -o)
+ ifeq ($(_UNAME_S),Darwin)
+ 	LIBFILENAME=$(LIBNAME).$(LIBVER).dylib
+ 	LIBFILENAMELINK=$(LIBNAME).dylib
++else ifeq ($(_UNAME_O),Msys)
++	LIBFILENAME=$(LIBNAME)-$(LIBVER).dll
++	LIBFILENAMELINK=$(LIBNAME).dll.a
+ else
+ 	LIBFILENAME=$(LIBNAME).so.$(LIBVER)
+ 	LIBFILENAMELINK=$(LIBNAME).so
+@@ -91,8 +95,10 @@ $(LIBNAME).a:	$(OBJS)
+ 	$(AR) rcs$(ARFLAGS) $@ $(OBJS)
+ 
+ $(LIBFILENAMELINK): $(LIBFILENAME)
++ifneq ($(_UNAME_O),Msys)
+ 	@printf "$(MKL_YELLOW)Creating $@ symlink$(MKL_CLR_RESET)\n"
+ 	rm -f "$@" && ln -s "$^" "$@"
++endif
+ 
+ 
+ # pkg-config .pc file definition
+@@ -151,13 +157,23 @@ lib-install:
+ 	$(INSTALL) -d $$DESTDIR$(includedir)/$(PKGNAME) ; \
+ 	$(INSTALL) -d $$DESTDIR$(libdir) ; \
+ 	$(INSTALL) $(HDRS) $$DESTDIR$(includedir)/$(PKGNAME) ; \
+-	$(INSTALL) $(LIBNAME).a $$DESTDIR$(libdir) ; \
++	$(INSTALL) $(LIBNAME).a $$DESTDIR$(libdir)
++ifeq ($(_UNAME_O),Msys)
++	$(INSTALL) -d $$DESTDIR$(bindir) ; \
++	$(INSTALL) $(LIBFILENAME) $$DESTDIR$(bindir) ; \
++	[ -f "$(LIBNAME0).pc" ] && ( \
++		$(INSTALL) -d $$DESTDIR$(pkgconfigdir) ; \
++		$(INSTALL) -m 0644 $(LIBNAME0).pc $$DESTDIR$(pkgconfigdir) \
++	) ; \
++	$(INSTALL) $(LIBFILENAMELINK) $$DESTDIR$(libdir)
++else
+ 	$(INSTALL) $(LIBFILENAME) $$DESTDIR$(libdir) ; \
+ 	[ -f "$(LIBNAME0).pc" ] && ( \
+ 		$(INSTALL) -d $$DESTDIR$(pkgconfigdir) ; \
+ 		$(INSTALL) -m 0644 $(LIBNAME0).pc $$DESTDIR$(pkgconfigdir) \
+ 	) ; \
+ 	(cd $$DESTDIR$(libdir) && ln -sf $(LIBFILENAME) $(LIBFILENAMELINK))
++endif
+ 
+ lib-uninstall:
+ 	@printf "$(MKL_YELLOW)Uninstall $(LIBNAME) from $$DESTDIR$(prefix)$(MKL_CLR_RESET)\n"
+@@ -173,7 +189,7 @@ lib-uninstall:
+ bin-install:
+ 	@printf "$(MKL_YELLOW)Install $(BIN) to $$DESTDIR$(prefix)$(MKL_CLR_RESET)\n"
+ 	$(INSTALL) -d $$DESTDIR$(bindir) && \
+-	$(INSTALL) $(BIN) $$DESTDIR$(bindir) 
++	$(INSTALL) $(BIN) $$DESTDIR$(bindir)
+ 
+ bin-uninstall:
+ 	@printf "$(MKL_YELLOW)Uninstall $(BIN) from $$DESTDIR$(prefix)$(MKL_CLR_RESET)\n"
+diff --git a/examples/kafka-serdes-avro-console-consumer.cpp b/examples/kafka-serdes-avro-console-consumer.cpp
+index 6772686a9c5ebb9865e25152ae59d5807a9bb5af..1e2646c4ade66386b35d931ae9836e8500879098 100644
+--- a/examples/kafka-serdes-avro-console-consumer.cpp
++++ b/examples/kafka-serdes-avro-console-consumer.cpp
+@@ -28,7 +28,11 @@
+ #include <signal.h>
+ #include <getopt.h>
+ 
++#ifdef WIN32
++#include <winsock2.h>
++#else
+ #include <netinet/in.h> // remove
++#endif
+ 
+ /* Typical include path is <libserdes/serdescpp-avro.h> */
+ #include "../src-cpp/serdescpp-avro.h"
+@@ -71,7 +75,7 @@ static int avro2json (Serdes::Schema *schema, const avro::GenericDatum *datum,
+ 
+   /* JSON output stream */
+   std::ostringstream oss;
+-  std::auto_ptr<avro::OutputStream> json_os = avro::ostreamOutputStream(oss);
++  avro::OutputStreamPtr json_os = avro::ostreamOutputStream(oss);
+ 
+   try {
+     /* Encode Avro datum to JSON */
+@@ -213,11 +217,16 @@ int main (int argc, char **argv) {
+   std::string errstr;
+ 
+   /* Controlled termination */
++#ifdef WIN32
++  signal(SIGINT, sig_term);
++  signal(SIGTERM, sig_term);
++#else
+   struct sigaction sa;
+   memset(&sa, 0, sizeof(sa));
+   sa.sa_handler = sig_term;
+   sigaction(SIGINT, &sa, NULL);
+   sigaction(SIGTERM, &sa, NULL);
++#endif
+ 
+ 
+   /* Create serdes configuration object.
+diff --git a/examples/kafka-serdes-avro-console-producer.cpp b/examples/kafka-serdes-avro-console-producer.cpp
+index de5836a55aee332cb6a8ae59c2ae381c1498d6ad..1eb771d74e2671f7c958234949047c78986212af 100644
+--- a/examples/kafka-serdes-avro-console-producer.cpp
++++ b/examples/kafka-serdes-avro-console-producer.cpp
+@@ -85,7 +85,7 @@ static int json2avro (Serdes::Schema *schema, const std::string &json,
+ 
+   /* Input stream from json string */
+   std::istringstream iss(json);
+-  std::auto_ptr<avro::InputStream> json_is = avro::istreamInputStream(iss);
++  avro::InputStreamPtr json_is = avro::istreamInputStream(iss);
+ 
+   /* JSON decoder */
+   avro::DecoderPtr json_decoder = avro::jsonDecoder(*avro_schema);
+@@ -155,11 +155,16 @@ int main (int argc, char **argv) {
+   int partition = -1;
+ 
+   /* Controlled termination */
++#ifdef WIN32
++  signal(SIGINT, sig_term);
++  signal(SIGTERM, sig_term);
++#else
+   struct sigaction sa;
+   memset(&sa, 0, sizeof(sa));
+   sa.sa_handler = sig_term;
+   sigaction(SIGINT, &sa, NULL);
+   sigaction(SIGTERM, &sa, NULL);
++#endif
+ 
+ 
+   /* Create serdes configuration object.
+diff --git a/examples/serdes-tool.cpp b/examples/serdes-tool.cpp
+index 457694bfde6be15deb35ace4a4213d19306fe999..00bd9a4697464f388723366d3ae57344fc89cf73 100644
+--- a/examples/serdes-tool.cpp
++++ b/examples/serdes-tool.cpp
+@@ -84,7 +84,7 @@ static void decode_json (Serdes::Schema *schema, const std::string &json_str) {
+ 
+   decoder = avro::jsonDecoder(*static_cast<avro::ValidSchema*>(schema->object()));
+ 
+-  std::auto_ptr<avro::InputStream> istream =
++  avro::InputStreamPtr istream =
+       avro::memoryInputStream((const uint8_t *)json_str.c_str(), json_str.size());
+ 
+   decoder->init(*istream);
+@@ -112,11 +112,16 @@ int main (int argc, char **argv) {
+ 
+ 
+   /* Controlled termination */
++#ifdef WIN32
++  signal(SIGINT, sig_term);
++  signal(SIGTERM, sig_term);
++#else
+   struct sigaction sa;
+   memset(&sa, 0, sizeof(sa));
+   sa.sa_handler = sig_term;
+   sigaction(SIGINT, &sa, NULL);
+   sigaction(SIGTERM, &sa, NULL);
++#endif
+ 
+ 
+   /* Create serdes configuration object.
+diff --git a/src/framing.c b/src/framing.c
+index 45429bc749e24f39308d5ca996b27991048e3d38..8e08987bb14581793b507ec9cc3f1be4edd75357 100644
+--- a/src/framing.c
++++ b/src/framing.c
+@@ -16,7 +16,11 @@
+ 
+ #include "serdes_int.h"
+ 
++#ifdef WIN32
++#include <winsock2.h>
++#else
+ #include <arpa/inet.h> /* ntohl/htonl */
++#endif
+ 
+ 
+ size_t serdes_serializer_framing_size (serdes_t *sd) {
+diff --git a/src/serdes_int.h b/src/serdes_int.h
+index d2f4e97013a2d82aa0f9ed59c1f53dc0eb6d63b3..3e4852551e7db0185eb5a1c0c0589b6ac144be25 100644
+--- a/src/serdes_int.h
++++ b/src/serdes_int.h
+@@ -15,7 +15,7 @@
+  */
+ #pragma once
+ 
+-#include <sys/queue.h>
++#include "queue.h"
+ 
+ #include <avro.h>
+ 
+diff --git a/src-cpp/Makefile b/src-cpp/Makefile
+index 4bd77ba85fba264b7cd4c68ab7720ce1019b94b9..322585daa1a9dd50f2294f2022e488ef5520f53f 100644
+--- a/src-cpp/Makefile
++++ b/src-cpp/Makefile
+@@ -26,12 +26,15 @@ endif
+ ifeq ($(_UNAME_S),AIX)
+ 	FWD_LINKING_REQ=y
+ endif
+-ifeq ($(shell uname -o 2>/dev/null),Cygwin)
++ifeq ($(_UNAME_O),Cygwin)
++	FWD_LINKING_REQ=y
++endif
++ifeq ($(_UNAME_O),Msys)
+ 	FWD_LINKING_REQ=y
+ endif
+ 
+ ifeq ($(FWD_LINKING_REQ),y)
+-	LIBS := -L../src -lserdes $(LIBS) 
++	LIBS := -L../src -lserdes $(LIBS)
+ endif
+ 
+ LIBS += -lstdc++
+diff --git a/src-cpp/Serdes.cpp b/src-cpp/Serdes.cpp
+index 01446fb376d4eca367f31c446f318ff2cf21cce7..e5a9c3a3e98d8b9c3a932960c86d3a0c21f30915 100644
+--- a/src-cpp/Serdes.cpp
++++ b/src-cpp/Serdes.cpp
+@@ -221,7 +221,7 @@ ssize_t AvroImpl::serialize (Schema *schema, const avro::GenericDatum *datum,
+   avro::ValidSchema *avro_schema = schema->object();
+ 
+   /* Binary encoded output stream */
+-  std::auto_ptr<avro::OutputStream> bin_os = avro::memoryOutputStream();
++  avro::OutputStreamPtr bin_os = avro::memoryOutputStream();
+   /* Avro binary encoder */
+   avro::EncoderPtr bin_encoder = avro::validatingEncoder(*avro_schema,
+                                                          avro::binaryEncoder());
+@@ -238,7 +238,7 @@ ssize_t AvroImpl::serialize (Schema *schema, const avro::GenericDatum *datum,
+   }
+ 
+   /* Extract written bytes. */
+-  boost::shared_ptr<std::vector<uint8_t> > v;
++  std::shared_ptr<std::vector<uint8_t> > v;
+   v = avro::snapshot(*bin_os.get());
+ 
+   /* Write framing */
+@@ -281,7 +281,7 @@ ssize_t AvroImpl::deserialize (Schema **schemap, avro::GenericDatum **datump,
+   avro::ValidSchema *avro_schema = schema->object();
+ 
+   /* Binary input stream */
+-  std::auto_ptr<avro::InputStream> bin_is =
++  avro::InputStreamPtr bin_is =
+       avro::memoryInputStream((const uint8_t *)payload, size);
+ 
+   /* Binary Avro decoder */

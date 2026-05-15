@@ -1,0 +1,109 @@
+# Maintainer: Alexey Pavlov <alexpux@gmail.com>
+
+_realname=libgeotiff
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=1.7.4
+pkgrel=1
+pkgdesc="TIFF based interchange format for georeferenced raster imagery (mingw-w64)"
+arch=(any)
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url="https://github.com/OSGeo/libgeotiff"
+msys2_repository_url='https://github.com/OSGeo/libgeotiff'
+license=('spdx:MIT')
+depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
+         "${MINGW_PACKAGE_PREFIX}-libtiff"
+         "${MINGW_PACKAGE_PREFIX}-libjpeg"
+         "${MINGW_PACKAGE_PREFIX}-proj"
+         "${MINGW_PACKAGE_PREFIX}-zlib")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja")
+source=("https://github.com/OSGeo/${_realname}/releases/download/$pkgver/${_realname}-$pkgver.tar.gz"
+        'libgeotiff_buildsys.patch')
+sha256sums=('c598d04fdf2ba25c4352844dafa81dde3f7fd968daa7ad131228cd91e9d3dc47'
+            '319ece99bef92f0f76de3c1c2c7311532ac7ee86a9f8f88c839f4c960a96fea8')
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+  patch -p1 -i "${srcdir}"/libgeotiff_buildsys.patch
+
+  # fix wrongly encoded files from tarball
+  for f in $(find . -type f); do
+    if file $f | grep -q ISO-8859 ; then
+      /bin/iconv -f ISO-8859-1 -t UTF-8 $f > ${f}.tmp && \
+        mv -f ${f}.tmp $f
+    fi
+    if file $f | grep -q CRLF ; then
+      sed -i -e 's|\r$||g' $f
+    fi
+  done
+}
+
+build() {
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  # Static
+  mkdir "${srcdir}/build-${MSYSTEM}-static" && cd "${srcdir}/build-${MSYSTEM}-static"
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake \
+    -G"Ninja" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    "${_extra_config[@]}" \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DWITH_TIFF=ON \
+    -DWITH_JPEG=ON \
+    -DWITH_ZLIB=ON \
+    ../${_realname}-${pkgver}
+
+  ${MINGW_PREFIX}/bin/cmake --build .
+
+  # Shared
+  mkdir "${srcdir}/build-${MSYSTEM}-shared" && cd "${srcdir}/build-${MSYSTEM}-shared"
+
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake \
+    -G"Ninja" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    "${_extra_config[@]}" \
+    -DBUILD_SHARED_LIBS=ON \
+    -DWITH_TIFF=ON \
+    -DWITH_JPEG=ON \
+    -DWITH_ZLIB=ON \
+    ../${_realname}-${pkgver}
+
+  ${MINGW_PREFIX}/bin/cmake --build .
+}
+
+package() {
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install "${srcdir}/build-${MSYSTEM}-static"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install "${srcdir}/build-${MSYSTEM}-shared"
+
+  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
+  for _f in "${pkgdir}${MINGW_PREFIX}"/share/cmake/GeoTIFF/*.cmake; do
+    sed -e "s|${PREFIX_WIN}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
+    sed -e "s|${MINGW_PREFIX}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
+  done
+
+  mkdir -p "${pkgdir}"${MINGW_PREFIX}/lib/pkgconfig/
+
+  cat > "${pkgdir}"${MINGW_PREFIX}/lib/pkgconfig/${_realname}.pc <<EOF
+prefix=${MINGW_PREFIX}
+exec_prefix=\${prefix}
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: ${_realname}
+Description: GeoTIFF file format library
+Version: ${pkgver}
+Libs: -L\${libdir} -lgeotiff
+Cflags: -I\${includedir}
+EOF
+
+}

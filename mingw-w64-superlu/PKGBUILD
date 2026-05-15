@@ -1,0 +1,125 @@
+# Contributor: Oleg A. Khlybov <fougas@mail.ru>
+
+_realname=superlu
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=7.0.1
+pkgrel=1
+pkgdesc="Sparse direct linear solver (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url='https://portal.nersc.gov/project/sparse/superlu/'
+msys2_repository_url="https://github.com/xiaoyeli/superlu"
+msys2_references=(
+  'archlinux: superlu'
+  'gentoo: sci-libs/superlu'
+)
+license=('spdx:BSD-3-Clause')
+depends=("${MINGW_PACKAGE_PREFIX}-openblas")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-fc")
+checkdepends=("${MINGW_PACKAGE_PREFIX}-tcl")
+options=(!emptydirs)
+source=("https://github.com/xiaoyeli/${_realname}/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz"
+        'all.tcl'
+        'tclbuildtest.tcl'
+        'superlu.test'
+        '0001-pc-fix.patch'
+        '0002-fix-build-fortran.patch')
+sha256sums=('86dcca1e086f8b8079990d07f00eb707fc9ef412cf3b2ce808b37956f0de2cb8'
+            'ec5072630e1c0309fe383669e9187790cd135a393c67bc4bc35cf60b0ba396ff'
+            '15c7af25b91406d5fe5f26cfe00963b6cfde1c3dd466eb25f1b6fae299934966'
+            '5efeea2586552dcbccf238c4aed94d64525e33fb9eca8741b56a961a6fd8e144'
+            '1fcaa29c407bb81fb898db641f13d11eb1b50e1aeafbe42074ae4eff5963c95d'
+            '89fcb3aed84aa7c192d6ece67676fe47dad284e0d04db8398f4a8e7defe1d6d7')
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  patch -p1 -i "${srcdir}/0001-pc-fix.patch"
+  patch -p1 -i "${srcdir}/0002-fix-build-fortran.patch"
+}
+
+build() {
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  mkdir -p "${srcdir}/build-${MSYSTEM}-static" && cd "${srcdir}/build-${MSYSTEM}-static"
+
+  MSYS2_ARG_CONV_EXCL='-DCMAKE_INSTALL_PREFIX=' \
+    ${MINGW_PREFIX}/bin/cmake.exe \
+      -G "Ninja" \
+      -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+     "${_extra_config[@]}" \
+      -DBUILD_SHARED_LIBS=OFF \
+      -Denable_tests=OFF \
+      -Denable_examples=OFF \
+      -Denable_internal_blaslib=OFF \
+      ../${_realname}-${pkgver}
+
+  ${MINGW_PREFIX}/bin/cmake.exe --build ./
+
+  mkdir -p "${srcdir}/build-${MSYSTEM}-shared" && cd "${srcdir}/build-${MSYSTEM}-shared"
+
+  MSYS2_ARG_CONV_EXCL='-DCMAKE_INSTALL_PREFIX=' \
+    ${MINGW_PREFIX}/bin/cmake.exe \
+      -G "Ninja" \
+      -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+      "${_extra_config[@]}" \
+      -DBUILD_SHARED_LIBS=ON \
+      -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
+      -DCMAKE_NEED_RESPONSE=ON \
+      -Denable_tests=OFF \
+      -Denable_examples=OFF \
+      -Denable_internal_blaslib=OFF \
+      -Denable_fortran=ON \
+      ../${_realname}-${pkgver}
+
+  ${MINGW_PREFIX}/bin/cmake.exe --build ./
+}
+
+check() {
+  cd "${srcdir}/build-${MSYSTEM}-static"
+  ${MINGW_PREFIX}/bin/cmake -Denable_tests=ON ../${_realname}-${pkgver}
+  ${MINGW_PREFIX}/bin/cmake --build .
+  ${MINGW_PREFIX}/bin/ctest.exe ./ || true
+
+  cd "${srcdir}/build-${MSYSTEM}-shared"
+  ${MINGW_PREFIX}/bin/cmake -Denable_tests=ON ../${_realname}-${pkgver}
+  ${MINGW_PREFIX}/bin/cmake --build .
+  ${MINGW_PREFIX}/bin/ctest.exe ./ || true
+}
+
+package() {
+  cd "${srcdir}/build-${MSYSTEM}-static"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install ./
+
+  cd "${srcdir}/build-${MSYSTEM}-shared"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install ./
+
+  mkdir -p "${pkgdir}/${MINGW_PREFIX}/share/test/${_realname}"
+  cd "${pkgdir}${MINGW_PREFIX}/include"
+  mkdir "${_realname}"
+  find . -type f -exec mv {} "${_realname}" \;
+
+  cd "${srcdir}"
+  cp {all,tclbuildtest}.tcl ${_realname}.test "${pkgdir}/${MINGW_PREFIX}/share/test/${_realname}"
+  cd "${_realname}-${pkgver}/EXAMPLE"
+  cp ?linsol.c g20.rua cg20.cua "${pkgdir}/${MINGW_PREFIX}/share/test/${_realname}"
+
+  # Remove full path reference in cmake
+  local PREFIX_WIN=$(cygpath -wm ${MINGW_PREFIX})
+  for _f in "${pkgdir}${MINGW_PREFIX}"/lib/cmake/${_realname}/*.cmake; do
+    sed -e "s|${PREFIX_WIN}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
+    sed -e "s|${MINGW_PREFIX}|\$\{_IMPORT_PREFIX\}|g" -i ${_f}
+  done
+
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE.txt" \
+    "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE.txt"
+}

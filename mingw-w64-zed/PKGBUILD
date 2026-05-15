@@ -1,0 +1,141 @@
+# Maintainer: Maksim Bondarenkov <maksapple2306@gmail.com>
+
+_realname=zed
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         #"${MINGW_PACKAGE_PREFIX}-${_realname}-docs"
+)
+pkgver=1.2.3
+pkgrel=1
+pkgdesc="A high-performance, multiplayer code editor (mingw-w64)"
+arch=('any')
+mingw_arch=('ucrt64' 'clang64' 'clangarm64')
+url='https://zed.dev'
+msys2_repository_url='https://github.com/zed-industries/zed'
+msys2_documentation_url='https://zed.dev/docs'
+license=('spdx:AGPL-3.0-or-later AND Apache-2.0 AND GPL-3.0-or-later')
+install=zed-${MSYSTEM}.install
+msys2_references=(
+  'anitya: 373275'
+  'archlinux: zed'
+  'aur'
+  'gentoo: app-editors/zed'
+)
+depends=("${MINGW_PACKAGE_PREFIX}-libgit2"
+         "${MINGW_PACKAGE_PREFIX}-nodejs"
+         "${MINGW_PACKAGE_PREFIX}-zstd"
+         "${MINGW_PACKAGE_PREFIX}-sqlite3")
+makedepends=("${MINGW_PACKAGE_PREFIX}-rust"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-protobuf"
+             #"${MINGW_PACKAGE_PREFIX}-sqlite3"
+             "${MINGW_PACKAGE_PREFIX}-cargo-about"
+             "${MINGW_PACKAGE_PREFIX}-mdbook"
+             "${MINGW_PACKAGE_PREFIX}-rust-bindgen"
+             "${MINGW_PACKAGE_PREFIX}-nasm"
+             "${MINGW_PACKAGE_PREFIX}-efxc2"
+             'git')
+optdepends=("${MINGW_PACKAGE_PREFIX}-basedpyright: for a better Python language support"
+            "${MINGW_PACKAGE_PREFIX}-clang-tools-extra: for a better C/C++ language support"
+            "${MINGW_PACKAGE_PREFIX}-eslint: for a better JavaScript language support"
+            "${MINGW_PACKAGE_PREFIX}-gemini-cli: one of the ACP agents"
+            "${MINGW_PACKAGE_PREFIX}-git: for a better Git integration"
+            "${MINGW_PACKAGE_PREFIX}-ollama: provides LLMs for assistance panel"
+            "${MINGW_PACKAGE_PREFIX}-rust-analyzer: for a better Rust language support"
+            'openssh: for a SSH remote')
+source=("git+${msys2_repository_url}.git#tag=v${pkgver}"
+        "zstd-sys.tar.gz::https://crates.io/api/v1/crates/zstd-sys/2.0.16+zstd.1.5.7/download"
+        "zstd-sys-remove-statik.patch"
+        "zed-fix-docs-build.patch"
+        "zed-wsl-set-proper-cli-name.patch")
+sha256sums=('3ec07bbfb0cdf69df89c0466656afc5fb986a35e410772e18ec4a6fd29f5a5a5'
+            '91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748'
+            '48f4900ceb02d3aaf9a1020f33d56629156e96759f456c0e7ca18bfcf910767b'
+            'acaf155e37120a1af8918854a457939cad71e59bca2ced866f89795ed6b0a7b2'
+            'efc8fd5c8f5725678b7e4f726aa1414480de7aefac360c7b691ef179ae39c54f')
+
+prepare() {
+  cd "${_realname}"
+  rm rust-toolchain.toml
+
+  # patch -p1 -i ../zed-fix-docs-build.patch
+  # link system deps dynamically
+  patch -d ../zstd-sys-2.0.16+zstd.1.5.7 -i ../zstd-sys-remove-statik.patch
+  # wsl script is hardcoded with zed.exe name
+  patch -Np1 -i ../zed-wsl-set-proper-cli-name.patch
+  # use patched *-sys crates
+  sed -i '/\[patch\.crates-io\]/a zstd-sys.path = "../zstd-sys-2.0.16+zstd.1.5.7"' Cargo.toml
+
+  # change git config so `pet*` crates would be fetched without error; requires Windows registry
+  # changes, see https://zed.dev/docs/development/windows#build-fails-path-too-long for details
+  if test true != "$(git config core.longpaths)"; then
+    git config --global core.longpaths true
+  fi
+
+  cargo update -p zstd-sys
+  cargo fetch --locked
+  # generate license for whole Zed contents
+  #sh script/generate-licenses
+}
+
+build() {
+  cd "${_realname}"
+
+  export PROTOC="${MINGW_PREFIX}/bin/protoc.exe"
+  export PROTOC_INCLUDE="${MINGW_PREFIX}/include"
+  export OPENSSL_NO_VENDOR=1
+  export LIBGIT2_NO_VENDOR=1
+  export ZSTD_SYS_USE_PKG_CONFIG=1
+  export WINAPI_NO_BUNDLED_LIBRARIES=1
+  export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+  export ZED_UPDATE_EXPLANATION='Updates are handled by pacman'
+  export CARGO_PROFILE_RELEASE_DEBUG=0
+  export RELEASE_CHANNEL="stable"
+  export RELEASE_VERSION="${pkgver} (Rev${pkgrel}, Built by MSYS2 project)"
+  # set path to our fxc compiler
+  export GPUI_FXC_PATH="${MINGW_PREFIX}/bin/fxc.exe"
+  # should be synced with .cargo/config.toml
+  export RUSTFLAGS="${RUSTFLAGS/+crt-static/-crt-static} -C symbol-mangling-version=v0
+    --cfg tokio_unstable --cfg windows_slim_errors"
+
+  cargo build --release --frozen -p zed -p cli
+
+  # mdbook 0.5.0 is not supported currently
+  #cd docs
+  #mdbook build
+}
+
+check() {
+  cd "${_realname}"
+
+  cargo test --release --frozen -p zed -p cli
+}
+
+package_zed() {
+  install -Dm755 "${_realname}/target/release/cli" "${pkgdir}${MINGW_PREFIX}/bin/zeditor"
+  install -Dm755 "${_realname}/target/release/zed" "${pkgdir}${MINGW_PREFIX}/lib/zed/zed-editor"
+  # WSL script
+  install -Dm755 "${_realname}/crates/zed/resources/windows/zed.sh" "${pkgdir}${MINGW_PREFIX}/bin/zed-wsl"
+
+  install -Dm644 "${_realname}"/LICENSE-{AGPL,APACHE,GPL} -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/"
+  #install -Dm644 "${_realname}/assets/licenses.md" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE.md"
+}
+
+package_zed-docs() {
+  pkgdesc+=" (Documentation)"
+  depends=()
+  optdepends=()
+
+  install -d "${pkgdir}${MINGW_PREFIX}/share/doc/${_realname}/html/"
+  cp -r -t "${pkgdir}${MINGW_PREFIX}/share/doc/${_realname}/html/" "${_realname}"/docs/book/*
+}
+
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done

@@ -1,0 +1,129 @@
+# Maintainer: Konstantin Podsvirov <konstantin@podsvirov.su>
+
+_realname=MapServer
+pkgbase=mingw-w64-${_realname,,}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname,,}")
+pkgver=8.6.0
+_pkgver=rel-${pkgver//./-}
+pkgrel=5
+pkgdesc='Platform for publishing spatial data and interactive mapping applications to the web (mingw-w64)'
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url='https://mapserver.org/'
+msys2_repository_url="https://github.com/MapServer/MapServer"
+msys2_references=(
+  'aur: mapserver'
+  "cpe: cpe:/a:osgeo:mapserver"
+  "cpe: cpe:/a:umn:mapserver"
+  "purl: pkg:pypi/mapscript"
+)
+license=('spdx:MIT')
+depends=("${MINGW_PACKAGE_PREFIX}-zlib"
+         "${MINGW_PACKAGE_PREFIX}-libpng"
+         "${MINGW_PACKAGE_PREFIX}-freetype"
+         "${MINGW_PACKAGE_PREFIX}-libjpeg-turbo"
+         "${MINGW_PACKAGE_PREFIX}-protobuf-c"
+         "${MINGW_PACKAGE_PREFIX}-proj"
+         "${MINGW_PACKAGE_PREFIX}-fribidi"
+         "${MINGW_PACKAGE_PREFIX}-harfbuzz"
+         "${MINGW_PACKAGE_PREFIX}-libiconv"
+         "${MINGW_PACKAGE_PREFIX}-cairo"
+         "${MINGW_PACKAGE_PREFIX}-librsvg"
+         "${MINGW_PACKAGE_PREFIX}-geos"
+         "${MINGW_PACKAGE_PREFIX}-postgis"
+         "${MINGW_PACKAGE_PREFIX}-gdal"
+         "${MINGW_PACKAGE_PREFIX}-libxml2"
+         "${MINGW_PACKAGE_PREFIX}-python")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-python-build"
+             "${MINGW_PACKAGE_PREFIX}-python-installer"
+             "${MINGW_PACKAGE_PREFIX}-python-setuptools"
+             "${MINGW_PACKAGE_PREFIX}-swig")
+options=('!strip')
+source=("https://github.com/MapServer/MapServer/archive/${_pkgver}/${_realname}-${_pkgver}.tar.gz"
+        'https://ftp.gnu.org/old-gnu/regex/regex-0.12.tar.gz'
+        '0004-mapserver-8.0.0-dest-relative.patch'
+        '0005-mapserver-8.4.0-dlfcn-win32.patch'
+        '0006-clang-snprintf.patch')
+sha256sums=('b10abf0b7717b804bdd7a860956b51aa750c64b93b860816056c08cd2e8893d2'
+            'f36e2d8d56bf15054a850128fcb2f51807706a92d3bb4b37ceadd731535ce230'
+            '6d66fbbdda99b7c794f5f7f9885a02f0727424a15774eeaf4d99a99876a85cbb'
+            '37c5499e5b97e6e7abd493331553ac34a4ae8d977718701e93ea7ccad73be55b'
+            '06ce739ee78c444a7b4b72fb486a25ee6889f1ac5356f3d6aeab9c5ef9281767')
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying $_patch"
+    patch -Np1 -i "${srcdir}/$_patch"
+  done
+}
+
+prepare() {
+  cd "${srcdir}"/${_realname}-${_pkgver}
+
+  apply_patch_with_msg \
+    0004-mapserver-8.0.0-dest-relative.patch \
+    0005-mapserver-8.4.0-dlfcn-win32.patch \
+    0006-clang-snprintf.patch
+}
+
+build() {
+  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
+
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  CFLAGS+=" -Wno-implicit-function-declaration" \
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=;-DINSTALL_CMAKE_DIR=;--prefix=;--install-scripts=;--install-platlib=" \
+    "${MINGW_PREFIX}"/bin/cmake.exe \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+      -DCMAKE_INSTALL_SYSCONFDIR="etc" \
+      "${_extra_config[@]}" \
+      -DBUILD_SHARED_LIBS=ON \
+      -DBUILD_{DYNAMIC,STATIC}=ON \
+      -DINSTALL_CMAKE_DIR="${MINGW_PREFIX}/lib/cmake/mapserver" \
+      -DPROTOBUFC_COMPILER="${MINGW_PREFIX}/bin/protoc.exe" \
+      -DREGEX_DIR="${srcdir}/regex-0.12" \
+      -DWITH_FCGI=OFF \
+      -DWITH_RSVG=ON \
+      -DWITH_PYTHON=ON \
+      -DPython_EXECUTABLE="${MINGW_PREFIX}/bin/python.exe" \
+      ../${_realname}-${_pkgver}
+
+  "${MINGW_PREFIX}"/bin/cmake.exe --build .
+
+  cd "${srcdir}/build-${MSYSTEM}/src/mapscript/python"
+
+  "${MINGW_PREFIX}"/bin/python.exe -m build --wheel --skip-dependency-check --no-isolation
+}
+
+package() {
+  cd "${srcdir}/build-${MSYSTEM}"
+
+  DESTDIR="${pkgdir}" "${MINGW_PREFIX}"/bin/cmake.exe --install .
+
+  MSYS2_ARG_CONV_EXCL="--prefix=" \
+    "${MINGW_PREFIX}"/bin/python.exe -m installer --prefix=${MINGW_PREFIX} \
+    --destdir="${pkgdir}" src/mapscript/python/dist/*.whl
+
+  # Fix cmake files
+  local PREFIX_WIN=$(cygpath -am ${MINGW_PREFIX})
+  find "${pkgdir}${MINGW_PREFIX}/lib/cmake" -type f -name '*.cmake' \
+      -exec sed -i -e "s|${PREFIX_WIN}|\$\{MAPSERVER_CMAKE_DIR\}/../../..|g" {} \;
+  find "${pkgdir}${MINGW_PREFIX}/lib/cmake" -type f -name '*.cmake' \
+      -exec sed -i -e "s|${MINGW_PREFIX}|\$\{MAPSERVER_CMAKE_DIR\}/../../..|g" {} \;
+
+  for _file in LICENSE.md src/flatgeobuf/LICENSE src/flatgeobuf/include/flatbuffers/LICENSE
+  do
+    install -Dm644 "${srcdir}/${_realname}-${_pkgver}/${_file}" \
+      "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname,,}/${_file}"
+  done
+}

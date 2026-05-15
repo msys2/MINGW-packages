@@ -1,0 +1,134 @@
+# Maintainer: David Macek <david.macek.0@gmail.com>
+
+# TODO: include more stuff from tools/?
+
+_realname=nim
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=2.2.8
+pkgrel=3
+pkgdesc='Imperative, multi-paradigm, compiled programming language (mingw-w64)'
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64')
+url='https://nim-lang.org/'
+msys2_repository_url="https://github.com/nim-lang/Nim"
+msys2_references=(
+  "cpe: cpe:/a:nim-lang:nim"
+  "cpe: cpe:/a:nim-lang:nim-lang"
+)
+license=('spdx:MIT')
+depends=("${MINGW_PACKAGE_PREFIX}-cc-libs")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc")
+options=(!emptydirs)
+source=("https://nim-lang.org/download/nim-${pkgver}.tar.xz"
+        "0001-Use-unixy-filenames-even-on-Windows.patch"
+        "0002-Fix-config-path.patch"
+        "0003-Fix-library-path.patch"
+        "0004-Fix-nimrtl-dll-name.patch"
+        "0005-Fix-pcre-dll-name.patch"
+        "0006-no-static-linking.patch"
+        "0007-Fix-openssl-dll-name.patch")
+sha256sums=('114191afa083c5059dcbe5ce88dbe4f42542cff04e2c3017668ee438bc0b8cfc'
+            '3010acbe7769ea214dd51f5889e3a26b44925001905deb04b060beaede2578f4'
+            'e4616080589f8140dbf4e4dc8afff1dddd95c93af51e2754bd84606cee415386'
+            'a4b83a835ab1ac3687c38623a7023a62390a903f19d710ca861e9cdcf51dad6a'
+            '35a60e8c4ccff04ac9adb4b7d13c6e1e72b96dac9361173e4a44b1662107eea3'
+            'fa475808c100a86174ae348faaa4048d09e56406cb54c2f795da9d733605b003'
+            '11f0e3931a3972e0d9e91c7a4c33b2cae69e7123985b261d26fe87cc61daf185'
+            '371a3133fd00d748199364ce2c6a2c23e0105c20fa236b46c2d7f61f2ffd7442')
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+
+prepare() {
+  cd "${_realname}-${pkgver}"
+
+  apply_patch_with_msg \
+    0001-Use-unixy-filenames-even-on-Windows.patch \
+    0002-Fix-config-path.patch \
+    0003-Fix-library-path.patch \
+    0004-Fix-nimrtl-dll-name.patch \
+    0005-Fix-pcre-dll-name.patch \
+    0006-no-static-linking.patch \
+    0007-Fix-openssl-dll-name.patch
+
+  if [[ ${MSYSTEM} == CLANG* ]]; then
+    echo "cc = clang" >> "config/nim.cfg" 
+  fi
+}
+
+build() {
+  declare -a extra_config
+  if check_option "debug" "n"; then
+    extra_config+=("-d:release")
+  else
+    extra_config+=("-d:debug")
+  fi
+
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  msg2 "Building nim"
+  sh build.sh --cpu ${MINGW_CHOST}
+
+  msg2 "Building koch"
+  ./bin/nim c "${extra_config[@]}" koch
+  ./koch boot "${extra_config[@]}" -d:useGnuReadline
+
+  export PATH="${srcdir}/${_realname}-${pkgver}/bin:$PATH"
+
+  msg2 "Building libs"
+  pushd lib
+  nim c --app:lib -d:createNimRtl "${extra_config[@]}" nimrtl.nim
+  popd
+
+  msg2 "Building tools"
+  pushd tools
+  nim c "${extra_config[@]}" nimgrep.nim
+  popd
+
+  msg2 "Building nimsuggest"
+  nim c "${extra_config[@]}" nimsuggest/nimsuggest.nim
+}
+
+package() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  export PATH="${srcdir}/${_realname}-${pkgver}/bin:$PATH"
+
+  ./koch install "${pkgdir}"
+
+  mkdir -p "${pkgdir}${MINGW_PREFIX}/lib"
+  cp -a lib "${pkgdir}${MINGW_PREFIX}/lib/nim"
+  cp -a compiler "${pkgdir}${MINGW_PREFIX}/lib/nim"
+  mkdir -p "${pkgdir}"${MINGW_PREFIX}/lib/nim/dist
+  cp -a dist/checksums "${pkgdir}${MINGW_PREFIX}/lib/nim/dist/checksums"
+
+  mkdir -p "${pkgdir}${MINGW_PREFIX}/bin"
+  cp "lib/libnimrtl.dll" "${pkgdir}${MINGW_PREFIX}/bin"
+
+  install -Dm 644 config/* -t "${pkgdir}${MINGW_PREFIX}/etc/nim"
+  install -Dm 755 bin/* tools/nimgrep nimsuggest/nimsuggest -t "${pkgdir}${MINGW_PREFIX}/bin"
+
+  # Fix FS#50252, unusual placement of header files
+  install -d "${pkgdir}${MINGW_PREFIX}/include"
+  cp -a "${pkgdir}${MINGW_PREFIX}/lib/nim/"*.h "${pkgdir}${MINGW_PREFIX}/include"
+
+  mkdir -p "${pkgdir}${MINGW_PREFIX}/share/nim/doc"
+  cp -r "doc"/* "${pkgdir}${MINGW_PREFIX}/share/nim/doc/"
+  mkdir -p "${pkgdir}${MINGW_PREFIX}/lib/nim/doc"
+  cp doc/{basicopt.txt,advopt.txt} "${pkgdir}${MINGW_PREFIX}/lib/nim/doc/"
+
+  mkdir -p "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}"
+  cp "copying.txt" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+
+  # clean up after koch install
+  rm -r "${pkgdir}/nim"
+  rm -f "${pkgdir}"${MINGW_PREFIX}/bin/*.txt
+  rm -r "${pkgdir}"${MINGW_PREFIX}/lib/nim/*.dll
+  rm -r "${pkgdir}"${MINGW_PREFIX}/lib/nim/compiler/*.exe
+}

@@ -1,0 +1,139 @@
+# Maintainer: Junjie Mao <eternal.n08@gmail.com>
+
+_bootstrap_flexdll=1
+
+_realname=ocaml
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}-compiler-libs"
+         $( (( _bootstrap_flexdll )) && echo "${MINGW_PACKAGE_PREFIX}-flexdll-bootstrap"))
+pkgver=5.4.1
+pkgrel=2
+_flexdll_ver=0.44
+pkgdesc="An industrial strength programming language supporting functional, imperative and object-oriented styles (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64')
+url='https://ocaml.org/'
+msys2_repository_url="https://github.com/ocaml/ocaml"
+msys2_references=(
+  'archlinux: ocaml'
+  "cpe: cpe:/a:ocaml:ocaml"
+)
+license=('spdx:LGPL-2.1-or-later WITH OCaml-LGPL-linking-exception')
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-autotools"
+             "${MINGW_PACKAGE_PREFIX}-ncurses"
+             "${MINGW_PACKAGE_PREFIX}-zstd"
+             $( (( _bootstrap_flexdll )) || echo "${MINGW_PACKAGE_PREFIX}-flexdll"))
+source=("https://caml.inria.fr/distrib/ocaml-${pkgver%.*}/${_realname}-${pkgver}.tar.xz"
+        "https://github.com/ocaml/flexdll/archive/${_flexdll_ver}/flexdll-${_flexdll_ver}.tar.gz"
+        "0001-fix-misc-h.patch")
+sha256sums=('b1e297adc186635540758eb064c7fab025598ae4436f3b9767e5025188b4e0ab'
+            'b7c6a92286f1f3065324d51083dcb16eec436a4e6e3b8df7cf836b6d7a8b9491'
+            '24d20cc5fc9c0f70e5c54c2378f0be612ae474425dd5918b321469fb887eb358')
+install=ocaml-${MSYSTEM}.install
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  #autoreconf -fiv
+
+  apply_patch_with_msg \
+    0001-fix-misc-h.patch
+
+  if (( _bootstrap_flexdll )); then
+    cp -r "${srcdir}/flexdll-${_flexdll_ver}/"* flexdll
+  fi
+}
+
+build() {
+  [[ -d "${srcdir}"/build-${MSYSTEM} ]] && rm -rf "${srcdir}"/build-${MSYSTEM}
+  cp -r "${srcdir}/${_realname}-${pkgver}" "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
+
+  declare -a _extra_config
+  if (( _bootstrap_flexdll )); then
+    _extra_config+=("--with-flexdll")
+  fi
+
+  ./configure \
+    --prefix=${MINGW_PREFIX} \
+    --mandir=${MINGW_PREFIX}/share/man \
+    "${_extra_config[@]}"
+
+  # The build rules force creating symlinks. But that causes issues if they end
+  # up in the binary package. Make copies instead.
+  sed -i 's/^LN = .*/LN = cp -pR/' Makefile.build_config
+
+  make world.opt
+}
+
+package_ocaml() {
+  depends=("${MINGW_PACKAGE_PREFIX}-zstd")
+  optdepends=("${MINGW_PACKAGE_PREFIX}-ncurses: advanced ncurses features"
+              "${MINGW_PACKAGE_PREFIX}-tk: advanced tk features")
+
+  cd "${srcdir}/build-${MSYSTEM}"
+  make DESTDIR="${pkgdir}" install
+
+  # install license
+  install -m755 -d "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}"
+  install -m644 "${srcdir}"/${_realname}-${pkgver}/LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/"
+
+  # remove compiler libs
+  rm -rf "${pkgdir}${MINGW_PREFIX}/lib/ocaml/compiler-libs"
+
+  if (( _bootstrap_flexdll )); then
+    # remove flexdll libs
+    mkdir -p "${srcdir}"/install-flexdll${MINGW_PREFIX}/lib/ocaml
+    mkdir -p "${srcdir}"/install-flexdll${MINGW_PREFIX}/bin
+    mv "${pkgdir}"${MINGW_PREFIX}/lib/ocaml/flexdll "${srcdir}"/install-flexdll${MINGW_PREFIX}/lib/ocaml/flexdll
+    mv "${pkgdir}"${MINGW_PREFIX}/bin/flexlink*.exe "${srcdir}"/install-flexdll${MINGW_PREFIX}/bin/
+  fi
+}
+
+package_ocaml-compiler-libs() {
+  pkgdesc="Several modules used internally by the OCaml compiler (mingw-w64)"
+  license=('spdx:QPL-1.0')
+  depends=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+
+  cd "${srcdir}/build-${MSYSTEM}"
+  make DESTDIR="${pkgdir}" install
+
+  # Remove non-compiler-libs
+  find "${pkgdir}${MINGW_PREFIX}/lib/ocaml/" -mindepth 1 -maxdepth 1 -not -name "compiler-libs" -execdir rm -rf "{}" "+"
+  rm -rf "${pkgdir}${MINGW_PREFIX}/bin" "${pkgdir}${MINGW_PREFIX}/share"
+
+  install -m755 -d "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}-compiler-libs"
+  install -m644 "${srcdir}"/${_realname}-${pkgver}/LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}-compiler-libs/"
+
+  if (( _bootstrap_flexdll )); then
+    # remove flexdll libs
+    rm -rf "${pkgdir}${MINGW_PREFIX}/lib/ocaml/flexdll"
+  fi
+}
+
+package_flexdll-bootstrap() {
+  pkgdesc="An implementation of a dlopen-like API for Windows (For bootstrapping) (mingw-w64)"
+  license=('spdx:Zlib')
+
+  mv "${srcdir}"/install-flexdll/* "${pkgdir}"
+}
+
+# template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
+# vim: set ft=bash :
+
+# generate wrappers
+for _name in "${pkgname[@]}"; do
+  _short="package_${_name#${MINGW_PACKAGE_PREFIX}-}"
+  _func="$(declare -f "${_short}")"
+  eval "${_func/#${_short}/package_${_name}}"
+done
+# template end;

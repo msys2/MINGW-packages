@@ -1,0 +1,199 @@
+From ad85758f099a09a74d00b417c46fa50a1bc4cc5f Mon Sep 17 00:00:00 2001
+From: Nerixyz <nerixdev@outlook.de>
+Date: Thu, 1 May 2025 17:53:50 +0200
+Subject: [PATCH] refactor(windows): Load resources relative to the executable
+
+---
+ css/CMakeLists.txt              |  2 +-
+ rc/CMakeLists.txt               |  2 +-
+ src/CMakeLists.txt              |  4 ++++
+ src/classes/renderer/image.vala |  9 +-------
+ src/classes/resources.vala      | 40 +++++++++++++++++++++++++++++++++
+ src/classes/rest_server.vala    |  8 +------
+ src/classes/view/markdown.vala  |  7 +-----
+ src/pdfpc.vala                  | 17 +++-----------
+ 8 files changed, 52 insertions(+), 37 deletions(-)
+ create mode 100644 src/classes/resources.vala
+
+diff --git a/css/CMakeLists.txt b/css/CMakeLists.txt
+index dae90fa6..40ef35f8 100644
+--- a/css/CMakeLists.txt
++++ b/css/CMakeLists.txt
+@@ -1,5 +1,5 @@
+ install(FILES
+     pdfpc.css notes.css
+ DESTINATION
+-    ${CMAKE_INSTALL_PREFIX}/share/pdfpc/css
++    share/pdfpc/css
+ )
+diff --git a/rc/CMakeLists.txt b/rc/CMakeLists.txt
+index d0bf4296..7a23c8b5 100644
+--- a/rc/CMakeLists.txt
++++ b/rc/CMakeLists.txt
+@@ -1,5 +1,5 @@
+ install(FILES
+     pdfpcrc
+ DESTINATION
+-    ${CMAKE_INSTALL_FULL_SYSCONFDIR}
++    ${CMAKE_INSTALL_SYSCONFDIR}
+ )
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 29fb83d7..4823a362 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -148,6 +148,10 @@ if (CC_HAS_IMPLICIT_FUNCTION_DECLARATION)
+     add_definitions("-Wno-implicit-function-declaration")
+ endif()
+ 
++if(WIN32)
++    set(EXTRA_VALA_OPTIONS ${EXTRA_VALA_OPTIONS} -D WIN32)
++endif()
++
+ vala_precompile(VALA_C
+     ${VALA_SRC}
+ PACKAGES
+diff --git a/src/classes/renderer/image.vala b/src/classes/renderer/image.vala
+index 412d471e..152147d5 100644
+--- a/src/classes/renderer/image.vala
++++ b/src/classes/renderer/image.vala
+@@ -29,14 +29,7 @@ namespace pdfpc.Renderer {
+             int width, int height) {
+             // attempt to load from a local path (if the user hasn't installed)
+             // if that fails, attempt to load from the global path
+-            string load_icon_path;
+-            if (Options.no_install) {
+-                load_icon_path = Path.build_filename(Paths.SOURCE_PATH, "icons",
+-                    filename);
+-            } else {
+-                load_icon_path = Path.build_filename(Paths.SHARE_PATH, "icons",
+-                    filename);
+-            }
++            string load_icon_path = Resources.resolve(Path.build_filename("icons", filename));
+             File icon_file = File.new_for_path(load_icon_path);
+ 
+             try {
+diff --git a/src/classes/resources.vala b/src/classes/resources.vala
+new file mode 100644
+index 00000000..dde72a51
+--- /dev/null
++++ b/src/classes/resources.vala
+@@ -0,0 +1,40 @@
++namespace pdfpc {
++    class Resources {
++        // `bin` directory
++        private static string executable_dir = "";
++
++        public static void init(string path) {
++            executable_dir = Path.get_dirname(path);
++        }
++
++        public static string resolve(string resource) {
++#if WIN32
++            var local_path = Path.build_filename(executable_dir, "../share/pdfpc", resource);
++            if (GLib.FileUtils.test(local_path, GLib.FileTest.EXISTS)) {
++                return local_path;
++            }
++#endif
++
++            if (Options.no_install) {
++                return Path.build_filename(Paths.SOURCE_PATH, resource);
++            } else {
++                return Path.build_filename(Paths.SHARE_PATH, resource);
++            }
++        }
++
++        public static string resolve_system_config() {
++#if WIN32
++            var local_path = Path.build_filename(executable_dir, "..", "etc", "pdfpcrc");
++            if (GLib.FileUtils.test(local_path, GLib.FileTest.EXISTS)) {
++                return local_path;
++            }
++#endif
++
++            if (Options.no_install) {
++                return Path.build_filename(Paths.SOURCE_PATH, "rc/pdfpcrc");
++            } else {
++                return Path.build_filename(Paths.CONF_PATH, "pdfpcrc");
++            }
++        }
++    }
++}
+diff --git a/src/classes/rest_server.vala b/src/classes/rest_server.vala
+index 61490f32..d42686f2 100644
+--- a/src/classes/rest_server.vala
++++ b/src/classes/rest_server.vala
+@@ -502,13 +502,7 @@ namespace pdfpc {
+             if (Options.rest_static_root.has_prefix("/")) {
+                 this.static_root = Options.rest_static_root;
+             } else {
+-                if (Options.no_install) {
+-                    this.static_root = Path.build_filename(Paths.SOURCE_PATH,
+-                        Options.rest_static_root);
+-                } else {
+-                    this.static_root = Path.build_filename(Paths.SHARE_PATH,
+-                        Options.rest_static_root);
+-                }
++                this.static_root = Resources.resolve(Options.rest_static_root);
+             }
+ 
+             this.add_handler("/api", api_handler);
+diff --git a/src/classes/view/markdown.vala b/src/classes/view/markdown.vala
+index ec8f6b82..3e9ff07f 100644
+--- a/src/classes/view/markdown.vala
++++ b/src/classes/view/markdown.vala
+@@ -28,12 +28,7 @@ namespace pdfpc.View {
+         public MarkdownView() {
+             this.ucm = this.get_user_content_manager();
+ 
+-            string css_path;
+-            if (Options.no_install) {
+-                css_path = Path.build_filename(Paths.SOURCE_PATH, "css/notes.css");
+-            } else {
+-                css_path = Path.build_filename(Paths.SHARE_PATH, "css/notes.css");
+-            }
++            string css_path = Resources.resolve("css/notes.css");
+ 
+             try {
+                 File css_file = File.new_for_path(css_path);
+diff --git a/src/pdfpc.vala b/src/pdfpc.vala
+index 9543aaab..5f828304 100644
+--- a/src/pdfpc.vala
++++ b/src/pdfpc.vala
+@@ -209,12 +209,7 @@ namespace pdfpc {
+             Gtk.StyleContext.add_provider_for_screen(Gdk.Display.get_default().get_default_screen(),
+                 userProvider, Gtk.STYLE_PROVIDER_PRIORITY_USER);
+ 
+-            string distCssPath;
+-            if (Options.no_install) {
+-                distCssPath = Path.build_filename(Paths.SOURCE_PATH, "css/pdfpc.css");
+-            } else {
+-                distCssPath = Path.build_filename(Paths.SHARE_PATH, "css/pdfpc.css");
+-            }
++            string distCssPath = Resources.resolve("css/pdfpc.css");
+             var legacyUserCssPath = Path.build_filename(GLib.Environment.get_user_config_dir(), "pdfpc.css");
+             var userCssPath = Path.build_filename(GLib.Environment.get_user_config_dir(), "pdfpc", "pdfpc.css");
+ 
+@@ -285,14 +280,7 @@ namespace pdfpc {
+ 
+             ConfigFileReader configFileReader = new ConfigFileReader();
+ 
+-            string systemConfig;
+-            if (Options.no_install) {
+-                systemConfig = Path.build_filename(Paths.SOURCE_PATH,
+-                    "rc/pdfpcrc");
+-            } else {
+-                systemConfig = Path.build_filename(Paths.CONF_PATH,
+-                    "pdfpcrc");
+-            }
++            string systemConfig = Resources.resolve_system_config();
+             configFileReader.readConfig(systemConfig);
+ 
+             // First, try the XDG config directory
+@@ -587,6 +575,7 @@ namespace pdfpc {
+          * Basic application entry point
+          */
+         public static int main (string[] args) {
++            Resources.init(args[0]);
+             var application = new Application();
+             application.run(args);
+ 
