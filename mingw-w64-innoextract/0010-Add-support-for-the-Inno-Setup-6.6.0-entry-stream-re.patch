@@ -1,0 +1,151 @@
+From 1f1c5ce97d4b44deca39c8fd11130936ac9522e4 Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Wed, 6 May 2026 22:33:50 +0200
+Subject: [PATCH 10/11] Add support for the Inno Setup 6.6.0 entry stream
+ rework
+
+Inno Setup 6.6.0 reorganised TSetupLanguageEntry beyond what is
+already covered by the matching SetupID magic patch. To actually parse
+6.6.0 language entries, the on-disk layout in
+Projects/Src/Shared.Struct.pas (tag is-6_6_0 in
+https://github.com/jrsoftware/issrc) needs three changes.
+
+The TitleFontName and CopyrightFontName binary strings were dropped
+entirely (the new dialog-font-base-scale machinery makes per-language
+title/copyright fonts unnecessary). The matching TitleFontSize and
+CopyrightFontSize integers were replaced by
+DialogFontBaseScaleHeight and DialogFontBaseScaleWidth, sitting
+between DialogFontSize and WelcomeFontSize. And LanguageID narrowed
+from Cardinal (4 bytes) to Word (2 bytes) on disk, since the upper
+half was always zero anyway. Add corresponding members for the new
+scale fields, gate the obsolete reads to ``< 6.6.0``, and read
+LanguageID at the right width.
+
+In TSetupCustomMessageEntry/TSetupPermissionEntry the read order is
+unchanged; only the wizard-and-decompressor stream gains material:
+6.6.0 added a second copy of each wizard image group right after the
+existing main and small image groups, holding the dynamic-dark images
+that match the new WantWizardImagesDynamicDark plumbing in
+Setup.MainFunc.pas (tag is-6_6_0). Both groups are always serialised
+even when dark-mode imagery is not configured; the runtime is what
+picks which set to display. innoextract does not expose dark-theme
+images yet, but the bytes have to be consumed so the decompressor /
+decryptor blocks that follow stay aligned. Read both groups into
+local vectors and discard them, gated to ``>= 6.6.0``.
+
+Assisted-by: Claude Opus 4.7
+Signed-off-by: Johannes Schindelin <johannes.schindelin@gmx.de>
+---
+ src/setup/info.cpp     | 11 +++++++++++
+ src/setup/language.cpp | 43 +++++++++++++++++++++++++++++++++++++-----
+ src/setup/language.hpp |  2 ++
+ 3 files changed, 51 insertions(+), 5 deletions(-)
+
+diff --git a/src/setup/info.cpp b/src/setup/info.cpp
+index 0678f36..8afe01b 100644
+--- a/src/setup/info.cpp
++++ b/src/setup/info.cpp
+@@ -113,6 +113,17 @@ void load_wizard_and_decompressor(std::istream & is, const setup::version & vers
+ 		load_wizard_images(is, version, info.wizard_images_small, entries);
+ 	}
+ 	
++	if(version >= INNO_VERSION(6, 6, 0)) {
++		// Inno Setup 6.6.0 added a second copy of each wizard image
++		// group for the dynamic-dark theme. The on-disk format always
++		// includes both copies regardless of whether dark-mode images
++		// were actually configured; the runtime decides which set to
++		// use based on WantWizardImagesDynamicDark.
++		std::vector<std::string> dark_images, dark_images_small;
++		load_wizard_images(is, version, dark_images, entries);
++		load_wizard_images(is, version, dark_images_small, entries);
++	}
++	
+ 	info.decompressor_dll.clear();
+ 	if(header.compression == stream::BZip2
+ 	   || (header.compression == stream::LZMA1 && version == INNO_VERSION(4, 1, 5))
+diff --git a/src/setup/language.cpp b/src/setup/language.cpp
+index 6b40813..62be840 100644
+--- a/src/setup/language.cpp
++++ b/src/setup/language.cpp
+@@ -140,9 +140,17 @@ void language_entry::load(std::istream & is, const info & i) {
+ 	}
+ 	
+ 	is >> util::binary_string(dialog_font);
+-	is >> util::binary_string(title_font);
++	if(i.version < INNO_VERSION(6, 6, 0)) {
++		is >> util::binary_string(title_font);
++	} else {
++		title_font.clear();
++	}
+ 	is >> util::binary_string(welcome_font);
+-	is >> util::binary_string(copyright_font);
++	if(i.version < INNO_VERSION(6, 6, 0)) {
++		is >> util::binary_string(copyright_font);
++	} else {
++		copyright_font.clear();
++	}
+ 	
+ 	if(i.version >= INNO_VERSION(4, 0, 0)) {
+ 		is >> util::binary_string(data);
+@@ -156,7 +164,15 @@ void language_entry::load(std::istream & is, const info & i) {
+ 		license_text.clear(), info_before.clear(), info_after.clear();
+ 	}
+ 	
+-	language_id = util::load<boost::uint32_t>(is);
++	if(i.version >= INNO_VERSION(6, 6, 0)) {
++		// Inno Setup 6.6.0 narrowed LanguageID from Cardinal (4 bytes) to
++		// Word (2 bytes) on disk; see TSetupLanguageEntry in
++		// Projects/Src/Shared.Struct.pas at tag is-6_6_0 in
++		// https://github.com/jrsoftware/issrc.
++		language_id = util::load<boost::uint16_t>(is);
++	} else {
++		language_id = util::load<boost::uint32_t>(is);
++	}
+ 	
+ 	if(i.version < INNO_VERSION(4, 2, 2)) {
+ 		codepage = default_codepage_for_language(language_id);
+@@ -186,9 +202,26 @@ void language_entry::load(std::istream & is, const info & i) {
+ 		dialog_font_standard_height = 0;
+ 	}
+ 	
+-	title_font_size = util::load<boost::uint32_t>(is);
++	if(i.version >= INNO_VERSION(6, 6, 0)) {
++		// 6.6.0 replaced TitleFontSize and CopyrightFontSize with
++		// DialogFontBaseScaleHeight and DialogFontBaseScaleWidth (each a
++		// 32-bit Integer) sitting between DialogFontSize and
++		// WelcomeFontSize. See TSetupLanguageEntry in
++		// Projects/Src/Shared.Struct.pas at tag is-6_6_0.
++		dialog_font_base_scale_height = util::load<boost::uint32_t>(is);
++		dialog_font_base_scale_width = util::load<boost::uint32_t>(is);
++		title_font_size = 0;
++	} else {
++		dialog_font_base_scale_height = 0;
++		dialog_font_base_scale_width = 0;
++		title_font_size = util::load<boost::uint32_t>(is);
++	}
+ 	welcome_font_size = util::load<boost::uint32_t>(is);
+-	copyright_font_size = util::load<boost::uint32_t>(is);
++	if(i.version < INNO_VERSION(6, 6, 0)) {
++		copyright_font_size = util::load<boost::uint32_t>(is);
++	} else {
++		copyright_font_size = 0;
++	}
+ 	
+ 	if(i.version == INNO_VERSION_EXT(5, 5, 7, 1)) {
+ 		util::load<boost::uint32_t>(is); // always 8 or 9?
+diff --git a/src/setup/language.hpp b/src/setup/language.hpp
+index 8801c64..99b65d0 100644
+--- a/src/setup/language.hpp
++++ b/src/setup/language.hpp
+@@ -56,6 +56,8 @@ struct language_entry {
+ 	boost::uint32_t codepage;
+ 	size_t dialog_font_size;
+ 	size_t dialog_font_standard_height;
++	size_t dialog_font_base_scale_height; //!< Inno Setup 6.6.0+
++	size_t dialog_font_base_scale_width;  //!< Inno Setup 6.6.0+
+ 	size_t title_font_size;
+ 	size_t welcome_font_size;
+ 	size_t copyright_font_size;
+-- 
+2.54.0.windows.1
+

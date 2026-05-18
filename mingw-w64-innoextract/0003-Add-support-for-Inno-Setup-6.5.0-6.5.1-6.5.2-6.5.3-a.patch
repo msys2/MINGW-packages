@@ -1,0 +1,112 @@
+From 6c584226b9adc9decd64f621d36d267b7bc5026d Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Tue, 5 May 2026 01:44:12 +0200
+Subject: [PATCH 03/11] Add support for Inno Setup 6.5.0, 6.5.1, 6.5.2, 6.5.3
+ and 6.5.4
+
+Inno Setup 6.5.0 made two on-disk changes to TSetupHeader:
+
+  - A new SevenZipLibraryName: String, serialised right after
+    CloseApplicationsFilterExcludes (Projects/Src/Shared.Struct.pas
+    at tag is-6_5_0 in https://github.com/jrsoftware/issrc).
+  - A new NumISSigKeyEntries: Integer entry-count field, slotted
+    between NumDirEntries and NumFileEntries. ISSig (Inno Setup
+    Signature) key entries are part of the new ECDSA P-256 ISSigTool
+    technology preview added in 6.4.3 and turned into a serialised
+    table in 6.5.0. innoextract does not yet process the entries
+    themselves; for now consume the count so that NumFileEntries and
+    every entry count after it remains aligned.
+
+6.5.0 also bumped the SetupLdrOffsetTableVersion from 1 to 2 and
+widened the offset table; that part is handled in the previous
+"loader: support setup loader offset table revision 2" commit.
+
+Add SetupID magic strings:
+  - 6.5.0 covers 6.5.0 and 6.5.1, which share `Inno Setup Setup Data
+    (6.5.0)`.
+  - 6.5.2 covers 6.5.2, 6.5.3 and 6.5.4, which share
+    `Inno Setup Setup Data (6.5.2)`. The header changes (new wizard
+    image background colours and dynamic-dark-mode variants) are added
+    in a separate follow-up commit since they are not in the same
+    on-disk position as the older WizardImageBackColor field, so they
+    require a different branch in `header::load`.
+
+This change continues the prior-art line started by PR #202
+(https://github.com/dscharrer/innoextract/pull/202) by itai-delphos.
+
+Helped-by: itai-delphos@github
+Assisted-by: Claude Opus 4.7
+Signed-off-by: Johannes Schindelin <johannes.schindelin@gmx.de>
+---
+ src/setup/header.cpp  | 14 ++++++++++++++
+ src/setup/header.hpp  |  1 +
+ src/setup/version.cpp |  2 ++
+ 3 files changed, 17 insertions(+)
+
+diff --git a/src/setup/header.cpp b/src/setup/header.cpp
+index 6ed61cc..65c6603 100644
+--- a/src/setup/header.cpp
++++ b/src/setup/header.cpp
+@@ -271,6 +271,11 @@ void header::load(std::istream & is, const version & version) {
+ 	} else {
+ 		close_applications_filter_excludes.clear();
+ 	}
++	if(version >= INNO_VERSION(6, 5, 0)) {
++		is >> util::binary_string(seven_zip_library_name);
++	} else {
++		seven_zip_library_name.clear();
++	}
+ 	if(version >= INNO_VERSION(5, 2, 5)) {
+ 		is >> util::ansi_string(license_text);
+ 		is >> util::ansi_string(info_before);
+@@ -324,6 +329,14 @@ void header::load(std::istream & is, const version & version) {
+ 	}
+ 	
+ 	directory_count = util::load<boost::uint32_t>(is, version.bits());
++	if(version >= INNO_VERSION(6, 5, 0)) {
++		// Inno Setup 6.5.0 inserted a NumISSigKeyEntries: Integer field
++		// between NumDirEntries and NumFileEntries
++		// (Projects/Src/Shared.Struct.pas at tag is-6_5_0). innoextract
++		// does not yet use the count, but the bytes must be consumed to
++		// keep the stream position correct.
++		(void)util::load<boost::uint32_t>(is, version.bits());
++	}
+ 	file_count = util::load<boost::uint32_t>(is, version.bits());
+ 	data_entry_count = util::load<boost::uint32_t>(is, version.bits());
+ 	icon_count = util::load<boost::uint32_t>(is, version.bits());
+@@ -768,6 +781,7 @@ void header::decode(util::codepage_id codepage) {
+ 	util::to_utf8(uninstallable, codepage);
+ 	util::to_utf8(close_applications_filter, codepage);
+ 	util::to_utf8(close_applications_filter_excludes, codepage);
++	util::to_utf8(seven_zip_library_name, codepage);
+ 	util::to_utf8(setup_mutex, codepage, &lead_bytes);
+ 	util::to_utf8(changes_environment, codepage);
+ 	util::to_utf8(changes_associations, codepage);
+diff --git a/src/setup/header.hpp b/src/setup/header.hpp
+index 08d492c..fa47892 100644
+--- a/src/setup/header.hpp
++++ b/src/setup/header.hpp
+@@ -168,6 +168,7 @@ struct header {
+ 	std::string architectures_allowed_expr;
+ 	std::string architectures_installed_in_64bit_mode_expr;
+ 	std::string close_applications_filter_excludes;
++	std::string seven_zip_library_name;
+ 	std::string license_text;
+ 	std::string info_before;
+ 	std::string info_after;
+diff --git a/src/setup/version.cpp b/src/setup/version.cpp
+index be6682b..2911396 100644
+--- a/src/setup/version.cpp
++++ b/src/setup/version.cpp
+@@ -188,6 +188,8 @@ const known_version versions[] = {
+ 	{ "Inno Setup Setup Data (6.4.0.1)",        /* 6.4.0 */ INNO_VERSION_EXT(6, 4,  0, 1), version::Unicode },
+ 	{ "Inno Setup Setup Data (6.4.2)",                      INNO_VERSION_EXT(6, 4,  2, 0), version::Unicode },
+ 	{ "Inno Setup Setup Data (6.4.3)",                      INNO_VERSION_EXT(6, 4,  3, 0), version::Unicode },
++	{ "Inno Setup Setup Data (6.5.0)",                      INNO_VERSION_EXT(6, 5,  0, 0), version::Unicode },
++	{ "Inno Setup Setup Data (6.5.2)",                      INNO_VERSION_EXT(6, 5,  2, 0), version::Unicode },
+ };
+ 
+ } // anonymous namespace
+-- 
+2.54.0.windows.1
+
