@@ -9,6 +9,17 @@
  
    set_target_properties(abinit::wannier PROPERTIES
      INTERFACE_INCLUDE_DIRECTORIES "${WANNIER_INCLUDE_DIR}"
+--- a/cmake/compiler_setup.cmake
++++ b/cmake/compiler_setup.cmake
+@@ -80,7 +80,7 @@
+       "$<$<AND:$<COMPILE_LANGUAGE:Fortran>,$<CONFIG:Debug>>:-fbacktrace;-finit-real=nan;-Wimplicit;-Wall;-Wextra>")
+   endif()
+ 
+-elseif(CMAKE_Fortran_COMPILER_ID MATCHES "Flang")
++elseif(CMAKE_Fortran_COMPILER_ID MATCHES "Flang" AND NOT MINGW)
+ 
+   # Add exec-stack
+   add_link_options("$<$<AND:$<LINK_LANGUAGE:Fortran>>:-Wl,-z,execstack>")
 --- a/cmake/generate_config_h.cmake
 +++ b/cmake/generate_config_h.cmake
 @@ -210,8 +210,10 @@
@@ -23,16 +34,6 @@
  endif()
  
  # check backtrace
---- a/shared/common/src/CMakeLists.txt
-+++ b/shared/common/src/CMakeLists.txt
-@@ -25,6 +25,6 @@
- IF(NOT EXISTS "${CMAKE_SOURCE_DIR}/shared/common/src/39_libpaw")
-   message("-- Create 39_libpaw symbolic link")
-   execute_process(WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/shared/common/src
--                  COMMAND ${CMAKE_COMMAND} -E create_symlink ../../libpaw/src 39_libpaw)
-+                  COMMAND ${CMAKE_COMMAND} -E copy_directory ../../libpaw/src 39_libpaw)
- endif()
- add_subdirectory(39_libpaw)
 --- a/shared/common/src/02_clib/CMakeLists.txt
 +++ b/shared/common/src/02_clib/CMakeLists.txt
 @@ -11,13 +11,15 @@
@@ -68,8 +69,8 @@
  add_library(abinit::02_clib ALIAS 02_clib)
 --- a/shared/common/src/02_clib/fsi_posix.c
 +++ b/shared/common/src/02_clib/fsi_posix.c
-@@ -25,6 +25,10 @@
- #include <errno.h>
+@@ -30,6 +30,10 @@
+ 
  #include "abi_clib.h"
  #include "xmalloc.h"
 +#ifdef _WIN32
@@ -79,23 +80,62 @@
  
  /* Return 0 if dirpath is not an existent directory */
  int _directory_exist(const char *dirpath) {
+@@ -63,7 +67,7 @@
+    }
+ }
+ 
+-
++#ifndef _WIN32
+ /* Create and lock file. Use fctn to be POSIX-compliant
+    Caller is responsible for unlocking and closing the file
+ */
+@@ -88,7 +92,7 @@
+         *ierr = +1;
+     }
+ }
+-
++#endif
+ 
+ /* Close file descriptor */
+ void c_close_fd(int *fd) {
 --- a/shared/common/src/02_clib/m_clib.F90
 +++ b/shared/common/src/02_clib/m_clib.F90
-@@ -31,10 +31,12 @@
+@@ -31,12 +31,14 @@
   public :: clib_etime
   public :: clib_mtrace
   public :: clib_print_mallinfo
 +#ifndef _WIN32
   public :: clib_ulimit_stack    ! Set stack size limit to maximum allowed value.
-+ public :: clib_setenv
++ public :: clib_setenv          ! Set env variable.
++ public :: clib_lock_file_by_name
 +#endif
-  public :: clib_getpid
+  public :: clib_getpid          ! Get process id
   public :: clib_sleep           ! Sleep for a certain number of seconds.
-- public :: clib_setenv
+- public :: clib_setenv          ! Set env variable.
   public :: clib_mkdir_if_needed
+- public :: clib_lock_file_by_name
+  public :: clib_close_fd
  
- 
-@@ -125,7 +127,7 @@
+ ! ===================================================
+@@ -58,7 +60,7 @@
+      character(kind=c_char),intent(in) :: newname(*)
+    end function c_rename
+  end interface
+-
++#ifndef _WIN32
+  interface
+     subroutine clib_lock_file_by_name(filename, fd, ierr) bind(C, name="c_lock_file_by_name")
+       import
+@@ -67,7 +69,7 @@
+       integer(c_int),intent(out) :: ierr
+     end subroutine clib_lock_file_by_name
+  end interface
+-
++#endif
+  interface
+     subroutine clib_close_fd(fd) bind(C, name="c_close_fd")
+       import
+@@ -139,7 +141,7 @@
       integer(c_int),intent(out) :: ierr
     end subroutine
   end interface
@@ -104,7 +144,7 @@
   interface
     ! Set stack size limit to maximum allowed value. Return soft and hard limit and exit status.
     subroutine clib_ulimit_stack(rlim_cur, rlim_max, ierr) bind(C, name="ulimit_stack")
-@@ -142,6 +144,7 @@
+@@ -156,6 +158,7 @@
       integer(c_int),intent(in) :: overwrite
     end function
   end interface
@@ -112,8 +152,8 @@
  
  ! ==========================================
  ! ==== Fortran-bindings for file_lock.c ====
-@@ -260,7 +263,7 @@
- !!       value (by contrast with putenv(3)).
+@@ -274,7 +277,7 @@
+ !!   value (by contrast with putenv(3)).
  !!
  !! SOURCE
 -
@@ -121,7 +161,7 @@
  integer function clib_setenv(name, value, overwrite) result(ierr)
  
  !Arguments ------------------------------------
-@@ -272,6 +275,6 @@
+@@ -286,6 +289,6 @@
  
  end function clib_setenv
  !!***
@@ -165,8 +205,8 @@
    abinit::02_clib
 --- a/shared/common/src/12_hide_mpi/m_xmpi.F90
 +++ b/shared/common/src/12_hide_mpi/m_xmpi.F90
-@@ -818,8 +818,10 @@
-  end if
+@@ -817,8 +817,10 @@
+  if (xmpio_bsize_frm == 0) call xmpio_get_info_frm(xmpio_bsize_frm, xmpio_mpi_type_frm, xmpi_world)
  #endif
  
 +#ifndef _WIN32
@@ -176,7 +216,7 @@
  
   if (xmpi_comm_rank(xmpi_world) == 0) then
  
-@@ -875,12 +877,7 @@
+@@ -874,12 +876,7 @@
  
   ! If OMP_NUM_THREADS is not defined (ierr != 0), set it to 1
   if (ierr /= 0) then
@@ -190,6 +230,42 @@
   else
     !write(std_out,*)'- OMP_NUM_THREADS is already set to: ', trim(omp_num_threads)
   end if
+--- a/shared/common/src/14_hidewrite/CMakeLists.txt
++++ b/shared/common/src/14_hidewrite/CMakeLists.txt
+@@ -62,4 +62,10 @@
+   MPI::MPI_Fortran
+ )
+ 
++if(WIN32)
++  target_compile_definitions(14_hidewrite
++    PRIVATE
++    _WIN32)
++endif()
++
+ add_library(abinit::14_hidewrite ALIAS 14_hidewrite)
+--- a/shared/common/src/14_hidewrite/m_io_tools.F90
++++ b/shared/common/src/14_hidewrite/m_io_tools.F90
+@@ -1161,8 +1161,9 @@
+ 
+  ! Try to acquire the lock.
+  ierr = 0; lock_name = trim(filename)//".lock"
+-
++#ifndef _WIN32
+  call clib_lock_file_by_name(trim(lock_name)//c_null_char, fd, ierr)
++#endif
+  if (ierr == 0) then
+    ! I got the lock --> write string to __ABI_MPIABORTFILE__
+    file_unit = get_unit()
+--- a/shared/common/src/CMakeLists.txt
++++ b/shared/common/src/CMakeLists.txt
+@@ -25,6 +25,6 @@
+ IF(NOT EXISTS "${CMAKE_SOURCE_DIR}/shared/common/src/39_libpaw")
+   message("-- Create 39_libpaw symbolic link")
+   execute_process(WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/shared/common/src
+-                  COMMAND ${CMAKE_COMMAND} -E create_symlink ../../libpaw/src 39_libpaw)
++                  COMMAND ${CMAKE_COMMAND} -E copy_directory ../../libpaw/src 39_libpaw)
+ endif()
+ add_subdirectory(39_libpaw)
 --- a/src/57_iopsp_parser/CMakeLists.txt
 +++ b/src/57_iopsp_parser/CMakeLists.txt
 @@ -37,6 +37,7 @@
