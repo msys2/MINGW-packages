@@ -1,0 +1,242 @@
+--- a/cvise/utils/process.py
++++ b/cvise/utils/process.py
+@@ -6,7 +6,6 @@
+ import contextlib
+ import heapq
+ import multiprocessing
+-import multiprocessing.managers
+ import os
+ import queue
+ import shlex
+@@ -25,6 +24,7 @@
+ from cvise.utils import sigmonitor
+ 
+ _mp_task_loss_workaround_obj: MPTaskLossWorkaround | None = None
++_process_event_pid_queue = None
+ 
+ 
+ @unique
+@@ -44,8 +44,8 @@
+ class ProcessMonitor:
+     """Keeps track of subprocesses spawned by Pebble workers."""
+ 
+-    def __init__(self, mpmanager: multiprocessing.managers.SyncManager, parallel_tests: int):
+-        self.pid_queue: queue.Queue = mpmanager.Queue()
++    def __init__(self, parallel_tests: int):
++        self.pid_queue = multiprocessing.SimpleQueue()
+         self._lock = threading.Lock()
+         self._worker_to_child_pids: dict[int, set[int]] = {}
+         # Remember dead worker PIDs, so that we can distinguish an early-reported child PID (arriving before
+@@ -56,6 +56,9 @@
+         self._thread = threading.Thread(target=self._thread_main)
+         self._killer = ProcessKiller()
+ 
++    def worker_process_initializer(self):
++        return _ProcessEventNotifierInitializer(self.pid_queue)
++
+     def __enter__(self):
+         self._killer.__enter__()
+         self._thread.start()
+@@ -268,9 +271,9 @@
+ 
+     _EVENT_LOOP_STEP = 1  # seconds
+ 
+-    def __init__(self, pid_queue: queue.Queue | None):
++    def __init__(self, pid_queue: queue.Queue | None = None):
+         self._my_pid = os.getpid()
+-        self._pid_queue = pid_queue
++        self._pid_queue = pid_queue if pid_queue is not None else _process_event_pid_queue
+ 
+     def run_process(
+         self,
+@@ -387,7 +390,7 @@
+         # Don't use Manager-based synchronization primitives because of their poor performance. Don't use Queue since
+         # it uses background threads which breaks our assumptions and isn't compatible with quick exit on signals.
+         self._task_status_queue = multiprocessing.SimpleQueue()
+-        self._task_exit_flag = multiprocessing.Event()
++        self._task_exit_flag = multiprocessing.Value('b', False)
+ 
+     def initialize_in_worker(self) -> None:
+         """Must be called in a worker process in order to initialize global state needed later."""
+@@ -416,7 +419,7 @@
+             time.sleep(self._POLL_LOOP_STEP)  # SimpleQueue doesn't provide polling
+ 
+         # 3. Shut down all tasks - use graceful termination for the successfully started ones, and cancel the lost ones.
+-        self._task_exit_flag.set()
++        self._task_exit_flag.value = True
+         start_time = time.monotonic()
+         while time.monotonic() < start_time + self._DEADLINE:
+             pump_task_queue()
+@@ -431,7 +434,7 @@
+         # 4. Cleanup; make sure to free the pool if the graceful termination above didn't finish within the timeout.
+         for future in futures:
+             future.cancel()
+-        self._task_exit_flag.clear()
++        self._task_exit_flag.value = False
+ 
+     @staticmethod
+     def _job(task_id: int) -> None:
+@@ -439,10 +442,20 @@
+         status_queue = _mp_task_loss_workaround_obj._task_status_queue
+         exit_flag = _mp_task_loss_workaround_obj._task_exit_flag
+         status_queue.put((task_id, os.getpid()))
+-        while not exit_flag.wait(timeout=MPTaskLossWorkaround._POLL_LOOP_STEP):
++        while not exit_flag.value:
++            time.sleep(MPTaskLossWorkaround._POLL_LOOP_STEP)
+             sigmonitor.maybe_raise_exc()
+ 
+ 
++@dataclass
++class _ProcessEventNotifierInitializer:
++    pid_queue: object
++
++    def __call__(self) -> None:
++        global _process_event_pid_queue
++        _process_event_pid_queue = self.pid_queue
++
++
+ @contextlib.contextmanager
+ def _auto_kill_on_timeout(proc: subprocess.Popen) -> Iterator[None]:
+     try:
+--- a/cvise/utils/testing.py
++++ b/cvise/utils/testing.py
+@@ -8,7 +8,6 @@
+ import multiprocessing
+ import os
+ import platform
+-import queue
+ import shutil
+ import subprocess
+ import sys
+@@ -38,7 +37,12 @@
+ )
+ from cvise.utils.folding import FoldingManager, FoldingStateIn, FoldingStateOut
+ from cvise.utils.hint import is_special_hint_type, load_hints
+-from cvise.utils.process import MPContextHook, MPTaskLossWorkaround, ProcessEventNotifier, ProcessMonitor
++from cvise.utils.process import (
++    MPContextHook,
++    MPTaskLossWorkaround,
++    ProcessEventNotifier,
++    ProcessMonitor,
++)
+ from cvise.utils.readkey import KeyLogger
+ 
+ MAX_PASS_INCREASEMENT_THRESHOLD = 3
+@@ -61,7 +65,6 @@
+     test_case: Path
+     tmp_dir: Path
+     job_timeout: int
+-    pid_queue: queue.Queue
+     dependee_bundle_paths: list[Path]
+ 
+     def run(self) -> Any:
+@@ -71,7 +74,7 @@
+                 self.test_case,
+                 tmp_dir=self.tmp_dir,
+                 job_timeout=self.job_timeout,
+-                process_event_notifier=ProcessEventNotifier(self.pid_queue),
++                process_event_notifier=ProcessEventNotifier(),
+                 dependee_hints=dependee_hints,
+             )
+         except UnicodeDecodeError:
+@@ -90,7 +93,6 @@
+     new_tmp_dir: Path
+     pass_succeeded_state: Any
+     job_timeout: int
+-    pid_queue: queue.Queue
+     dependee_bundle_paths: list[Path]
+ 
+     def run(self) -> Any:
+@@ -101,7 +103,7 @@
+             new_tmp_dir=self.new_tmp_dir,
+             succeeded_state=self.pass_succeeded_state,
+             job_timeout=self.job_timeout,
+-            process_event_notifier=ProcessEventNotifier(self.pid_queue),
++            process_event_notifier=ProcessEventNotifier(),
+             dependee_hints=dependee_hints,
+         )
+ 
+@@ -123,7 +125,6 @@
+         all_test_cases: set[Path],
+         should_copy_current_test_case: bool,
+         transform,
+-        pid_queue: queue.Queue | None = None,
+     ):
+         self.state = state
+         self.folder: Path = folder
+@@ -132,7 +133,6 @@
+         self.result: PassResult | None = None
+         self.order = order
+         self.transform = transform
+-        self.pid_queue = pid_queue
+         self.test_case: Path = test_case
+         self.should_copy_current_test_case = should_copy_current_test_case
+         self.all_test_cases: set[Path] = all_test_cases
+@@ -176,7 +176,7 @@
+             (result, self.state) = self.transform(
+                 self.test_case_path,
+                 self.state,
+-                process_event_notifier=ProcessEventNotifier(self.pid_queue),
++                process_event_notifier=ProcessEventNotifier(),
+                 original_test_case=self.test_case.resolve(),
+                 written_paths=written_paths,
+             )
+@@ -209,7 +209,7 @@
+         # interestingness test, or because C-Vise abruptly kills our job without a chance for a proper cleanup).
+         with tempfile.TemporaryDirectory(dir=self.folder, prefix='overridetmp') as tmp_override:
+             env = override_tmpdir_env(os.environ.copy(), Path(tmp_override))
+-            stdout, stderr, returncode = ProcessEventNotifier(self.pid_queue).run_process(
++            stdout, stderr, returncode = ProcessEventNotifier().run_process(
+                 str(self.test_script), shell=True, env=env, cwd=self.folder
+             )
+             return returncode, stdout, stderr
+@@ -493,8 +493,7 @@
+         )
+ 
+         self.key_logger = None if self.skip_key_off else KeyLogger()
+-        self.mpmanager = multiprocessing.Manager()
+-        self.process_monitor = ProcessMonitor(self.mpmanager, self.parallel_tests)
++        self.process_monitor = ProcessMonitor(self.parallel_tests)
+         self.mplogger = mplogging.MPLogger(self.parallel_tests)
+         self.worker_pool: pebble.ProcessPool | None = None
+         self.mp_task_loss_workaround = MPTaskLossWorkaround(self.parallel_tests)
+@@ -510,6 +509,7 @@
+         self.exit_stack.enter_context(self.process_monitor)
+ 
+         worker_initializers = [
++            self.process_monitor.worker_process_initializer(),
+             self.mplogger.worker_process_initializer(),
+             self.mp_task_loss_workaround.initialize_in_worker,
+         ]
+@@ -1227,7 +1227,6 @@
+                 test_case=self.current_test_case,
+                 tmp_dir=tmp_dir,
+                 job_timeout=self.timeout,
+-                pid_queue=self.process_monitor.pid_queue,
+                 dependee_bundle_paths=dependee_bundle_paths,
+             )
+         else:
+@@ -1238,7 +1237,6 @@
+                 new_tmp_dir=tmp_dir,
+                 pass_succeeded_state=ctx.taken_succeeded_state,
+                 job_timeout=self.timeout,
+-                pid_queue=self.process_monitor.pid_queue,
+                 dependee_bundle_paths=dependee_bundle_paths,
+             )
+         init_timeout = self.INIT_TIMEOUT_FACTOR * self.timeout
+@@ -1284,7 +1282,6 @@
+             self.test_cases,
+             should_copy_current_test_case,
+             ctx.pass_.transform,
+-            self.process_monitor.pid_queue,
+         )
+         future = self.worker_pool.schedule(
+             _worker_process_job_wrapper, args=[self.order, env.run], timeout=self.timeout
+@@ -1324,7 +1321,6 @@
+             self.test_cases,
+             should_copy_current_test_case,
+             FoldingManager.transform,
+-            self.process_monitor.pid_queue,
+         )
+         future = self.worker_pool.schedule(
+             _worker_process_job_wrapper, args=[self.order, env.run], timeout=self.timeout
