@@ -4,8 +4,9 @@ _realname=ollama
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 pkgdesc='Create, run and share large language models (LLMs) (mingw-w64)'
-pkgver=0.24.0
+pkgver=0.30.0
 pkgrel=1
+_llama_ver=b9452 # from LLAMA_CPP_VERSION file
 arch=(any)
 mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url='https://ollama.com'
@@ -25,19 +26,20 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-ninja"
              "${MINGW_PACKAGE_PREFIX}-openblas"
              "${MINGW_PACKAGE_PREFIX}-shaderc"
+             "${MINGW_PACKAGE_PREFIX}-spirv-headers"
              "${MINGW_PACKAGE_PREFIX}-vulkan-loader"
              "${MINGW_PACKAGE_PREFIX}-vulkan-headers"
-             git)
+             "${MINGW_PACKAGE_PREFIX}-git")
 optdepends=("${MINGW_PACKAGE_PREFIX}-openblas: BLAS Backend"
             "${MINGW_PACKAGE_PREFIX}-vulkan-loader: Vulkan Backend")
 source=(https://github.com/ollama/ollama/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz
-        0001-no-static-linking.patch
-        0002-fix-dynamic-libraries-path.patch
-        0003-do-not-install-vulkan-dll.patch)
-sha256sums=('a97e4a545cb08ed0343f97dc964be49f707b8404f1c2e29ec1338ec96b556eb2'
-            '8dfbc740dab6b28e826cc038d321f836f034290aadf0f946e8230c2a4f57df26'
-            '6f9bfd8b2c825714c8ee87de83997b17f0e5c38aeab68705b87b815b5986af21'
-            '1419a26d88b199b25b57a6df1f798b2d2067795b75e2d4d57cda0fff7a296bf2')
+        https://github.com/ggml-org/llama.cpp/archive/${_llama_ver}/llama.cpp-${_llama_ver}.tar.gz
+        0001-do-not-install-runtime-dlls.patch
+        0101-disable-sapphirerapids-with-clang.patch)
+sha256sums=('08ca87f68816fd6e3489dd2784216515f0c7cf5b6863f35fea855602c450550e'
+            '43830a2cb08975d732e3538fa2130105dd528cf929387cc82b2526acdf4c689b'
+            '75ba9ee7ddc4b025d2984a18f8584aff5f7765a320a51321bb8e51a82430a4fa'
+            '6dc68b2a5c1a255a2d0e06e412a3d22bac8de288cdee806cdefaf91324591fea')
 
 apply_patch_with_msg() {
   for _patch in "$@"
@@ -51,18 +53,29 @@ prepare() {
   cd ${_realname}-${pkgver}
 
   apply_patch_with_msg \
-    0001-no-static-linking.patch \
-    0002-fix-dynamic-libraries-path.patch \
-    0003-do-not-install-vulkan-dll.patch
+    0001-do-not-install-runtime-dlls.patch
 
   if check_option "debug" "n"; then
     sed -i 's,var mode string = gin.DebugMode,var mode string = gin.ReleaseMode,g' server/routes.go
+  fi
+
+  cd "${srcdir}"/llama.cpp-${_llama_ver}
+  
+  if [[ ${CC} == clang ]]; then
+    # clang hangs building the sapphirerapids DLL
+    apply_patch_with_msg \
+      0101-disable-sapphirerapids-with-clang.patch
   fi
 }
 
 build() {
   [[ -d "${srcdir}"/build-${MSYSTEM} ]] && rm -rf "${srcdir}"/build-${MSYSTEM}
   cp -r "${_realname}-${pkgver}" "build-${MSYSTEM}" && cd "build-${MSYSTEM}"
+
+  declare -a _extra_config
+  if [[ ${CARCH} == aarch64 ]]; then
+    _extra_config+=("-DGGML_CPU_ALL_VARIANTS=OFF")
+  fi
 
   if [[ ${CARCH} == aarch64 ]]; then
     # See https://github.com/ggerganov/llama.cpp/blob/325afb37/cmake/arm64-windows-llvm.cmake#L12
@@ -71,24 +84,27 @@ build() {
     CXXFLAGS+=" ${_flags}"
   fi
 
-  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
-  ${MINGW_PREFIX}/bin/cmake -Wno-dev \
-    -G"Ninja" \
-    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
-    -DBUILD_SHARED_LIBS=ON \
-    -DGGML_OPENMP=ON \
-    -DGGML_BLAS=ON \
-    -DGGML_BLAS_VENDOR=OpenBLAS \
-    ../${_realname}-${pkgver}
-
-  ${MINGW_PREFIX}/bin/cmake --build .
-
+  export OLLAMA_LLAMA_CPP_SOURCE="${srcdir}"/llama.cpp-${_llama_ver}
   export CGO_CFLAGS="$CFLAGS" CGO_CPPFLAGS="$CPPFLAGS" CGO_CXXFLAGS="$CXXFLAGS" CGO_LDFLAGS="$LDFLAGS"
   export GOPROXY=direct
   export GOROOT=${MINGW_PREFIX}/lib/go
   export GOPATH=${MINGW_PREFIX}/
 
-  go build -ldflags "${LDFLAGS} -X=github.com/ollama/ollama/version.Version=${pkgver}" .
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake -Wno-dev \
+    -G"Ninja" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DBUILD_SHARED_LIBS=ON \
+    -DOLLAMA_VERSION=${pkgver} \
+    -DOLLAMA_LLAMA_BACKENDS="vulkan" \
+    -DGGML_OPENMP=ON \
+    -DGGML_BLAS=ON \
+    -DGGML_BLAS_VENDOR=OpenBLAS \
+    -DGGML_CCACHE=OFF \
+    "${_extra_config[@]}" \
+    ../${_realname}-${pkgver}
+
+  ${MINGW_PREFIX}/bin/cmake --build .
 }
 
 check() {
@@ -100,15 +116,7 @@ check() {
 
 package() {
   cd $srcdir/build-$MSYSTEM
-
   DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
-  cp lib/ollama/libggml-blas.dll "${pkgdir}"${MINGW_PREFIX}/lib/ollama
-
-  mkdir -p "${pkgdir}"${MINGW_PREFIX}/bin
-  install ollama.exe -t"${pkgdir}"${MINGW_PREFIX}/bin
-
-  # they are installed in lib/ollama, not sure why they get installed twice
-  rm "${pkgdir}${MINGW_PREFIX}/bin/libggml-"*.dll
 
   install -Dm644 LICENSE "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }
