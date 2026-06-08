@@ -1,0 +1,160 @@
+# Maintainer: Johannes Schindelin <johannes.schindelin@gmx.de>
+
+_realname=onnxruntime
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+pkgver=1.24.4
+pkgrel=1
+pkgdesc="Cross-platform inference and training machine-learning accelerating engine (mingw-w64)"
+arch=('any')
+mingw_arch=('ucrt64' 'clang64')
+url='https://onnxruntime.ai'
+msys2_repository_url="https://github.com/microsoft/onnxruntime"
+msys2_references=(
+  'purl: pkg:github/microsoft/onnxruntime'
+)
+license=('spdx:MIT')
+depends=("${MINGW_PACKAGE_PREFIX}-cc-libs")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             "${MINGW_PACKAGE_PREFIX}-python"
+             "${MINGW_PACKAGE_PREFIX}-nlohmann-json"
+             "${MINGW_PACKAGE_PREFIX}-eigen3"
+             "${MINGW_PACKAGE_PREFIX}-uasm")
+source=("https://github.com/microsoft/onnxruntime/archive/refs/tags/v${pkgver}/${_realname}-${pkgver}.tar.gz"
+        0001-mingw-cmake-fixes.patch
+        0002-mingw-compiler-compat.patch
+        0003-mingw-etw-telemetry-wil-stubs.patch
+        0004-mingw-fstream-and-logging-sinks-core.patch
+        0005-mingw-mlas-assembly-macros.patch
+        0006-mingw-test-fixes.patch)
+sha256sums=('SKIP'
+            'SKIP'
+            'SKIP'
+            'SKIP'
+            'SKIP'
+            'SKIP'
+            'SKIP')
+
+prepare() {
+  cd ${_realname}-${pkgver}
+
+  # ONNX Runtime assumes Windows = MSVC throughout its cmake and C++ code.
+  # These patches fix the ~80 files that need adjustments for MinGW/GCC
+  # and MinGW/Clang:
+  #
+  # 0001: cmake guard fixes (WIN32->MSVC for compiler flags, MSVC->WIN32
+  #       for platform selection, linker flag guards, DLL PREFIX removal,
+  #       -municode for wmain executables, COMPILE_WARNING_AS_ERROR off)
+  # 0002: compiler/platform compatibility (SAL annotations, HRESULT typedef,
+  #       __cpuid wrapper, FARPROC casts, i64->LL suffix, _tpause guard,
+  #       _aligned_free/free mismatch, MLAS_FORCEINLINE guard, vsnprintf_s
+  #       precedence fix, [[nodiscard]] Clang conflict)
+  # 0003: ETW/telemetry stubs + WIL shim (MinGW lacks TraceLoggingProvider.h
+  #       and WIL has no GCC support; provide stub headers and shims)
+  # 0004: fstream(wstring) + logging sinks (libstdc++ fstream does not accept
+  #       std::wstring; wrap with std::filesystem::path. Restructure logging
+  #       sinks so MinGW uses narrow OStreamSink for console, wide for files)
+  # 0005: MLAS assembly macros (macamd64.inc SEH shim for UASM, option evex:1
+  #       in mlasi.inc for AVX-512 EVEX encoding)
+  # 0006: test code fixes (fstream wstring in ~40 test files, locale stubs,
+  #       RNG guard, noexcept math functions, missing headers, wide stream
+  #       guards, device metadata guard)
+  patch -p1 -i "${srcdir}/0001-mingw-cmake-fixes.patch"
+  patch -p1 -i "${srcdir}/0002-mingw-compiler-compat.patch"
+  patch -p1 -i "${srcdir}/0003-mingw-etw-telemetry-wil-stubs.patch"
+  patch -p1 -i "${srcdir}/0004-mingw-fstream-and-logging-sinks-core.patch"
+  patch -p1 -i "${srcdir}/0005-mingw-mlas-assembly-macros.patch"
+  patch -p1 -i "${srcdir}/0006-mingw-test-fixes.patch"
+}
+
+build() {
+  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
+
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  # The real CMakeLists.txt is in the cmake/ subdirectory.
+  #
+  # ONNX Runtime pins protobuf v21.12, which is ABI-incompatible with
+  # the system protobuf (v33.x).  Let FetchContent build it from source
+  # together with its tightly-coupled deps (abseil, re2).
+  #
+  # GCC needs -mxsave for the _xgetbv intrinsic used in MLAS
+  # platform detection code; MSVC provides it unconditionally.
+  # -Wno-attributes: ELF visibility attributes are meaningless on PE.
+  # -Wno-unknown-pragmas: MSVC '#pragma warning(push/pop)' is harmless.
+  #
+  # --allow-multiple-definition: without a .def file MinGW exports ALL
+  # symbols from DLLs, so test executables linking both DLL import
+  # libraries and static archives get duplicates.  GNU ld resolves this.
+  # LLD (CLANG64) has a stricter "was replaced" check that this flag
+  # cannot suppress, so unit tests are disabled on Clang (the library
+  # itself builds fine; tests are fully covered by UCRT64).
+  local _test_flag=ON
+  if [[ "$CC" == "clang" ]]; then
+    _test_flag=OFF
+  fi
+  CXXFLAGS+=" -mxsave -Wno-attributes -Wno-unknown-pragmas -Wno-unused-value -Wno-unused-variable -Wno-unused-parameter -Wno-unused-but-set-variable -Wno-switch -Wno-parentheses -Wno-cast-function-type -Wno-sign-compare -Wno-deprecated-declarations -DPLATFORM_WINDOWS -DNOGDI -DNOMINMAX -D_USE_MATH_DEFINES -D_WIN32_WINNT=0x0A00 -D_NO_W32_PSEUDO_MODIFIERS" \
+  LDFLAGS+=" -Wl,--allow-multiple-definition" \
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake.exe -Wno-dev \
+    -G"Ninja" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-multiple-definition \
+    -DCMAKE_SHARED_LINKER_FLAGS=-Wl,--allow-multiple-definition \
+    -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
+    -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
+    -DCMAKE_ASM_MASM_COMPILER=${MINGW_PREFIX}/bin/uasm.exe \
+    -DCMAKE_ASM_MASM_FLAGS=-win64 \
+    -Donnxruntime_BUILD_SHARED_LIB=ON \
+    -Donnxruntime_BUILD_UNIT_TESTS=$_test_flag \
+    -Donnxruntime_BUILD_BENCHMARKS=OFF \
+    -Donnxruntime_ENABLE_PYTHON=OFF \
+    -Donnxruntime_USE_CUDA=OFF \
+    -Donnxruntime_USE_TENSORRT=OFF \
+    -Donnxruntime_USE_OPENVINO=OFF \
+    -Donnxruntime_USE_COREML=OFF \
+    -Donnxruntime_USE_DML=OFF \
+    -Donnxruntime_USE_WINML=OFF \
+    -Donnxruntime_USE_XNNPACK=OFF \
+    -Donnxruntime_USE_WEBNN=OFF \
+    -Donnxruntime_USE_WEBGPU=OFF \
+    -Donnxruntime_USE_JSEP=OFF \
+    -Donnxruntime_USE_QNN=OFF \
+    -Donnxruntime_USE_SNPE=OFF \
+    -Donnxruntime_USE_RKNPU=OFF \
+    -Donnxruntime_USE_DNNL=OFF \
+    -Donnxruntime_USE_MIGRAPHX=OFF \
+    -Donnxruntime_USE_ACL=OFF \
+    -Donnxruntime_USE_ARMNN=OFF \
+    -Donnxruntime_USE_CANN=OFF \
+    -Donnxruntime_USE_VITISAI=OFF \
+    -DCMAKE_DISABLE_FIND_PACKAGE_flatbuffers=ON \
+    -Donnxruntime_ENABLE_DELAY_LOADING_WIN_DLLS=OFF \
+    -Donnxruntime_ENABLE_TRAINING=OFF \
+    -Donnxruntime_ENABLE_TRAINING_APIS=OFF \
+    -Donnxruntime_USE_MIMALLOC=OFF \
+    "${_extra_config[@]}" \
+    ../${_realname}-${pkgver}/cmake
+
+  ${MINGW_PREFIX}/bin/cmake --build .
+}
+
+check() {
+  cd "${srcdir}/build-${MSYSTEM}"
+  ${MINGW_PREFIX}/bin/ctest --output-on-failure
+}
+
+package() {
+  cd "${srcdir}/build-${MSYSTEM}"
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
+
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" \
+    "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+}
