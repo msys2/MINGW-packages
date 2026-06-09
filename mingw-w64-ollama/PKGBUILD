@@ -4,9 +4,9 @@ _realname=ollama
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 pkgdesc='Create, run and share large language models (LLMs) (mingw-w64)'
-pkgver=0.30.0
+pkgver=0.30.7
 pkgrel=1
-_llama_ver=b9452 # from LLAMA_CPP_VERSION file
+_llama_ver=b9509 # from LLAMA_CPP_VERSION file
 arch=(any)
 mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url='https://ollama.com'
@@ -35,11 +35,11 @@ optdepends=("${MINGW_PACKAGE_PREFIX}-openblas: BLAS Backend"
 source=(https://github.com/ollama/ollama/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz
         https://github.com/ggml-org/llama.cpp/archive/${_llama_ver}/llama.cpp-${_llama_ver}.tar.gz
         0001-do-not-install-runtime-dlls.patch
-        0101-disable-sapphirerapids-with-clang.patch)
-sha256sums=('08ca87f68816fd6e3489dd2784216515f0c7cf5b6863f35fea855602c450550e'
-            '43830a2cb08975d732e3538fa2130105dd528cf929387cc82b2526acdf4c689b'
+        0002-do-not-skip-llama-compat-patch.patch)
+sha256sums=('a7bd79e063602b8013cfd9da49d58d2d24dcd5e7d2b3bd61bfa02f08c6b055e6'
+            '6a90bab3a581dad1dc3ab7bfffcd3711177d8cd41739a2b841a7c5ca2f94c393'
             '75ba9ee7ddc4b025d2984a18f8584aff5f7765a320a51321bb8e51a82430a4fa'
-            '6dc68b2a5c1a255a2d0e06e412a3d22bac8de288cdee806cdefaf91324591fea')
+            '3dcdee56985715b611c3bb4c02012ead5f5a4806e461489fa00e4378eae4377e')
 
 apply_patch_with_msg() {
   for _patch in "$@"
@@ -53,33 +53,29 @@ prepare() {
   cd ${_realname}-${pkgver}
 
   apply_patch_with_msg \
-    0001-do-not-install-runtime-dlls.patch
+    0001-do-not-install-runtime-dlls.patch \
+    0002-do-not-skip-llama-compat-patch.patch
 
   if check_option "debug" "n"; then
     sed -i 's,var mode string = gin.DebugMode,var mode string = gin.ReleaseMode,g' server/routes.go
   fi
-
-  cd "${srcdir}"/llama.cpp-${_llama_ver}
-  
-  if [[ ${CC} == clang ]]; then
-    # clang hangs building the sapphirerapids DLL
-    apply_patch_with_msg \
-      0101-disable-sapphirerapids-with-clang.patch
-  fi
 }
 
 build() {
-  [[ -d "${srcdir}"/build-${MSYSTEM} ]] && rm -rf "${srcdir}"/build-${MSYSTEM}
-  cp -r "${_realname}-${pkgver}" "build-${MSYSTEM}" && cd "build-${MSYSTEM}"
-
   declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
   if [[ ${CARCH} == aarch64 ]]; then
     _extra_config+=("-DGGML_CPU_ALL_VARIANTS=OFF")
   fi
 
   if [[ ${CARCH} == aarch64 ]]; then
-    # See https://github.com/ggerganov/llama.cpp/blob/325afb37/cmake/arm64-windows-llvm.cmake#L12
-    local _flags="-march=armv8.7-a -fvectorize -ffp-model=fast -fno-finite-math-only"
+    # See https://github.com/ggml-org/llama.cpp/blob/b9509/cmake/arm64-windows-llvm.cmake#L12
+    local _flags="-march=armv8.7-a -fvectorize -ffp-model=fast"
     CFLAGS+=" ${_flags}"
     CXXFLAGS+=" ${_flags}"
   fi
@@ -97,14 +93,16 @@ build() {
     -DBUILD_SHARED_LIBS=ON \
     -DOLLAMA_VERSION=${pkgver} \
     -DOLLAMA_LLAMA_BACKENDS="vulkan" \
+    -DOLLAMA_LLAMA_CPP_SKIP_COMPAT_PATCH=OFF \
     -DGGML_OPENMP=ON \
     -DGGML_BLAS=ON \
     -DGGML_BLAS_VENDOR=OpenBLAS \
     -DGGML_CCACHE=OFF \
     "${_extra_config[@]}" \
-    ../${_realname}-${pkgver}
+    -S ${_realname}-${pkgver} \
+    -B build-${MSYSTEM}
 
-  ${MINGW_PREFIX}/bin/cmake --build .
+  ${MINGW_PREFIX}/bin/cmake --build build-${MSYSTEM}
 }
 
 check() {
@@ -115,8 +113,7 @@ check() {
 }
 
 package() {
-  cd $srcdir/build-$MSYSTEM
-  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install build-$MSYSTEM
 
-  install -Dm644 LICENSE "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
+  install -Dm644 ${_realname}-${pkgver}/LICENSE "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }
