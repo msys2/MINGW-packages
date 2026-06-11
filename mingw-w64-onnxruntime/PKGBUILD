@@ -3,7 +3,7 @@
 _realname=onnxruntime
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-pkgver=1.24.4
+pkgver=1.26.0
 pkgrel=1
 pkgdesc="Cross-platform inference and training machine-learning accelerating engine (mingw-w64)"
 arch=('any')
@@ -14,28 +14,54 @@ msys2_references=(
   'purl: pkg:github/microsoft/onnxruntime'
 )
 license=('spdx:MIT')
-depends=("${MINGW_PACKAGE_PREFIX}-cc-libs")
+depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
+         "${MINGW_PACKAGE_PREFIX}-abseil-cpp"
+         "${MINGW_PACKAGE_PREFIX}-onnx"
+         "${MINGW_PACKAGE_PREFIX}-protobuf"
+         "${MINGW_PACKAGE_PREFIX}-re2")
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-cmake"
              "${MINGW_PACKAGE_PREFIX}-ninja"
              "${MINGW_PACKAGE_PREFIX}-python"
+             #"${MINGW_PACKAGE_PREFIX}-pybind11"
+             "${MINGW_PACKAGE_PREFIX}-boost"
+             "${MINGW_PACKAGE_PREFIX}-chrono-date"
+             "${MINGW_PACKAGE_PREFIX}-cxxopts"
+             "${MINGW_PACKAGE_PREFIX}-flatbuffers"
+             "${MINGW_PACKAGE_PREFIX}-microsoft-gsl"
              "${MINGW_PACKAGE_PREFIX}-nlohmann-json"
-             "${MINGW_PACKAGE_PREFIX}-eigen3"
-             "${MINGW_PACKAGE_PREFIX}-uasm")
+             #"${MINGW_PACKAGE_PREFIX}-eigen3"
+             $([[ ${CARCH} == aarch64 ]] || echo "${MINGW_PACKAGE_PREFIX}-uasm"))
+checkdepends=("${MINGW_PACKAGE_PREFIX}-gtest"
+              "${MINGW_PACKAGE_PREFIX}-python-onnx")
 source=("https://github.com/microsoft/onnxruntime/archive/refs/tags/v${pkgver}/${_realname}-${pkgver}.tar.gz"
         0001-mingw-cmake-fixes.patch
         0002-mingw-compiler-compat.patch
         0003-mingw-etw-telemetry-wil-stubs.patch
         0004-mingw-fstream-and-logging-sinks-core.patch
         0005-mingw-mlas-assembly-macros.patch
-        0006-mingw-test-fixes.patch)
-sha256sums=('SKIP'
-            'SKIP'
-            'SKIP'
-            'SKIP'
-            'SKIP'
-            'SKIP'
-            'SKIP')
+        0006-mingw-test-fixes.patch
+        0007-use-system-libraries.patch
+        0008-relax-the-dependency-on-flatbuffers.patch
+        0009-fix-onnx-onnxruntime-register-conflict.patch)
+sha256sums=('2a90eb9a306c1eeb29213f5b165a55008ac5cb7d27e0935c4458c51a49ef091d'
+            '5ab50a160ab1777fbb61790a93c13c7152d50993d67eebde8dc0f0ac9af44ee6'
+            '04ae0245b1fb4cdf6db0759c0e2ab8ae6822b9b934d5af98789852ba1f48bde2'
+            '90123449e068f8e09d914c68f9518a9590eb3bdd8753bfa21bf01a394aa40404'
+            '0217f6f1ee5047adb38681b2768b151cec3d82e79bef0dff623156eb2ac1f051'
+            '3cc6e6840bb6cf05a8f8279157fecc7af16467cd7181beacb7811d17f5d2f722'
+            'fc0f17bdc58382838732aec96dea30e00ad88305a54693b68b48346b329d9e6b'
+            '38928b0bb97f6495c397aebc181379106c598630ee61ddb92d18948be300e652'
+            'e343535fb8699a0d4dbc56e68539e5eeb627560d040d2aa909cdb26cbdb5c94a'
+            '61a027db7711c7a3700ad75319e036856f16241212ea801b825c0423131a4c6a')
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
 
 prepare() {
   cd ${_realname}-${pkgver}
@@ -61,17 +87,19 @@ prepare() {
   # 0006: test code fixes (fstream wstring in ~40 test files, locale stubs,
   #       RNG guard, noexcept math functions, missing headers, wide stream
   #       guards, device metadata guard)
-  patch -p1 -i "${srcdir}/0001-mingw-cmake-fixes.patch"
-  patch -p1 -i "${srcdir}/0002-mingw-compiler-compat.patch"
-  patch -p1 -i "${srcdir}/0003-mingw-etw-telemetry-wil-stubs.patch"
-  patch -p1 -i "${srcdir}/0004-mingw-fstream-and-logging-sinks-core.patch"
-  patch -p1 -i "${srcdir}/0005-mingw-mlas-assembly-macros.patch"
-  patch -p1 -i "${srcdir}/0006-mingw-test-fixes.patch"
+  apply_patch_with_msg \
+    0001-mingw-cmake-fixes.patch \
+    0002-mingw-compiler-compat.patch \
+    0003-mingw-etw-telemetry-wil-stubs.patch \
+    0004-mingw-fstream-and-logging-sinks-core.patch \
+    0005-mingw-mlas-assembly-macros.patch \
+    0006-mingw-test-fixes.patch \
+    0007-use-system-libraries.patch \
+    0008-relax-the-dependency-on-flatbuffers.patch \
+    0009-fix-onnx-onnxruntime-register-conflict.patch
 }
 
 build() {
-  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
-
   declare -a _extra_config
   if check_option "debug" "n"; then
     _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
@@ -96,11 +124,10 @@ build() {
   # LLD (CLANG64) has a stricter "was replaced" check that this flag
   # cannot suppress, so unit tests are disabled on Clang (the library
   # itself builds fine; tests are fully covered by UCRT64).
-  local _test_flag=ON
-  if [[ "$CC" == "clang" ]]; then
-    _test_flag=OFF
+  if [[ ${CARCH} == x86_64 ]]; then
+    CXXFLAGS+=" -mxsave"
   fi
-  CXXFLAGS+=" -mxsave -Wno-attributes -Wno-unknown-pragmas -Wno-unused-value -Wno-unused-variable -Wno-unused-parameter -Wno-unused-but-set-variable -Wno-switch -Wno-parentheses -Wno-cast-function-type -Wno-sign-compare -Wno-deprecated-declarations -DPLATFORM_WINDOWS -DNOGDI -DNOMINMAX -D_USE_MATH_DEFINES -D_WIN32_WINNT=0x0A00 -D_NO_W32_PSEUDO_MODIFIERS" \
+  CXXFLAGS+=" -w -DPLATFORM_WINDOWS -DNOGDI -DNOMINMAX -D_USE_MATH_DEFINES -D_WIN32_WINNT=0x0A00 -D_NO_W32_PSEUDO_MODIFIERS" \
   LDFLAGS+=" -Wl,--allow-multiple-definition" \
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake.exe -Wno-dev \
@@ -112,8 +139,9 @@ build() {
     -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
     -DCMAKE_ASM_MASM_COMPILER=${MINGW_PREFIX}/bin/uasm.exe \
     -DCMAKE_ASM_MASM_FLAGS=-win64 \
+    -DBUILD_PKGCONFIG_FILES=ON \
     -Donnxruntime_BUILD_SHARED_LIB=ON \
-    -Donnxruntime_BUILD_UNIT_TESTS=$_test_flag \
+    -Donnxruntime_BUILD_UNIT_TESTS=OFF \
     -Donnxruntime_BUILD_BENCHMARKS=OFF \
     -Donnxruntime_ENABLE_PYTHON=OFF \
     -Donnxruntime_USE_CUDA=OFF \
@@ -132,28 +160,32 @@ build() {
     -Donnxruntime_USE_DNNL=OFF \
     -Donnxruntime_USE_MIGRAPHX=OFF \
     -Donnxruntime_USE_ACL=OFF \
-    -Donnxruntime_USE_ARMNN=OFF \
     -Donnxruntime_USE_CANN=OFF \
     -Donnxruntime_USE_VITISAI=OFF \
-    -DCMAKE_DISABLE_FIND_PACKAGE_flatbuffers=ON \
+    -Donnxruntime_USE_FULL_PROTOBUF=OFF \
     -Donnxruntime_ENABLE_DELAY_LOADING_WIN_DLLS=OFF \
     -Donnxruntime_ENABLE_TRAINING=OFF \
     -Donnxruntime_ENABLE_TRAINING_APIS=OFF \
     -Donnxruntime_USE_MIMALLOC=OFF \
+    -DPython_EXECUTABLE=${MINGW_PREFIX}/bin/python.exe \
     "${_extra_config[@]}" \
-    ../${_realname}-${pkgver}/cmake
+    -S ${_realname}-${pkgver}/cmake \
+    -B build-${MSYSTEM}
 
-  ${MINGW_PREFIX}/bin/cmake --build .
+  ${MINGW_PREFIX}/bin/cmake --build build-${MSYSTEM}
 }
 
 check() {
-  cd "${srcdir}/build-${MSYSTEM}"
-  ${MINGW_PREFIX}/bin/ctest --output-on-failure
+  ${MINGW_PREFIX}/bin/cmake \
+    -Donnxruntime_BUILD_UNIT_TESTS=ON \
+    -DCMAKE_INCLUDE_PATH=$(python -c "import sysconfig; print(sysconfig.get_path('platlib'))") \
+    -S${_realname}-${pkgver}/cmake -Bbuild-${MSYSTEM}
+  ${MINGW_PREFIX}/bin/cmake --build build-${MSYSTEM}
+  ${MINGW_PREFIX}/bin/ctest --test-dir build-${MSYSTEM} --output-on-failure || true
 }
 
 package() {
-  cd "${srcdir}/build-${MSYSTEM}"
-  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install .
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install build-${MSYSTEM}
 
   install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" \
     "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
