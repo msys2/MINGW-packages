@@ -4,7 +4,7 @@ _realname=wasi-compiler-rt
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 pkgver=22.1.7
-pkgrel=1
+pkgrel=2
 pkgdesc="Compiler runtime libraries for clang (WASI) (mingw-w64)"
 arch=('any')
 mingw_arch=('ucrt64' 'clang64' 'clangarm64')
@@ -17,6 +17,7 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-llvm"
              "${MINGW_PACKAGE_PREFIX}-python"
              "${MINGW_PACKAGE_PREFIX}-clang"
              "${MINGW_PACKAGE_PREFIX}-lld")
+groups=("${MINGW_PACKAGE_PREFIX}-wasi-sdk")
 options=('!buildflags' '!strip')
 _source_base="https://github.com/llvm/llvm-project/releases/download/llvmorg-${pkgver}"
 source=("${_source_base}/llvm-project-${pkgver}.src.tar.xz"{,.sig})
@@ -28,6 +29,8 @@ validpgpkeys=('474E22316ABF4785A88C6E8EA2C794A986419D8A'  # Tom Stellard <tstell
               '71046D1E9C6656BDD61171873E83BABF4A4F9E85'  # Cullen Rhodes <cullen.rhodes@arm.com>
 )
 noextract=("llvm-project-${pkgver}.src.tar.xz")
+
+_targets=(wasm32-wasip1 wasm32-wasip1-threads wasm32-wasip2)
 
 prepare() {
   plain "Extracting llvm-project-${pkgver}.src.tar.xz due to symlink(s) without pre-existing target(s)"
@@ -46,11 +49,10 @@ build() {
 
   # Build options are derived from
   # https://github.com/WebAssembly/wasi-sdk/blob/main/cmake/wasi-sdk-sysroot.cmake
-  local cmake_args=(
+  local cmake_options=(
     -G Ninja
     -DCMAKE_AR="${MINGW_PREFIX}/bin/llvm-ar.exe"
     -DCMAKE_ASM_COMPILER="${MINGW_PREFIX}/bin/clang.exe"
-    -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_CXX_COMPILER="${MINGW_PREFIX}/bin/clang++.exe"
     -DCMAKE_CXX_COMPILER_WORKS=ON
     -DCMAKE_CXX_FLAGS=-fno-exceptions
@@ -79,42 +81,34 @@ build() {
     -DCOMPILER_RT_INCLUDE_TESTS=OFF
     -DCOMPILER_RT_INSTALL_PATH="${_resource_dir}"
     -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=ON
+    -S "llvm-project-${pkgver}.src/compiler-rt"
   )
+  if check_option "debug" "n"; then
+    cmake_options+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    cmake_options+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
 
-  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=;-DCOMPILER_RT_INSTALL_PATH=" \
-    cmake \
-      -B "build-${MSYSTEM}-wasip1" \
-      -S "llvm-project-${pkgver}.src/compiler-rt" \
-      "${cmake_args[@]}" \
-      -DCMAKE_{ASM,CXX,C}_COMPILER_TARGET=wasm32-wasip1
-  cmake --build "build-${MSYSTEM}-wasip1"
-
-  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=;-DCOMPILER_RT_INSTALL_PATH=" \
-    cmake \
-      -B "build-${MSYSTEM}-wasip1-threads" \
-      -S "llvm-project-${pkgver}.src/compiler-rt" \
-      "${cmake_args[@]}" \
-      -DCMAKE_{ASM,CXX,C}_COMPILER_TARGET=wasm32-wasip1-threads
-  cmake --build "build-${MSYSTEM}-wasip1-threads"
-
-  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=;-DCOMPILER_RT_INSTALL_PATH=" \
-    cmake \
-      -B "build-${MSYSTEM}-wasip2" \
-      -S "llvm-project-${pkgver}.src/compiler-rt" "${cmake_args[@]}" \
-      -DCMAKE_{ASM,CXX,C}_COMPILER_TARGET=wasm32-wasip2
-  cmake --build "build-${MSYSTEM}-wasip2"
+  for _target in ${_targets[@]}; do
+    MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=;-DCOMPILER_RT_INSTALL_PATH=" \
+      cmake \
+        -B "build-${MSYSTEM}-${_target}" \ \
+        "${cmake_options[@]}" \
+        -DCMAKE_{ASM,CXX,C}_COMPILER_TARGET=${_target}
+    cmake --build "build-${MSYSTEM}-${_target}"
+  done
 }
 
 package() {
-  DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}-wasip1"
-  DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}-wasip1-threads"
-  DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}-wasip2"
+  for _target in ${_targets[@]}; do
+    DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}-${_target}"
+  done
 
-  local _resource_dir
-  _resource_dir="$(cygpath -u "$(clang --print-resource-dir)")"
-
-  mkdir "${pkgdir}/${_resource_dir}/lib/wasm32-unknown-wasi" && cd "${pkgdir}/${_resource_dir}/lib/wasm32-unknown-wasi"
+  local _resource_dir="$(cygpath -u "$(clang --print-resource-dir)")"
+  mkdir "${pkgdir}"/${_resource_dir}/lib/wasm32-unknown-wasi
+  cd "${pkgdir}"/${_resource_dir}/lib/wasm32-unknown-wasi
   ln -f ../wasm32-unknown-wasip1/libclang_rt.builtins.a libclang_rt.builtins.a
 
-  install -Dm644 "${srcdir}/llvm-project-${pkgver}.src/compiler-rt/LICENSE.TXT" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+  install -Dm644 "${srcdir}"/llvm-project-${pkgver}.src/compiler-rt/LICENSE.TXT \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }
