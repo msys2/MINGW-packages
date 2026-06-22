@@ -3,32 +3,33 @@
 _realname=sleef
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-url="https://sleef.org"
 pkgver=3.9.0
-pkgrel=2
+pkgrel=3
 pkgdesc="SIMD Library for Evaluating Elementary Functions, vectorized libm and DFT (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+mingw_arch=('ucrt64' 'clang64' 'clangarm64')
+url="https://sleef.org"
 msys2_repository_url="https://github.com/shibatch/sleef"
 license=("spdx:BSL-1.0")
-source=(
-  "https://github.com/shibatch/sleef/archive/refs/tags/${pkgver}.tar.gz"
-  "001-aarch64-detection.patch"
-)
-sha256sums=('af60856abac08a3b5e72a8d156dd71fec1f7ac23de8ee67793f45f9edcdf0908'
-            '14304efdf29b0a67726de102e4ef76032e7c343d47af27b24901fd06bb5277df')
-depends=("${MINGW_PACKAGE_PREFIX}-cc-libs")
+depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
+         "${MINGW_PACKAGE_PREFIX}-omp")
 makedepends=(
   "${MINGW_PACKAGE_PREFIX}-cc"
   "${MINGW_PACKAGE_PREFIX}-cmake"
   "${MINGW_PACKAGE_PREFIX}-ninja"
-  "${MINGW_PACKAGE_PREFIX}-omp"
+  "${MINGW_PACKAGE_PREFIX}-tlfloat"
 )
 checkdepends=(
   "${MINGW_PACKAGE_PREFIX}-mpfr"
   "${MINGW_PACKAGE_PREFIX}-openssl"
   "${MINGW_PACKAGE_PREFIX}-fftw"
 )
+source=(
+  "https://github.com/shibatch/sleef/archive/refs/tags/${pkgver}.tar.gz"
+  "001-aarch64-detection.patch"
+)
+sha256sums=('af60856abac08a3b5e72a8d156dd71fec1f7ac23de8ee67793f45f9edcdf0908'
+            '14304efdf29b0a67726de102e4ef76032e7c343d47af27b24901fd06bb5277df')
 
 apply_patch_with_msg() {
   for _fname in "$@"
@@ -53,16 +54,28 @@ build() {
     extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
   fi
 
+  if [[ ${CARCH} == aarch64 ]]; then
+    extra_config+=("-DSLEEF_ARCH_AARCH64=ON")
+  fi
+
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
     cmake \
       -GNinja \
       -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
       "${extra_config[@]}" \
       -DBUILD_SHARED_LIBS=OFF \
+      -DSLEEF_BUILD_TESTS=OFF \
       -S "${_realname}-${pkgver}" \
       -B "build-${MSYSTEM}-static"
 
   cmake --build "build-${MSYSTEM}-static"
+
+  if [[ ${CC} == gcc ]]; then
+    # It fails to build with undefined reference to: `__gxx_personality_sj0', `_Unwind_SjLj_Register'...
+    extra_config+=("-DSLEEF_BUILD_DFT=OFF")
+  else
+    extra_config+=("-DSLEEF_BUILD_DFT=ON" "-DSLEEF_ENFORCE_DFT=ON")
+  fi
 
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
     cmake \
@@ -71,6 +84,9 @@ build() {
       "${extra_config[@]}" \
       -DCMAKE_DLL_NAME_WITH_SOVERSION=ON \
       -DBUILD_SHARED_LIBS=ON \
+      -DSLEEF_BUILD_QUAD=ON \
+      -DSLEEF_BUILD_TESTS=OFF \
+      -DSLEEF_ENFORCE_OPENMP=ON \
       -S "${_realname}-${pkgver}" \
       -B "build-${MSYSTEM}"
 
@@ -78,10 +94,14 @@ build() {
 }
 
 check() {
+  cmake -DSLEEF_BUILD_TESTS=ON -S "${_realname}-${pkgver}" -B "build-${MSYSTEM}"
+  cmake --build "build-${MSYSTEM}"
   cmake --build "build-${MSYSTEM}" --target test
 }
 
 package() {
   DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}-static"
   DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}"
+  install -Dm 644 "${srcdir}"/${_realname}-${pkgver}/LICENSE.txt \
+    -t "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/
 }
