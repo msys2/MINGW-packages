@@ -50,17 +50,16 @@ build() {
 check() {
   cd python-build-${MSYSTEM}
 
-# The test command will usually depend upon what is contained in the tox.ini file
-# or in the [testenv:py] section of the pyproject.toml file.
-  python -m pytest
+  # The test command will usually depend upon what is contained in the tox.ini file
+  # or in the [testenv:py] section of the pyproject.toml file.
+  PYTHONPATH="$(pwd)/src" python -m pytest
 }
 
 package() {
   cd python-build-${MSYSTEM}
 
   MSYS2_ARG_CONV_EXCL="--prefix=" \
-    python -m installer --prefix=${MINGW_PREFIX} \
-    --destdir="${pkgdir}" dist/*.whl
+    python -m installer --prefix=${MINGW_PREFIX} --destdir="${pkgdir}" dist/*.whl
 
   install -Dm644 "${srcdir}"/${_realname}-${pkgver}/LICENSE \
     "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE

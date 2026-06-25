@@ -47,6 +47,7 @@ build() {
       -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
       "${extra_config[@]}" \
       -DBUILD_{SHARED,STATIC}_LIBS=ON \
+      -DBUILD_TESTING=OFF \
       -S ${_realname}-${pkgver} \
       -B build-${MSYSTEM}
 
@@ -54,7 +55,9 @@ build() {
 }
 
 check() {
-  cmake --build build-${MSYSTEM} --target test
+  cmake -DBUILD_TESTING=ON -S ${_realname}-${pkgver} -B build-${MSYSTEM}
+  cmake --build build-${MSYSTEM}
+  ctest --test-dir build-${MSYSTEM} --output-on-failure
 }
 
 package() {
