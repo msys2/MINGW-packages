@@ -28,7 +28,7 @@ sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc')
 
 prepare() {
-  cd "${_realname}-${pkgver}"
+  cd ${_realname}-${pkgver}
 
   patch -Nbp1 -i "${srcdir}"/0001-A-really-important-fix.patch
   patch -Nbp1 -i "${srcdir}"/0002-A-less-important-fix.patch
@@ -41,18 +41,19 @@ build() {
       --wrap-mode=nodownload \
       --auto-features=enabled \
       --buildtype=plain \
-      "build-${MSYSTEM}" \
-      "${_realname}-${pkgver}"
+      build-${MSYSTEM} \
+      ${_realname}-${pkgver}
 
-  meson compile -C "build-${MSYSTEM}"
+  meson compile -C build-${MSYSTEM}
 }
 
 check() {
-  meson test -C "build-${MSYSTEM}"
+  meson test -C build-${MSYSTEM}
 }
 
 package() {
-  meson install -C "build-${MSYSTEM}" --destdir "${pkgdir}"
+  meson install -C build-${MSYSTEM} --destdir "${pkgdir}"
 
-  install -Dm644 "${_realname}-${pkgver}/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING"
+  install -Dm644 "${srcdir}"/${_realname}-${pkgver}/LICENSE \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }

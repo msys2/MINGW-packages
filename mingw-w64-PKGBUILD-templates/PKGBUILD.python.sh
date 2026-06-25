@@ -31,7 +31,7 @@ sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc')
 
 prepare() {
-  cd "${_realname}-${pkgver}"
+  cd ${_realname}-${pkgver}
 
   patch -Nbp1 -i "${srcdir}"/0001-A-really-important-fix.patch
   patch -Nbp1 -i "${srcdir}"/0002-A-less-important-fix.patch
@@ -42,13 +42,13 @@ prepare() {
 }
 
 build() {
-  cp -r "${_realname}-${pkgver}" "python-build-${MSYSTEM}" && cd "python-build-${MSYSTEM}"
+  cp -r ${_realname}-${pkgver} python-build-${MSYSTEM} && cd python-build-${MSYSTEM}
 
   python -m build --wheel --skip-dependency-check --no-isolation
 }
 
 check() {
-  cd "python-build-${MSYSTEM}"
+  cd python-build-${MSYSTEM}
 
 # The test command will usually depend upon what is contained in the tox.ini file
 # or in the [testenv:py] section of the pyproject.toml file.
@@ -56,11 +56,12 @@ check() {
 }
 
 package() {
-  cd "python-build-${MSYSTEM}"
+  cd python-build-${MSYSTEM}
 
   MSYS2_ARG_CONV_EXCL="--prefix=" \
     python -m installer --prefix=${MINGW_PREFIX} \
     --destdir="${pkgdir}" dist/*.whl
 
-  install -Dm644 LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/python-${_realname}/LICENSE"
+  install -Dm644 "${srcdir}"/${_realname}-${pkgver}/LICENSE \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }

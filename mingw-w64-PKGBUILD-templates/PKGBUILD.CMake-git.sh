@@ -29,13 +29,13 @@ sha256sums=('SKIP'
             'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
 
 pkgver() {
-  cd "${_realname}"
+  cd ${_realname}
 
   git describe --long "${_commit}" | sed 's/\([^-]*-g\)/r\1/;s/-/./g;s/^v//g'
 }
 
 prepare() {
-  cd "${_realname}"
+  cd ${_realname}
 
   patch -Nbp1 -i "${srcdir}"/0001-A-really-important-fix.patch
   patch -Nbp1 -i "${srcdir}"/0002-A-less-important-fix.patch
@@ -55,18 +55,19 @@ build() {
       -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
       "${extra_config[@]}" \
       -DBUILD_{SHARED,STATIC}_LIBS=ON \
-      -S "${_realname}" \
-      -B "build-${MSYSTEM}"
+      -S ${_realname} \
+      -B build-${MSYSTEM}
 
-  cmake --build "build-${MSYSTEM}"
+  cmake --build build-${MSYSTEM}
 }
 
 check() {
-  cmake --build "build-${MSYSTEM}" --target test
+  cmake --build build-${MSYSTEM} --target test
 }
 
 package() {
   DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}"
 
-  install -Dm644 "${srcdir}/${_realname}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+  install -Dm644 "${srcdir}"/${_realname}/LICENSE \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }

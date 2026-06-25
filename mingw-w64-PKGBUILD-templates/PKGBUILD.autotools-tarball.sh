@@ -24,15 +24,15 @@ sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
 
 prepare() {
-  cd "${_realname}-${pkgver}"
+  cd ${_realname}-${pkgver}
 
   patch -Nbp1 -i "${srcdir}"/0001-A-fix.patch
 }
 
 build() {
-  mkdir -p "build-${MSYSTEM}" && cd "build-${MSYSTEM}"
+  mkdir -p build-${MSYSTEM} && cd build-${MSYSTEM}
 
-  ../"${_realname}-${pkgver}"/configure \
+  ../${_realname}-${pkgver}/configure \
     --prefix="${MINGW_PREFIX}" \
     --build="${MINGW_CHOST}" \
     --host="${MINGW_CHOST}" \
@@ -44,15 +44,16 @@ build() {
 }
 
 check() {
-  cd "build-${MSYSTEM}"
+  cd build-${MSYSTEM}
 
   make check
 }
 
 package() {
-  cd "build-${MSYSTEM}"
+  cd build-${MSYSTEM}
 
   make install DESTDIR="${pkgdir}"
 
-  install -Dm644 "../${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+  install -Dm644 "${srcdir}"/${_realname}-${pkgver}/LICENSE \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }
