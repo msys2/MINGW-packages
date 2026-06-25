@@ -19,14 +19,14 @@ makedepends=(
   "${MINGW_PACKAGE_PREFIX}-cc"
 )
 source=("https://www.somepackage.org/${_realname}/${_realname}-${pkgver}.tar.gz"
-        "0001-A-fix.patch")
+        '0001-A-fix.patch')
 sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
 
 prepare() {
   cd "${_realname}-${pkgver}"
 
-  patch -p1 -i ../0001-A-fix.patch
+  patch -Nbp1 -i "${srcdir}"/0001-A-fix.patch
 }
 
 build() {

@@ -20,8 +20,8 @@ makedepends=(
   "${MINGW_PACKAGE_PREFIX}-ninja"
 )
 source=("https://www.somepackage.org/${_realname}/${_realname}-${pkgver}.tar.gz"
-        "0001-An-important-fix.patch"
-        "0002-A-less-important-fix.patch")
+        '0001-An-important-fix.patch'
+        '0002-A-less-important-fix.patch')
 sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
             'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc')
@@ -29,8 +29,8 @@ sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 prepare() {
   cd "${_realname}-${pkgver}"
 
-  patch -Np1 -i ../0001-A-really-important-fix.patch
-  patch -Np1 -i ../0002-A-less-important-fix.patch
+  patch -Nbp1 -i "${srcdir}"/0001-A-really-important-fix.patch
+  patch -Nbp1 -i "${srcdir}"/0002-A-less-important-fix.patch
 }
 
 build() {
