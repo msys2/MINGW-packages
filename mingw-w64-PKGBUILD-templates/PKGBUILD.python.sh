@@ -9,9 +9,18 @@ pkgdesc="Some package (mingw-w64)"
 arch=('any')
 mingw_arch=('ucrt64' 'clang64' 'clangarm64')
 url='https://www.somepackage.org/'
-license=('LICENSE')
+msys2_repository_url='https://www.somepackage.org/'
+msys2_references=(
+  'archlinux: python-somepackage'
+  'gentoo: dev-python/somepackage'
+  'purl: pkg:pypi/somepackage'
+)
+license=('spdx:LICENSE')
 depends=("${MINGW_PACKAGE_PREFIX}-python")
-makedepends=("${MINGW_PACKAGE_PREFIX}-python-build" "${MINGW_PACKAGE_PREFIX}-python-installer")
+makedepends=(
+  "${MINGW_PACKAGE_PREFIX}-python-build"
+  "${MINGW_PACKAGE_PREFIX}-python-installer"
+)
 checkdepends=("${MINGW_PACKAGE_PREFIX}-python-pytest")
 options=('!strip')
 source=("https://pypi.org/packages/source/${_realname::1}/${_realname}/${_realname}-${pkgver}.tar.gz"

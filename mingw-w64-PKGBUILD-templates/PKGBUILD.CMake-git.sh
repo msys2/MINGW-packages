@@ -9,11 +9,17 @@ pkgdesc="Some package (mingw-w64)"
 arch=('any')
 mingw_arch=('ucrt64' 'clang64' 'clangarm64')
 url="https://github.com/someproject/somepackage"
-license=('LICENSE')
-makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
-             "${MINGW_PACKAGE_PREFIX}-ninja"
-             "${MINGW_PACKAGE_PREFIX}-cc"
-             'git')
+msys2_repository_url='https://www.somepackage.org/'
+msys2_references=(
+  'archlinux: somepackage'
+)
+license=('spdx:LICENSE')
+makedepends=(
+  "${MINGW_PACKAGE_PREFIX}-cc"
+  "${MINGW_PACKAGE_PREFIX}-cmake"
+  "${MINGW_PACKAGE_PREFIX}-ninja"
+  'git'
+)
 _commit='ff9ee68d7e31784c6fea3c864a235ad1f32ff026'
 source=("${_realname}"::"git+https://github.com/someproject/somepackage.git#commit=${_commit}"
         0001-An-important-fix.patch

@@ -9,7 +9,11 @@ pkgdesc="Some package (mingw-w64)"
 arch=('any')
 mingw_arch=('ucrt64' 'clang64' 'clangarm64')
 url='https://www.somepackage.org/'
-license=('LICENSE')
+msys2_repository_url='https://www.somepackage.org/'
+msys2_references=(
+  'archlinux: somepackage'
+)
+license=('spdx:LICENSE')
 makedepends=("${MINGW_PACKAGE_PREFIX}-rust")
 source=("https://www.somepackage.org/${_realname}/${_realname}-${pkgver}.tar.gz"
         "0001-An-important-fix.patch"
