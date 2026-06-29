@@ -8,7 +8,7 @@
 # Uncomment one of these to select a build profile below:
 
 # Full build with max optimisation and everything enabled (very slow build)
-BuildFlavour = perf
+#BuildFlavour = perf
 
 # As above but build GHC using the LLVM backend
 #BuildFlavour = perf-llvm
@@ -20,7 +20,7 @@ BuildFlavour = perf
 #BuildFlavour = perf-cross-ncg
 
 # Fast build with optimised libraries, no profiling (RECOMMENDED):
-#BuildFlavour = quick
+BuildFlavour = quick
 
 # Fast build with optimised libraries, no profiling, with LLVM:
 #BuildFlavour = quick-llvm
@@ -112,3 +112,8 @@ V=0
 
 # Don't strip debug and other unneeded symbols from libraries and executables.
 STRIP_CMD = :
+
+SRC_CC_OPTS += -std=gnu11
+# `--image-base 0x400000` roughly equals to `--default-image-base-low`,
+# but the latter isn't recognized by older binutils provided by ghc bootstrap
+SRC_LD_OPTS += -Wl,--image-base,0x400000
