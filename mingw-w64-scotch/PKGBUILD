@@ -3,83 +3,97 @@
 _realname=scotch
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
-         "${MINGW_PACKAGE_PREFIX}-${_realname}-int64")
+         "${MINGW_PACKAGE_PREFIX}-${_realname}64"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}-metis"
+         "${MINGW_PACKAGE_PREFIX}-${_realname}64-metis")
 pkgdesc='Graph partitioning and sparse matrix ordering package (mingw-w64)'
-pkgver=7.0.11
+pkgver=7.0.12
 pkgrel=1
 arch=('any')
 mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
 url="https://www.labri.fr/perso/pelegrin/scotch/"
 msys2_repository_url="https://gitlab.inria.fr/scotch/scotch"
 license=('spdx:CECILL-C')
-depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
-         "${MINGW_PACKAGE_PREFIX}-libwinpthread"
+depends=("${MINGW_PACKAGE_PREFIX}-bzip2"
+         "${MINGW_PACKAGE_PREFIX}-xz"
          "${MINGW_PACKAGE_PREFIX}-zlib")
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-fc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja"
+             #"${MINGW_PACKAGE_PREFIX}-libgnurx"
              $([[ ${CARCH} == aarch64 ]] || echo "${MINGW_PACKAGE_PREFIX}-msmpi"))
 options=('!strip')
 source=("https://gitlab.inria.fr/scotch/scotch/-/archive/v${pkgver}/${_realname}-v${pkgver}.tar.gz"
-        "Makefile.idx32.inc"
-        "Makefile.idx64.inc")
-sha256sums=('ce1ea6e16ca36ae91426a360f639c8f575fccebc0116fbcb381f164c5e862768'
-            '4221b69dcc53230ff4d6bc18e3982f6d39971a99fc17f4dab609fc19b99d8a30'
-            'c52bf0598332d8139a37606e7ea9376b7f841059047c0c977b205a763fc7e97a')
+        "001-include-missing-header-on-windows.patch")
+sha256sums=('870bf681e7e40b6b01c3890dbe7b27da2617660f1722541919a865a6729dcbf2'
+            '81fb21fa39a7267399a3a50d199db81e6bba7eb269ff6c06eb2bec5fbe59d69f')
 
 prepare() {
   cd "${srcdir}/${_realname}-v${pkgver}"
-  for p in ${source[*]:3}; do
+  for p in ${source[*]:1}; do
     patch -p1 -i "$srcdir/$p"
   done
 }
 
 _build_scotch() {
-  _idx_makefile_inc=$1
-  _idx_suffix=$2
+  _int_size=$1
+  local _name_suffix=""
+  #if [[ ${_int_size} == 64 ]]; then
+  #  _name_suffix="_${_int_size}"
+  #  LDFLAGS+=" -lregex"
+  #fi
 
-  cp -r "${srcdir}/${_realname}-v${pkgver}" "${srcdir}/build-${MSYSTEM}-idx${_idx_suffix}"
-  cd "${srcdir}/build-${MSYSTEM}-idx${_idx_suffix}"
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+    ${MINGW_PREFIX}/bin/cmake \
+      -GNinja \
+      -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+      -DBUILD_SHARED_LIBS=ON \
+      -DINTSIZE=${_int_size} \
+      -DIDXSIZE=${_int_size} \
+      -DSCOTCH_NAME_SUFFIX=${_name_suffix} \
+      -DLIBSCOTCHERR=scotcherr \
+      -DLIBPTSCOTCHERR=ptscotcherr \
+      -DENABLE_TESTS=OFF \
+      "${_extra_config[@]}" \
+      -S ${_realname}-v${pkgver} \
+      -B build-${MSYSTEM}-${_int_size}
 
-  cp -p "${srcdir}/${_idx_makefile_inc}" "${srcdir}/build-${MSYSTEM}-idx${_idx_suffix}/src/Makefile.inc"
-  cd "${srcdir}/build-${MSYSTEM}-idx${_idx_suffix}/src"
-
-  if [[ ${CARCH} != aarch64 ]]; then
-    make scotch ptscotch esmumps ptesmumps
-  else
-    # No MPI so no PT-Scotch
-    make scotch esmumps 
-  fi
-
-  cd ../lib
-  ${CC} -shared -o lib${_realname}.dll -Wl,--enable-auto-import -Wl,--export-all-symbols,-no-undefined \
-    -Wl,--out-implib,lib${_realname}.dll.a -Wl,--whole-archive lib${_realname}.a lib${_realname}err.a -Wl,--no-whole-archive \
-    -pthread -lz
-
-  mv "${srcdir}/build-${MSYSTEM}-idx${_idx_suffix}/include/metis.h" "${srcdir}/build-${MSYSTEM}-idx${_idx_suffix}/include/scotchmetis.h"
-
-  if [[ ${CARCH} != aarch64 ]]; then
-    mpicc -shared -o libpt${_realname}.dll -Wl,--enable-auto-import -Wl,--export-all-symbols,-no-undefined \
-      -Wl,--out-implib,libpt${_realname}.dll.a -Wl,--whole-archive libpt${_realname}.a libpt${_realname}err.a -Wl,--no-whole-archive \
-      -L. -l${_realname} -pthread
-
-    mv "${srcdir}/build-${MSYSTEM}-idx${_idx_suffix}/include/parmetis.h" "${srcdir}/build-${MSYSTEM}-idx${_idx_suffix}/include/ptscotchparmetis.h"
-  fi
+  ${MINGW_PREFIX}/bin/cmake --build build-${MSYSTEM}-${_int_size}
 }
 
 build()
 {
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  if [[ ${CARCH} == aarch64 ]]; then
+    _extra_config+=("-DBUILD_PTSCOTCH=OFF")
+  fi
+
   msg2 "Build Scotch with 32-bit indexing"
-  _build_scotch "Makefile.idx32.inc" "32"
+  _build_scotch "32"
 
   msg2 "Build Scotch with 64-bit indexing"
-  _build_scotch "Makefile.idx64.inc" "64"
+  _build_scotch "64"
 }
 
 
 _package_scotch() {
-  _idx_suffix=$1
+  _int_size=$1
+  local _name_suffix=""
+  local _pc_suffix=""
+  if [[ ${_int_size} == 64 ]]; then
+  #  _name_suffix="_${_int_size}"
+     _pc_suffix=${_int_size}
+  fi
 
-  cd "${srcdir}/${_realname}-v${pkgver}"
-  mkdir -p "${pkgdir}"${MINGW_PREFIX}/{bin,lib,include}
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install build-${MSYSTEM}-${_int_size}
+
   mkdir -p "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig"
   echo "
 	prefix=${MINGW_PREFIX}
@@ -90,9 +104,8 @@ _package_scotch() {
 	Version: ${pkgver}
 	Description: Serial graph partitioning and sparse matrix ordering package
 	Cflags: -I\${includedir}
-	Libs.private: -lscotcherr -lz -lpthread
-	Libs: -L\${libdir} -lscotch
-  " | sed '/^\s*$/d;s/^\s*//' > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/scotch.pc"
+	Libs: -L\${libdir} -lscotch${_name_suffix}
+  " | sed '/^\s*$/d;s/^\s*//' > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/scotch${_pc_suffix}.pc"
 
   if [[ ${CARCH} != aarch64 ]]; then
     echo "
@@ -103,35 +116,62 @@ _package_scotch() {
     URL: ${url}
     Version: ${pkgver}
     Description: Parallel graph partitioning and sparse matrix ordering package
-    Requires: scotch
-    Requires.private: msmpi
+    Requires: scotch${_pc_suffix}
     Cflags: -I\${includedir}
-    Libs.private: -lptscotcherr
-    Libs: -L\${libdir} -lptscotch
-    " | sed '/^\s*$/d;s/^\s*//' > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/ptscotch.pc"
-  fi  
-  (
-    cd "${srcdir}/build-${MSYSTEM}-idx${_idx_suffix}"/include
-    install -m644 *.h "${pkgdir}${MINGW_PREFIX}/include"
-  )
-  (
-    cd "${srcdir}/build-${MSYSTEM}-idx${_idx_suffix}"/lib
-    install -m644 lib*.a "${pkgdir}${MINGW_PREFIX}/lib"
-    install -m644 lib*.dll "${pkgdir}${MINGW_PREFIX}/bin"
-  )
+    Libs: -L\${libdir} -lptscotch${_name_suffix}
+    " | sed '/^\s*$/d;s/^\s*//' > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/ptscotch${_pc_suffix}.pc"
+  fi
+  mkdir -p "${srcdir}"/scotch${_int_size}-metis/{include,lib{,/cmake/scotch},bin}
+  cd "${pkgdir}"
+  mv -v ./${MINGW_PREFIX}/include/*metis* "${srcdir}"/scotch${_int_size}-metis/include
+  mv -v ./${MINGW_PREFIX}/lib/*metis* "${srcdir}"/scotch${_int_size}-metis/lib
+  mv -v ./${MINGW_PREFIX}/bin/*metis* "${srcdir}"/scotch${_int_size}-metis/bin
+  mv -v ./${MINGW_PREFIX}/lib/cmake/scotch/*metis* "${srcdir}"/scotch${_int_size}-metis/lib/cmake/scotch/
+  if [[ ${CARCH} != aarch64 ]]; then
+    mv -v ./${MINGW_PREFIX}/bin/adm2dgr.exe "${srcdir}"/scotch${_int_size}-metis/bin/ # depends on libptscotchparmetis
+  fi
 }
 
 package_scotch()
 {
   _package_scotch "32"
+  install -Dm644 "${srcdir}"/${_realname}-v${pkgver}/doc/CeCILL-C_V1-en.txt \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }
 
-package_scotch-int64() {
+package_scotch64() {
   pkgdesc="Graph partitioning and sparse matrix ordering package with 64-bit indexing (mingw-w64)"
-  conflicts=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+  provides=("${MINGW_PACKAGE_PREFIX}-${_realname}-int64")
+  replaces=("${MINGW_PACKAGE_PREFIX}-${_realname}-int64")
+  conflicts=("${MINGW_PACKAGE_PREFIX}-${_realname}-int64"
+             "${MINGW_PACKAGE_PREFIX}-${_realname}")
   _package_scotch "64"
+  install -Dm644 "${srcdir}"/${_realname}-v${pkgver}/doc/CeCILL-C_V1-en.txt \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}64/LICENSE
 }
 
+package_scotch-metis() {
+  pkgdesc="libScotchMeTiS compatibility library: MeTiS interface implemented using Scotch (mingw-w64)"
+  depends=("${MINGW_PACKAGE_PREFIX}-scotch")
+  conflicts=("${MINGW_PACKAGE_PREFIX}-metis"
+             "${MINGW_PACKAGE_PREFIX}-parmetis")
+
+  mv -v "${srcdir}"/scotch32-metis/ "${pkgdir}"${MINGW_PREFIX}
+  install -Dm644 "${srcdir}"/${_realname}-v${pkgver}/doc/CeCILL-C_V1-en.txt \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/scotch-metis/LICENSE
+}
+
+package_scotch64-metis() {
+  pkgdesc="libScotchMeTiS compatibility library: MeTiS interface implemented using Scotch with 64-bit indexing (mingw-w64)"
+  depends=("${MINGW_PACKAGE_PREFIX}-scotch64")
+  conflicts=("${MINGW_PACKAGE_PREFIX}-metis"
+             "${MINGW_PACKAGE_PREFIX}-parmetis"
+             "${MINGW_PACKAGE_PREFIX}-scotch-metis")
+
+  mv -v "${srcdir}"/scotch64-metis/ "${pkgdir}"${MINGW_PREFIX}
+  install -Dm644 "${srcdir}"/${_realname}-v${pkgver}/doc/CeCILL-C_V1-en.txt \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/scotch64-metis/LICENSE
+}
 
 # template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
 # vim: set ft=bash :
