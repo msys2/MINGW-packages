@@ -4,6 +4,7 @@
 # Contributor: Renato Silva <br.renatosilva@gmail.com>
 # Contributor: wirx6 <wirx654@gmail.com>
 # Contributor: Kirill Müller <krlmlr@mailbox.org>
+# Contributor: dragon-archer <dragon-archer@outlook.com>
 
 if [[ ${CARCH} != i686 ]]; then
   _enable_ada=yes
@@ -53,7 +54,7 @@ else
   _url=https://gcc.gnu.org/pub/gcc/snapshots/${_version}-${_snapshot}
 fi
 _libdir=lib/gcc/${CHOST}/${pkgver}
-pkgrel=5
+pkgrel=6
 pkgdesc="GCC for the MinGW-w64"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64')
@@ -96,7 +97,9 @@ source=(${_url}/${_sourcedir}.tar.xz{,.sig}
         0140-gcc-diagnostic-color.patch
         0200-add-m-no-align-vector-insn-option-for-i386.patch
         2001-fix-building-rust-on-mingw-w64.patch
-        3001-fix-codeview-crashes.patch)
+        3001-fix-codeview-crashes.patch
+        3002-jit-set-missing-JIT_LDFLAGS-for-MinGW.patch
+        3003-gnattools-do-not-unset-LDFLAGS.patch)
 sha256sums=('50efb4d94c3397aff3b0d61a5abd748b4dd31d9d3f2ab7be05b171d36a510f79'
             'SKIP'
             'bce81824fc89e5e62cca350de4c17a27e27a18a1a1ad5ca3492aec1fc5af3234'
@@ -108,11 +111,13 @@ sha256sums=('50efb4d94c3397aff3b0d61a5abd748b4dd31d9d3f2ab7be05b171d36a510f79'
             'e98805ead7d78ee2a92f237894c4b2b7ddc1688e1b517d8c04f28d440202e40f'
             'fd9bdecb2bbc4796bbc9f00b708dac42ef9e3464a06d6d27e5475cee117de5be'
             'ad1f7b5e7afaaec008b7cbd14feea13a10989fa91bda7003af72d457619bb199'
-            'd8b9b979dc1742f63d23dfca92bc05944612bd196a31fb882b8a616baba84383'
+            'f918a228644057d9acfd2ebacc9c21c57087dde45be349db6e663f5e9f9d78dd'
             'c94004dab1685a6fa9124de86aae742df4136a2e9ff5d5e1ad87ecdc35fbcef4'
             '1484911163634f30324827619c873a6267b377abba0df8bbedfd128163c53ea4'
             'a411f59953553a3d01dd64c79b1acbb91eca092c4cb01bfd26b1c51c3eb798e8'
-            'f21f9ab731e9cab8fd4ca8c289497f859ef7004e6fa0507877dc2559ac2071c3')
+            'f21f9ab731e9cab8fd4ca8c289497f859ef7004e6fa0507877dc2559ac2071c3'
+            '0127ee4e0f8075ada4bbe20274783ccce6f21ca5df7720386795f539f2df6162'
+            'fe0dc50becdd5e1b71c17858fa854b46869909b5fd9a304970815e69dfd24e9a')
 validpgpkeys=(F3691687D867B81B51CE07D9BBE43771487328A9  # bpiotrowski@archlinux.org
               86CFFCA918CF3AF47147588051E8B148A9999C34  # evangelos@foutrelis.com
               13975A70E63C361C73AE69EF6EEB81F8981C74C7  # richard.guenther@gmail.com
@@ -172,16 +177,19 @@ prepare() {
   apply_patch_with_msg \
     3001-fix-codeview-crashes.patch
 
+  # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=125229
+  apply_patch_with_msg \
+    3002-jit-set-missing-JIT_LDFLAGS-for-MinGW.patch
+
+  # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=125232
+  apply_patch_with_msg \
+    3003-gnattools-do-not-unset-LDFLAGS.patch
+
   autoreconf -fiv
 
   # do not expect ${prefix}/mingw symlink - this should be superceded by
   # 0005-Windows-Don-t-ignore-native-system-header-dir.patch .. but isn't!
   sed -i 's/${prefix}\/mingw\//${prefix}\//g' configure
-
-  # change hardcoded /mingw prefix to the real prefix .. isn't this rubbish?
-  # it might work at build time and could be important there but beyond that?!
-  local MINGW_NATIVE_PREFIX=$(cygpath -am ${MINGW_PREFIX})
-  sed -i "s#\\/mingw\\/#${MINGW_NATIVE_PREFIX//\//\\/}\\/#g" gcc/config/mingw/mingw32.h
 }
 
 build() {
@@ -301,9 +309,28 @@ build() {
     sed -i 's,^STRIP_FOR_TARGET=.*$,STRIP_FOR_TARGET=true,g' Makefile
   fi
 
+  # Set standard file search path from make config instead of hardcoding it in gcc/config/mingw/mingw32.h
+  # Thus, these paths will not exists in the final installation.
+  # See https://github.com/msys2/MINGW-packages/issues/27782 for details.
+  local _bootstrap_search="-B$(cygpath -am "${MINGW_PREFIX}/lib")"
+  local _arg_conv_excl="--LINK=" # avoid gnatlink to convert _bootstrap_search to "-BD;D:/M/..."
+  # DRIVER_DEFINES in gcc/Makefile.in, affects most executables
+  _arg_conv_excl+=";-DSTANDARD_EXEC_PREFIX=;-DSTANDARD_LIBEXEC_PREFIX=;-DSTANDARD_BINDIR_PREFIX=;-DTOOL_INCLUDE_DIR=;-DNATIVE_SYSTEM_HEADER_DIR="
+  # PREPROCESSOR_DEFINES in gcc/Makefile.in, affects cc1.exe and cc1plus.exe
+  _arg_conv_excl+=";-DGCC_INCLUDE_DIR=;-DFIXED_INCLUDE_DIR=;-DGPLUSPLUS_INCLUDE_DIR=;-DGPLUSPLUS_TOOL_INCLUDE_DIR=;-DGPLUSPLUS_BACKWARD_INCLUDE_DIR=;-DGPLUSPLUS_LIBCXX_INCLUDE_DIR=;-DLOCAL_INCLUDE_DIR=;-DCROSS_INCLUDE_DIR=;-DPREFIX="
+
+  # For the bootstrap compiler to find system headers
+  cat >> Makefile <<EOF
+POSTSTAGE1_CXX_EXPORT += export CXX="\$\$CXX -isystem ${MINGW_PREFIX}/include"; export CXX_FOR_BUILD="\$\$CXX";
+EOF
+
   # https://gcc.gnu.org/onlinedocs/gccint/Makefile.html
-  make -O STAGE1_CFLAGS="-O2" \
-          profiledbootstrap
+  # https://gcc.gnu.org/install/build.html
+  MSYS2_ARG_CONV_EXCL="${_arg_conv_excl}" \
+    make -O STAGE1_CFLAGS="-O2" \
+            TFLAGS="${_bootstrap_search}" \
+            BOOT_LDFLAGS="${_bootstrap_search}" \
+            profiledbootstrap
 }
 
 package_gcc-libs() {
