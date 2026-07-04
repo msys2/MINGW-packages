@@ -1,5 +1,35 @@
+--- ghc-8.6.5/libraries/base/base.cabal.orig
++++ ghc-8.6.5/libraries/base/base.cabal
+@@ -366,7 +366,7 @@
+         -- mingw32: Unfortunately required because of a resource leak between
+         --          mingwex and mingw32. the __math_err symbol is defined in
+         --          mingw32 which is required by mingwex.
+-        extra-libraries: wsock32, user32, shell32, msvcrt, mingw32, mingwex
++        extra-libraries: wsock32, user32, shell32, shlwapi, msvcrt, mingw32, mingwex
+         exposed-modules:
+             GHC.IO.Encoding.CodePage.API
+             GHC.IO.Encoding.CodePage.Table
 --- ghc-8.6.5/rts/RtsSymbols.c.orig	2026-06-29 22:22:19.848368500 +0800
 +++ ghc-8.6.5/rts/RtsSymbols.c	2026-06-29 22:59:30.712087400 +0800
+@@ -38,12 +38,12 @@
+                                 SymI_HasProto(stg_finalizzeWeakzh)
+ 
+ #define RTS_LIBDW_SYMBOLS                       \
+-      SymE_HasProto(backtraceFree)              \
+-      SymE_HasProto(libdwGetBacktrace)          \
+-      SymE_HasProto(libdwLookupLocation)        \
+-      SymE_HasProto(libdwPoolTake)              \
+-      SymE_HasProto(libdwPoolRelease)           \
+-      SymE_HasProto(libdwPoolClear)
++      SymI_HasProto(backtraceFree)              \
++      SymI_HasProto(libdwGetBacktrace)          \
++      SymI_HasProto(libdwLookupLocation)        \
++      SymI_HasProto(libdwPoolTake)              \
++      SymI_HasProto(libdwPoolRelease)           \
++      SymI_HasProto(libdwPoolClear)
+ 
+ #if !defined (mingw32_HOST_OS)
+ #define RTS_POSIX_ONLY_SYMBOLS                  \
 @@ -102,14 +102,12 @@
        SymI_HasProto(atexit)                              \
        RTS_WIN32_ONLY(SymI_NeedsProto(__chkstk_ms))       \
@@ -14,10 +44,107 @@
 -      SymI_HasProto(_unlock_file)
 +      SymI_HasProto(_unlock_file)                        \
 +      SymI_HasProto(__acrt_iob_func)                     \
-+      RTS_WIN64_ONLY(SymI_NeedsDataProto(__imp___acrt_iob_func))
++      SymI_NeedsDataProto(__imp___acrt_iob_func)
  
  #define RTS_MINGW_COMPAT_SYMBOLS                         \
        SymI_HasProto_deprecated(access)                   \
+@@ -966,7 +964,7 @@
+ #define SymI_NeedsProto(vvv)  extern void vvv(void);
+ #define SymI_NeedsDataProto(vvv)  extern StgWord vvv[];
+ #if defined(COMPILING_WINDOWS_DLL)
+-#define SymE_HasProto(vvv)    SymE_HasProto(vvv);
++#define SymE_HasProto(vvv)    SymE_NeedsProto(vvv);
+ #  if defined(x86_64_HOST_ARCH)
+ #    define SymE_NeedsProto(vvv)    extern void __imp_ ## vvv (void);
+ #    define SymE_NeedsDataProto(vvv) SymE_NeedsProto(vvv)
+--- ghc-8.6.5/rts/RtsAPI.c.orig	2019-04-08 03:39:58.000000000 +0800
++++ ghc-8.6.5/rts/RtsAPI.c	2026-06-30 15:14:13.097572400 +0800
+@@ -475,7 +475,7 @@
+     SchedulerStatus stat;
+ 
+     p = (StgClosure *)deRefStablePtr(s);
+-    w = rts_apply(*cap, &base_GHCziTopHandler_runMainIO_closure, p);
++    w = rts_apply(*cap, runMainIO_closure, p);
+     tso = createStrictIOThread(*cap, RtsFlags.GcFlags.initialStkSize, w);
+     // async exceptions are always blocked by default in the created
+     // thread.  See #1048.
+--- ghc-8.6.5/rts/ghc.mk.orig	2019-04-08 03:39:58.000000000 +0800
++++ ghc-8.6.5/rts/ghc.mk	2026-06-30 17:00:00.000000000 +0800
+@@ -203,14 +203,18 @@
+ 
+ ifneq "$$(UseSystemLibFFI)" "YES"
+ rts_dist_FFI_SO = rts/dist/build/lib$$(LIBFFI_NAME)$$(soext)
++rts_dist_FFI_DLL = rts/dist/build/$$(LIBFFI_DLL)
++rts_dist_FFI_LIBS = -Lrts/dist/build -l$$(LIBFFI_NAME)
+ else
+ rts_dist_FFI_SO =
++rts_dist_FFI_DLL =
++rts_dist_FFI_LIBS =
+ endif
+ 
+ # Making a shared library for the RTS.
+ ifneq "$$(findstring dyn, $1)" ""
+ ifeq "$$(TargetOS_CPP)" "mingw32"
+-$$(rts_$1_LIB) : $$(rts_$1_OBJS) $$(ALL_RTS_DEF_LIBS) rts/dist/libs.depend rts/dist/build/$$(LIBFFI_DLL)
++$$(rts_$1_LIB) : $$(rts_$1_OBJS) $$(ALL_RTS_DEF_LIBS) rts/dist/libs.depend $$(rts_dist_FFI_DLL)
+ 	"$$(RM)" $$(RM_OPTS) $$@
+ 	# Call out to the shell script to decide how to build the dll.
+ 	# Making a shared library for the RTS.
+@@ -226,7 +230,7 @@
+ 	# $$10 = SxS Name
+ 	# $$11 = SxS Version
+ 	$$(gen-dll_INPLACE) link "rts/dist/build" "rts/dist/build" "" "" "$$(ALL_RTS_DEF_LIBS)" "$$(rts_$1_OBJS)" "$$@" "$$(rts_dist_HC) -this-unit-id rts -no-hs-main -shared -dynamic -dynload deploy \
+-         -no-auto-link-packages -Lrts/dist/build -l$$(LIBFFI_NAME) \
++         -no-auto-link-packages $$(rts_dist_FFI_LIBS) \
+          `cat rts/dist/libs.depend | tr '\n' ' '` \
+          $$(rts_dist_$1_GHC_LD_OPTS)" "NO" \
+          "$(rts_INSTALL_INFO)-$(subst dyn,,$(subst _dyn,,$(subst v,,$1)))" "$(ProjectVersion)"
+--- ghc-8.6.5/rts/rts.cabal.in.orig	2019-04-08 03:39:58.000000000 +0800
++++ ghc-8.6.5/rts/rts.cabal.in	2026-06-30 16:20:00.000000000 +0800
+@@ -36,9 +36,7 @@
+     -- expects the unit-id to be
+     -- set without version
+     ghc-options: -this-unit-id rts
+-    if os(windows)
+-      extra-bundled-libraries: Cffi-6
+-    else
++    if !os(windows)
+       extra-bundled-libraries: Cffi
+     -- the rts comes in a variety of flavours that ar built outside
+     -- of cabal.  The combination of extra-bundled-libraries and
+--- ghc-8.6.5/rts/rts.cabal.orig	2019-04-08 03:39:58.000000000 +0800
++++ ghc-8.6.5/rts/rts.cabal	2026-06-30 16:20:00.000000000 +0800
+@@ -36,9 +36,7 @@
+     -- expects the unit-id to be
+     -- set without version
+     ghc-options: -this-unit-id rts
+-    if os(windows)
+-      extra-bundled-libraries: Cffi-6
+-    else
++    if !os(windows)
+       extra-bundled-libraries: Cffi
+     -- the rts comes in a variety of flavours that ar built outside
+     -- of cabal.  The combination of extra-bundled-libraries and
+--- ghc-8.6.5/rts/win32/libHSbase.def.orig
++++ ghc-8.6.5/rts/win32/libHSbase.def
+@@ -18,6 +18,7 @@
+ 	base_GHCziPack_unpackCString_closure
+ 
+ 	base_GHCziTopHandler_runIO_closure
++	base_GHCziTopHandler_runMainIO_closure
+ 	base_GHCziTopHandler_runNonIO_closure
+ 
+ 	base_GHCziIOziException_stackOverflow_closure
+--- ghc-8.6.5/rts/win32/libHSghc-prim.def.orig
++++ ghc-8.6.5/rts/win32/libHSghc-prim.def
+@@ -3,6 +3,7 @@
+ 
+ EXPORTS
+ 
++	ghczmprim_GHCziTuple_Z0T_closure
+ 	ghczmprim_GHCziTypes_True_closure
+ 	ghczmprim_GHCziTypes_False_closure
+ 	ghczmprim_GHCziTypes_Czh_con_info
 --- ghc-8.6.5/rts/win32/ConsoleHandler.c.orig	2026-06-29 22:22:19.928336300 +0800
 +++ ghc-8.6.5/rts/win32/ConsoleHandler.c	2026-06-30 00:01:15.856326200 +0800
 @@ -9,6 +9,7 @@

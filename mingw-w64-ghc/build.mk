@@ -113,7 +113,7 @@ V=0
 # Don't strip debug and other unneeded symbols from libraries and executables.
 STRIP_CMD = :
 
-SRC_CC_OPTS += -std=gnu11
+SRC_CC_OPTS += -std=gnu11 -mcmodel=medium
 # `--image-base 0x400000` roughly equals to `--default-image-base-low`,
 # but the latter isn't recognized by older binutils provided by ghc bootstrap
 SRC_LD_OPTS += -Wl,--image-base,0x400000
