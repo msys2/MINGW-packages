@@ -21,31 +21,31 @@ MSYS2 is an independent rewrite of MSYS providing a Unix-like environment and co
 See the [MSYS2 website](https://www.msys2.org/).
 
 ## Using packages
-The common way to use these packages are **pre-built** binary packages from the MSYS2 MINGW64 repo (which includes the binaries, libraries, headers, man pages), and install it on your machine, and build against those packages/libraries as you are porting/writing your software.
+The common way to use these packages are **pre-built** binary packages from the MSYS2 UCRT64 repo (which includes the binaries, libraries, headers, man pages), and install it on your machine, and build against those packages/libraries as you are porting/writing your software.
 
-Details about this, including information about how to find the correct package, are found in the [MSYS2 documentation](https://www.msys2.org/docs/package-management/).  
+Details about this, including information about how to find the correct package, are found in the [MSYS2 documentation](https://www.msys2.org/docs/package-management/).
 Short summary:
- 
-Assuming you have a properly installed MSYS2 environment, you can install the pre-built binary package by using the following command from the bash prompt:
- ```
-    pacman -S ${package-name}
- ```
 
-Please note: Not all the packages in this repository are built and accessible from the MSYS2 MINGW64 repo right away. After merging changes to the git repository it can take a few days until compiled and built packages are accessible in the repo. Also for some packages you can find older versions in the repo if you need older version, for some packages you have only the most recent version.
+Assuming you have a properly installed MSYS2 environment, you can install the pre-built binary package by using the following command from the bash prompt:
+```
+pacman -S ${package-name}
+```
+
+Please note: Not all the packages in this repository are built and accessible from the MSYS2 UCRT64 repo right away. After merging changes to the git repository it can take a few days until compiled and built packages are accessible in the repo. Also for some packages you can find older versions in the repo if you need older version, for some packages you have only the most recent version.
 
 ---------------------------------------------
 
-As an alternative you can download or clone the package folder with the scripts to your machine and you **build it for yourself**, in whatever version you like. 
+As an alternative you can download or clone the package folder with the scripts to your machine and you **build it for yourself**, in whatever version you like.
 
- Assuming you have a properly installed MSYS2 environment and build tools, you can build any package using the following command:
- ```
-    cd ${package-name}
-    MINGW_ARCH=mingw64 makepkg-mingw -sLf
- ```
- After that you can install the freshly built package(s) with the following command:
- ```
-    pacman -U ${package-name}*.pkg.tar.xz
- ```
+Assuming you have a properly installed MSYS2 environment and build tools, you can build any package using the following command:
+```
+cd ${package-name}
+MINGW_ARCH=ucrt64 makepkg-mingw -sLf
+```
+After that you can install the freshly built package(s) with the following command:
+```
+pacman -U ${package-name}*.pkg.tar.zst
+```
 
 ## Creating packages
 See the [MSYS2 documentation](https://www.msys2.org/wiki/Creating-Packages) for instructions and advice about creating MINGW-packages.
