@@ -39,13 +39,38 @@ options=('!emptydirs' '!strip')
 source=("https://ftp.gnu.org/gnu/gcc/gcc-${pkgver}/gcc-${pkgver}.tar.xz")
 sha256sums=('50efb4d94c3397aff3b0d61a5abd748b4dd31d9d3f2ab7be05b171d36a510f79')
 
-_build_gcc() {
+_stash_libstdcxx() {
+  local _variant=$1
+  local _build_dir="${srcdir}/build-${MSYSTEM}"
+  local _stash_dir="${srcdir}/libstdc++-${_variant}-${MSYSTEM}"
+  local _multilib _dir _from_dir _to_dir
+
+  rm -rf "${_stash_dir}" && mkdir -p "${_stash_dir}"
+
+  while IFS= read -r _multilib; do
+    _dir="${_multilib%%;*}"
+    if [[ ${_dir} == . ]]; then
+      _from_dir="${_build_dir}/${_target}/libstdc++-v3"
+      _to_dir="${_stash_dir}"
+    else
+      _from_dir="${_build_dir}/${_target}/${_dir}/libstdc++-v3"
+      _to_dir="${_stash_dir}/${_dir}"
+    fi
+
+    install -Dm644 "${_from_dir}/src/.libs/libstdc++.a" "${_to_dir}/libstdc++.a"
+    install -Dm644 "${_from_dir}/libsupc++/.libs/libsupc++.a" "${_to_dir}/libsupc++.a"
+    install -Dm644 "${_from_dir}/src/experimental/.libs/libstdc++exp.a" "${_to_dir}/libstdc++exp.a"
+  done < <("${_build_dir}/gcc/xgcc" -B"${_build_dir}/gcc/" -print-multi-lib)
+}
+
+build() {
+  mkdir build-${MSYSTEM} && cd build-${MSYSTEM}
+
   declare -a _extra_config
   if [[ ${CC} == clang ]]; then
     _extra_config+=("--disable-win32-utf8-manifest")
   fi
 
-  local _GCC_LDFLAGS="${LDFLAGS} -Wl,--disable-dynamicbase"
   ../${_realname}-${pkgver}/configure \
     --prefix=${MINGW_PREFIX} \
     --target=${_target} \
@@ -81,25 +106,24 @@ _build_gcc() {
     --with-host-libstdcxx="-static-libgcc -Wl,-Bstatic,-lstdc++,-Bdynamic -lm" \
     --enable-linker-plugin-flags='LDFLAGS=-static-libstdc++\ -static-libgcc\ '"${LDFLAGS// /\\ }"'\ -Wl,--stack,12582912' \
     "${_extra_config[@]}" \
-    LDFLAGS="${_GCC_LDFLAGS}"
+    LDFLAGS="${LDFLAGS} -Wl,--disable-dynamicbase"
 
-  make INHIBIT_LIBC_CFLAGS='-DUSE_TM_CLONE_REGISTRY=0'
-}
+  make \
+    INHIBIT_LIBC_CFLAGS='-DUSE_TM_CLONE_REGISTRY=0' \
+    CFLAGS_FOR_TARGET='-Os' \
+    CXXFLAGS_FOR_TARGET='-Os' \
 
-build() {
-  mkdir build-${MSYSTEM} && cd build-${MSYSTEM}
-
-  export CFLAGS_FOR_TARGET='-Os'
-  export CXXFLAGS_FOR_TARGET='-Os'
-  _build_gcc
+  _stash_libstdcxx normal
 
   # Build libstdc++ without exceptions support (the 'nano' variant)
-  mkdir "${srcdir}"/build-nano-${MSYSTEM} && cd "${srcdir}"/build-nano-${MSYSTEM}
+  make clean-target-libstdc++-v3
+  make \
+    INHIBIT_LIBC_CFLAGS='-DUSE_TM_CLONE_REGISTRY=0' \
+    CFLAGS_FOR_TARGET='-Os -fno-exceptions' \
+    CXXFLAGS_FOR_TARGET='-Os -fno-exceptions' \
+    all-target-libstdc++-v3
 
-  export CFLAGS_FOR_TARGET='-Os -fno-exceptions'
-  export CXXFLAGS_FOR_TARGET='-Os -fno-exceptions'
-  # Only C and C++ are required for the nano build
-  _build_gcc
+  _stash_libstdcxx nano
 }
 
 package() {
@@ -107,25 +131,28 @@ package() {
 
   make DESTDIR="${pkgdir}" install
 
-  cd "${srcdir}"/build-nano-${MSYSTEM}
-
-  mkdir "${pkgdir}"/nano-install-${MSYSTEM}
-
-  make DESTDIR="${pkgdir}/nano-install-${MSYSTEM}" install
-
   cd "${pkgdir}"${MINGW_PREFIX}
 
-  # we need only libstdc nano files
-  multilibs=($(bin/${_target}-gcc -print-multi-lib 2>/dev/null))
-  for multilib in "${multilibs[@]}"; do
-    dir="${multilib%%;*}"
-    from_dir="${pkgdir}"/nano-install-${MSYSTEM}${MINGW_PREFIX}/${_target}/lib/"$dir"
-    to_dir=${_target}/lib/"$dir"
+  local _multilib _dir _normal_dir _nano_dir _to_dir
+  while IFS= read -r _multilib; do
+    _dir="${_multilib%%;*}"
+    if [[ ${_dir} == . ]]; then
+      _normal_dir="${srcdir}/libstdc++-normal-${MSYSTEM}"
+      _nano_dir="${srcdir}/libstdc++-nano-${MSYSTEM}"
+      _to_dir="${_target}/lib"
+    else
+      _normal_dir="${srcdir}/libstdc++-normal-${MSYSTEM}/${_dir}"
+      _nano_dir="${srcdir}/libstdc++-nano-${MSYSTEM}/${_dir}"
+      _to_dir="${_target}/lib/${_dir}"
+    fi
 
-    cp -f "$from_dir"/libstdc++.a "$to_dir"/libstdc++_nano.a
-    cp -f "$from_dir"/libsupc++.a "$to_dir"/libsupc++_nano.a
-  done
-  rm -r "${pkgdir}"/nano-install-${MSYSTEM}
+    install -Dm644 "${_normal_dir}/libstdc++.a" "${_to_dir}/libstdc++.a"
+    install -Dm644 "${_normal_dir}/libsupc++.a" "${_to_dir}/libsupc++.a"
+    install -Dm644 "${_normal_dir}/libstdc++exp.a" "${_to_dir}/libstdc++exp.a"
+    install -Dm644 "${_nano_dir}/libstdc++.a" "${_to_dir}/libstdc++_nano.a"
+    install -Dm644 "${_nano_dir}/libsupc++.a" "${_to_dir}/libsupc++_nano.a"
+    install -Dm644 "${_nano_dir}/libstdc++exp.a" "${_to_dir}/libstdc++exp_nano.a"
+  done < <(bin/${_target}-gcc -print-multi-lib 2>/dev/null)
 
   # strip target binaries
   find lib/gcc/${_target}/${pkgver} ${_target}/lib -type f -and \( -name \*.a -or -name \*.o \) -exec ${_target}-objcopy -R .comment -R .note -R .debug_info -R .debug_aranges -R .debug_pubnames -R .debug_pubtypes -R .debug_abbrev -R .debug_line -R .debug_str -R .debug_ranges -R .debug_loc '{}' \;
