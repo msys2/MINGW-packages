@@ -7,7 +7,7 @@ prefix = prefix.replace('\\','\\\\') # needed for regex
 
 pkgdir = os.getenv("pkgdir").replace('/','\\')
 
-reg = re.compile(f'(?P<key>INSTALL(\S*)) = {prefix}(?P<value>\S*)')
+reg = re.compile(f'(?P<key>INSTALL(\\S*)) = {prefix}(?P<value>\\S*)')
 
 def do(a: re.Match):
     return f"{a.group('key')} = {a.group('value')}"
