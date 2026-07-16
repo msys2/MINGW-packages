@@ -152,7 +152,7 @@ sed -i -E \
 -e "s/^#?(INST_SITE_VER_PERL\s)/$( ((SITE_VER)) || echo -n '#')\1/" \
 -e "s/^#?(INST_VEND_VER_PERL\s)/$( ((VEND_VER)) || echo -n '#')\1/" \
 -e "s/^#?(INST_ARCH\s)/$( ((ARCH)) || echo -n '#')\1/" \
-"${srcdir}"/win32/{GNUmakefile,makefile.mk}
+"${srcdir}"/win32/{GNUmakefile,Makefile}
 
 vendlib="${priv_vend//\\\\/\\\/}"
 vendlib="${vendlib#\\\/}"
