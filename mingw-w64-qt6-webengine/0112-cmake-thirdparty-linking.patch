@@ -1,0 +1,149 @@
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index eb83a82..4b3103e 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -657,6 +657,36 @@ add_gn_build_artifacts_to_target(
+     NINJA_STAMP QtWebEngineCore.stamp
+     ${dataStampOption}
+ )
++if (DEFINED QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE AND EXISTS "${QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE}")
++    set(_qtwebengineThirdPartyArchiveList
++        "${CMAKE_CURRENT_BINARY_DIR}/qtwebengine-thirdparty-archives-native.rsp")
++    file(STRINGS "${QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE}" _qtwebengineThirdPartyArchives)
++    file(WRITE "${_qtwebengineThirdPartyArchiveList}" "")
++    foreach(_qtwebengineThirdPartyArchive IN LISTS _qtwebengineThirdPartyArchives)
++        if(MINGW AND _qtwebengineThirdPartyArchive MATCHES "^/")
++            execute_process(
++                COMMAND cygpath -m "${_qtwebengineThirdPartyArchive}"
++                OUTPUT_VARIABLE _qtwebengineThirdPartyArchiveNative
++                OUTPUT_STRIP_TRAILING_WHITESPACE)
++            file(APPEND "${_qtwebengineThirdPartyArchiveList}" "${_qtwebengineThirdPartyArchiveNative}\n")
++        else()
++            file(APPEND "${_qtwebengineThirdPartyArchiveList}" "${_qtwebengineThirdPartyArchive}\n")
++        endif()
++    endforeach()
++    if(MINGW)
++        target_link_options(WebEngineCore PRIVATE
++            "@${_qtwebengineThirdPartyArchiveList}" "-Wl,--end-group")
++    else()
++        target_link_options(WebEngineCore PRIVATE "@${_qtwebengineThirdPartyArchiveList}")
++    endif()
++endif()
++
++if (DEFINED QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY AND EXISTS "${QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY}")
++    target_link_libraries(WebEngineCore PRIVATE "${QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY}")
++endif()
++if (MINGW)
++    target_link_options(WebEngineCore PRIVATE "-Wl,--strip-debug" "-Wl,--no-keep-memory")
++endif()
+ add_dependencies(WebEngineCore run_core_NinjaDone)
+ if(COIN_BUG_699)
+    set_property(TARGET WebEngineCore PROPERTY CXX_LINKER_LAUNCHER ${PROJECT_BINARY_DIR}/linker_ulimit.sh)
+endif()
+@@ -690,20 +720,26 @@ if(WIN32)
+     foreach(config ${configs})
+         string(TOUPPER ${config} cfg)
++        if(MINGW)
++            set(sandboxLibraryFileName libQtWebEngineCoreSandbox.a)
++        else()
++            set(sandboxLibraryFileName QtWebEngineCoreSandbox.lib)
++        endif()
+         add_ninja_command(
+             TARGET QtWebEngineCoreSandbox
+-            OUTPUT QtWebEngineCoreSandbox.lib
++            OUTPUT ${sandboxLibraryFileName}
+             BUILDDIR ${buildDir}/${config}/${arch}
+             DEPENDS WebEngineCore_sync_headers
+             MODULE core
+         )
+         qt_webengine_add_gn_target_to_sbom(QtWebEngineCoreSandbox ${buildDir}/${config}/${arch})
+-        set(sandboxLibraryPath ${buildDir}/${config}/${arch}/QtWebEngineCoreSandbox.lib)
++        set(sandboxLibraryPath ${buildDir}/${config}/${arch}/${sandboxLibraryFileName})
+         set_property(TARGET WebEngineCoreSandbox
+             PROPERTY IMPORTED_LOCATION_${cfg} ${sandboxLibraryPath}
+         )
+         add_custom_target(sandboxLibrary_${config}
+-            DEPENDS ${buildDir}/${config}/${arch}/QtWebEngineCoreSandbox.lib)
++            DEPENDS ${sandboxLibraryPath})
+         add_dependencies(run_core_NinjaDone sandboxLibrary_${config})
+         add_dependencies(WebEngineCoreSandbox WebEngineCore)
+     endforeach()
+ endif()
+diff --git a/cmake/Functions.cmake b/cmake/Functions.cmake
+index 40ff99f..56a8148 100644
+--- a/cmake/Functions.cmake
++++ b/cmake/Functions.cmake
+@@ -68,11 +68,31 @@ function(get_copy_of_response_file result target rsp)
+     else()
+        set(rsp_output ${PROJECT_BINARY_DIR}/../${rsp_dst})
+     endif()
+-    add_custom_command(
+-        OUTPUT ${rsp_output}
+-        COMMAND ${CMAKE_COMMAND} -E copy ${rsp_src} ${rsp_output}
+-        DEPENDS ${rsp_src}
+-        USES_TERMINAL
+-    )
++    if(MINGW AND rsp STREQUAL "libs")
++        set(normalize_mingw_lib_rsp_script
++            "${PROJECT_BINARY_DIR}/QtNormalizeMingwLibRsp.cmake")
++        file(WRITE "${normalize_mingw_lib_rsp_script}" [=[
++file(READ "${INPUT}" rsp_contents)
++string(REGEX REPLACE "-l([^ \r\n\t]+)\\.lib([ \r\n\t]|$)" "-l\\1\\2"
++    rsp_contents "${rsp_contents}")
++string(REGEX REPLACE "(^|[ \r\n\t])-lxpsprint([ \r\n\t]|$)" "\\1\\2"
++    rsp_contents "${rsp_contents}")
++file(WRITE "${OUTPUT}" "${rsp_contents}")
++]=])
++        add_custom_command(
++            OUTPUT ${rsp_output}
++            COMMAND ${CMAKE_COMMAND}
++                -DINPUT=${rsp_src}
++                -DOUTPUT=${rsp_output}
++                -P ${normalize_mingw_lib_rsp_script}
++            DEPENDS ${rsp_src}
++            USES_TERMINAL
++        )
++    else()
++        add_custom_command(
++            OUTPUT ${rsp_output}
++            COMMAND ${CMAKE_COMMAND} -E copy ${rsp_src} ${rsp_output}
++            DEPENDS ${rsp_src}
++            USES_TERMINAL
++        )
++    endif()
+     set(${result} ${rsp_dst} PARENT_SCOPE)
+     add_custom_target(${cmakeTarget}_${rsp}_copy_${config}
+         DEPENDS ${rsp_output}
+@@ -166,11 +186,29 @@ function(add_linker_options target buildDir completeStatic)
+         endif()
+         target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${objects_rsp}>")
+         if(NOT completeStatic)
+             get_copy_of_response_file(archives_rsp ${target} archives)
+-            target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${archives_rsp}>")
++            if(MINGW)
++                if(cmakeTarget STREQUAL "WebEngineCore" AND DEFINED QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE)
++                    target_link_options(${cmakeTarget} PRIVATE
++                        "-Wl,--start-group" "$<$<CONFIG:${config}>:@${archives_rsp}>")
++                elseif(cmakeTarget STREQUAL "WebEngineCore")
++                    target_link_options(${cmakeTarget} PRIVATE
++                        "-Wl,--start-group" "$<$<CONFIG:${config}>:@${archives_rsp}>" "-Wl,--end-group")
++                else()
++                    set(_qtwebengineMingwUseLibraryPosition TRUE)
++                endif()
++            else()
++                target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${archives_rsp}>")
++            endif()
+         endif()
+         get_copy_of_response_file(libs_rsp ${target} libs)
+-        target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${libs_rsp}>")
++        if(_qtwebengineMingwUseLibraryPosition)
++            if(NOT completeStatic)
++                target_link_libraries(${cmakeTarget} PRIVATE
++                    "$<1:-Wl,--start-group $<$<CONFIG:${config}>:@${archives_rsp}> $<$<CONFIG:${config}>:@${libs_rsp}> -Wl,--end-group>")
++            else()
++                target_link_libraries(${cmakeTarget} PRIVATE
++                    "$<1:$<$<CONFIG:${config}>:@${libs_rsp}>>")
++            endif()
++        else()
++            target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${libs_rsp}>")
++        endif()
