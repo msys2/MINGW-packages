@@ -9,24 +9,30 @@ pkgdesc="Some package (mingw-w64)"
 arch=('any')
 mingw_arch=('ucrt64' 'clang64' 'clangarm64')
 url='https://www.somepackage.org/'
-license=('LICENSE')
-makedepends=("${MINGW_PACKAGE_PREFIX}-autotools"
-             "${MINGW_PACKAGE_PREFIX}-cc")
+msys2_repository_url='https://www.somepackage.org/'
+msys2_references=(
+  'archlinux: somepackage'
+)
+license=('spdx:LICENSE')
+makedepends=(
+  "${MINGW_PACKAGE_PREFIX}-autotools"
+  "${MINGW_PACKAGE_PREFIX}-cc"
+)
 source=("https://www.somepackage.org/${_realname}/${_realname}-${pkgver}.tar.gz"
-        "0001-A-fix.patch")
+        '0001-A-fix.patch')
 sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
 
 prepare() {
-  cd "${_realname}-${pkgver}"
+  cd ${_realname}-${pkgver}
 
-  patch -p1 -i ../0001-A-fix.patch
+  patch -Nbp1 -i "${srcdir}"/0001-A-fix.patch
 }
 
 build() {
-  mkdir -p "build-${MSYSTEM}" && cd "build-${MSYSTEM}"
+  mkdir -p build-${MSYSTEM} && cd build-${MSYSTEM}
 
-  ../"${_realname}-${pkgver}"/configure \
+  ../${_realname}-${pkgver}/configure \
     --prefix="${MINGW_PREFIX}" \
     --build="${MINGW_CHOST}" \
     --host="${MINGW_CHOST}" \
@@ -38,15 +44,16 @@ build() {
 }
 
 check() {
-  cd "build-${MSYSTEM}"
+  cd build-${MSYSTEM}
 
   make check
 }
 
 package() {
-  cd "build-${MSYSTEM}"
+  cd build-${MSYSTEM}
 
   make install DESTDIR="${pkgdir}"
 
-  install -Dm644 "../${_realname}-${pkgver}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+  install -Dm644 "${srcdir}"/${_realname}-${pkgver}/LICENSE \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }

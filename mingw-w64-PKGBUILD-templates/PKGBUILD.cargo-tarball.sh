@@ -9,46 +9,51 @@ pkgdesc="Some package (mingw-w64)"
 arch=('any')
 mingw_arch=('ucrt64' 'clang64' 'clangarm64')
 url='https://www.somepackage.org/'
-license=('LICENSE')
+msys2_repository_url='https://www.somepackage.org/'
+msys2_references=(
+  'archlinux: somepackage'
+)
+license=('spdx:LICENSE')
 makedepends=("${MINGW_PACKAGE_PREFIX}-rust")
 source=("https://www.somepackage.org/${_realname}/${_realname}-${pkgver}.tar.gz"
-        "0001-An-important-fix.patch"
-        "0002-A-less-important-fix.patch")
+        '0001-An-important-fix.patch'
+        '0002-A-less-important-fix.patch')
 sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
             'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc')
 
 prepare() {
-  cd "${_realname}-${pkgver}"
+  cd ${_realname}-${pkgver}
 
-  patch -Np1 -i ../0001-A-really-important-fix.patch
-  patch -Np1 -i ../0002-A-less-important-fix.patch
+  patch -Nbp1 -i "${srcdir}"/0001-A-really-important-fix.patch
+  patch -Nbp1 -i "${srcdir}"/0002-A-less-important-fix.patch
 
   # if cargo wants to make an http request at build stage, use `cargo fetch --locked` instead
-  cargo fetch --locked --target "${RUST_CHOST}"
+  cargo fetch --locked --target ${RUST_CHOST}
 }
 
 build() {
-  cd "${_realname}-${pkgver}"
+  cd ${_realname}-${pkgver}
 
   cargo build --release --frozen
 }
 
 check() {
-  cd "${_realname}-${pkgver}"
+  cd ${_realname}-${pkgver}
 
   cargo test --release --frozen
 }
 
 package() {
-  cd "${_realname}-${pkgver}"
+  cd ${_realname}-${pkgver}
 
   cargo install \
     --offline \
     --no-track \
     --frozen \
     --path . \
-    --root "${pkgdir}${MINGW_PREFIX}"
+    --root "${pkgdir}"${MINGW_PREFIX}
 
-  install -Dm644 LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+  install -Dm644 "${srcdir}"/${_realname}-${pkgver}/LICENSE \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }
