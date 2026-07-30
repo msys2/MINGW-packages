@@ -59,7 +59,7 @@ html_vend="${html}${vend}"
 
 declare -i \
     CORE_VER=0 \
-    SITE_VER=1 \
+    SITE_VER=0 \
     VEND_VER=0 \
     ARCH=0
 
@@ -121,8 +121,8 @@ sed -i -E \
 -e "/^(install)?vendorhtml[13]dir(exp)?=/  s/=.*/='$(path html_vend 1 0 doc)'/" \
 -e "/^(install)?(vendor)?man1dir(exp)?=/   s/=.*/='$(path null 0 0 doc)"'\\share\\man\\man1'"'/" \
 -e "/^(install)?(vendor)?man3dir(exp)?=/   s/=.*/='$(path null 0 0 doc)"'\\share\\man\\man3'"'/" \
--e "/^(install)?siteman1dir(exp)?=/        s/=.*/='$(path null 0 0 doc)"'\\local\\man\\man1'"'/" \
--e "/^(install)?siteman3dir(exp)?=/        s/=.*/='$(path null 0 0 doc)"'\\local\\man\\man3'"'/" \
+-e "/^(install)?siteman1dir(exp)?=/        s/=.*/='$(path null 0 0 doc)"'\\share\\man\\man1'"'/" \
+-e "/^(install)?siteman3dir(exp)?=/        s/=.*/='$(path null 0 0 doc)"'\\share\\man\\man3'"'/" \
 -e "/^man1ext=/                            s/=.*/='1perl'/" \
 -e "/^man3ext=/                            s/=.*/='3perl'/" \
 -e "/^usevendorprefix=/                    s/=.*/='define'/" \
