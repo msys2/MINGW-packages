@@ -9,27 +9,33 @@ pkgdesc="Some package (mingw-w64)"
 arch=('any')
 mingw_arch=('ucrt64' 'clang64' 'clangarm64')
 url='https://www.somepackage.org/'
-license=('LICENSE')
-makedepends=("${MINGW_PACKAGE_PREFIX}-rust"
-             "${MINGW_PACKAGE_PREFIX}-cargo-c")
+msys2_repository_url='https://www.somepackage.org/'
+msys2_references=(
+  'archlinux: somepackage'
+)
+license=('spdx:LICENSE')
+makedepends=(
+  "${MINGW_PACKAGE_PREFIX}-rust"
+  "${MINGW_PACKAGE_PREFIX}-cargo-c"
+)
 source=("https://www.somepackage.org/${_realname}/${_realname}-${pkgver}.tar.gz"
-        "0001-An-important-fix.patch"
-        "0002-A-less-important-fix.patch")
+        '0001-An-important-fix.patch'
+        '0002-A-less-important-fix.patch')
 sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
             'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc')
 
 prepare() {
-  cd "${_realname}-${pkgver}"
+  cd ${_realname}-${pkgver}
 
-  patch -Np1 -i ../0001-A-really-important-fix.patch
-  patch -Np1 -i ../0002-A-less-important-fix.patch
+  patch -Nbp1 -i "${srcdir}"/0001-A-really-important-fix.patch
+  patch -Nbp1 -i "${srcdir}"/0002-A-less-important-fix.patch
 
-  cargo fetch --locked --target "${RUST_CHOST}"
+  cargo fetch --locked --target ${RUST_CHOST}
 }
 
 build() {
-  cd "${_realname}-${pkgver}"
+  cd ${_realname}-${pkgver}
 
   MSYS2_ARG_CONV_EXCL="--prefix=" \
     cargo cbuild \
@@ -41,13 +47,13 @@ build() {
 }
 
 check() {
-  cd "${_realname}-${pkgver}"
+  cd ${_realname}-${pkgver}
 
   cargo test --release --frozen
 }
 
 package() {
-  cd "${_realname}-${pkgver}"
+  cd ${_realname}-${pkgver}
 
   MSYS2_ARG_CONV_EXCL="--prefix=" \
     cargo cinstall \
@@ -55,11 +61,12 @@ package() {
       --release \
       --frozen \
       --all-features \
-      --prefix="${MINGW_PREFIX}" \
+      --prefix=${MINGW_PREFIX} \
       --destdir="${pkgdir}"
 
   # Remove def file
   rm -f "${pkgdir}"${MINGW_PREFIX}/lib/*.def
 
-  install -Dm644 LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+  install -Dm644 "${srcdir}"/${_realname}-${pkgver}/LICENSE \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }

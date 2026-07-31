@@ -9,23 +9,32 @@ pkgdesc="Some package (mingw-w64)"
 arch=('any')
 mingw_arch=('ucrt64' 'clang64' 'clangarm64')
 url='https://www.somepackage.org/'
-license=('LICENSE')
+msys2_repository_url='https://www.somepackage.org/'
+msys2_references=(
+  'archlinux: python-somepackage'
+  'gentoo: dev-python/somepackage'
+  'purl: pkg:pypi/somepackage'
+)
+license=('spdx:LICENSE')
 depends=("${MINGW_PACKAGE_PREFIX}-python")
-makedepends=("${MINGW_PACKAGE_PREFIX}-python-build" "${MINGW_PACKAGE_PREFIX}-python-installer")
+makedepends=(
+  "${MINGW_PACKAGE_PREFIX}-python-build"
+  "${MINGW_PACKAGE_PREFIX}-python-installer"
+)
 checkdepends=("${MINGW_PACKAGE_PREFIX}-python-pytest")
 options=('!strip')
 source=("https://pypi.org/packages/source/${_realname::1}/${_realname}/${_realname}-${pkgver}.tar.gz"
-        "0001-An-important-fix.patch"
-        "0002-A-less-important-fix.patch")
+        '0001-An-important-fix.patch'
+        '0002-A-less-important-fix.patch')
 sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
             'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc')
 
 prepare() {
-  cd "${_realname}-${pkgver}"
+  cd ${_realname}-${pkgver}
 
-  patch -Np1 -i ../0001-A-really-important-fix.patch
-  patch -Np1 -i ../0002-A-less-important-fix.patch
+  patch -Nbp1 -i "${srcdir}"/0001-A-really-important-fix.patch
+  patch -Nbp1 -i "${srcdir}"/0002-A-less-important-fix.patch
 
   ## (OPTIONAL) Only if setuptools-scm is used
   # Set version for setuptools_scm
@@ -33,25 +42,25 @@ prepare() {
 }
 
 build() {
-  cp -r "${_realname}-${pkgver}" "python-build-${MSYSTEM}" && cd "python-build-${MSYSTEM}"
+  cp -r ${_realname}-${pkgver} python-build-${MSYSTEM} && cd python-build-${MSYSTEM}
 
   python -m build --wheel --skip-dependency-check --no-isolation
 }
 
 check() {
-  cd "python-build-${MSYSTEM}"
+  cd python-build-${MSYSTEM}
 
-# The test command will usually depend upon what is contained in the tox.ini file
-# or in the [testenv:py] section of the pyproject.toml file.
-  python -m pytest
+  # The test command will usually depend upon what is contained in the tox.ini file
+  # or in the [testenv:py] section of the pyproject.toml file.
+  PYTHONPATH="$(pwd)/src" python -m pytest
 }
 
 package() {
-  cd "python-build-${MSYSTEM}"
+  cd python-build-${MSYSTEM}
 
   MSYS2_ARG_CONV_EXCL="--prefix=" \
-    python -m installer --prefix=${MINGW_PREFIX} \
-    --destdir="${pkgdir}" dist/*.whl
+    python -m installer --prefix=${MINGW_PREFIX} --destdir="${pkgdir}" dist/*.whl
 
-  install -Dm644 LICENSE "${pkgdir}${MINGW_PREFIX}/share/licenses/python-${_realname}/LICENSE"
+  install -Dm644 "${srcdir}"/${_realname}-${pkgver}/LICENSE \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }

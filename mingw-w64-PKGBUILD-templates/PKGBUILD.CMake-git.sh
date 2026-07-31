@@ -9,30 +9,36 @@ pkgdesc="Some package (mingw-w64)"
 arch=('any')
 mingw_arch=('ucrt64' 'clang64' 'clangarm64')
 url="https://github.com/someproject/somepackage"
-license=('LICENSE')
-makedepends=("${MINGW_PACKAGE_PREFIX}-cmake"
-             "${MINGW_PACKAGE_PREFIX}-ninja"
-             "${MINGW_PACKAGE_PREFIX}-cc"
-             'git')
+msys2_repository_url='https://www.somepackage.org/'
+msys2_references=(
+  'archlinux: somepackage'
+)
+license=('spdx:LICENSE')
+makedepends=(
+  "${MINGW_PACKAGE_PREFIX}-cc"
+  "${MINGW_PACKAGE_PREFIX}-cmake"
+  "${MINGW_PACKAGE_PREFIX}-ninja"
+  'git'
+)
 _commit='ff9ee68d7e31784c6fea3c864a235ad1f32ff026'
 source=("${_realname}"::"git+https://github.com/someproject/somepackage.git#commit=${_commit}"
-        0001-An-important-fix.patch
-        0002-A-less-important-fix.patch)
+        '0001-An-important-fix.patch'
+        '0002-A-less-important-fix.patch')
 sha256sums=('SKIP'
             'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
             'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
 
 pkgver() {
-  cd "${_realname}"
+  cd ${_realname}
 
   git describe --long "${_commit}" | sed 's/\([^-]*-g\)/r\1/;s/-/./g;s/^v//g'
 }
 
 prepare() {
-  cd "${_realname}"
+  cd ${_realname}
 
-  patch -Np1 -i "${srcdir}/0001-A-really-important-fix.patch"
-  patch -Np1 -i "${srcdir}/0002-A-less-important-fix.patch"
+  patch -Nbp1 -i "${srcdir}"/0001-A-really-important-fix.patch
+  patch -Nbp1 -i "${srcdir}"/0002-A-less-important-fix.patch
 }
 
 build() {
@@ -49,18 +55,22 @@ build() {
       -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
       "${extra_config[@]}" \
       -DBUILD_{SHARED,STATIC}_LIBS=ON \
-      -S "${_realname}" \
-      -B "build-${MSYSTEM}"
+      -DBUILD_TESTING=OFF \
+      -S ${_realname} \
+      -B build-${MSYSTEM}
 
-  cmake --build "build-${MSYSTEM}"
+  cmake --build build-${MSYSTEM}
 }
 
 check() {
-  cmake --build "build-${MSYSTEM}" --target test
+  cmake -DBUILD_TESTING=ON -S ${_realname} -B build-${MSYSTEM}
+  cmake --build build-${MSYSTEM}
+  ctest --test-dir build-${MSYSTEM} --output-on-failure
 }
 
 package() {
   DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}"
 
-  install -Dm644 "${srcdir}/${_realname}/LICENSE" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+  install -Dm644 "${srcdir}"/${_realname}/LICENSE \
+    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }
