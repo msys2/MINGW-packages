@@ -1,0 +1,977 @@
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index eb83a82..4b3103e 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -657,7 +657,56 @@ add_gn_build_artifacts_to_target(
+     NINJA_STAMP QtWebEngineCore.stamp
+     ${dataStampOption}
+ )
++if (DEFINED QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE AND EXISTS "${QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE}")
++    set(_qtwebengineThirdPartyArchiveList
++        "${CMAKE_CURRENT_BINARY_DIR}/qtwebengine-thirdparty-archives-native.rsp")
++    file(STRINGS "${QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE}" _qtwebengineThirdPartyArchives)
++    file(WRITE "${_qtwebengineThirdPartyArchiveList}" "")
++    foreach(_qtwebengineThirdPartyArchive IN LISTS _qtwebengineThirdPartyArchives)
++        if(MINGW AND _qtwebengineThirdPartyArchive MATCHES "^/")
++            execute_process(
++                COMMAND cygpath -m "${_qtwebengineThirdPartyArchive}"
++                OUTPUT_VARIABLE _qtwebengineThirdPartyArchiveNative
++                OUTPUT_STRIP_TRAILING_WHITESPACE)
++            file(APPEND "${_qtwebengineThirdPartyArchiveList}" "${_qtwebengineThirdPartyArchiveNative}\n")
++        else()
++            file(APPEND "${_qtwebengineThirdPartyArchiveList}" "${_qtwebengineThirdPartyArchive}\n")
++        endif()
++    endforeach()
++    if(NOT MINGW)
++        target_link_options(WebEngineCore PRIVATE "@${_qtwebengineThirdPartyArchiveList}")
++    endif()
++endif()
++
++if (DEFINED QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY
++        AND EXISTS "${QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY}")
++    if(MINGW AND QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY MATCHES "^/")
++        execute_process(
++            COMMAND cygpath -m "${QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY}"
++            OUTPUT_VARIABLE _qtwebengineThirdPartyObjectLibraryNative
++            OUTPUT_STRIP_TRAILING_WHITESPACE)
++    else()
++        set(_qtwebengineThirdPartyObjectLibraryNative
++            "${QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY}")
++    endif()
++endif()
++if(MINGW
++        AND DEFINED _qtwebengineThirdPartyArchiveList
++        AND DEFINED _qtwebengineThirdPartyObjectLibraryNative)
++    get_property(_qtwebengineFirstPartyArchiveList
++        TARGET WebEngineCore PROPERTY ARCHIVES_RSP)
++    get_property(_qtwebengineLibrariesList
++        TARGET WebEngineCore PROPERTY LIBS_RSP)
++    target_link_libraries(WebEngineCore PRIVATE
++        "$<1:-Wl,--start-group @${_qtwebengineFirstPartyArchiveList} @${_qtwebengineThirdPartyArchiveList} ${_qtwebengineThirdPartyObjectLibraryNative} @${_qtwebengineLibrariesList} -Wl,--end-group>")
++elseif(DEFINED _qtwebengineThirdPartyObjectLibraryNative)
++    target_link_libraries(WebEngineCore PRIVATE
++        "${_qtwebengineThirdPartyObjectLibraryNative}")
++endif()
++if (MINGW)
++    target_link_options(WebEngineCore PRIVATE "-Wl,--strip-debug" "-Wl,--no-keep-memory")
++endif()
+ add_dependencies(WebEngineCore run_core_NinjaDone)
+ if(COIN_BUG_699)
+    set_property(TARGET WebEngineCore PROPERTY CXX_LINKER_LAUNCHER ${PROJECT_BINARY_DIR}/linker_ulimit.sh)
+ endif()
+@@ -756,20 +805,35 @@ if(WIN32)
+     foreach(config ${configs})
+         string(TOUPPER ${config} cfg)
++        if(MINGW)
++            set(sandboxLibraryFileName libQtWebEngineCoreSandbox.a)
++        else()
++            set(sandboxLibraryFileName QtWebEngineCoreSandbox.lib)
++        endif()
+         add_ninja_command(
+             TARGET QtWebEngineCoreSandbox
+-            OUTPUT QtWebEngineCoreSandbox.lib
++            OUTPUT ${sandboxLibraryFileName}
+             BUILDDIR ${buildDir}/${config}/${arch}
+             DEPENDS WebEngineCore_sync_headers
+             MODULE core
+         )
+         qt_webengine_add_gn_target_to_sbom(QtWebEngineCoreSandbox ${buildDir}/${config}/${arch})
+-        set(sandboxLibraryPath ${buildDir}/${config}/${arch}/QtWebEngineCoreSandbox.lib)
++        if(MINGW AND DEFINED QTWEBENGINE_THIRDPARTY_SANDBOX_LIBRARY)
++            if(EXISTS "${QTWEBENGINE_THIRDPARTY_SANDBOX_LIBRARY}")
++                set(sandboxLibraryPath ${QTWEBENGINE_THIRDPARTY_SANDBOX_LIBRARY})
++            else()
++                message(FATAL_ERROR
++                    "QTWEBENGINE_THIRDPARTY_SANDBOX_LIBRARY does not exist: "
++                    "${QTWEBENGINE_THIRDPARTY_SANDBOX_LIBRARY}")
++            endif()
++        else()
++            set(sandboxLibraryPath ${buildDir}/${config}/${arch}/${sandboxLibraryFileName})
++        endif()
+         set_property(TARGET WebEngineCoreSandbox
+             PROPERTY IMPORTED_LOCATION_${cfg} ${sandboxLibraryPath}
+         )
+         add_custom_target(sandboxLibrary_${config}
+-            DEPENDS ${buildDir}/${config}/${arch}/QtWebEngineCoreSandbox.lib)
++            DEPENDS ${sandboxLibraryPath})
+         add_dependencies(run_core_NinjaDone sandboxLibrary_${config})
+         add_dependencies(WebEngineCoreSandbox WebEngineCore)
+     endforeach()
+ endif()
+diff --git a/cmake/Functions.cmake b/cmake/Functions.cmake
+index 40ff99f..56a8148 100644
+--- a/cmake/Functions.cmake
++++ b/cmake/Functions.cmake
+@@ -68,12 +68,94 @@ function(get_copy_of_response_file result target rsp)
+     else()
+        set(rsp_output ${PROJECT_BINARY_DIR}/../${rsp_dst})
+     endif()
+-    add_custom_command(
+-        OUTPUT ${rsp_output}
+-        COMMAND ${CMAKE_COMMAND} -E copy ${rsp_src} ${rsp_output}
+-        DEPENDS ${rsp_src}
+-        USES_TERMINAL
+-    )
++    if(MINGW AND rsp STREQUAL "objects"
++            AND DEFINED QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY)
++        set(filter_webenginecore_objects_rsp_script
++            "${PROJECT_BINARY_DIR}/QtFilterWebEngineCoreObjectsRsp.cmake")
++        file(WRITE "${filter_webenginecore_objects_rsp_script}" [=[
++file(STRINGS "${INPUT}" rsp_lines)
++file(WRITE "${OUTPUT}" "")
++foreach(rsp_line IN LISTS rsp_lines)
++    if(NOT rsp_line MATCHES "(^|/)obj/(.*third_party|net/third_party|skia)/" OR rsp_line MATCHES "(^|/)obj/third_party/blink/renderer/")
++        file(APPEND "${OUTPUT}" "${rsp_line}\n")
++    endif()
++endforeach()
++]=])
++        add_custom_command(
++            OUTPUT ${rsp_output}
++            COMMAND ${CMAKE_COMMAND}
++                -DINPUT=${rsp_src}
++                -DOUTPUT=${rsp_output}
++                -P ${filter_webenginecore_objects_rsp_script}
++            DEPENDS ${rsp_src}
++            USES_TERMINAL
++        )
++    elseif(MINGW AND cmakeTarget STREQUAL "WebEngineCore" AND rsp STREQUAL "archives"
++            AND DEFINED QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE)
++        set(filter_webenginecore_archives_rsp_script
++            "${PROJECT_BINARY_DIR}/QtFilterWebEngineCoreArchivesRsp.cmake")
++        file(WRITE "${filter_webenginecore_archives_rsp_script}" [=[
++file(STRINGS "${INPUT}" rsp_lines)
++file(STRINGS "${PACKAGED_ARCHIVES}" packaged_archive_lines)
++set(packaged_archive_suffixes)
++foreach(packaged_archive_line IN LISTS packaged_archive_lines)
++    string(REGEX REPLACE "^\"|\"$" "" packaged_archive_path
++        "${packaged_archive_line}")
++    string(REGEX REPLACE "^.*[/\\\\]obj[/\\\\]" ""
++        packaged_archive_suffix "${packaged_archive_path}")
++    list(APPEND packaged_archive_suffixes "${packaged_archive_suffix}")
++endforeach()
++list(REMOVE_DUPLICATES packaged_archive_suffixes)
++file(WRITE "${OUTPUT}" "")
++foreach(rsp_line IN LISTS rsp_lines)
++    string(REGEX REPLACE "^\"|\"$" "" archive_path "${rsp_line}")
++    string(REGEX REPLACE "^.*[/\\\\]obj[/\\\\]" ""
++        archive_suffix "${archive_path}")
++    list(FIND packaged_archive_suffixes "${archive_suffix}"
++        packaged_archive_index)
++    if(packaged_archive_index EQUAL -1)
++        file(APPEND "${OUTPUT}" "${rsp_line}\n")
++    endif()
++endforeach()
++]=])
++        add_custom_command(
++            OUTPUT ${rsp_output}
++            COMMAND ${CMAKE_COMMAND}
++                -DINPUT=${rsp_src}
++                -DOUTPUT=${rsp_output}
++                -DPACKAGED_ARCHIVES=${QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE}
++                -P ${filter_webenginecore_archives_rsp_script}
++            DEPENDS ${rsp_src}
++            USES_TERMINAL
++        )
++    elseif(MINGW AND rsp STREQUAL "libs")
++        set(normalize_mingw_lib_rsp_script
++            "${PROJECT_BINARY_DIR}/QtNormalizeMingwLibRsp.cmake")
++        file(WRITE "${normalize_mingw_lib_rsp_script}" [=[
++file(READ "${INPUT}" rsp_contents)
++string(REGEX REPLACE "-l([^ \r\n\t]+)\\.lib([ \r\n\t]|$)" "-l\\1\\2"
++    rsp_contents "${rsp_contents}")
++string(REGEX REPLACE "(^|[ \r\n\t])-lxpsprint([ \r\n\t]|$)" "\\1\\2"
++    rsp_contents "${rsp_contents}")
++file(WRITE "${OUTPUT}" "${rsp_contents}")
++]=])
++        add_custom_command(
++            OUTPUT ${rsp_output}
++            COMMAND ${CMAKE_COMMAND}
++                -DINPUT=${rsp_src}
++                -DOUTPUT=${rsp_output}
++                -P ${normalize_mingw_lib_rsp_script}
++            DEPENDS ${rsp_src}
++            USES_TERMINAL
++        )
++    else()
++        add_custom_command(
++            OUTPUT ${rsp_output}
++            COMMAND ${CMAKE_COMMAND} -E copy ${rsp_src} ${rsp_output}
++            DEPENDS ${rsp_src}
++            USES_TERMINAL
++        )
++    endif()
+     set(${result} ${rsp_dst} PARENT_SCOPE)
+     add_custom_target(${cmakeTarget}_${rsp}_copy_${config}
+         DEPENDS ${rsp_output}
+@@ -167,10 +249,36 @@
+-        target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${objects_rsp}>")
++        target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${objects_rsp}>")
+         if(NOT completeStatic)
+             get_copy_of_response_file(archives_rsp ${target} archives)
+-            target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${archives_rsp}>")
++            if(MINGW)
++                if(cmakeTarget STREQUAL "WebEngineCore" AND DEFINED QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE)
++                    set(_qtwebengineMingwDeferPackagedArchives TRUE)
++                elseif(cmakeTarget STREQUAL "WebEngineCore")
++                    target_link_options(${cmakeTarget} PRIVATE
++                        "-Wl,--start-group" "$<$<CONFIG:${config}>:@${archives_rsp}>" "-Wl,--end-group")
++                else()
++                    set(_qtwebengineMingwUseLibraryPosition TRUE)
++                endif()
++            else()
++                target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${archives_rsp}>")
++            endif()
+         endif()
+         get_copy_of_response_file(libs_rsp ${target} libs)
+-        target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${libs_rsp}>")
++        if(_qtwebengineMingwUseLibraryPosition)
++            if(NOT completeStatic)
++                if(DEFINED QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY)
++                    target_link_libraries(${cmakeTarget} PRIVATE
++                        "$<1:-Wl,--start-group $<$<CONFIG:${config}>:@${archives_rsp}> ${QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY} $<$<CONFIG:${config}>:@${libs_rsp}> -Wl,--end-group>")
++                else()
++                    target_link_libraries(${cmakeTarget} PRIVATE
++                        "$<1:-Wl,--start-group $<$<CONFIG:${config}>:@${archives_rsp}> $<$<CONFIG:${config}>:@${libs_rsp}> -Wl,--end-group>")
++                endif()
++            else()
++                target_link_libraries(${cmakeTarget} PRIVATE
++                    "$<1:$<$<CONFIG:${config}>:@${libs_rsp}>>")
++            endif()
++        elseif(NOT _qtwebengineMingwDeferPackagedArchives)
++            target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${libs_rsp}>")
++        endif()
+         # we need libs rsp also when linking process with sandbox lib
+         set_property(TARGET ${cmakeTarget} PROPERTY LIBS_RSP ${libs_rsp})
+         set_property(TARGET ${cmakeTarget} PROPERTY ARCHIVES_RSP ${archives_rsp})
+@@ -491,21 +599,473 @@ function(add_ninja_command)
+     endif()
+     list(TRANSFORM arg_OUTPUT PREPEND "${arg_BUILDDIR}/")
+     list(TRANSFORM arg_BYPRODUCTS PREPEND "${arg_BUILDDIR}/")
++    if(MINGW
++            AND arg_TARGET STREQUAL "QtWebEngineCore"
++            AND DEFINED QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY)
++        set(build_webenginecore_objects_script
++            "${PROJECT_BINARY_DIR}/QtBuildWebEngineCoreObjects.cmake")
++        file(WRITE "${build_webenginecore_objects_script}" [=[
++file(STRINGS "${INPUT_RSP}" rsp_lines)
++file(STRINGS "${ARCHIVES_RSP}" archive_rsp_lines)
++file(STRINGS "${PACKAGED_ARCHIVES_RSP}" packaged_archive_rsp_lines)
++set(required_codegen_targets
++    gen/chrome/grit/pdf_resources_map.h
++    gen/chrome/grit/component_extension_resources_map.h
++    gen/chrome/grit/extensions_resources.h
++    gen/chrome/grit/common_resources.h
++    gen/chrome/grit/renderer_resources.h
++    gen/net/base/registry_controlled_domains/effective_tld_names-reversed-inc.cc
++    phony/net/data/ssl/chrome_root_store/gen_root_store_inc
++    phony/ui/base/locales_list_gen
++    phony/components/url_formatter/spoof_checks/top_domains/generate_top_domains_trie
++    phony/components/url_formatter/spoof_checks/common_words/common_words_dafsa
++    phony/components/domain_reliability/bake_in_configs
++    phony/components/certificate_transparency/data/ct_log_list
++    phony/third_party/blink/public/devtools_protocol/protocol_version
++    phony/content/browser/devtools/protocol_sources
++    phony/content/services/auction_worklet/protocol_sources
++    phony/v8/run_torque
++    phony/v8/run_gen-regexp-special-case
++    phony/v8/src/inspector/protocol_generated_sources
++    phony/v8/run_mksnapshot_default
++    gen/chrome/common/extensions/api/api_features.h
++    gen/chrome/common/extensions/api/generated_schemas.h
++    gen/chrome/common/extensions/api/manifest_features.h
++    gen/chrome/common/extensions/api/permission_features.h
++    phony/chrome/browser/ui/webui/usb_internals/mojo_bindings_headers
++    phony/components/autofill/content/common/mojom/mojom__generator
++    phony/components/autofill/content/common/mojom/mojom_shared__generator
++    phony/components/autofill/core/common/mojom/mojo_types__generator
++    phony/components/autofill/core/common/mojom/mojo_types_shared__generator
++    phony/components/content_settings/common/mojom__generator
++    phony/components/content_settings/common/mojom_shared__generator
++    phony/components/resources/ssl/ssl_error_assistant/make_ssl_error_assistant_protobuf
++    phony/generate_cpp_mocs
++    phony/mojo/public/interfaces/bindings/bindings_shared__generator
++    phony/components/spellcheck/common/interfaces__generator
++    phony/components/spellcheck/common/interfaces_shared__generator
++    gen/third_party/blink/public/mojom/quota/quota_blink__type_mappings
++    gen/third_party/blink/public/mojom/storage_key/storage_key_blink__type_mappings
++    gen/third_party/lit/v3_0/lit.js
++    gen/third_party/lit/v3_0/bundled/lit.rollup.js
++    gen/third_party/lit/v3_0/minified/lit.rollup.js
++    gen/third_party/lit/v3_0/resources.grdp
++    gen/third_party/d3/d3_resources.grdp
++    gen/third_party/dawn/cpp_headers_gen.json_tarball
++    gen/third_party/dawn/headers_gen.json_tarball
++    gen/third_party/polymer/v3_0/tsconfig_library.json
++    gen/third_party/polymer/v3_0/polymer_3_0_resources.grdp
++    phony/third_party/catapult/tracing/generate_about_tracing
++    gen/extensions/common/api/generated_schemas.h
++    gen/extensions/common/api/api_features.h
++    gen/extensions/common/api/behavior_features.h
++    gen/extensions/common/api/manifest_features.h
++    gen/extensions/common/api/permission_features.h
++    gen/extensions/grit/extensions_resources.h
++    gen/qtwebengine/common/extensions/api/generated_schemas.h
++    gen/qt_api_features.h
++    gen/qt_permission_features.h
++    gen/qtwebengine/browser/extensions/resources/grit/extensions_ui_qt_resources.h
++    phony/qtwebengine/browser/interfaces__generator
++    phony/qtwebengine/browser/interfaces_shared__generator
++    phony/qtwebengine/browser/qt_webengine_resources_grit
++    phony/qtwebengine/browser/extensions/webui/mojo_bindings__generator
++    phony/qtwebengine/browser/extensions/webui/mojo_bindings_shared__generator
++    phony/qtwebengine/common/mojo_bindings__generator
++    phony/qtwebengine/common/mojo_bindings_shared__generator
++    phony/sandbox/policy/mojom/mojom__generator
++    phony/sandbox/policy/mojom/mojom_shared__generator
++    phony/services/network/public/mojom/cookies_mojom_shared__generator
++    phony/services/network/public/mojom/mojom_ad_auction_shared__generator
++    phony/services/network/public/mojom/mojom_attribution_shared__generator
++    phony/services/network/public/mojom/mojom_content_security_policy_shared__generator
++    phony/services/network/public/mojom/mojom_cors_origin_pattern_shared__generator
++    phony/services/network/public/mojom/mojom_first_party_sets_shared__generator
++    phony/services/network/public/mojom/mojom_host_resolver_shared__generator
++    phony/services/network/public/mojom/mojom_integrity_algorithm_shared__generator
++    phony/services/network/public/mojom/mojom_integrity_metadata_shared__generator
++    phony/services/network/public/mojom/mojom_integrity_policy_shared__generator
++    phony/services/network/public/mojom/mojom_ip_address_shared__generator
++    phony/services/network/public/mojom/mojom_network_anonymization_key_shared__generator
++    phony/services/network/public/mojom/mojom_network_isolation_key_shared__generator
++    phony/services/network/public/mojom/mojom_network_isolation_partition_shared__generator
++    phony/services/network/public/mojom/mojom_network_param_shared__generator
++    phony/services/network/public/mojom/mojom_permissions_policy_shared__generator
++    phony/services/network/public/mojom/mojom_proxy_config_shared__generator
++    phony/services/network/public/mojom/mojom_schemeful_site_shared__generator
++    phony/services/network/public/mojom/mojom_shared__generator
++    phony/services/network/public/mojom/mojom_shared_dictionary_shared__generator
++    phony/services/network/public/mojom/mojom_shared_storage_shared__generator
++    phony/services/network/public/mojom/mojom_source_location_shared__generator
++    phony/services/network/public/mojom/mojom_storage_access_api_shared__generator
++    phony/services/network/public/mojom/mojom_structured_headers_shared__generator
++    phony/services/network/public/mojom/mojom_unencoded_digest_shared__generator
++    phony/services/network/public/mojom/mojom_web_sandbox_flags_shared__generator
++    phony/services/network/public/mojom/url_loader_base_shared__generator
++    phony/services/network/public/mojom/websocket_mojom_shared__generator
++    phony/services/tracing/public/mojom/mojom__generator
++    phony/services/tracing/public/mojom/mojom_shared__generator
++    phony/qtwebengine/userscript/interfaces__generator
++    phony/qtwebengine/userscript/interfaces_shared__generator
++    phony/mojo/public/mojom/base/base__generator
++    phony/mojo/public/mojom/base/base_shared__generator
++    phony/ui/display/mojom/mojom__generator
++    phony/ui/display/mojom/mojom_blink__generator
++    phony/ui/display/mojom/mojom_shared__generator
++    phony/ui/events/mojom/event_latency_metadata_mojom__generator
++    phony/ui/events/mojom/event_latency_metadata_mojom_shared__generator
++    phony/ui/events/mojom/mojom__generator
++    phony/ui/events/mojom/mojom_blink__generator
++    phony/ui/events/mojom/mojom_shared__generator
++    phony/ui/gfx/mojom/dxgi_info__generator
++    phony/ui/gfx/mojom/dxgi_info_blink__generator
++    phony/ui/gfx/mojom/dxgi_info_shared__generator
++    phony/ui/gfx/mojom/hdr_metadata__generator
++    phony/ui/gfx/mojom/hdr_metadata_blink__generator
++    phony/ui/gfx/mojom/hdr_metadata_shared__generator
++    phony/ui/gfx/mojom/mojom__generator
++    phony/ui/gfx/mojom/mojom_blink__generator
++    phony/ui/gfx/mojom/mojom_shared__generator
++    phony/ui/gfx/mojom/native_handle_types__generator
++    phony/ui/gfx/mojom/native_handle_types_blink__generator
++    phony/ui/gfx/mojom/native_handle_types_shared__generator
++    phony/ui/gfx/geometry/mojom/mojom__generator
++    phony/ui/gfx/geometry/mojom/mojom_blink__generator
++    phony/ui/gfx/geometry/mojom/mojom_shared__generator
++    phony/ui/gfx/image/mojom/mojom__generator
++    phony/ui/gfx/image/mojom/mojom_shared__generator
++    phony/ui/gfx/range/mojom/mojom__generator
++    phony/ui/gfx/range/mojom/mojom_blink__generator
++    phony/ui/gfx/range/mojom/mojom_shared__generator
++    phony/ui/gl/buildflags
++    phony/ui/gl/mojom/mojom__generator
++    phony/ui/gl/mojom/mojom_shared__generator
++    phony/ui/latency/mojom/mojom__generator
++    phony/ui/latency/mojom/mojom_shared__generator
++    phony/ui/resources/ui_resources_grd_grit
++    phony/url/mojom/url_mojom_gurl__generator
++    phony/url/mojom/url_mojom_gurl_blink__generator
++    phony/url/mojom/url_mojom_gurl_shared__generator
++    phony/url/mojom/url_mojom_origin__generator
++    phony/url/mojom/url_mojom_origin_blink__generator
++    phony/url/mojom/url_mojom_origin_shared__generator
++    phony/url/mojom/url_mojom_scheme_host_port__generator
++    phony/url/mojom/url_mojom_scheme_host_port_blink__generator
++    phony/url/mojom/url_mojom_scheme_host_port_shared__generator
++    phony/ui/touch_selection/vector_icons/touch_selection_vector_icons)
++set(flatbuffer_codegen_targets
++    gen/components/ip_protection/common/flat/masked_domain_list_generated.h
++    gen/components/subresource_filter/core/common/flat/indexed_ruleset_generated.h
++    gen/components/url_pattern_index/flat/url_pattern_index_generated.h
++    gen/extensions/browser/api/declarative_net_request/flat/extension_ruleset_generated.h)
++# The reduced (packaged third-party) build only compiles a subset of Chromium.
++# Mojom generator actions reference sibling generated files -- parsed
++# *.mojom-module data, C++ *__type_mappings metadata, *.mojom*.ts TypeScript
++# bindings -- through runtime arguments without declaring them as Ninja inputs,
++# so Ninja never schedules them first and the action aborts with a missing-file
++# error. Generate the shippable mojom surface up front by building every
++# parser action's first *mojom-module output, every module's __generator phony,
++# and every __type_mappings target. Qt release archives omit Chromium test
++# mojom inputs, so exclude targets below a test path component. Many
++# cross-module dependencies are themselves undeclared, so retry until a full
++# pass succeeds and the ordering converges.
++function(_qwe_ninja_multipass _targets _what)
++    list(LENGTH _targets _total)
++    if(_total EQUAL 0)
++        return()
++    endif()
++    set(_done FALSE)
++    foreach(_pass RANGE 1 12)
++        set(_pass_ok TRUE)
++        set(_batch)
++        set(_batch_size 0)
++        set(_index 0)
++        foreach(_target IN LISTS _targets)
++            list(APPEND _batch "${_target}")
++            math(EXPR _batch_size "${_batch_size} + 1")
++            math(EXPR _index "${_index} + 1")
++            if(_batch_size GREATER_EQUAL 300 OR _index EQUAL _total)
++                execute_process(
++                    COMMAND "${CMAKE_COMMAND}" -E env
++                        "NODEJS_EXECUTABLE=${NODEJS_EXECUTABLE}"
++                        "${NINJA_EXECUTABLE}" -k 0 -C "${BUILDDIR}" ${_batch}
++                    RESULT_VARIABLE _result)
++                if(NOT _result EQUAL 0)
++                    set(_pass_ok FALSE)
++                endif()
++                set(_batch)
++                set(_batch_size 0)
++            endif()
++        endforeach()
++        if(_pass_ok)
++            set(_done TRUE)
++            break()
++        endif()
++    endforeach()
++    if(NOT _done)
++        message(FATAL_ERROR "Failed to generate QtWebEngineCore ${_what}")
++    endif()
++endfunction()
++set(private_tool_names)
++if(DEFINED PRIVATE_TOOL_DIR AND EXISTS "${PRIVATE_TOOL_DIR}")
++    file(GLOB private_tools "${PRIVATE_TOOL_DIR}/*.exe")
++    foreach(private_tool IN LISTS private_tools)
++        get_filename_component(private_tool_name "${private_tool}" NAME)
++        list(APPEND private_tool_names "${private_tool_name}")
++        configure_file("${private_tool}" "${BUILDDIR}/${private_tool_name}" COPYONLY)
++        file(TOUCH "${BUILDDIR}/${private_tool_name}")
++        file(MAKE_DIRECTORY "${BUILDDIR}/exe.unstripped")
++        configure_file("${private_tool}"
++            "${BUILDDIR}/exe.unstripped/${private_tool_name}" COPYONLY)
++        file(TOUCH "${BUILDDIR}/exe.unstripped/${private_tool_name}")
++        string(REGEX REPLACE "\\.exe$" "" private_tool_stamp
++            "${private_tool_name}")
++        configure_file("${private_tool}"
++            "${BUILDDIR}/${private_tool_stamp}" COPYONLY)
++    endforeach()
++endif()
++file(GLOB_RECURSE ninja_target_files "${BUILDDIR}/obj/*.ninja")
++set(pch_rules)
++foreach(ninja_target_file IN LISTS ninja_target_files)
++    file(READ "${ninja_target_file}" ninja_contents)
++    # The package repair adds one safe aggregate after the generated GN order-
++    # only inputs. Preserve it while stripping those inputs; otherwise cold
++    # object batches race the generated headers the aggregate was created for.
++    string(REGEX REPLACE
++        "(build [^\r\n]+: (cc|cxx|asm|alink) [^\r\n]*) \\|\\|[^\r\n]*qtwebengine_generated_prerequisites[^\r\n]*"
++        "\\1 @qtwebengine_generated_prerequisites@"
++        sanitized_ninja_contents "${ninja_contents}")
++    string(REGEX REPLACE
++        "(build [^\r\n]+: (cc|cxx|asm|alink) [^\r\n]*) \\|\\|[^\r\n]*"
++        "\\1" sanitized_ninja_contents "${sanitized_ninja_contents}")
++    string(REPLACE
++        " @qtwebengine_generated_prerequisites@"
++        " || qtwebengine_generated_prerequisites"
++        sanitized_ninja_contents "${sanitized_ninja_contents}")
++    foreach(private_tool_name IN LISTS private_tool_names)
++        string(REGEX REPLACE
++            "(build \\./${private_tool_name} \\./exe\\.unstripped/${private_tool_name}): link [^\r\n]*"
++            "\\1: phony" sanitized_ninja_contents "${sanitized_ninja_contents}")
++    endforeach()
++    if(NOT sanitized_ninja_contents STREQUAL ninja_contents)
++        file(WRITE "${ninja_target_file}" "${sanitized_ninja_contents}")
++    endif()
++    file(STRINGS "${ninja_target_file}" ninja_lines
++        REGEX "^build .*precompile\\.h-[^ ]*\\.gch: cxx ")
++    foreach(ninja_line IN LISTS ninja_lines)
++        string(REGEX MATCH
++            "^build ([^: ]*precompile\\.h-[^: ]*\\.gch): cxx ([^ |]+)"
++            pch_match "${ninja_line}")
++        if(pch_match)
++            list(APPEND pch_rules
++                "${CMAKE_MATCH_1}|${CMAKE_MATCH_2}")
++        endif()
++    endforeach()
++endforeach()
++list(REMOVE_DUPLICATES pch_rules)
++foreach(pch_rule IN LISTS pch_rules)
++    string(REPLACE "|" ";" pch_rule_parts "${pch_rule}")
++    list(GET pch_rule_parts 0 pch_target)
++    list(GET pch_rule_parts 1 pch_source)
++    get_filename_component(pch_source_absolute
++        "${BUILDDIR}/${pch_source}" ABSOLUTE)
++    string(REGEX REPLACE "\\.gch$" "" pch_header "${pch_target}")
++    get_filename_component(pch_header_absolute
++        "${BUILDDIR}/${pch_header}" ABSOLUTE)
++    configure_file("${pch_source_absolute}" "${pch_header_absolute}" COPYONLY)
++endforeach()
++file(STRINGS "${BUILDDIR}/toolchain.ninja" _pregen_rule_lines
++    REGEX "^build ([^:]*mojom-module[ :]|[^:]*__type_mappings[ :]|phony/[^ :]*__generator:)")
++set(pregen_targets)
++foreach(_rule_line IN LISTS _pregen_rule_lines)
++    string(REGEX REPLACE "^build ([^ :]+).*" "\\1" _pregen_target "${_rule_line}")
++    if(_pregen_target MATCHES "^(gen|phony)/"
++            AND NOT _pregen_target MATCHES "(^|/)(test|tests)(/|$)")
++        list(APPEND pregen_targets "${_pregen_target}")
++    endif()
++endforeach()
++list(REMOVE_DUPLICATES pregen_targets)
++_qwe_ninja_multipass("${pregen_targets}" "mojom generated bindings")
++_qwe_ninja_multipass("flatc.exe" "system flatc tool")
++foreach(flatbuffer_codegen_target IN LISTS flatbuffer_codegen_targets)
++    file(REMOVE "${BUILDDIR}/${flatbuffer_codegen_target}")
++endforeach()
++_qwe_ninja_multipass("${flatbuffer_codegen_targets}" "FlatBuffers generated headers")
++_qwe_ninja_multipass(
++    "phony/third_party/protobuf/copy_google_protobuf;phony/third_party/protobuf/copy_google_protobuf_internal"
++    "bundled Python protobuf runtime")
++_qwe_ninja_multipass("${required_codegen_targets}" "generated header targets")
++_qwe_ninja_multipass(
++    "phony/third_party/blink/public/strings/strings_grit;phony/third_party/blink/public/strings/permission_element_strings_grit;phony/third_party/blink/public/strings/permission_element_generated_strings_grit;phony/third_party/libaddressinput/strings_grit"
++    "Blink locale resources")
++_qwe_ninja_multipass(
++    "phony/qtwebengine_repack_locales_pack"
++    "WebEngine locale packs")
++_qwe_ninja_multipass(
++    "phony/third_party/blink/public/resources_grit;phony/third_party/blink/public/image_resources_grit;phony/third_party/blink/renderer/modules/media_controls/media_controls_resources_grit"
++    "Blink resource pack")
++_qwe_ninja_multipass(
++    "phony/third_party/devtools-frontend/src/inspector_overlay/copy_css_to_gen"
++    "DevTools inspector overlay styles")
++_qwe_ninja_multipass(
++    "phony/third_party/devtools-frontend/src/inspector_overlay/build_inspector_overlay"
++    "DevTools inspector overlay")
++_qwe_ninja_multipass(
++    "phony/third_party/blink/public/devtools_inspector_resources_grit"
++    "DevTools inspector resource pack")
++_qwe_ninja_multipass(
++    "phony/third_party/blink/public/scaled_resources_100_percent;phony/third_party/blink/public/scaled_resources_200_percent"
++    "Blink scaled resource packs")
++_qwe_ninja_multipass(
++    "qtwebengine_resources.pak;qtwebengine_resources_100p.pak;qtwebengine_resources_200p.pak;qtwebengine_devtools_resources.pak"
++    "WebEngine resource packs")
++# QtRepairWebEngineNinja.py creates this from the first-party generated headers
++# that linked translation units include.  Run it after the broad generator
++# passes above have converged and before any object batch can start.
++_qwe_ninja_multipass(
++    "qtwebengine_generated_prerequisites"
++    "compile generated prerequisites")
++set(object_targets)
++set(object_target_batch_size 0)
++foreach(rsp_line IN LISTS rsp_lines)
++    string(REGEX REPLACE "^\"|\"$" "" object_path "${rsp_line}")
++    if(NOT object_path MATCHES "(^|/)obj/(.*third_party|net/third_party|skia)/" OR object_path MATCHES "(^|/)obj/third_party/blink/renderer/")
++        file(RELATIVE_PATH object_target "${BUILDDIR}" "${object_path}")
++        if(NOT EXISTS "${BUILDDIR}/${object_target}")
++            list(APPEND object_targets "${object_target}")
++            math(EXPR object_target_batch_size "${object_target_batch_size} + 1")
++            if(object_target_batch_size GREATER_EQUAL 100)
++                execute_process(
++                    COMMAND "${CMAKE_COMMAND}" -E env
++                        "NODEJS_EXECUTABLE=${NODEJS_EXECUTABLE}"
++                        "${NINJA_EXECUTABLE}" -C "${BUILDDIR}" ${object_targets}
++                    RESULT_VARIABLE result)
++                if(NOT result EQUAL 0)
++                    message(FATAL_ERROR
++                        "Failed to build QtWebEngineCore object targets")
++                endif()
++                set(object_targets)
++                set(object_target_batch_size 0)
++            endif()
++        endif()
++    endif()
++endforeach()
++if(object_targets)
++    execute_process(
++        COMMAND "${CMAKE_COMMAND}" -E env
++            "NODEJS_EXECUTABLE=${NODEJS_EXECUTABLE}"
++            "${NINJA_EXECUTABLE}" -C "${BUILDDIR}" ${object_targets}
++        RESULT_VARIABLE result)
++    if(NOT result EQUAL 0)
++        message(FATAL_ERROR
++            "Failed to build QtWebEngineCore object targets")
++    endif()
++endif()
++set(packaged_archive_suffixes)
++foreach(packaged_archive_line IN LISTS packaged_archive_rsp_lines)
++    string(REGEX REPLACE "^\"|\"$" "" packaged_archive_path
++        "${packaged_archive_line}")
++    string(REGEX REPLACE "^.*[/\\\\]obj[/\\\\]" ""
++        packaged_archive_suffix "${packaged_archive_path}")
++    list(APPEND packaged_archive_suffixes "${packaged_archive_suffix}")
++endforeach()
++list(REMOVE_DUPLICATES packaged_archive_suffixes)
++set(archive_targets)
++set(archive_target_batch_size 0)
++foreach(archive_rsp_line IN LISTS archive_rsp_lines)
++    string(REGEX REPLACE "^\"|\"$" "" archive_path "${archive_rsp_line}")
++    string(REGEX REPLACE "^.*[/\\\\]obj[/\\\\]" ""
++        archive_suffix "${archive_path}")
++    list(FIND packaged_archive_suffixes "${archive_suffix}"
++        packaged_archive_index)
++    if(packaged_archive_index EQUAL -1 AND NOT EXISTS "${archive_path}")
++        file(RELATIVE_PATH archive_target "${BUILDDIR}" "${archive_path}")
++        list(APPEND archive_targets "${archive_target}")
++        math(EXPR archive_target_batch_size
++            "${archive_target_batch_size} + 1")
++        if(archive_target_batch_size GREATER_EQUAL 50)
++            execute_process(
++                COMMAND "${CMAKE_COMMAND}" -E env
++                    "NODEJS_EXECUTABLE=${NODEJS_EXECUTABLE}"
++                    "${NINJA_EXECUTABLE}" -C "${BUILDDIR}" ${archive_targets}
++                RESULT_VARIABLE result)
++            if(NOT result EQUAL 0)
++                message(FATAL_ERROR
++                    "Failed to build QtWebEngineCore first-party archives")
++            endif()
++            set(archive_targets)
++            set(archive_target_batch_size 0)
++        endif()
++    endif()
++endforeach()
++if(archive_targets)
++    execute_process(
++        COMMAND "${CMAKE_COMMAND}" -E env
++            "NODEJS_EXECUTABLE=${NODEJS_EXECUTABLE}"
++            "${NINJA_EXECUTABLE}" -C "${BUILDDIR}" ${archive_targets}
++        RESULT_VARIABLE result)
++    if(NOT result EQUAL 0)
++        message(FATAL_ERROR
++            "Failed to build QtWebEngineCore first-party archives")
++    endif()
++endif()
++]=])
++        add_custom_command(
++            OUTPUT
++                ${arg_OUTPUT}
++                ${arg_BUILDDIR}/${arg_TARGET}
++            BYPRODUCTS ${arg_BYPRODUCTS}
++            COMMENT "Building QtWebEngineCore objects with packaged third-party objects"
++            COMMAND ${CMAKE_COMMAND}
++                -DINPUT_RSP=${arg_BUILDDIR}/${arg_TARGET}_objects.rsp
++                -DARCHIVES_RSP=${arg_BUILDDIR}/${arg_TARGET}_archives.rsp
++                -DPACKAGED_ARCHIVES_RSP=${QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE}
++                -DBUILDDIR=${arg_BUILDDIR}
++                -DNINJA_EXECUTABLE=$<TARGET_FILE:Ninja::ninja>
++                -DNODEJS_EXECUTABLE=${Nodejs_EXECUTABLE}
++                -DPRIVATE_TOOL_DIR=${QTWEBENGINE_PRIVATE_TOOL_DIR}
++                -P ${build_webenginecore_objects_script}
++            COMMAND ${CMAKE_COMMAND} -E touch ${arg_OUTPUT} ${arg_BUILDDIR}/${arg_TARGET}
++            VERBATIM
++            COMMAND_EXPAND_LISTS
++            DEPENDS run_${arg_MODULE}_NinjaReady ${arg_DEPENDS}
++        )
++        return()
++    endif()
++    if(MINGW
++            AND ((arg_TARGET STREQUAL "QtWebEngineCoreSandbox"
++                    AND DEFINED QTWEBENGINE_THIRDPARTY_SANDBOX_LIBRARY
++                    AND EXISTS "${QTWEBENGINE_THIRDPARTY_SANDBOX_LIBRARY}")
++                OR (QTWEBENGINE_PRIVATE_TOOL_DIR
++                    AND EXISTS "${QTWEBENGINE_PRIVATE_TOOL_DIR}/${arg_TARGET}.exe")))
++        add_custom_command(
++            OUTPUT
++                ${arg_OUTPUT}
++                ${arg_BUILDDIR}/${arg_TARGET}
++            BYPRODUCTS ${arg_BYPRODUCTS}
++            COMMENT "Using packaged third-party objects for ${arg_TARGET}"
++            COMMAND ${CMAKE_COMMAND} -E touch ${arg_OUTPUT} ${arg_BUILDDIR}/${arg_TARGET}
++            VERBATIM
++            COMMAND_EXPAND_LISTS
++            DEPENDS run_${arg_MODULE}_NinjaReady ${arg_DEPENDS}
++        )
++        return()
++    endif()
+     add_custom_command(
+         OUTPUT
+             ${arg_OUTPUT}
+             ${arg_BUILDDIR}/${arg_TARGET} # use generator expression in CMAKE 3.20
+         BYPRODUCTS ${arg_BYPRODUCTS}
+         COMMENT "Running ninja for ${arg_TARGET} in ${arg_BUILDDIR}"
+         COMMAND ${CMAKE_COMMAND}
+             -E env
+             "NODEJS_EXECUTABLE=${Nodejs_EXECUTABLE}"
+             $<TARGET_FILE:Ninja::ninja>
+             ${ninja_flags}
+             -C ${arg_BUILDDIR}
+             ${arg_TARGET}
+         USES_TERMINAL
+         VERBATIM
+         COMMAND_EXPAND_LISTS
+         DEPENDS run_${arg_MODULE}_NinjaReady ${arg_DEPENDS}
+     )
+diff --git a/src/3rdparty/gn/src/gn/ninja_binary_target_writer.cc b/src/3rdparty/gn/src/gn/ninja_binary_target_writer.cc
+index 631f77c..ea5a4d1 100644
+--- a/src/3rdparty/gn/src/gn/ninja_binary_target_writer.cc
++++ b/src/3rdparty/gn/src/gn/ninja_binary_target_writer.cc
+@@ -316,4 +316,25 @@ void NinjaBinaryTargetWriter::WriteCompilerBuildLine(
+-  if (!order_only_deps.empty()) {
++  const bool qtwebengine_uses_packaged_thirdparty =
++      target_->settings()->build_settings()->build_args()
++          .GetArgFromAllArguments("qtwebengine_private_chromium_include_dir")
++          .has_value();
++
++  std::vector<OutputFile> filtered_order_only_deps;
++  const std::vector<OutputFile>* deps_to_write = &order_only_deps;
++  if (qtwebengine_uses_packaged_thirdparty) {
++    for (const OutputFile& dep : order_only_deps) {
++      const std::string& dep_path = dep.value();
++      if ((dep_path.find("third_party/") == std::string::npos ||
++           dep_path.find("third_party/blink/renderer/") != std::string::npos ||
++           dep_path.find("third_party/blink/public/mojom/") != std::string::npos) &&
++          dep_path.find("skia/") == std::string::npos &&
++          dep_path.find("protobuf") == std::string::npos) {
++        filtered_order_only_deps.push_back(dep);
++      }
++    }
++    deps_to_write = &filtered_order_only_deps;
++  }
++
++  if (!deps_to_write->empty()) {
+     out_ << " ||";
+-    path_output_.WriteFiles(out_, order_only_deps);
++    path_output_.WriteFiles(out_, *deps_to_write);
+   }
+diff --git a/src/3rdparty/chromium/third_party/node/node_modules.py b/src/3rdparty/chromium/third_party/node/node_modules.py
+index 6a09aa2..497a678 100644
+--- a/src/3rdparty/chromium/third_party/node/node_modules.py
++++ b/src/3rdparty/chromium/third_party/node/node_modules.py
+@@ -24,4 +24,4 @@ def PathToTypescript():
+   return _path_in_node_modules('typescript', 'bin', 'tsc')
+
+ def PathToTsProto():
+-  return _path_in_node_modules('ts-proto', 'protoc-gen-ts_proto')
++  return _path_in_node_modules('ts-proto', 'build', 'src', 'plugin.js')
+diff --git a/src/3rdparty/gn/src/gn/ninja_c_binary_target_writer.cc b/src/3rdparty/gn/src/gn/ninja_c_binary_target_writer.cc
+index b8ba228..f8de3dd 100644
+--- a/src/3rdparty/gn/src/gn/ninja_c_binary_target_writer.cc
++++ b/src/3rdparty/gn/src/gn/ninja_c_binary_target_writer.cc
+@@ -593,8 +593,45 @@ void NinjaCBinaryTargetWriter::WriteLinkerStuff(
+   ClassifiedDeps classified_deps = GetClassifiedDeps();
+
+   // Object files.
+-  path_output_.WriteFiles(out_, object_files);
+-  path_output_.WriteFiles(out_, classified_deps.extra_object_files);
++  const bool qtwebengine_uses_packaged_thirdparty =
++      target_->label().name() == "QtWebEngineCore" &&
++      target_->settings()->build_settings()->build_args()
++          .GetArgFromAllArguments("qtwebengine_private_chromium_include_dir")
++          .has_value();
++
++  std::vector<OutputFile> filtered_object_files;
++  const std::vector<OutputFile>* object_files_to_write = &object_files;
++  if (qtwebengine_uses_packaged_thirdparty) {
++    for (const OutputFile& dep : object_files) {
++      const std::string& dep_path = dep.value();
++      if ((dep_path.find("third_party/") == std::string::npos ||
++           dep_path.find("third_party/blink/renderer/") != std::string::npos ||
++           dep_path.find("third_party/blink/public/mojom/") != std::string::npos) &&
++          dep_path.find("skia/") == std::string::npos &&
++          dep_path.find("protobuf") == std::string::npos) {
++        filtered_object_files.push_back(dep);
++      }
++    }
++    object_files_to_write = &filtered_object_files;
++  }
++  path_output_.WriteFiles(out_, *object_files_to_write);
++
++  if (qtwebengine_uses_packaged_thirdparty) {
++    std::vector<OutputFile> filtered_extra_object_files;
++    for (const OutputFile& dep : classified_deps.extra_object_files) {
++      const std::string& dep_path = dep.value();
++      if ((dep_path.find("third_party/") == std::string::npos ||
++           dep_path.find("third_party/blink/renderer/") != std::string::npos ||
++           dep_path.find("third_party/blink/public/mojom/") != std::string::npos) &&
++          dep_path.find("skia/") == std::string::npos &&
++          dep_path.find("protobuf") == std::string::npos) {
++        filtered_extra_object_files.push_back(dep);
++      }
++    }
++    path_output_.WriteFiles(out_, filtered_extra_object_files);
++  } else {
++    path_output_.WriteFiles(out_, classified_deps.extra_object_files);
++  }
+
+   // Dependencies.
+   std::vector<OutputFile> implicit_deps;
+@@ -614,6 +651,18 @@ void NinjaCBinaryTargetWriter::WriteLinkerStuff(
+     if (cur->output_type() == Target::RUST_LIBRARY ||
+         cur->output_type() == Target::RUST_PROC_MACRO)
+       continue;
++    if (qtwebengine_uses_packaged_thirdparty) {
++      const std::string& dep_path = cur->link_output_file().value();
++      if ((dep_path.find("third_party/") == std::string::npos ||
++           dep_path.find("third_party/blink/renderer/") != std::string::npos ||
++           dep_path.find("third_party/blink/public/mojom/") != std::string::npos) &&
++          dep_path.find("skia/") == std::string::npos &&
++          dep_path.find("protobuf") == std::string::npos) {
++        // Keep non-private link dependencies in the stamp.
++      } else {
++        continue;
++      }
++    }
+
+     if (cur->has_dependency_output() &&
+         cur->dependency_output().value() != cur->link_output_file().value()) {
+@@ -691,6 +740,22 @@ void NinjaCBinaryTargetWriter::WriteLinkerStuff(
+   }
+
+   // Append implicit dependencies collected above.
++  if (qtwebengine_uses_packaged_thirdparty) {
++    std::vector<OutputFile> filtered_implicit_deps;
++    filtered_implicit_deps.reserve(implicit_deps.size());
++    for (const OutputFile& dep : implicit_deps) {
++      const std::string& dep_path = dep.value();
++      if ((dep_path.find("third_party/") == std::string::npos ||
++           dep_path.find("third_party/blink/renderer/") != std::string::npos ||
++           dep_path.find("third_party/blink/public/mojom/") != std::string::npos) &&
++          dep_path.find("skia/") == std::string::npos &&
++          dep_path.find("protobuf") == std::string::npos) {
++        filtered_implicit_deps.push_back(dep);
++      }
++    }
++    implicit_deps = std::move(filtered_implicit_deps);
++  }
++
+   if (!implicit_deps.empty()) {
+     if (target_->rsp_types().empty()) {
+         out_ << " |";
+@@ -794,16 +859,34 @@ void NinjaCBinaryTargetWriter::WriteOrderOnlyDependencies(
+     const UniqueVector<const Target*>& non_linkable_deps) {
+   if (non_linkable_deps.empty())
+     return;
+
+-  out_ << " ||";
++  const bool qtwebengine_uses_packaged_thirdparty =
++      target_->settings()->build_settings()->build_args()
++          .GetArgFromAllArguments("qtwebengine_private_chromium_include_dir")
++          .has_value();
++  std::vector<OutputFile> order_only_deps;
+
+   // Non-linkable targets.
+   for (auto* non_linkable_dep : non_linkable_deps) {
+     if (non_linkable_dep->has_dependency_output()) {
+-      out_ << " ";
+-      path_output_.WriteFile(out_, non_linkable_dep->dependency_output());
++      const OutputFile& dep = non_linkable_dep->dependency_output();
++      const std::string& dep_path = dep.value();
++      if (!qtwebengine_uses_packaged_thirdparty ||
++          ((dep_path.find("third_party/") == std::string::npos ||
++            dep_path.find("third_party/blink/renderer/") != std::string::npos ||
++            dep_path.find("third_party/blink/public/mojom/") != std::string::npos) &&
++           dep_path.find("skia/") == std::string::npos &&
++           dep_path.find("protobuf") == std::string::npos)) {
++        order_only_deps.push_back(dep);
++      }
+     }
+   }
++
++  if (order_only_deps.empty())
++    return;
++
++  out_ << " ||";
++  path_output_.WriteFiles(out_, order_only_deps);
+ }
+
+ void NinjaCBinaryTargetWriter::WriteValidations(
+diff --git a/src/3rdparty/gn/src/gn/ninja_target_writer.cc b/src/3rdparty/gn/src/gn/ninja_target_writer.cc
+index 4f68c22..7ac68ef 100644
+--- a/src/3rdparty/gn/src/gn/ninja_target_writer.cc
++++ b/src/3rdparty/gn/src/gn/ninja_target_writer.cc
+@@ -538,7 +538,30 @@ std::vector<OutputFile> NinjaTargetWriter::WriteInputDepsStampOrPhonyAndGetDep(
+   for (auto* dep : input_deps_targets) {
+     if (dep->has_dependency_output())
+       outs.push_back(dep->dependency_output());
+   }
++  if (target_->label().name() == "QtWebEngineCore" &&
++      target_->settings()->build_settings()->build_args()
++          .GetArgFromAllArguments("qtwebengine_private_chromium_include_dir")
++          .has_value()) {
++    return std::vector<OutputFile>();
++  }
++  if (target_->settings()->build_settings()->build_args()
++          .GetArgFromAllArguments("qtwebengine_private_chromium_include_dir")
++          .has_value()) {
++    std::vector<OutputFile> filtered_outs;
++    filtered_outs.reserve(outs.size());
++    for (const OutputFile& dep : outs) {
++      const std::string& dep_path = dep.value();
++      if ((dep_path.find("third_party/") == std::string::npos ||
++           dep_path.find("third_party/blink/renderer/") != std::string::npos ||
++           dep_path.find("third_party/blink/public/mojom/") != std::string::npos) &&
++          dep_path.find("skia/") == std::string::npos &&
++          dep_path.find("protobuf") == std::string::npos) {
++        filtered_outs.push_back(dep);
++      }
++    }
++    outs = std::move(filtered_outs);
++  }
+
+   // If there are multiple inputs, but the phony target would be referenced only
+   // once, don't write it but depend on the inputs directly.
+@@ -628,7 +651,46 @@ void NinjaTargetWriter::WriteStampOrPhonyForTarget(
+
++  const bool qtwebengine_uses_packaged_thirdparty =
++      target_->settings()->build_settings()->build_args()
++          .GetArgFromAllArguments("qtwebengine_private_chromium_include_dir")
++          .has_value();
++
++  std::vector<OutputFile> filtered_files;
++  const std::vector<OutputFile>* files_to_write = &files;
++  if (qtwebengine_uses_packaged_thirdparty) {
++    for (const OutputFile& dep : files) {
++      const std::string& dep_path = dep.value();
++      if ((dep_path.find("third_party/") == std::string::npos ||
++           dep_path.find("third_party/blink/renderer/") != std::string::npos ||
++           dep_path.find("third_party/blink/public/mojom/") != std::string::npos) &&
++          dep_path.find("skia/") == std::string::npos &&
++          dep_path.find("protobuf") == std::string::npos) {
++        filtered_files.push_back(dep);
++      }
++    }
++    files_to_write = &filtered_files;
++  }
++
++  path_output_.WriteFiles(out_, *files_to_write);
++
+-  if (!order_only_deps.empty()) {
++  std::vector<OutputFile> filtered_order_only_deps;
++  const std::vector<OutputFile>* deps_to_write = &order_only_deps;
++  if (qtwebengine_uses_packaged_thirdparty) {
++    for (const OutputFile& dep : order_only_deps) {
++      const std::string& dep_path = dep.value();
++      if ((dep_path.find("third_party/") == std::string::npos ||
++           dep_path.find("third_party/blink/renderer/") != std::string::npos ||
++           dep_path.find("third_party/blink/public/mojom/") != std::string::npos) &&
++          dep_path.find("skia/") == std::string::npos &&
++          dep_path.find("protobuf") == std::string::npos) {
++        filtered_order_only_deps.push_back(dep);
++      }
++    }
++    deps_to_write = &filtered_order_only_deps;
++  }
++
++  if (!deps_to_write->empty()) {
+     out_ << " ||";
+-    path_output_.WriteFiles(out_, order_only_deps);
++    path_output_.WriteFiles(out_, *deps_to_write);
+   }
+   out_ << std::endl;
+ }
