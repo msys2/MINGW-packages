@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Drop build edges for artifacts already supplied by qt6-webengine-thirdparty.
+
+The set to skip is read from the manifests that package ships, not from a
+pattern matched against paths.  A pattern has to be kept in sync by hand at
+every site that uses it, and anything it fails to cover is silently built
+twice -- once by the producer as a dependency, then again here.
+"""
+import pathlib
+import re
+import sys
+
+
+def read_manifest(path, rebase_on_obj=False):
+    """Read an rsp/manifest into a set of build-dir-relative posix paths.
+
+    Entries may be absolute in either msys (/ucrt64/...) or mixed
+    (E:/msys64/...) form depending on who wrote them, so rebasing keys off the
+    /obj/ component rather than stripping a prefix we would have to guess.
+    """
+    entries = set()
+    if not path.is_file():
+        return entries
+    for line in path.read_text(encoding="utf-8").splitlines():
+        token = line.strip().strip('"')
+        if not token:
+            continue
+        token = token.replace("\\", "/")
+        if rebase_on_obj:
+            head, separator, tail = token.partition("/obj/")
+            if not separator:
+                continue
+            token = "obj/" + tail
+        entries.add(token.removeprefix("./"))
+    return entries
+
+
+def unpack_object_archive(archive, build_dir):
+    """Materialise the producer's loose source_set objects into the build dir.
+
+    GN source_sets do not go through an archive: their objects are named
+    individually on the final link line.  The producer ships them packed into a
+    single .a purely as transport, with member names carrying the full
+    build-relative path, so unpacking restores exactly the files the link
+    expects.
+
+    Linking the packed archive instead would be smaller but not equivalent --
+    archive members are pulled in only to satisfy an undefined symbol, so
+    translation units that matter solely for their static initialisers (feature
+    and trace-category registration, mojo type converters) would be dropped.
+    That failure is silent at link time and only shows up at runtime.
+    """
+    members = 0
+    with archive.open("rb") as handle:
+        if handle.read(8) != b"!<arch>\n":
+            sys.exit("error: {} is not an ar archive".format(archive))
+
+        string_table = b""
+        while True:
+            header = handle.read(60)
+            if len(header) < 60:
+                break
+
+            raw_name = header[0:16].decode("ascii", "replace").strip()
+            size = int(header[48:58].decode("ascii").strip())
+            payload = handle.read(size)
+            if size % 2:
+                handle.read(1)
+
+            if raw_name == "//":
+                # GNU long-name table: every path here exceeds ar's 15-char
+                # inline limit, so nearly all real members resolve through it.
+                string_table = payload
+                continue
+            if raw_name == "/" or raw_name == "/SYM64/":
+                continue  # symbol index
+
+            if raw_name.startswith("/") and raw_name[1:].isdigit():
+                offset = int(raw_name[1:])
+                end = string_table.find(b"\n", offset)
+                name = string_table[offset:end].decode("ascii").rstrip("/")
+            else:
+                name = raw_name.rstrip("/")
+
+            if not name:
+                continue
+
+            destination = build_dir / name
+            # Re-writing 3 GB on every configure is pure wall-clock; the objects
+            # are immutable build output, so a size match means identical.
+            if destination.is_file() and destination.stat().st_size == size:
+                members += 1
+                continue
+
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(payload)
+            members += 1
+
+    return members
+
+
+build_dir = pathlib.Path(sys.argv[1])
+private_dir = pathlib.Path(sys.argv[2]) if len(sys.argv) > 2 else None
+
+supplied_archives = set()
+supplied_objects = set()
+if private_dir is not None:
+    supplied_archives = read_manifest(
+        private_dir / "qtwebengine-thirdparty-archives.rsp",
+        rebase_on_obj=True,
+    )
+    supplied_objects = read_manifest(
+        private_dir / "qtwebengine-thirdparty-objects.rsp"
+    )
+
+if not supplied_archives:
+    sys.exit(
+        "error: no archive manifest found under {}; refusing to run without a "
+        "skip set, as that would silently rebuild everything the producer "
+        "already shipped".format(private_dir)
+    )
+
+
+unpacked_objects = 0
+if supplied_objects:
+    object_archive = private_dir / "libQt6WebEngineThirdPartyObjects.a"
+    if not object_archive.is_file():
+        sys.exit(
+            "error: {} lists {} objects but {} is missing; the link names those "
+            "objects by path, so they have to exist".format(
+                private_dir, len(supplied_objects), object_archive.name
+            )
+        )
+    unpacked_objects = unpack_object_archive(object_archive, build_dir)
+
+
+def is_supplied_archive(path: str) -> bool:
+    path = path.replace("\\", "/").removeprefix("./")
+    return (
+        path in supplied_archives
+        or pathlib.PurePosixPath(path).name == "libQtWebEngineCoreSandbox.a"
+    )
+
+
+def is_supplied_object(path: str) -> bool:
+    return path.replace("\\", "/").removeprefix("./") in supplied_objects
+
+
+changed_files = 0
+changed_edges = 0
+removed_inputs = 0
+phonied_compiles = 0
+
+for ninja_file in (build_dir / "obj").rglob("*.ninja"):
+    original = ninja_file.read_text(encoding="utf-8")
+    output_lines = []
+    file_changed = False
+
+    for line in original.splitlines(keepends=True):
+        ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+        content = line.removesuffix(ending)
+        # A supplied object is already on disk, unpacked above, but ninja still
+        # refuses to load an edge whose source file is gone -- and the sources
+        # for wholly-supplied subtrees are deliberately deleted.  Dropping the
+        # rule is what makes recompiling them impossible rather than merely
+        # redundant.
+        compiled = re.match(r"^build (\S+): (?:cxx|cc|objcxx|objc|asm|rc) ", content)
+        if compiled is not None and is_supplied_object(compiled.group(1)):
+            output_lines.append(f"build {compiled.group(1)}: phony{ending}")
+            file_changed = True
+            phonied_compiles += 1
+            continue
+
+        match = re.match(r"^build (.+): alink(?: (.*))?$", content)
+        if match is None:
+            output_lines.append(line)
+            continue
+
+        outputs = match.group(1)
+        inputs = (match.group(2) or "").split()
+        output_paths = [token for token in outputs.split() if token != "|"]
+        make_phony = any(is_supplied_archive(path) for path in output_paths)
+
+        if make_phony:
+            replacement = f"build {outputs}: phony{ending}"
+            removed_inputs += len(inputs)
+        else:
+            filtered_inputs = [
+                token for token in inputs if not is_supplied_object(token)
+            ]
+            removed_inputs += len(inputs) - len(filtered_inputs)
+            replacement = (
+                f"build {outputs}: alink"
+                + (f" {' '.join(filtered_inputs)}" if filtered_inputs else "")
+                + ending
+            )
+
+        if replacement != line:
+            file_changed = True
+            changed_edges += 1
+        output_lines.append(replacement)
+
+    if file_changed:
+        ninja_file.write_text("".join(output_lines), encoding="utf-8", newline="")
+        changed_files += 1
+
+print(
+    f"supplied_archives={len(supplied_archives)} "
+    f"supplied_objects={len(supplied_objects)} "
+    f"unpacked_objects={unpacked_objects} "
+    f"sanitized_files={changed_files} "
+    f"sanitized_edges={changed_edges} "
+    f"phonied_compiles={phonied_compiles} "
+    f"removed_inputs={removed_inputs}"
+)
+
+if supplied_objects and phonied_compiles == 0:
+    sys.exit(
+        "error: {} objects are supplied but no compile edge was dropped; the "
+        "build would recompile every one of them".format(len(supplied_objects))
+    )
