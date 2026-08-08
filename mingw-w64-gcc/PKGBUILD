@@ -4,6 +4,7 @@
 # Contributor: Renato Silva <br.renatosilva@gmail.com>
 # Contributor: wirx6 <wirx654@gmail.com>
 # Contributor: Kirill Müller <krlmlr@mailbox.org>
+# Contributor: dragon-archer <dragon-archer@outlook.com>
 
 if [[ ${CARCH} != i686 ]]; then
   _enable_ada=yes
@@ -56,7 +57,7 @@ else
   _url=https://gcc.gnu.org/pub/gcc/snapshots/${_version}-${_snapshot}
 fi
 _libdir=lib/gcc/${CHOST}/${pkgver}
-pkgrel=1
+pkgrel=2
 pkgdesc="The GNU Compielr Collection (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw32' 'mingw64' 'ucrt64')
@@ -96,7 +97,8 @@ source=(${_url}/${_sourcedir}.tar.xz{,.sig}
         0012-Handle-spaces-in-path-for-default-manifest.patch
         0014-gcc-9-branch-clone_function_name_1-Retain-any-stdcall-suffix.patch
         0020-libgomp-Don-t-hard-code-MS-printf-attributes.patch
-        0022-unset-native-system-header-dir.patch
+        0021-bootstrap-gnattools-Pass-target-sysroot-flags-to-boo.patch
+        0022-mingw-Remove-outdated-mingw-stuff.patch
         0023-Ada-Don-t-export-gnat1-s-symbols-on-PE-hosts.patch
         0024-libgfortran-Guard-locale-restoration-for-formatted-I0.patch
         0025-libgfortran-Copy-LC_NUMERIC-string-for-formatted-IO.patch
@@ -115,7 +117,8 @@ sha256sums=('e6738e29597f733270731aa90600f37ffdc045079dfc27ec7e8192cc81085c3e'
             'e98805ead7d78ee2a92f237894c4b2b7ddc1688e1b517d8c04f28d440202e40f'
             'fd9bdecb2bbc4796bbc9f00b708dac42ef9e3464a06d6d27e5475cee117de5be'
             'ad1f7b5e7afaaec008b7cbd14feea13a10989fa91bda7003af72d457619bb199'
-            'd8b9b979dc1742f63d23dfca92bc05944612bd196a31fb882b8a616baba84383'
+            '76455c46eec4df95a80bbf7e5bcd2d165f300976c79c1baf0bf7ed20f000cdd4'
+            'ec05f8f26698dae4e0e0b58189cbf509185ad6d40b4950b33e28b638bf70c7ae'
             '395dd4df29c295f917aa4a136a0aa72af34eee6320ecc2d92ee717397578398d'
             '976d14f803a211b19d9bf0169c08d4fde05af5cc18073f2fc8efc9a3cb17890a'
             'f591efc820a2c72aefb83179f7cbd3f4654231b68700486bd04ee32e2db61de5'
@@ -160,10 +163,16 @@ prepare() {
     0012-Handle-spaces-in-path-for-default-manifest.patch \
     0014-gcc-9-branch-clone_function_name_1-Retain-any-stdcall-suffix.patch \
     0020-libgomp-Don-t-hard-code-MS-printf-attributes.patch \
-    0022-unset-native-system-header-dir.patch \
     0023-Ada-Don-t-export-gnat1-s-symbols-on-PE-hosts.patch \
     0024-libgfortran-Guard-locale-restoration-for-formatted-I0.patch \
     0025-libgfortran-Copy-LC_NUMERIC-string-for-formatted-IO.patch
+
+  # Avoid hardcoding /mingw or D:/M/${MINGW_PREFIX} in the final installation.
+  # Make GCC fully relocatable.
+  # See https://github.com/msys2/MINGW-packages/pull/29280 for details.
+  apply_patch_with_msg \
+    0021-bootstrap-gnattools-Pass-target-sysroot-flags-to-boo.patch \
+    0022-mingw-Remove-outdated-mingw-stuff.patch
 
   # Enable diagnostic color under mintty
   # based on https://github.com/BurntSushi/ripgrep/issues/94#issuecomment-261761687
@@ -187,15 +196,6 @@ prepare() {
     3001-fix-codeview-crashes.patch
 
   autoreconf -fiv
-
-  # do not expect ${prefix}/mingw symlink - this should be superceded by
-  # 0005-Windows-Don-t-ignore-native-system-header-dir.patch .. but isn't!
-  sed -i 's/${prefix}\/mingw\//${prefix}\//g' configure
-
-  # change hardcoded /mingw prefix to the real prefix .. isn't this rubbish?
-  # it might work at build time and could be important there but beyond that?!
-  local MINGW_NATIVE_PREFIX=$(cygpath -am ${MINGW_PREFIX})
-  sed -i "s#\\/mingw\\/#${MINGW_NATIVE_PREFIX//\//\\/}\\/#g" gcc/config/mingw/mingw32.h
 }
 
 build() {
@@ -271,9 +271,15 @@ build() {
   # In addition adaint.c does `#include <accctrl.h>` which pulls in msxml.h, hacky hack:
   CPPFLAGS+=" -DCOM_NO_WINDOWS_H"
 
+  # local-prefix and native-system-header-dir will be prefixed with sysroot, so don't add ${MINGW_PREFIX} here.
+  # --with-build-sysroot has to be an Windows path because it's used by gnatlink.exe, which launch xgcc.exe
+  # with `System.OS_Lib.Spawn` which doesn't convert paths.
   ../${_sourcedir}/configure \
     --prefix=${MINGW_PREFIX} \
-    --with-local-prefix=${MINGW_PREFIX}/local \
+    --with-sysroot=${MINGW_PREFIX} \
+    --with-build-sysroot=$(cygpath -m ${MINGW_PREFIX}) \
+    --with-local-prefix=/local \
+    --with-native-system-header-dir=/include \
     --libexecdir=${MINGW_PREFIX}/lib \
     --enable-bootstrap \
     --enable-checking=release \
@@ -318,8 +324,11 @@ build() {
   fi
 
   # https://gcc.gnu.org/onlinedocs/gccint/Makefile.html
-  make -O STAGE1_CFLAGS="-O2" \
-          profiledbootstrap
+  # Avoid all paths passed with -DXXX_DIR to be converted and hardcoded in binaries.
+  # See https://github.com/msys2/MINGW-packages/pull/29280 for details.
+  MSYS2_ARG_CONV_EXCL='-D' \
+    make -O STAGE1_CFLAGS="-O2" \
+            profiledbootstrap
 }
 
 package_gcc-libs() {
