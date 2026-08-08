@@ -1,0 +1,65 @@
+From 7f534bb71c47196ede5f03710a5530e36f58dac1 Mon Sep 17 00:00:00 2001
+From: Yohann Vautrin <Yohann.Vautrin@cnrc-nrc.gc.ca>
+Date: Tue, 4 Aug 2026 10:27:07 -0400
+Subject: [PATCH 1/2] libgfortran: Guard locale restoration for formatted I/O
+
+data_transfer_init_worker sets LC_NUMERIC to "C" before performing
+formatted transfers, but finalize_transfer restores LC_NUMERIC and
+decrements old_locale_ctr after every transfer.
+
+An unformatted transfer therefore decrements old_locale_ctr without a
+matching increment, making the counter negative.  Later formatted
+transfers then fail to enter the locale guard that sets LC_NUMERIC to
+"C", causing them to use the program's numeric locale.  This can cause
+transfers to read or write incorrect data when that locale uses a comma
+as the decimal separator, for example.
+
+Apply the same FORM_FORMATTED condition to the locale restoration code.
+---
+ libgfortran/io/transfer.c | 27 +++++++++++++++------------
+ 1 file changed, 15 insertions(+), 12 deletions(-)
+
+diff --git a/libgfortran/io/transfer.c b/libgfortran/io/transfer.c
+index 95ead6936..ee7d4d319 100644
+--- a/libgfortran/io/transfer.c
++++ b/libgfortran/io/transfer.c
+@@ -4590,21 +4590,24 @@ finalize_transfer (st_parameter_dt *dtp)
+ 	}
+     }
+ 
+-#ifdef HAVE_POSIX_2008_LOCALE
+-  if (dtp->u.p.old_locale != (locale_t) 0)
++  if (dtp->u.p.current_unit->flags.form == FORM_FORMATTED)
+     {
+-      uselocale (dtp->u.p.old_locale);
+-      dtp->u.p.old_locale = (locale_t) 0;
+-    }
++#ifdef HAVE_POSIX_2008_LOCALE
++      if (dtp->u.p.old_locale != (locale_t) 0)
++	{
++	  uselocale (dtp->u.p.old_locale);
++	  dtp->u.p.old_locale = (locale_t) 0;
++	}
+ #else
+-  __gthread_mutex_lock (&old_locale_lock);
+-  if (!--old_locale_ctr)
+-    {
+-      setlocale (LC_NUMERIC, old_locale);
+-      old_locale = NULL;
+-    }
+-  __gthread_mutex_unlock (&old_locale_lock);
++      __gthread_mutex_lock (&old_locale_lock);
++      if (!--old_locale_ctr)
++	{
++	  setlocale (LC_NUMERIC, old_locale);
++	  old_locale = NULL;
++	}
++      __gthread_mutex_unlock (&old_locale_lock);
+ #endif
++    }
+ }
+ 
+ /* Transfer function for IOLENGTH. It doesn't actually do any
+-- 
+2.55.0
+
