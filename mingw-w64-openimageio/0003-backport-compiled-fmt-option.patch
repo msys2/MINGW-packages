@@ -1,0 +1,107 @@
+From 08acb93ef17432e86cc6e9b82e0388b273ec9c46 Mon Sep 17 00:00:00 2001
+From: Vlad Erium <shaamaan@gmail.com>
+Date: Mon, 15 Jun 2026 14:40:11 +0900
+Subject: [PATCH] build: Option to use compiled fmt library
+
+Backport the upstream compiled-fmt option to 3.1.16.0. The upstream
+`ustring.cpp` hunk is not needed in this branch because the touched code is
+not present here.
+
+---
+ src/cmake/Config.cmake.in                |  2 +-
+ src/cmake/externalpackages.cmake         | 12 +++++++++++-
+ src/include/OpenImageIO/detail/fmt.h     | 10 +++++++---
+ src/include/OpenImageIO/oiioversion.h.in |  1 +
+ src/libutil/CMakeLists.txt               |  6 +++++-
+ 5 files changed, 25 insertions(+), 6 deletions(-)
+
+diff --git a/src/cmake/Config.cmake.in b/src/cmake/Config.cmake.in
+--- a/src/cmake/Config.cmake.in
++++ b/src/cmake/Config.cmake.in
+@@ -12,7 +12,7 @@ if (NOT @OPENIMAGEIO_CONFIG_DO_NOT_FIND_IMATH@ AND NOT OPENIMAGEIO_CONFIG_DO_NOT
+                     HINTS @Imath_DIR@)
+ endif ()
+ 
+-if (NOT @fmt_LOCAL_BUILD@ AND NOT @OIIO_INTERNALIZE_FMT@)
++if (NOT @fmt_LOCAL_BUILD@ AND (NOT @OIIO_INTERNALIZE_FMT@ OR @OIIO_USE_COMPILED_FMT@))
+     find_dependency(fmt)
+ endif ()
+ 
+diff --git a/src/cmake/externalpackages.cmake b/src/cmake/externalpackages.cmake
+--- a/src/cmake/externalpackages.cmake
++++ b/src/cmake/externalpackages.cmake
+@@ -236,11 +236,21 @@ checked_find_package (Robinmap REQUIRED
+ 
+ # fmtlib
+ option (OIIO_INTERNALIZE_FMT "Copy fmt headers into <install>/include/OpenImageIO/detail/fmt" ON)
++option (OIIO_USE_COMPILED_FMT "Link against compiled fmt::fmt instead of header-only fmt" OFF)
++if (OIIO_USE_COMPILED_FMT)
++    set (OIIO_USE_COMPILED_FMT_VALUE 1)
++else ()
++    set (OIIO_USE_COMPILED_FMT_VALUE 0)
++endif ()
+ checked_find_package (fmt REQUIRED
+                       VERSION_MIN 7.0
+                       BUILD_LOCAL missing
+                      )
+-get_target_property(FMT_INCLUDE_DIR fmt::fmt-header-only INTERFACE_INCLUDE_DIRECTORIES)
++if (OIIO_USE_COMPILED_FMT)
++    get_target_property(FMT_INCLUDE_DIR fmt::fmt INTERFACE_INCLUDE_DIRECTORIES)
++else ()
++    get_target_property(FMT_INCLUDE_DIR fmt::fmt-header-only INTERFACE_INCLUDE_DIRECTORIES)
++endif ()
+ 
+ 
+ ###########################################################################
+diff --git a/src/include/OpenImageIO/detail/fmt.h b/src/include/OpenImageIO/detail/fmt.h
+--- a/src/include/OpenImageIO/detail/fmt.h
++++ b/src/include/OpenImageIO/detail/fmt.h
+@@ -5,12 +5,16 @@
+ #define OIIO_FMT_H
+ 
+ #include <OpenImageIO/dassert.h>
++#include <OpenImageIO/oiioversion.h>
+ #include <OpenImageIO/platform.h>
+ #include <OpenImageIO/type_traits.h>
+ 
+-// We want the header-only implementation of fmt
+-#ifndef FMT_HEADER_ONLY
+-#    define FMT_HEADER_ONLY
+-#endif
++// By default OIIO uses the header-only implementation of fmt. Builds that opt
++// into compiled external fmt must use the same mode in OIIO and consumers.
++#if !OIIO_USE_COMPILED_FMT
++#    ifndef FMT_HEADER_ONLY
++#        define FMT_HEADER_ONLY
++#    endif
++#endif
+ 
+ // Disable fmt exceptions
+ #ifndef FMT_EXCEPTIONS
+diff --git a/src/include/OpenImageIO/oiioversion.h.in b/src/include/OpenImageIO/oiioversion.h.in
+--- a/src/include/OpenImageIO/oiioversion.h.in
++++ b/src/include/OpenImageIO/oiioversion.h.in
+@@ -47,6 +47,7 @@
+ #define OIIO_VERSION_PATCH @PROJECT_VERSION_PATCH@
+ #define OIIO_VERSION_TWEAK @PROJECT_VERSION_TWEAK@
+ #define OIIO_VERSION_RELEASE_TYPE @PROJECT_VERSION_RELEASE_TYPE@
++#define OIIO_USE_COMPILED_FMT @OIIO_USE_COMPILED_FMT_VALUE@
+ 
+ // Preprocessor utility: stringize
+ #define OIIO_STRINGIZE_HELPER(a) #a
+diff --git a/src/libutil/CMakeLists.txt b/src/libutil/CMakeLists.txt
+--- a/src/libutil/CMakeLists.txt
++++ b/src/libutil/CMakeLists.txt
+@@ -84,7 +84,11 @@ function (setup_oiio_util_library targetname)
+ 
+     if (OIIO_INTERNALIZE_FMT OR fmt_LOCAL_BUILD)
+         add_dependencies(${targetname} fmt_internal_target)
+-    else ()
++    endif ()
++    if (OIIO_USE_COMPILED_FMT)
++        target_link_libraries (${targetname}
++                               PUBLIC fmt::fmt)
++    elseif (NOT OIIO_INTERNALIZE_FMT AND NOT fmt_LOCAL_BUILD)
+         target_link_libraries (${targetname}
+                                PUBLIC fmt::fmt-header-only)
+     endif ()
