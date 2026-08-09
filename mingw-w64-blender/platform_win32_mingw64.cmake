@@ -3,7 +3,7 @@
 
 # Libraries configuration for MINGW
 
-add_definitions(-DWIN32 -D_WIN32_WINNT=0x603 -DFREE_WINDOWS)
+add_definitions(-DWIN32 -D_WIN32_WINNT=0x603 -DFREE_WINDOWS -DWIN32_LEAN_AND_MEAN)
 
 # Support restoring this value once pre-compiled libraries have been handled.
 set(WITH_STATIC_LIBS_INIT ${WITH_STATIC_LIBS})
@@ -82,10 +82,8 @@ else()
   find_program(PYTHON_EXECUTABLE "python3")
 endif()
 
-if(WITH_IMAGE_OPENEXR)
-  find_package_wrapper(OpenEXR)
-  set_and_warn_library_found("OpenEXR" OpenEXR_FOUND WITH_IMAGE_OPENEXR)
-endif()
+find_package_wrapper(Imath REQUIRED CONFIG)
+find_package_wrapper(OpenEXR REQUIRED CONFIG)
 if(DEFINED OpenEXR_DIR)
   mark_as_advanced(OpenEXR_DIR)
 endif()
@@ -110,21 +108,11 @@ if(WITH_OPENAL)
 endif()
 
 if(WITH_SDL)
-  find_package_wrapper(SDL2)
-  if(SDL2_FOUND)
-    # Use same names for both versions of SDL until we move to 2.x.
-    set(SDL_INCLUDE_DIR "${SDL2_INCLUDE_DIR}")
-    set(SDL_LIBRARY "${SDL2_LIBRARY}")
-    set(SDL_FOUND "${SDL2_FOUND}")
-  else()
-    find_package_wrapper(SDL)
-  endif()
-  mark_as_advanced(
-    SDL_INCLUDE_DIR
-    SDL_LIBRARY
-  )
-  # unset(SDLMAIN_LIBRARY CACHE)
-  set_and_warn_library_found("SDL" SDL_FOUND WITH_SDL)
+  find_package_wrapper(SDL3 REQUIRED CONFIG)
+  set_and_warn_library_found("SDL3" SDL3_FOUND WITH_SDL)
+endif()
+if(DEFINED SDL3_DIR)
+  mark_as_advanced(SDL3_DIR)
 endif()
 
 # Codecs
@@ -308,6 +296,16 @@ if(WITH_OPENIMAGEDENOISE)
   set_and_warn_library_found("OpenImageDenoise" OPENIMAGEDENOISE_FOUND WITH_OPENIMAGEDENOISE)
   add_bundled_libraries(openimagedenoise/lib)
 endif()
+
+if(WITH_DRACO)
+  find_package_wrapper(draco REQUIRED CONFIG)
+endif()
+add_bundled_libraries(draco/lib)
+
+if(WITH_MESHOPTIMIZER)
+  find_package_wrapper(meshoptimizer REQUIRED CONFIG)
+endif()
+add_bundled_libraries(meshoptimizer/lib)
 
 if(WITH_LLVM)
   find_package_wrapper(LLVM)
