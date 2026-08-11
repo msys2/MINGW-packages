@@ -26,8 +26,8 @@ neighbouring ``gen/mojo/public/mojom/base/base__type_mappings`` survives.
 
 Rather than re-derive which dependency was legitimate inside GN, this rebuilds
 the ordering from evidence in the build directory itself: generated paths in an
-action recipe say what it reads, generated direct children of an input directory
-cover tools that enumerate names separately, and ``#include`` says what a
+action recipe say what it reads, explicit input-directory and filename pairs
+cover tools that split a path across arguments, and ``#include`` says what a
 translation unit needs. Both stay correct as the patch set moves. Nothing here
 alters what is linked.
 """
@@ -47,7 +47,8 @@ SOURCE_SUFFIXES = (".cc", ".cpp", ".cxx", ".c", ".h", ".hpp", ".inc", ".hxx")
 LINK_ROOTS = ("QtWebEngineCore", "QtWebEngineCore.stamp", "convert_dict",
               "convert_dict.stamp", "sandboxLibrary")
 GENERATED_PATH_RE = re.compile(r"gen/[A-Za-z0-9_./$:+-]+")
-INPUT_DIRECTORY_RE = re.compile(r"^--[A-Za-z0-9_-]*(?:input|in_folder)[A-Za-z0-9_-]*$")
+INPUT_DIRECTORY_FLAGS = ("--input", "--in_folder")
+INPUT_FILE_FLAGS = ("--in_files", "--js_module_in_files")
 
 
 def normalize_command_path(edge, value):
@@ -67,41 +68,62 @@ def normalize_command_path(edge, value):
             os.path.dirname(edge.outputs[0]), value)).replace("\\", "/")
 
 
-def command_prerequisites(edge, command, producer, outputs_by_parent):
+def flag_values(tokens, flags, multiple=False):
+    """Yield values belonging to selected command-line flags."""
+    for index, token in enumerate(tokens):
+        plain = ninjagraph.unescape(token)
+        for flag in flags:
+            if plain.startswith(flag + "="):
+                yield plain[len(flag) + 1:]
+                break
+            if plain != flag:
+                continue
+            following = tokens[index + 1:]
+            for value in following:
+                value = ninjagraph.unescape(value)
+                if value.startswith("--"):
+                    break
+                yield value
+                if not multiple:
+                    break
+            break
+
+
+def command_prerequisites(edge, command, producer):
     """Yield generated files an action recipe reads but does not declare.
 
     This treats the generated-output table as the authority. It recognizes
     literal paths (including ``key=path`` and paths embedded in configuration
-    values), output-relative paths, and immediate children of explicit input
-    directories. The final case is needed for command-line tools whose input
-    directory and requested filenames are separate arguments, such as bundlers.
+    values), output-relative paths, and paths split between an explicit input
+    directory and filename list. The final case covers bundlers without adding
+    every output in a directory, some of which can be downstream of the action.
     """
     tokens = ninjagraph.split_tokens(command)
     candidates = []
-    directories = []
-    for index, token in enumerate(tokens):
+    for token in tokens:
         plain = ninjagraph.unescape(token)
         values = [plain]
         if "=" in plain:
-            flag, value = plain.split("=", 1)
-            values.append(value)
-            if INPUT_DIRECTORY_RE.match(flag):
-                directories.append(value)
-        elif INPUT_DIRECTORY_RE.match(plain) and index + 1 < len(tokens):
-            directories.append(ninjagraph.unescape(tokens[index + 1]))
+            values.append(plain.split("=", 1)[1])
         for value in values:
-            candidates.append(value)
+            # Bare GN target names occur in action commands too. They are graph
+            # outputs, but they are not filesystem inputs and may alias this
+            # action's own output, so only path-like values are considered.
+            if "/" in value or "\\" in value:
+                candidates.append(value)
             candidates.extend(match.group(0) for match in
                               GENERATED_PATH_RE.finditer(value))
+
+    directories = list(flag_values(tokens, INPUT_DIRECTORY_FLAGS))
+    filenames = list(flag_values(tokens, INPUT_FILE_FLAGS, multiple=True))
+    candidates.extend(os.path.join(directory, filename)
+                      for directory in directories for filename in filenames)
 
     wanted = set()
     for value in candidates:
         for path in normalize_command_path(edge, value):
             if path in producer:
                 wanted.add(path)
-    for value in directories:
-        for directory in normalize_command_path(edge, value):
-            wanted.update(outputs_by_parent.get(directory, ()))
 
     # A mojom generator reads its parser-produced module through a response
     # file. Ninja writes that response file immediately before launching the
@@ -116,6 +138,23 @@ def command_prerequisites(edge, command, producer, outputs_by_parent):
             if module in producer:
                 wanted.add(module)
     return wanted
+
+
+def reaches_any(producer, start, targets):
+    """Return whether an existing dependency path reaches any target."""
+    seen = set()
+    stack = [start]
+    while stack:
+        node = stack.pop()
+        if node in targets:
+            return True
+        if node in seen:
+            continue
+        seen.add(node)
+        edge = producer.get(node)
+        if edge is not None:
+            stack.extend(edge.all_inputs())
+    return False
 
 
 def in_build_dir(build_dir, token):
@@ -308,20 +347,21 @@ def main():
     additions = []
 
     # ---- ordering generated inputs that action recipes read -----------------
-    outputs_by_parent = {}
-    for output in producer:
-        outputs_by_parent.setdefault(os.path.dirname(output), []).append(output)
-
-    repaired_actions = repaired_refs = 0
+    repaired_actions = repaired_refs = skipped_action_cycles = 0
     for edge in edges:
         command = rules.get(edge.rule, {}).get("command", "")
         if not command:
             continue
         declared = set(edge.all_inputs())
-        wanted = command_prerequisites(
-            edge, command, producer, outputs_by_parent) - declared
-        wanted.difference_update(edge.outputs)
-        wanted.difference_update(edge.implicit_outputs)
+        wanted = command_prerequisites(edge, command, producer) - declared
+        own_outputs = set(edge.outputs + edge.implicit_outputs)
+        wanted.difference_update(own_outputs)
+        cyclic = {
+            path for path in wanted
+            if reaches_any(producer, path, own_outputs)
+        }
+        wanted.difference_update(cyclic)
+        skipped_action_cycles += len(cyclic)
         if not wanted:
             continue
         prefix = "" if edge.order_only else " ||"
@@ -419,6 +459,7 @@ def main():
     print(
         f"manifests={len(manifests)} edges={len(edges)} "
         f"repaired_actions={repaired_actions} repaired_refs={repaired_refs} "
+        f"skipped_action_cycles={skipped_action_cycles} "
         f"compiles={len(compiles)} linked_compiles={len(linked)} "
         f"ordered_compiles={ordered_compiles} "
         f"scanned_sources={len(resolver.scanned) if resolver else 0} "

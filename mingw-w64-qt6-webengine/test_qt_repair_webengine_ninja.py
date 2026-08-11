@@ -25,7 +25,9 @@ rule protocol_config
 rule bundle
   command = bundle --input gen/lit --js_module_in_files lit.js
 rule minify
-  command = minify --in_folder gen/lit/bundled
+  command = minify --in_folder gen/lit/bundled --in_files lit.rollup.js
+rule cyclic
+  command = generate --config gen/cyclic_alias
 rule grd
   command = generate --manifest-files gen/lit/build_min_js_manifest.json
 rule ts
@@ -44,6 +46,8 @@ build gen/lit/lit.js: action lit.ts
 build gen/lit/bundled/lit.rollup.js: bundle lit.ts
 build gen/lit/minified/lit.rollup.js gen/lit/build_min_js_manifest.json: minify lit.ts
 build gen/lit/resources.grdp: grd lit.ts
+build gen/cyclic/output.js: cyclic cyclic.ts
+build gen/cyclic_alias: phony gen/cyclic/output.js
 build gen/third_party/polymer/tsconfig_library.json: action polymer.ts
 build gen/app/sub/tsconfig_build_ts.json: ts app.ts
 build obj/core.o: cxx source.cc
@@ -85,6 +89,8 @@ class GeneratedActionOrderingTest(unittest.TestCase):
                           by_output["gen/lit/minified/lit.rollup.js"].order_only)
             self.assertIn("gen/lit/build_min_js_manifest.json",
                           by_output["gen/lit/resources.grdp"].order_only)
+            self.assertNotIn("gen/cyclic_alias",
+                             by_output["gen/cyclic/output.js"].order_only)
             self.assertIn("gen/third_party/polymer/tsconfig_library.json",
                           by_output["gen/app/sub/tsconfig_build_ts.json"].order_only)
 
