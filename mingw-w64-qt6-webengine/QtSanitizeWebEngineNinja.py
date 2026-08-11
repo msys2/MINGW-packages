@@ -77,18 +77,53 @@ def unpack_object_archive(archive, build_dir):
 
             if raw_name.startswith("/") and raw_name[1:].isdigit():
                 offset = int(raw_name[1:])
-                end = string_table.find(b"\n", offset)
+                if offset >= len(string_table):
+                    sys.exit(
+                        "error: {} has an invalid long-name offset {}".format(
+                            archive, offset
+                        )
+                    )
+                # GNU ar terminates long names with "/\n", while COFF archives
+                # produced by LLVM use NUL.  Accept both encodings.
+                ends = [
+                    end
+                    for marker in (b"\n", b"\0")
+                    if (end := string_table.find(marker, offset)) != -1
+                ]
+                end = min(ends) if ends else len(string_table)
                 name = string_table[offset:end].decode("ascii").rstrip("/")
+            elif raw_name.startswith("#1/") and raw_name[3:].isdigit():
+                # BSD extended names are stored at the start of the member and
+                # included in its declared size.
+                name_size = int(raw_name[3:])
+                if name_size > len(payload):
+                    sys.exit(
+                        "error: {} has a truncated BSD extended name".format(archive)
+                    )
+                name = payload[:name_size].rstrip(b"\0").decode("ascii")
+                payload = payload[name_size:]
             else:
                 name = raw_name.rstrip("/")
 
             if not name:
                 continue
+            if "\0" in name:
+                sys.exit("error: {} has a NUL in member name {!r}".format(archive, name))
 
-            destination = build_dir / name
+            member_path = pathlib.PurePosixPath(name)
+            if (
+                member_path.is_absolute()
+                or ".." in member_path.parts
+                or re.match(r"^[A-Za-z]:", name)
+            ):
+                sys.exit(
+                    "error: {} has unsafe member name {!r}".format(archive, name)
+                )
+
+            destination = build_dir / member_path
             # Re-writing 3 GB on every configure is pure wall-clock; the objects
             # are immutable build output, so a size match means identical.
-            if destination.is_file() and destination.stat().st_size == size:
+            if destination.is_file() and destination.stat().st_size == len(payload):
                 members += 1
                 continue
 
