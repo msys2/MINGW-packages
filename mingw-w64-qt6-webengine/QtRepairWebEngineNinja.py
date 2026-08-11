@@ -4,10 +4,11 @@
 Two defects make a build from an empty tree fail partway through, at a point
 that depends on how ninja happened to schedule things:
 
-  1. Mojom actions read sibling ``*__type_mappings`` files named by
-     ``--dependency`` or ``--typemap`` on their command lines. Some of those are
-     not listed as ninja inputs, so nothing orders them first and the action
-     dies with ``OSError: Missing dependencies: ...`` or ``FileNotFoundError``.
+  1. Actions read generated files that their edges omit: mojom modules and
+     type mappings, DevTools protocols, JavaScript bundling/minification inputs,
+     and TypeScript project dependencies. Nothing orders such a reader after the
+     producer, so it dies with ``OSError: Missing dependencies: ...`` or
+     ``FileNotFoundError``.
 
   2. Compile edges carry no ordering to the generated headers their translation
      units include -- most visibly ``*.pb.h``.  Only 33 of the 1133 generated
@@ -24,10 +25,11 @@ to generated headers match it too and are lost with them.  Hence
 neighbouring ``gen/mojo/public/mojom/base/base__type_mappings`` survives.
 
 Rather than re-derive which dependency was legitimate inside GN, this rebuilds
-the ordering from evidence in the build directory itself: the ``--dependency``
-arguments say what an action reads, and ``#include`` says what a translation
-unit needs.  Both are ground truth, and both stay correct as the patch set
-moves.  Nothing here alters what is linked.
+the ordering from evidence in the build directory itself: generated paths in an
+action recipe say what it reads, generated direct children of an input directory
+cover tools that enumerate names separately, and ``#include`` says what a
+translation unit needs. Both stay correct as the patch set moves. Nothing here
+alters what is linked.
 """
 import collections
 import os
@@ -44,21 +46,76 @@ INCLUDE_RE = re.compile(rb'^[ \t]*#[ \t]*include[ \t]*[<"]([^>"]+)[>"]',
 SOURCE_SUFFIXES = (".cc", ".cpp", ".cxx", ".c", ".h", ".hpp", ".inc", ".hxx")
 LINK_ROOTS = ("QtWebEngineCore", "QtWebEngineCore.stamp", "convert_dict",
               "convert_dict.stamp", "sandboxLibrary")
-ORDERED_PATH_FLAGS = ("--dependency", "--typemap")
+GENERATED_PATH_RE = re.compile(r"gen/[A-Za-z0-9_./$:+-]+")
+INPUT_DIRECTORY_RE = re.compile(r"^--[A-Za-z0-9_-]*(?:input|in_folder)[A-Za-z0-9_-]*$")
 
 
-def command_prerequisites(command):
-    """Yield paths that an action reads but GN may omit from its inputs."""
-    tokens = command.split()
+def normalize_command_path(edge, value):
+    """Yield graph spellings for one command argument.
+
+    GN action helpers commonly express generated inputs relative to the action's
+    output directory (not the ninja working directory). Trying both spellings
+    only accepts a candidate when it is an actual graph output, so source paths
+    and tool arguments cannot become dependencies accidentally.
+    """
+    value = ninjagraph.unescape(value).rstrip(",;:)]}")
+    if not value or DRIVE_RE.match(value):
+        return
+    yield os.path.normpath(value).replace("\\", "/")
+    if edge.outputs:
+        yield os.path.normpath(os.path.join(
+            os.path.dirname(edge.outputs[0]), value)).replace("\\", "/")
+
+
+def command_prerequisites(edge, command, producer, outputs_by_parent):
+    """Yield generated files an action recipe reads but does not declare.
+
+    This treats the generated-output table as the authority. It recognizes
+    literal paths (including ``key=path`` and paths embedded in configuration
+    values), output-relative paths, and immediate children of explicit input
+    directories. The final case is needed for command-line tools whose input
+    directory and requested filenames are separate arguments, such as bundlers.
+    """
+    tokens = ninjagraph.split_tokens(command)
+    candidates = []
+    directories = []
     for index, token in enumerate(tokens):
-        if token in ORDERED_PATH_FLAGS and index + 1 < len(tokens):
-            yield ninjagraph.unescape(tokens[index + 1])
-            continue
-        for flag in ORDERED_PATH_FLAGS:
-            prefix = flag + "="
-            if token.startswith(prefix):
-                yield ninjagraph.unescape(token[len(prefix):])
-                break
+        plain = ninjagraph.unescape(token)
+        values = [plain]
+        if "=" in plain:
+            flag, value = plain.split("=", 1)
+            values.append(value)
+            if INPUT_DIRECTORY_RE.match(flag):
+                directories.append(value)
+        elif INPUT_DIRECTORY_RE.match(plain) and index + 1 < len(tokens):
+            directories.append(ninjagraph.unescape(tokens[index + 1]))
+        for value in values:
+            candidates.append(value)
+            candidates.extend(match.group(0) for match in
+                              GENERATED_PATH_RE.finditer(value))
+
+    wanted = set()
+    for value in candidates:
+        for path in normalize_command_path(edge, value):
+            if path in producer:
+                wanted.add(path)
+    for value in directories:
+        for directory in normalize_command_path(edge, value):
+            wanted.update(outputs_by_parent.get(directory, ()))
+
+    # A mojom generator reads its parser-produced module through a response
+    # file. Ninja writes that response file immediately before launching the
+    # action, so it is unavailable for inspection here. The output contract is
+    # nevertheless explicit: every generated ``foo.mojom-*`` sibling uses the
+    # producer of ``foo.mojom-module``. This is naming-based rather than tied to
+    # a Chromium target or a particular response-file path.
+    for output in edge.outputs + edge.implicit_outputs:
+        marker = output.find(".mojom")
+        if marker >= 0:
+            module = output[:marker + len(".mojom")] + "-module"
+            if module in producer:
+                wanted.add(module)
+    return wanted
 
 
 def in_build_dir(build_dir, token):
@@ -250,22 +307,27 @@ def main():
 
     additions = []
 
-    # ---- ordering mojom files named only on action command lines ------------
+    # ---- ordering generated inputs that action recipes read -----------------
+    outputs_by_parent = {}
+    for output in producer:
+        outputs_by_parent.setdefault(os.path.dirname(output), []).append(output)
+
     repaired_actions = repaired_refs = 0
     for edge in edges:
         command = rules.get(edge.rule, {}).get("command", "")
-        if not any(flag in command for flag in ORDERED_PATH_FLAGS):
+        if not command:
             continue
         declared = set(edge.all_inputs())
-        wanted = []
-        for path in command_prerequisites(command):
-            if path not in declared and path in producer and path not in wanted:
-                wanted.append(path)
+        wanted = command_prerequisites(
+            edge, command, producer, outputs_by_parent) - declared
+        wanted.difference_update(edge.outputs)
+        wanted.difference_update(edge.implicit_outputs)
         if not wanted:
             continue
         prefix = "" if edge.order_only else " ||"
         additions.append(
-            (edge, prefix + "".join(" " + ninjagraph.escape(p) for p in wanted))
+            (edge, prefix + "".join(
+                " " + ninjagraph.escape(path) for path in sorted(wanted)))
         )
         repaired_actions += 1
         repaired_refs += len(wanted)
