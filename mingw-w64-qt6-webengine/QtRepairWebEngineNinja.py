@@ -4,10 +4,10 @@
 Two defects make a build from an empty tree fail partway through, at a point
 that depends on how ninja happened to schedule things:
 
-  1. Mojom's generate_type_mappings.py reads sibling ``*__type_mappings`` files
-     named by ``--dependency`` on its command line.  Some of those are not
-     listed as ninja inputs, so nothing orders them first and the action dies
-     with ``OSError: Missing dependencies: ...``.
+  1. Mojom actions read sibling ``*__type_mappings`` files named by
+     ``--dependency`` or ``--typemap`` on their command lines. Some of those are
+     not listed as ninja inputs, so nothing orders them first and the action
+     dies with ``OSError: Missing dependencies: ...`` or ``FileNotFoundError``.
 
   2. Compile edges carry no ordering to the generated headers their translation
      units include -- most visibly ``*.pb.h``.  Only 33 of the 1133 generated
@@ -44,6 +44,21 @@ INCLUDE_RE = re.compile(rb'^[ \t]*#[ \t]*include[ \t]*[<"]([^>"]+)[>"]',
 SOURCE_SUFFIXES = (".cc", ".cpp", ".cxx", ".c", ".h", ".hpp", ".inc", ".hxx")
 LINK_ROOTS = ("QtWebEngineCore", "QtWebEngineCore.stamp", "convert_dict",
               "convert_dict.stamp", "sandboxLibrary")
+ORDERED_PATH_FLAGS = ("--dependency", "--typemap")
+
+
+def command_prerequisites(command):
+    """Yield paths that an action reads but GN may omit from its inputs."""
+    tokens = command.split()
+    for index, token in enumerate(tokens):
+        if token in ORDERED_PATH_FLAGS and index + 1 < len(tokens):
+            yield ninjagraph.unescape(tokens[index + 1])
+            continue
+        for flag in ORDERED_PATH_FLAGS:
+            prefix = flag + "="
+            if token.startswith(prefix):
+                yield ninjagraph.unescape(token[len(prefix):])
+                break
 
 
 def in_build_dir(build_dir, token):
@@ -235,19 +250,15 @@ def main():
 
     additions = []
 
-    # ---- ordering the --dependency arguments of mojom actions ---------------
+    # ---- ordering mojom files named only on action command lines ------------
     repaired_actions = repaired_refs = 0
     for edge in edges:
         command = rules.get(edge.rule, {}).get("command", "")
-        if "--dependency" not in command:
+        if not any(flag in command for flag in ORDERED_PATH_FLAGS):
             continue
-        tokens = command.split()
         declared = set(edge.all_inputs())
         wanted = []
-        for index, token in enumerate(tokens[:-1]):
-            if token != "--dependency":
-                continue
-            path = ninjagraph.unescape(tokens[index + 1])
+        for path in command_prerequisites(command):
             if path not in declared and path in producer and path not in wanted:
                 wanted.append(path)
         if not wanted:
