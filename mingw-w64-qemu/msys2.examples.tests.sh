@@ -644,26 +644,26 @@ function qemuLiveDesktopLegacyBiosBlockDevices {
 
 function qemuLiveDesktopGTKBase {
 	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -usb -device usb-tablet \
-		-display "$@" $(audioq35 hda-micro) -boot menu=on \
-		"${BLOCKDEVS[@]}"
+		-display gtk${DISPLAY_OPTS} $(audioq35 hda-micro) -boot menu=on \
+		"$@" "${BLOCKDEVS[@]}"
 }
 
 function qemuLiveDesktopSDLBase {
 	execute qemu-system-x86_64 -M q35,vmport=off $(accel) -m 1536 -usb -device usb-tablet \
-		-display "$@" $(audioq35 hda-duplex) -boot menu=on \
-		"${BLOCKDEVS[@]}"
+		-display sdl${DISPLAY_OPTS} $(audioq35 hda-duplex) -boot menu=on \
+		"$@" "${BLOCKDEVS[@]}"
 }
 
 function qemuLiveDesktopVNCBase {
 	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -usb -device usb-tablet -pidfile "$PIDFILE" \
 		-display vnc=:05 -k de $(audioq35 hda-duplex) -boot menu=on \
-		"${BLOCKDEVS[@]}" &
+		"$@" "${BLOCKDEVS[@]}" &
 }
 
 function qemuLiveDesktopSPICEBase {
 	execute qemu-system-x86_64 -M q35 $(accel) -m 1536 -pidfile "$PIDFILE" \
 		-vga qxl $(audioq35 hda-micro) -boot menu=on \
-		-spice port=5905,addr=127.0.0.1,disable-ticketing=on \
+		-spice port=5905,addr=127.0.0.1,disable-ticketing=on${SPICE_OPTS} \
 		-device virtio-serial -chardev spicevmc,id=spicechannel0,name=vdagent \
 		-device virtserialport,chardev=spicechannel0,name=com.redhat.spice.0 \
 		"$@" "${BLOCKDEVS[@]}" &
@@ -673,7 +673,7 @@ function qemuLiveDesktopSPICEBase {
 function qemuLiveDesktopUEFI_Pflash {
 	if qemuLiveDesktopUEFIPflashBlockDevices uefi_pflash
 	then
-		qemuLiveDesktopGTKBase gtk
+		qemuLiveDesktopGTKBase
 	fi
 	removeDir uefi_pflash
 }
@@ -682,7 +682,7 @@ function qemuLiveDesktopUEFI_Pflash {
 function qemuLiveDesktopUEFI_Bios {
 	if qemuLiveDesktopUEFIBiosBlockDevices uefi_bios
 	then
-		qemuLiveDesktopGTKBase gtk
+		qemuLiveDesktopGTKBase
 	fi
 	removeDir uefi_bios
 }
@@ -690,7 +690,7 @@ function qemuLiveDesktopUEFI_Bios {
 # SDL-Desktop (LiveImage)
 function qemuLiveDesktopSDL {
 	qemuLiveDesktopLegacyBiosBlockDevices sdl
-	qemuLiveDesktopSDLBase sdl
+	qemuLiveDesktopSDLBase
 	removeDir sdl
 }
 
@@ -698,7 +698,8 @@ function qemuLiveDesktopSDL {
 function qemuLiveDesktopSDLVgaGl_UEFIBios {
 	if qemuLiveDesktopUEFIBiosBlockDevices sdlgl_uefibios
 	then
-		qemuLiveDesktopSDLBase sdl,gl=on -device virtio-vga-gl
+		local DISPLAY_OPTS=",gl=on"
+		qemuLiveDesktopSDLBase -device virtio-vga-gl
 	fi
 	removeDir sdlgl_uefibios
 }
@@ -707,7 +708,8 @@ function qemuLiveDesktopSDLVgaGl_UEFIBios {
 function qemuLiveDesktopSDLVgaGlES_UEFIPflash {
 	if qemuLiveDesktopUEFIPflashBlockDevices sdlgles_uefipflash
 	then
-		qemuLiveDesktopSDLBase sdl,gl=es -device virtio-vga-gl
+		local DISPLAY_OPTS=",gl=es"
+		qemuLiveDesktopSDLBase -device virtio-vga-gl
 	fi
 	removeDir sdlgles_uefipflash
 }
@@ -715,21 +717,23 @@ function qemuLiveDesktopSDLVgaGlES_UEFIPflash {
 # GTK-Desktop (LiveImage)
 function qemuLiveDesktopGTK {
 	qemuLiveDesktopLegacyBiosBlockDevices gtk
-	qemuLiveDesktopGTKBase gtk
+	qemuLiveDesktopGTKBase
 	removeDir gtk
 }
 
 # GTK-VgaGL-Desktop (LiveImage)
 function qemuLiveDesktopGTKVgaGl {
 	qemuLiveDesktopLegacyBiosBlockDevices gtkvgagl
-	qemuLiveDesktopGTKBase gtk,gl=on -device virtio-vga-gl
+	local DISPLAY_OPTS=",gl=on"
+	qemuLiveDesktopGTKBase -device virtio-vga-gl
 	removeDir gtkvgagl
 }
 
 # GTK-GpuGL-Desktop (LiveImage)
 function qemuLiveDesktopGTKGpuGl {
 	qemuLiveDesktopLegacyBiosBlockDevices gtkgpugl
-	qemuLiveDesktopGTKBase gtk,gl=on -device virtio-gpu-gl
+	local DISPLAY_OPTS=",gl=on"
+	qemuLiveDesktopGTKBase -device virtio-gpu-gl
 	removeDir gtkgpugl
 }
 
@@ -1012,6 +1016,8 @@ function qemuPlugins {
 	PLUGIN_OPTS["libhotpages.dll"]=",sortby=reads,io=on"
 	PLUGIN_OPTS["libexeclog.dll"]=",ifilter=msr"
 	PLUGIN_OPTS["libcache.dll"]=",evict=fifo"
+	PLUGIN_OPTS["libpatch.dll"]=",target=0x0000,patch=0x0000"
+	PLUGIN_OPTS["libbbv.dll"]=",outfile=plugin.out"
 	echo "QEMU plugin dir for $MSYSTEM is '$MINGW_PREFIX/lib/qemu/plugins'"
 	local PLUGIN
 	for PLUGIN in $(find $MINGW_PREFIX/lib/qemu/plugins -type f | sort -r)
@@ -1021,18 +1027,23 @@ function qemuPlugins {
 		echo "Testing plugin: $PLUGIN_NAME"
 		mkdir -p $PLUGIN_NAME
 		cd $PLUGIN_NAME
-		if execute qemu-system-i386 -plugin ${PLUGIN}${PLUGIN_OPTS[${PLUGIN_NAME}]} -d plugin -D plugin.log
+		if execute qemu-system-x86_64 -plugin "${PLUGIN}${PLUGIN_OPTS[${PLUGIN_NAME}]}" -d plugin -D plugin.log
 		then
-			if [ -f plugin.log ] && [ -n "$(cat plugin.log)" ]
-			then
-				head -n 15 plugin.log
-				local PLUGIN_LOG_LENGTH="$(cat plugin.log | wc -l)"
-				if (( PLUGIN_LOG_LENGTH > 15 ))
+			find -type f | while read FILENAME
+			do
+				echo "<$(basename $FILENAME)>"
+				local MIME="$(file -i "$FILENAME")"
+				if [[ $MIME =~ charset=binary$ ]] && ! [[ $MIME =~ inode/x-empty ]]
 				then
-					echo "..."
+					echo "<base64>"
+					cat "$FILENAME" | base64 | head -n 15
+					echo "</base64>"
+				else
+					head -n 15 "$FILENAME"
 				fi
+				echo "</$(basename $FILENAME)>"
 				echo
-			fi
+			done
 			echo "Plugin $PLUGIN_NAME successfully executed"
 		else
 			echo "Plugin $PLUGIN_NAME execution failed"
