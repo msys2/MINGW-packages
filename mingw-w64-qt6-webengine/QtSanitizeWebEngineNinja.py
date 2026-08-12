@@ -10,6 +10,8 @@ import pathlib
 import re
 import sys
 
+import QtWebEngineNinjaGraph as ninjagraph
+
 
 def read_manifest(path, rebase_on_obj=False):
     """Read an rsp/manifest into a set of build-dir-relative posix paths.
@@ -32,6 +34,20 @@ def read_manifest(path, rebase_on_obj=False):
                 continue
             token = "obj/" + tail
         entries.add(token.removeprefix("./"))
+    return entries
+
+
+def read_prebuilt_outputs(path):
+    """Read the copied ``gen/`` output manifest.
+
+    Only paths beneath ``gen/`` are accepted.  The package creates this list
+    while copying the producer's generated tree, so it describes actual files
+    rather than a suffix or target-name guess.
+    """
+    entries = read_manifest(path)
+    invalid = sorted(entry for entry in entries if not entry.startswith("gen/"))
+    if invalid:
+        sys.exit("error: {} has non-generated path {!r}".format(path, invalid[0]))
     return entries
 
 
@@ -136,6 +152,7 @@ def unpack_object_archive(archive, build_dir):
 
 build_dir = pathlib.Path(sys.argv[1])
 private_dir = pathlib.Path(sys.argv[2]) if len(sys.argv) > 2 else None
+prebuilt_manifest = pathlib.Path(sys.argv[3]) if len(sys.argv) > 3 else None
 
 supplied_archives = set()
 supplied_objects = set()
@@ -147,6 +164,8 @@ if private_dir is not None:
     supplied_objects = read_manifest(
         private_dir / "qtwebengine-thirdparty-objects.rsp"
     )
+prebuilt_outputs = (read_prebuilt_outputs(prebuilt_manifest)
+                    if prebuilt_manifest is not None else set())
 
 if not supplied_archives:
     sys.exit(
@@ -239,11 +258,42 @@ for ninja_file in (build_dir / "obj").rglob("*.ninja"):
         ninja_file.write_text("".join(output_lines), encoding="utf-8", newline="")
         changed_files += 1
 
+# Generated assets copied from the producer are valid build outputs but must
+# remain leaves: their original actions may need a host-only generator that the
+# consumer intentionally does not ship (for example ts-proto).  Use the graph
+# rather than a list of known actions, so every copied output follows the same
+# contract.  An edge is replaced only when *all* of its outputs were packaged;
+# otherwise its remaining outputs still require the original action.
+prebuilt_edges = partial_prebuilt_edges = 0
+prebuilt_files = 0
+if prebuilt_outputs:
+    edges, _, _ = ninjagraph.load(build_dir)
+    replacements = []
+    for edge in edges:
+        outputs = edge.outputs + edge.implicit_outputs
+        supplied = set(outputs) & prebuilt_outputs
+        if not supplied:
+            continue
+        if supplied != set(outputs):
+            partial_prebuilt_edges += 1
+            continue
+        replacements.append((
+            edge,
+            "build {}: phony".format(" ".join(
+                ninjagraph.escape(output) for output in outputs
+            )),
+        ))
+        prebuilt_edges += 1
+    prebuilt_files = ninjagraph.replace_edges(replacements)
+
 print(
     f"supplied_archives={len(supplied_archives)} "
     f"supplied_objects={len(supplied_objects)} "
+    f"prebuilt_outputs={len(prebuilt_outputs)} "
+    f"prebuilt_edges={prebuilt_edges} "
+    f"partial_prebuilt_edges={partial_prebuilt_edges} "
     f"unpacked_objects={unpacked_objects} "
-    f"sanitized_files={changed_files} "
+    f"sanitized_files={changed_files + prebuilt_files} "
     f"sanitized_edges={changed_edges} "
     f"phonied_compiles={phonied_compiles} "
     f"removed_inputs={removed_inputs}"

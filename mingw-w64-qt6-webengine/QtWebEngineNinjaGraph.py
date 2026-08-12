@@ -54,7 +54,8 @@ def split_tokens(text):
 
 class Edge:
     __slots__ = ("outputs", "implicit_outputs", "rule", "inputs", "implicit",
-                 "order_only", "path", "first_line", "last_line", "scope")
+                 "order_only", "path", "first_line", "last_line", "scope",
+                 "variables")
 
     def __init__(self):
         self.outputs = []
@@ -67,6 +68,7 @@ class Edge:
         self.first_line = 0
         self.last_line = 0
         self.scope = None
+        self.variables = {}
 
     def all_inputs(self):
         return self.inputs + self.implicit + self.order_only
@@ -125,6 +127,8 @@ def parse_manifest(path, edges, rules, root):
                 continue
             if rule is not None:
                 rules[rule][key.strip()] = value.strip()
+            elif edge is not None:
+                edge.variables[key.strip()] = value.strip()
             continue
         edge = rule = None
         if line.startswith("rule "):
@@ -208,6 +212,31 @@ def append_to_edges(additions):
             line = lines[lineno - 1]
             ending = "\n" if line.endswith("\n") else ""
             lines[lineno - 1] = line[: len(line) - len(ending)] + text + ending
+        with open(path, "w", encoding="utf-8", errors="surrogateescape",
+                  newline="") as fh:
+            fh.writelines(lines)
+    return len(by_file)
+
+
+def replace_edges(replacements):
+    """Replace complete build edges, including all continuation lines.
+
+    ``replacement`` must be a complete Ninja build statement without a newline.
+    Replacing the whole edge is necessary for wrapped actions: leaving their
+    continuation lines behind would turn inputs from the discarded producer into
+    top-level syntax.
+    """
+    by_file = {}
+    for edge, replacement in replacements:
+        by_file.setdefault(edge.path, []).append((
+            edge.first_line, edge.last_line, replacement
+        ))
+    for path, items in by_file.items():
+        with open(path, "r", encoding="utf-8", errors="surrogateescape") as fh:
+            lines = fh.readlines()
+        for first, last, replacement in sorted(items, reverse=True):
+            ending = "\r\n" if lines[first - 1].endswith("\r\n") else "\n"
+            lines[first - 1:last] = [replacement + ending]
         with open(path, "w", encoding="utf-8", errors="surrogateescape",
                   newline="") as fh:
             fh.writelines(lines)

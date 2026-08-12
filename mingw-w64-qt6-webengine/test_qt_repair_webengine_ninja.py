@@ -3,6 +3,7 @@
 import contextlib
 import io
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,9 @@ sys.path.insert(0, str(HERE))
 
 import QtRepairWebEngineNinja as repair
 import QtWebEngineNinjaGraph as graph
+
+
+SANITIZER = HERE / "QtSanitizeWebEngineNinja.py"
 
 
 MANIFEST = r'''rule action
@@ -50,7 +54,11 @@ build gen/cyclic/output.js: cyclic cyclic.ts
 build gen/cyclic_alias: phony gen/cyclic/output.js
 build gen/third_party/polymer/tsconfig_library.json: action polymer.ts
 build gen/app/sub/tsconfig_build_ts.json: ts app.ts
-build obj/core.o: cxx source.cc
+build gen/jumbo.cc: action source.cc gen/blink/http_names.cc
+build gen/loader_jumbo_merge.stamp: action
+  rspfile_content = gen/blink/http_names.cc
+build gen/blink/http_names.cc: action names.in
+build obj/core.o: cxx gen/jumbo.cc
 build QtWebEngineCore: link obj/core.o
 '''
 
@@ -59,6 +67,7 @@ class GeneratedActionOrderingTest(unittest.TestCase):
     def run_repair(self, build_dir):
         (build_dir / "build.ninja").write_text(MANIFEST, encoding="utf-8")
         (build_dir / "source.cc").write_text("int main() {}\n", encoding="utf-8")
+        (build_dir / "names.in").write_text("names\n", encoding="utf-8")
 
         old_argv = sys.argv
         try:
@@ -93,6 +102,10 @@ class GeneratedActionOrderingTest(unittest.TestCase):
                              by_output["gen/cyclic/output.js"].order_only)
             self.assertIn("gen/third_party/polymer/tsconfig_library.json",
                           by_output["gen/app/sub/tsconfig_build_ts.json"].order_only)
+            self.assertIn("gen/blink/http_names.cc",
+                          by_output["qtwebengine_generated_prerequisites"].inputs)
+            self.assertIn("qtwebengine_generated_prerequisites",
+                          by_output["obj/core.o"].order_only)
 
     def test_repair_is_idempotent(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -108,6 +121,50 @@ class GeneratedActionOrderingTest(unittest.TestCase):
                 sys.argv = old_argv
             self.assertEqual(first, (build_dir / "build.ninja").read_text(
                 encoding="utf-8"))
+
+
+class PrebuiltGeneratedOutputTest(unittest.TestCase):
+    def run_sanitizer(self, build_dir, private_dir, manifest):
+        subprocess.run(
+            [sys.executable, str(SANITIZER), str(build_dir), str(private_dir),
+             str(manifest)],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+
+    def test_phonies_complete_prebuilt_action_edge(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            build_dir = root / "build"
+            private_dir = root / "private"
+            build_dir.mkdir()
+            private_dir.mkdir()
+            (private_dir / "qtwebengine-thirdparty-archives.rsp").write_text(
+                "/ucrt64/lib/qt6-webengine-private/obj/libsupplied.a\n",
+                encoding="utf-8",
+            )
+            manifest = root / "prebuilt-gen.rsp"
+            manifest.write_text(
+                "gen/tsproto/third_party/perfetto/perfetto_config.ts\n",
+                encoding="utf-8",
+            )
+            (build_dir / "build.ninja").write_text(r'''rule tsproto
+  command = missing-ts-proto $in
+rule action
+  command = action $in
+build gen/tsproto/third_party/perfetto/perfetto_config.ts: tsproto config.proto
+build gen/mixed.ts gen/unpackaged.ts: action input.idl
+''', encoding="utf-8")
+
+            self.run_sanitizer(build_dir, private_dir, manifest)
+            edges, _, _ = graph.load(build_dir)
+            by_output = {edge.outputs[0]: edge for edge in edges if edge.outputs}
+            self.assertEqual("phony", by_output[
+                "gen/tsproto/third_party/perfetto/perfetto_config.ts"].rule)
+            self.assertEqual([], by_output[
+                "gen/tsproto/third_party/perfetto/perfetto_config.ts"].all_inputs())
+            self.assertEqual("action", by_output["gen/mixed.ts"].rule)
 
 
 if __name__ == "__main__":

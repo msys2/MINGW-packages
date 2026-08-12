@@ -10,10 +10,9 @@ that depends on how ninja happened to schedule things:
      producer, so it dies with ``OSError: Missing dependencies: ...`` or
      ``FileNotFoundError``.
 
-  2. Compile edges carry no ordering to the generated headers their translation
-     units include -- most visibly ``*.pb.h``.  Only 33 of the 1133 generated
-     protobuf headers are reachable from the link at all, so a compile can be
-     scheduled before the header it needs exists.
+  2. Compile edges carry no ordering to generated inputs.  This is most
+     visible for ``*.pb.h``, but generated jumbo translation units also include
+     generated ``*.cc`` files.  A compile can be scheduled before either exists.
 
 Both come from the same place: the GN patch that keeps this package from
 building third-party code the -thirdparty package already supplies drops
@@ -87,6 +86,24 @@ def flag_values(tokens, flags, multiple=False):
                 if not multiple:
                     break
             break
+
+
+def generated_cxx_inputs(edge, gen_outputs):
+    """Return generated C/C++ paths fed to a generated source action.
+
+    Jumbo source lists are commonly emitted through ``rspfile_content`` rather
+    than normal Ninja inputs.  Edge-local variables preserve that otherwise
+    hidden contract, and checking against actual graph outputs avoids treating a
+    source-tree spelling as generated merely because it starts with ``gen/``.
+    """
+    candidates = list(edge.inputs) + list(edge.implicit)
+    for value in edge.variables.values():
+        candidates.extend(match.group(0) for match in
+                          GENERATED_PATH_RE.finditer(value))
+    return {
+        path for path in candidates
+        if path in gen_outputs and path.endswith((".cc", ".cpp", ".cxx", ".c"))
+    }
 
 
 def command_prerequisites(edge, command, producer):
@@ -294,7 +311,13 @@ class IncludeResolver:
         return None, None
 
     def scan(self, start_files):
-        """Collect every generated header reachable through #include."""
+        """Collect generated headers and source fragments reachable by include.
+
+        Jumbo inputs are generated source files which textual-include generated
+        ``.cc`` fragments.  Those fragments are compile prerequisites just as
+        much as a generated header is, while following disk-resident sources is
+        still needed to find nested generated headers.
+        """
         generated = set()
         queue = collections.deque(start_files)
         seen = set()
@@ -404,21 +427,49 @@ def main():
         required = set(aggregate_edge.all_inputs())
     else:
         # A jumbo translation unit is itself generated and so is not on disk yet;
-        # its real sources are the inputs of the edge that will concatenate it.
+        # its real sources are the inputs of the edge that concatenates it.  Most
+        # are on disk and can be scanned for headers.  Generated ``.cc`` inputs
+        # are different: the jumbo file textual-includes them, so retain their
+        # graph outputs as explicit prerequisites instead of hoping their action
+        # wins Ninja's scheduling race.
         start_files = set()
+        generated_sources = set()
         for edge in linked:
             for source in edge.inputs:
                 if os.path.isfile(in_build_dir(build_dir, source)):
                     start_files.add(source)
                 elif source in producer:
-                    start_files.update(
-                        nested for nested in producer[source].inputs
-                        if nested.endswith(SOURCE_SUFFIXES)
-                        and os.path.isfile(in_build_dir(build_dir, nested))
-                    )
+                    for nested in producer[source].inputs:
+                        if not nested.endswith(SOURCE_SUFFIXES):
+                            continue
+                        if os.path.isfile(in_build_dir(build_dir, nested)):
+                            start_files.add(nested)
+                        elif nested.startswith("gen/") and nested in producer:
+                            generated_sources.add(nested)
 
         resolver = IncludeResolver(build_dir, gen_outputs, search_dirs)
-        required = resolver.scan(start_files)
+        # A jumbo merge records its source list in an edge-local rsp file that
+        # Ninja writes only while launching the action.  Its command therefore
+        # cannot be inspected here, but the generated source is still its output
+        # contract: look for generated C/C++ inputs on the merge edge and in an
+        # rsp file when a resumed build has materialised one.
+        for edge in edges:
+            if not any("_jumbo_merge" in output
+                       for output in edge.outputs + edge.implicit_outputs):
+                continue
+            generated_sources.update(generated_cxx_inputs(edge, gen_outputs))
+            rspfile = edge.variables.get("rspfile")
+            if rspfile and os.path.isfile(in_build_dir(build_dir, rspfile)):
+                with open(in_build_dir(build_dir, rspfile), encoding="utf-8",
+                          errors="replace") as handle:
+                    generated_sources.update(
+                        match.group(0) for match in GENERATED_PATH_RE.finditer(
+                            handle.read()
+                        ) if match.group(0) in gen_outputs and match.group(0).endswith(
+                            (".cc", ".cpp", ".cxx", ".c")
+                        )
+                    )
+        required = resolver.scan(start_files) | generated_sources
         if not resolver.scanned:
             sys.exit("error: resolved no translation unit to scan from {} compile "
                      "edges; the graph no longer has the shape this expects"
