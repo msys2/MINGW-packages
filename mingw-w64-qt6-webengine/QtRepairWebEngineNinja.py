@@ -454,8 +454,7 @@ def main():
         # contract: look for generated C/C++ inputs on the merge edge and in an
         # rsp file when a resumed build has materialised one.
         for edge in edges:
-            if not any("_jumbo_merge" in output
-                       for output in edge.outputs + edge.implicit_outputs):
+            if edge.rule != "__jumbo_merge":
                 continue
             generated_sources.update(generated_cxx_inputs(edge, gen_outputs))
             rspfile = edge.variables.get("rspfile")

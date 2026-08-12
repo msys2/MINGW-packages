@@ -38,6 +38,8 @@ rule ts
   command = tsc --deps ../../third_party/polymer/tsconfig_library.json
 rule cxx
   command = cxx $in
+rule __jumbo_merge
+  command = merge $in
 rule link
   command = link $in
 
@@ -55,7 +57,7 @@ build gen/cyclic_alias: phony gen/cyclic/output.js
 build gen/third_party/polymer/tsconfig_library.json: action polymer.ts
 build gen/app/sub/tsconfig_build_ts.json: ts app.ts
 build gen/jumbo.cc: action source.cc gen/blink/http_names.cc
-build gen/loader_jumbo_merge.stamp: action
+build gen/loader_jumbo_9.cc: __jumbo_merge
   rspfile_content = gen/blink/http_names.cc
 build gen/blink/http_names.cc: action names.in
 build obj/core.o: cxx gen/jumbo.cc
@@ -146,7 +148,8 @@ class PrebuiltGeneratedOutputTest(unittest.TestCase):
             )
             manifest = root / "prebuilt-gen.rsp"
             manifest.write_text(
-                "gen/tsproto/third_party/perfetto/perfetto_config.ts\n",
+                "gen/tsproto/third_party/perfetto/perfetto_config.ts\n"
+                "gen/webui/resources.json\n",
                 encoding="utf-8",
             )
             (build_dir / "build.ninja").write_text(r'''rule tsproto
@@ -154,6 +157,7 @@ class PrebuiltGeneratedOutputTest(unittest.TestCase):
 rule action
   command = action $in
 build gen/tsproto/third_party/perfetto/perfetto_config.ts: tsproto config.proto
+build gen/webui/resources.json: action resources.grd
 build gen/mixed.ts gen/unpackaged.ts: action input.idl
 ''', encoding="utf-8")
 
@@ -164,6 +168,8 @@ build gen/mixed.ts gen/unpackaged.ts: action input.idl
                 "gen/tsproto/third_party/perfetto/perfetto_config.ts"].rule)
             self.assertEqual([], by_output[
                 "gen/tsproto/third_party/perfetto/perfetto_config.ts"].all_inputs())
+            self.assertEqual("phony", by_output["gen/webui/resources.json"].rule)
+            self.assertEqual([], by_output["gen/webui/resources.json"].all_inputs())
             self.assertEqual("action", by_output["gen/mixed.ts"].rule)
 
 
