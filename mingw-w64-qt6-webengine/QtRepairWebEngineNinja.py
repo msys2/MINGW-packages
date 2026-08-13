@@ -457,6 +457,13 @@ def main():
             rule = rules.get(edge.rule, {})
             if "_jumbo_merge" not in edge.rule:
                 continue
+            # GN emits test-only jumbo rules into the global manifest even though
+            # their compiles are not in the retained first-party link. Qt release
+            # archives omit some of those test mojoms, so do not promote their
+            # generated sources into the compile-prerequisite aggregate.
+            if any("/test/" in output or "/tests/" in output
+                   for output in edge.outputs):
+                continue
             generated_sources.update(
                 generated_cxx_inputs(edge, rule, gen_outputs)
             )

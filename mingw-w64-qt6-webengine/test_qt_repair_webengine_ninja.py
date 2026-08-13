@@ -59,6 +59,11 @@ build gen/third_party/polymer/tsconfig_library.json: action polymer.ts
 build gen/app/sub/tsconfig_build_ts.json: ts app.ts
 build gen/loader_jumbo_9.cc: __third_party_blink_renderer_platform_loader_loader__jumbo_merge___build_toolchain_win_mingw_x64__rule
 build gen/blink/fetch_initiator_type_names.cc: action names.in
+rule __third_party_blink_public_test_mojom_automation__jumbo_merge___build_toolchain_win_mingw_x64__rule
+  command = merge $in
+  rspfile_content = --inputs gen/third_party/blink/public/test/mojom/automation.test-mojom.cc
+build gen/third_party/blink/public/test/mojom/automation_jumbo_1.cc: __third_party_blink_public_test_mojom_automation__jumbo_merge___build_toolchain_win_mingw_x64__rule
+build gen/third_party/blink/public/test/mojom/automation.test-mojom.cc: action missing.test-mojom-module
 build obj/core.o: cxx source.cc gen/loader_jumbo_9.cc
 build QtWebEngineCore: link obj/core.o
 '''
@@ -105,6 +110,10 @@ class GeneratedActionOrderingTest(unittest.TestCase):
                           by_output["gen/app/sub/tsconfig_build_ts.json"].order_only)
             self.assertIn("gen/blink/fetch_initiator_type_names.cc",
                           by_output["qtwebengine_generated_prerequisites"].inputs)
+            self.assertNotIn(
+                "gen/third_party/blink/public/test/mojom/automation.test-mojom.cc",
+                by_output["qtwebengine_generated_prerequisites"].inputs,
+            )
             self.assertIn("qtwebengine_generated_prerequisites",
                           by_output["obj/core.o"].order_only)
 
