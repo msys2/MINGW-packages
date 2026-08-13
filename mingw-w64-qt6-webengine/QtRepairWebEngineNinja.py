@@ -388,11 +388,15 @@ def main():
         skipped_action_cycles += len(cyclic)
         if not wanted:
             continue
+        ordered_wanted = sorted(wanted)
         prefix = "" if edge.order_only else " ||"
         additions.append(
             (edge, prefix + "".join(
-                " " + ninjagraph.escape(path) for path in sorted(wanted)))
+                " " + ninjagraph.escape(path) for path in ordered_wanted))
         )
+        # Later unbuildable and cycle analysis must inspect the graph that will be
+        # written, not the stale graph loaded before these inferred inputs existed.
+        edge.order_only.extend(ordered_wanted)
         repaired_actions += 1
         repaired_refs += len(wanted)
 
@@ -456,13 +460,6 @@ def main():
         for edge in edges:
             rule = rules.get(edge.rule, {})
             if "_jumbo_merge" not in edge.rule:
-                continue
-            # GN emits test-only jumbo rules into the global manifest even though
-            # their compiles are not in the retained first-party link. Qt release
-            # archives omit some of those test mojoms, so do not promote their
-            # generated sources into the compile-prerequisite aggregate.
-            if any("/test/" in output or "/tests/" in output
-                   for output in edge.outputs):
                 continue
             generated_sources.update(
                 generated_cxx_inputs(edge, rule, gen_outputs)
