@@ -146,13 +146,19 @@ def command_prerequisites(edge, command, producer):
     # A mojom generator reads its parser-produced module through a response
     # file. Ninja writes that response file immediately before launching the
     # action, so it is unavailable for inspection here. The output contract is
-    # nevertheless explicit: every generated ``foo.mojom-*`` sibling uses the
-    # producer of ``foo.mojom-module``. This is naming-based rather than tied to
-    # a Chromium target or a particular response-file path.
+    # nevertheless explicit: every generated ``foo.mojom-*`` or
+    # ``foo.test-mojom-*`` sibling uses the correspondingly named ``*-module``.
+    # This is naming-based rather than tied to a Chromium target or a particular
+    # response-file path.
     for output in edge.outputs + edge.implicit_outputs:
-        marker = output.find(".mojom")
-        if marker >= 0:
-            module = output[:marker + len(".mojom")] + "-module"
+        markers = [marker for marker in
+                   (output.find(".mojom"), output.find(".test-mojom"))
+                   if marker >= 0]
+        if markers:
+            marker = min(markers)
+            suffix = (".test-mojom" if output.startswith(".test-mojom", marker)
+                      else ".mojom")
+            module = output[:marker + len(suffix)] + "-module"
             if module in producer:
                 wanted.add(module)
     return wanted

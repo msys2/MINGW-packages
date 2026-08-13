@@ -44,7 +44,7 @@ rule __third_party_blink_renderer_platform_loader_loader__jumbo_merge___build_to
 rule link
   command = link $in
 rule test_generator
-  command = generate gen/third_party/blink/public/test/mojom/automation.test-mojom-module
+  command = generate from-response-file
 
 build gen/mojom/example.mojom-module: action source.mojom
 build gen/mojom/example.mojom.h: mojom source.mojom
