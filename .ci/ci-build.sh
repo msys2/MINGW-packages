@@ -164,8 +164,8 @@ for package in "${packages[@]}"; do
 
         echo "::group::[file-diff] ${pkgname}"
         message "File listing diff for ${pkgname}"
-        old_pkgver="$(pacman -Si ${MSYSTEM,,}/"${pkgname}" | pkgver_from_metadata)"
-        new_pkgver="$(pacman -Qip "${pkg}" | pkgver_from_metadata)"
+        old_pkgver="$(pacman -Si ${MSYSTEM,,}/"${pkgname}" | pkgver_from_metadata || true)"
+        new_pkgver="$(pacman -Qip "${pkg}" | pkgver_from_metadata || true)"
         diff -Nur \
             <(pacman -Fl ${MSYSTEM,,}/"${pkgname}" | sed -e 's|^[^ ]* |/|' -e "s|${old_pkgver}|PKGVER|g" | sort) \
             <(pacman -Ql "${pkgname}" | sed -e 's|^[^/]*||' -e "s|${new_pkgver}|PKGVER|g" | sort) || true
