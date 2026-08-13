@@ -465,7 +465,9 @@ def main():
         # suffix rather than one fictional exact name.
         for edge in edges:
             rule = rules.get(edge.rule, {})
-            if "_jumbo_merge" not in edge.rule:
+            if ("_jumbo_merge" not in edge.rule or
+                    not any(output in from_link for output in
+                            edge.outputs + edge.implicit_outputs)):
                 continue
             jumbo_inputs = generated_cxx_inputs(edge, rule, gen_outputs)
             generated_sources.update(jumbo_inputs)

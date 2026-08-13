@@ -113,13 +113,15 @@ class GeneratedActionOrderingTest(unittest.TestCase):
                           by_output["gen/app/sub/tsconfig_build_ts.json"].order_only)
             self.assertIn("gen/blink/fetch_initiator_type_names.cc",
                           by_output["qtwebengine_generated_prerequisites"].inputs)
+            self.assertIn("gen/blink/fetch_initiator_type_names.cc",
+                          by_output["gen/loader_jumbo_9.cc"].order_only)
             self.assertIn(
                 "gen/third_party/blink/public/test/mojom/automation.test-mojom-module",
                 by_output[
                     "gen/third_party/blink/public/test/mojom/automation.test-mojom.cc"
                 ].order_only,
             )
-            self.assertIn(
+            self.assertNotIn(
                 "gen/third_party/blink/public/test/mojom/automation.test-mojom.cc",
                 by_output[
                     "gen/third_party/blink/public/test/mojom/automation_jumbo_1.cc"
