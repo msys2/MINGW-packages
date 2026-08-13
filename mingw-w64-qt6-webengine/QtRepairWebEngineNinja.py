@@ -42,7 +42,8 @@ AGGREGATE = "qtwebengine_generated_prerequisites"
 DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 INCLUDE_RE = re.compile(rb'^[ \t]*#[ \t]*include[ \t]*[<"]([^>"]+)[>"]',
                         re.MULTILINE)
-SOURCE_SUFFIXES = (".cc", ".cpp", ".cxx", ".c", ".h", ".hpp", ".inc", ".hxx")
+SOURCE_SUFFIXES = (".cc", ".cpp", ".cxx", ".c", ".h", ".hpp", ".inc", ".hxx",
+                   ".moc")
 LINK_ROOTS = ("QtWebEngineCore", "QtWebEngineCore.stamp", "convert_dict",
               "convert_dict.stamp", "sandboxLibrary")
 GENERATED_PATH_RE = re.compile(r"gen/[A-Za-z0-9_./$:+-]+")

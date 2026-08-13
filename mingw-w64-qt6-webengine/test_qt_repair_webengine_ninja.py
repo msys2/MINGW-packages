@@ -18,7 +18,8 @@ import QtWebEngineNinjaGraph as graph
 SANITIZER = HERE / "QtSanitizeWebEngineNinja.py"
 
 
-MANIFEST = r'''rule action
+MANIFEST = r'''include_dirs = -Igen/.moc
+rule action
   command = action $in
 rule mojom
   command = mojom_bindings_generator.py --filelist=gen/mojom/example.rsp
@@ -67,6 +68,7 @@ rule __third_party_blink_public_test_mojom_automation__jumbo_merge___build_toolc
 build gen/third_party/blink/public/test/mojom/automation_jumbo_1.cc: __third_party_blink_public_test_mojom_automation__jumbo_merge___build_toolchain_win_mingw_x64__rule
 build gen/third_party/blink/public/test/mojom/automation.test-mojom-module: action missing.test-mojom
 build gen/third_party/blink/public/test/mojom/automation.test-mojom.cc: test_generator
+build gen/.moc/location_provider_qt.moc: action location_provider_qt.cpp
 build obj/core.o: cxx source.cc gen/loader_jumbo_9.cc
 build QtWebEngineCore: link obj/core.o
 '''
@@ -75,7 +77,12 @@ build QtWebEngineCore: link obj/core.o
 class GeneratedActionOrderingTest(unittest.TestCase):
     def run_repair(self, build_dir):
         (build_dir / "build.ninja").write_text(MANIFEST, encoding="utf-8")
-        (build_dir / "source.cc").write_text("int main() {}\n", encoding="utf-8")
+        (build_dir / "source.cc").write_text(
+            '#include "location_provider_qt.moc"\nint main() {}\n',
+            encoding="utf-8",
+        )
+        (build_dir / "location_provider_qt.cpp").write_text(
+            "class LocationProvider {};\n", encoding="utf-8")
         (build_dir / "names.in").write_text("names\n", encoding="utf-8")
 
         old_argv = sys.argv
@@ -112,6 +119,8 @@ class GeneratedActionOrderingTest(unittest.TestCase):
             self.assertIn("gen/third_party/polymer/tsconfig_library.json",
                           by_output["gen/app/sub/tsconfig_build_ts.json"].order_only)
             self.assertIn("gen/blink/fetch_initiator_type_names.cc",
+                          by_output["qtwebengine_generated_prerequisites"].inputs)
+            self.assertIn("gen/.moc/location_provider_qt.moc",
                           by_output["qtwebengine_generated_prerequisites"].inputs)
             self.assertIn("gen/blink/fetch_initiator_type_names.cc",
                           by_output["gen/loader_jumbo_9.cc"].order_only)
