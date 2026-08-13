@@ -88,18 +88,19 @@ def flag_values(tokens, flags, multiple=False):
             break
 
 
-def generated_cxx_inputs(edge, gen_outputs):
+def generated_cxx_inputs(edge, rule, gen_outputs):
     """Return generated C/C++ paths fed to a generated source action.
 
-    Jumbo source lists are commonly emitted through ``rspfile_content`` rather
-    than normal Ninja inputs.  Edge-local variables preserve that otherwise
-    hidden contract, and checking against actual graph outputs avoids treating a
-    source-tree spelling as generated merely because it starts with ``gen/``.
+    Jumbo source lists are commonly emitted through rule-scoped
+    ``rspfile_content`` rather than normal Ninja inputs. Edge-local values can
+    override those defaults, so inspect both while accepting only actual graph
+    outputs.
     """
     candidates = list(edge.inputs) + list(edge.implicit)
-    for value in edge.variables.values():
-        candidates.extend(match.group(0) for match in
-                          GENERATED_PATH_RE.finditer(value))
+    for variables in (rule, edge.variables):
+        for value in variables.values():
+            candidates.extend(match.group(0) for match in
+                              GENERATED_PATH_RE.finditer(value))
     return {
         path for path in candidates
         if path in gen_outputs and path.endswith((".cc", ".cpp", ".cxx", ".c"))
@@ -448,16 +449,18 @@ def main():
                             generated_sources.add(nested)
 
         resolver = IncludeResolver(build_dir, gen_outputs, search_dirs)
-        # A jumbo merge records its source list in an edge-local rsp file that
-        # Ninja writes only while launching the action.  Its command therefore
-        # cannot be inspected here, but the generated source is still its output
-        # contract: look for generated C/C++ inputs on the merge edge and in an
-        # rsp file when a resumed build has materialised one.
+        # A jumbo merge records its source list in rule-scoped rspfile_content.
+        # Ninja may also materialise the rsp file on a resumed build. GN mangles
+        # the target and toolchain into the rule name, so match the stable rule
+        # suffix rather than one fictional exact name.
         for edge in edges:
-            if edge.rule != "__jumbo_merge":
+            rule = rules.get(edge.rule, {})
+            if "_jumbo_merge" not in edge.rule:
                 continue
-            generated_sources.update(generated_cxx_inputs(edge, gen_outputs))
-            rspfile = edge.variables.get("rspfile")
+            generated_sources.update(
+                generated_cxx_inputs(edge, rule, gen_outputs)
+            )
+            rspfile = edge.variables.get("rspfile", rule.get("rspfile"))
             if rspfile and os.path.isfile(in_build_dir(build_dir, rspfile)):
                 with open(in_build_dir(build_dir, rspfile), encoding="utf-8",
                           errors="replace") as handle:

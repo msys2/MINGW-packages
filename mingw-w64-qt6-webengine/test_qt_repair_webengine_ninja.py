@@ -38,8 +38,9 @@ rule ts
   command = tsc --deps ../../third_party/polymer/tsconfig_library.json
 rule cxx
   command = cxx $in
-rule __jumbo_merge
+rule __third_party_blink_renderer_platform_loader_loader__jumbo_merge___build_toolchain_win_mingw_x64__rule
   command = merge $in
+  rspfile_content = --inputs gen/blink/fetch_initiator_type_names.cc
 rule link
   command = link $in
 
@@ -56,11 +57,9 @@ build gen/cyclic/output.js: cyclic cyclic.ts
 build gen/cyclic_alias: phony gen/cyclic/output.js
 build gen/third_party/polymer/tsconfig_library.json: action polymer.ts
 build gen/app/sub/tsconfig_build_ts.json: ts app.ts
-build gen/jumbo.cc: action source.cc gen/blink/http_names.cc
-build gen/loader_jumbo_9.cc: __jumbo_merge
-  rspfile_content = gen/blink/http_names.cc
-build gen/blink/http_names.cc: action names.in
-build obj/core.o: cxx gen/jumbo.cc
+build gen/loader_jumbo_9.cc: __third_party_blink_renderer_platform_loader_loader__jumbo_merge___build_toolchain_win_mingw_x64__rule
+build gen/blink/fetch_initiator_type_names.cc: action names.in
+build obj/core.o: cxx source.cc gen/loader_jumbo_9.cc
 build QtWebEngineCore: link obj/core.o
 '''
 
@@ -104,7 +103,7 @@ class GeneratedActionOrderingTest(unittest.TestCase):
                              by_output["gen/cyclic/output.js"].order_only)
             self.assertIn("gen/third_party/polymer/tsconfig_library.json",
                           by_output["gen/app/sub/tsconfig_build_ts.json"].order_only)
-            self.assertIn("gen/blink/http_names.cc",
+            self.assertIn("gen/blink/fetch_initiator_type_names.cc",
                           by_output["qtwebengine_generated_prerequisites"].inputs)
             self.assertIn("qtwebengine_generated_prerequisites",
                           by_output["obj/core.o"].order_only)
