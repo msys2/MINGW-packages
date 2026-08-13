@@ -467,9 +467,26 @@ def main():
             rule = rules.get(edge.rule, {})
             if "_jumbo_merge" not in edge.rule:
                 continue
-            generated_sources.update(
-                generated_cxx_inputs(edge, rule, gen_outputs)
+            jumbo_inputs = generated_cxx_inputs(edge, rule, gen_outputs)
+            generated_sources.update(jumbo_inputs)
+            # Jumbo inputs live only in rule-scoped rspfile_content, so Ninja does
+            # not order the merge behind their generators. Record the same graph
+            # relation used for aggregate discovery; this also lets the generic
+            # unbuildable analysis reject a jumbo whose source cannot be produced.
+            jumbo_inputs.difference_update(
+                edge.outputs + edge.implicit_outputs + edge.all_inputs()
             )
+            if jumbo_inputs:
+                prefix = "" if edge.order_only else " ||"
+                ordered_jumbo_inputs = sorted(jumbo_inputs)
+                additions.append((
+                    edge,
+                    prefix + "".join(
+                        " " + ninjagraph.escape(path)
+                        for path in ordered_jumbo_inputs
+                    ),
+                ))
+                edge.order_only.extend(ordered_jumbo_inputs)
             rspfile = edge.variables.get("rspfile", rule.get("rspfile"))
             if rspfile and os.path.isfile(in_build_dir(build_dir, rspfile)):
                 with open(in_build_dir(build_dir, rspfile), encoding="utf-8",

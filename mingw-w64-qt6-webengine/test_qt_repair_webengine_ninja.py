@@ -119,8 +119,18 @@ class GeneratedActionOrderingTest(unittest.TestCase):
                     "gen/third_party/blink/public/test/mojom/automation.test-mojom.cc"
                 ].order_only,
             )
+            self.assertIn(
+                "gen/third_party/blink/public/test/mojom/automation.test-mojom.cc",
+                by_output[
+                    "gen/third_party/blink/public/test/mojom/automation_jumbo_1.cc"
+                ].order_only,
+            )
             self.assertNotIn(
                 "gen/third_party/blink/public/test/mojom/automation.test-mojom.cc",
+                by_output["qtwebengine_generated_prerequisites"].inputs,
+            )
+            self.assertNotIn(
+                "gen/third_party/blink/public/test/mojom/automation_jumbo_1.cc",
                 by_output["qtwebengine_generated_prerequisites"].inputs,
             )
             self.assertIn("qtwebengine_generated_prerequisites",
