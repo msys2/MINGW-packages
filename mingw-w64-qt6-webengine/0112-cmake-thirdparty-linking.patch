@@ -1,11 +1,25 @@
 diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
-index 02a5c00c3a..5f5ccf776e 100644
 --- a/src/core/CMakeLists.txt
 +++ b/src/core/CMakeLists.txt
-@@ -654,6 +654,55 @@ add_gn_build_artifacts_to_target(
+@@ -654,6 +654,72 @@
      NINJA_STAMP QtWebEngineCore.stamp
      ${dataStampOption}
  )
++if(MINGW AND (DEFINED QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE
++        OR DEFINED QTWEBENGINE_THIRDPARTY_OBJECT_LIST_FILE
++        OR DEFINED QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY))
++    foreach(_qtwebengineThirdPartyInput IN ITEMS
++            QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE
++            QTWEBENGINE_THIRDPARTY_OBJECT_LIST_FILE
++            QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY)
++        if(NOT DEFINED ${_qtwebengineThirdPartyInput}
++                OR NOT EXISTS "${${_qtwebengineThirdPartyInput}}")
++            message(FATAL_ERROR
++                "Incomplete QtWebEngine third-party input: ${_qtwebengineThirdPartyInput}='${${_qtwebengineThirdPartyInput}}'")
++        endif()
++    endforeach()
++endif()
++
 +if (DEFINED QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE AND EXISTS "${QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE}")
 +    set(_qtwebengineThirdPartyArchiveList
 +        "${CMAKE_CURRENT_BINARY_DIR}/qtwebengine-thirdparty-archives-native.rsp")
@@ -46,8 +60,10 @@ index 02a5c00c3a..5f5ccf776e 100644
 +        TARGET WebEngineCore PROPERTY ARCHIVES_RSP)
 +    get_property(_qtwebengineLibrariesList
 +        TARGET WebEngineCore PROPERTY LIBS_RSP)
++    # GN links source-set objects directly, so every object participates even if
++    # it is reachable only through a static initializer or registration hook.
 +    target_link_libraries(WebEngineCore PRIVATE
-+        "$<1:-Wl,--start-group @${_qtwebengineFirstPartyArchiveList} @${_qtwebengineThirdPartyArchiveList} ${_qtwebengineThirdPartyObjectLibraryNative} @${_qtwebengineLibrariesList} -Wl,--end-group>")
++        "$<1:-Wl,--start-group @${_qtwebengineFirstPartyArchiveList} @${_qtwebengineThirdPartyArchiveList} -Wl,--whole-archive ${_qtwebengineThirdPartyObjectLibraryNative} -Wl,--no-whole-archive @${_qtwebengineLibrariesList} -Wl,--end-group>")
 +elseif(DEFINED _qtwebengineThirdPartyObjectLibraryNative)
 +    target_link_libraries(WebEngineCore PRIVATE
 +        "${_qtwebengineThirdPartyObjectLibraryNative}")
@@ -58,7 +74,7 @@ index 02a5c00c3a..5f5ccf776e 100644
  add_dependencies(WebEngineCore run_core_NinjaDone)
  if(COIN_BUG_699)
     set_property(TARGET WebEngineCore PROPERTY CXX_LINKER_LAUNCHER ${PROJECT_BINARY_DIR}/linker_ulimit.sh)
-@@ -667,20 +716,35 @@ if(WIN32)
+@@ -667,20 +733,35 @@
      add_library(WebEngineCoreSandbox STATIC IMPORTED GLOBAL)
      foreach(config ${configs})
          string(TOUPPER ${config} cfg)
@@ -98,10 +114,9 @@ index 02a5c00c3a..5f5ccf776e 100644
          add_dependencies(WebEngineCoreSandbox WebEngineCore)
      endforeach()
 diff --git a/cmake/Functions.cmake b/cmake/Functions.cmake
-index bfcc76cb80..8542e63c01 100644
 --- a/cmake/Functions.cmake
 +++ b/cmake/Functions.cmake
-@@ -68,12 +68,94 @@ function(get_copy_of_response_file result target rsp)
+@@ -68,12 +68,110 @@
      else()
         set(rsp_output ${PROJECT_BINARY_DIR}/../${rsp_dst})
      endif()
@@ -111,26 +126,42 @@ index bfcc76cb80..8542e63c01 100644
 -        DEPENDS ${rsp_src}
 -        USES_TERMINAL
 -    )
-+    if(MINGW AND rsp STREQUAL "objects"
-+            AND DEFINED QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY)
++    if(MINGW
++            AND cmakeTarget STREQUAL "WebEngineCore"
++            AND rsp STREQUAL "objects"
++            AND DEFINED QTWEBENGINE_THIRDPARTY_OBJECT_LIST_FILE
++            AND EXISTS "${QTWEBENGINE_THIRDPARTY_OBJECT_LIST_FILE}"
++            AND DEFINED QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY
++            AND EXISTS "${QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY}"
++            AND DEFINED QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE
++            AND EXISTS "${QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE}")
++        set(webengine_object_manifest_helper
++            "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/QtWebEngineThirdPartyObjectManifest.cmake")
 +        set(filter_webenginecore_objects_rsp_script
 +            "${PROJECT_BINARY_DIR}/QtFilterWebEngineCoreObjectsRsp.cmake")
 +        file(WRITE "${filter_webenginecore_objects_rsp_script}" [=[
-+file(STRINGS "${INPUT}" rsp_lines)
++include("${OBJECT_MANIFEST_HELPER}")
++qwe_classify_object_response(
++    "${INPUT}" "${PACKAGED_OBJECTS}" retained_rsp_lines retained_object_paths
++    object_stats)
 +file(WRITE "${OUTPUT}" "")
-+foreach(rsp_line IN LISTS rsp_lines)
-+    if(NOT rsp_line MATCHES "(^|/)obj/(.*third_party|net/third_party|skia)/" OR rsp_line MATCHES "(^|/)obj/third_party/blink/renderer/")
-+        file(APPEND "${OUTPUT}" "${rsp_line}\n")
-+    endif()
++foreach(rsp_line IN LISTS retained_rsp_lines)
++    file(APPEND "${OUTPUT}" "${rsp_line}\n")
 +endforeach()
++qwe_report_object_classification("${object_stats}")
 +]=])
 +        add_custom_command(
 +            OUTPUT ${rsp_output}
 +            COMMAND ${CMAKE_COMMAND}
 +                -DINPUT=${rsp_src}
 +                -DOUTPUT=${rsp_output}
++                -DPACKAGED_OBJECTS=${QTWEBENGINE_THIRDPARTY_OBJECT_LIST_FILE}
++                -DOBJECT_MANIFEST_HELPER=${webengine_object_manifest_helper}
 +                -P ${filter_webenginecore_objects_rsp_script}
-+            DEPENDS ${rsp_src}
++            DEPENDS
++                ${rsp_src}
++                ${QTWEBENGINE_THIRDPARTY_OBJECT_LIST_FILE}
++                ${webengine_object_manifest_helper}
 +            USES_TERMINAL
 +        )
 +    elseif(MINGW AND cmakeTarget STREQUAL "WebEngineCore" AND rsp STREQUAL "archives"
@@ -202,7 +233,7 @@ index bfcc76cb80..8542e63c01 100644
      set(${result} ${rsp_dst} PARENT_SCOPE)
      add_custom_target(${cmakeTarget}_${rsp}_copy_${config}
          DEPENDS ${rsp_output}
-@@ -151,10 +233,36 @@ function(add_linker_options target buildDir completeStatic)
+@@ -151,10 +249,36 @@
          target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${objects_rsp}>")
          if(NOT completeStatic)
              get_copy_of_response_file(archives_rsp ${target} archives)
@@ -241,30 +272,33 @@ index bfcc76cb80..8542e63c01 100644
          # we need libs rsp also when linking process with sandbox lib
          set_property(TARGET ${cmakeTarget} PROPERTY LIBS_RSP ${libs_rsp})
          set_property(TARGET ${cmakeTarget} PROPERTY ARCHIVES_RSP ${archives_rsp})
-@@ -445,6 +553,383 @@ function(add_ninja_command)
+@@ -445,6 +569,398 @@
      endif()
      list(TRANSFORM arg_OUTPUT PREPEND "${arg_BUILDDIR}/")
      list(TRANSFORM arg_BYPRODUCTS PREPEND "${arg_BUILDDIR}/")
 +    if(MINGW
 +            AND arg_TARGET STREQUAL "QtWebEngineCore"
-+            AND DEFINED QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY)
++            AND DEFINED QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY
++            AND EXISTS "${QTWEBENGINE_THIRDPARTY_OBJECT_LIBRARY}"
++            AND DEFINED QTWEBENGINE_THIRDPARTY_OBJECT_LIST_FILE
++            AND EXISTS "${QTWEBENGINE_THIRDPARTY_OBJECT_LIST_FILE}"
++            AND DEFINED QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE
++            AND EXISTS "${QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE}")
++        set(webengine_object_manifest_helper
++            "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/QtWebEngineThirdPartyObjectManifest.cmake")
 +        set(build_webenginecore_objects_script
 +            "${PROJECT_BINARY_DIR}/QtBuildWebEngineCoreObjects.cmake")
 +        file(WRITE "${build_webenginecore_objects_script}" [=[
-+file(STRINGS "${INPUT_RSP}" rsp_lines)
++include("${OBJECT_MANIFEST_HELPER}")
++qwe_classify_object_response(
++    "${INPUT_RSP}" "${PACKAGED_OBJECTS_RSP}" retained_rsp_lines
++    retained_object_paths object_stats)
++qwe_report_object_classification("${object_stats}")
 +file(STRINGS "${ARCHIVES_RSP}" archive_rsp_lines)
 +file(STRINGS "${PACKAGED_ARCHIVES_RSP}" packaged_archive_rsp_lines)
-+# The reduced (packaged third-party) build only compiles a subset of Chromium.
-+# Mojom generator actions reference sibling generated files -- parsed
-+# *.mojom-module data, C++ *__type_mappings metadata, *.mojom*.ts TypeScript
-+# bindings -- through runtime arguments without declaring them as Ninja inputs,
-+# so Ninja never schedules them first and the action aborts with a missing-file
-+# error. Generate the shippable mojom surface up front by building every
-+# parser action's first *mojom-module output, every module's __generator phony,
-+# and every __type_mappings target. Qt release archives omit Chromium test
-+# mojom inputs, so exclude targets below a test path component. Many
-+# cross-module dependencies are themselves undeclared, so retry until a full
-+# pass succeeds and the ordering converges.
++# The reduced build keeps only the generated inputs reachable from retained
++# first-party compile edges. Some generators reference runtime inputs that GN
++# does not declare, so retry exact target batches until their ordering converges.
 +function(_qwe_ninja_multipass _targets _what)
 +    list(LENGTH _targets _total)
 +    if(_total EQUAL 0)
@@ -370,18 +404,13 @@ index bfcc76cb80..8542e63c01 100644
 +        "${BUILDDIR}/${pch_header}" ABSOLUTE)
 +    configure_file("${pch_source_absolute}" "${pch_header_absolute}" COPYONLY)
 +endforeach()
-+file(STRINGS "${BUILDDIR}/toolchain.ninja" _pregen_rule_lines
-+    REGEX "^build ([^:]*mojom-module[ :]|[^:]*__type_mappings[ :]|phony/[^ :]*__generator:)")
-+set(pregen_targets)
-+foreach(_rule_line IN LISTS _pregen_rule_lines)
-+    string(REGEX REPLACE "^build ([^ :]+).*" "\\1" _pregen_target "${_rule_line}")
-+    if(_pregen_target MATCHES "^(gen|phony)/"
-+            AND NOT _pregen_target MATCHES "(^|/)(test|tests)(/|$)")
-+        list(APPEND pregen_targets "${_pregen_target}")
-+    endif()
-+endforeach()
-+list(REMOVE_DUPLICATES pregen_targets)
-+_qwe_ninja_multipass("${pregen_targets}" "mojom generated bindings")
++# QtRepairWebEngineNinja.py creates this from the generated inputs used by the
++# retained first-party compile graph. Build that exact set rather than scanning
++# every production mojom target, which spends hours generating disconnected
++# bindings that the primary package never compiles.
++_qwe_ninja_multipass(
++    "qtwebengine_generated_prerequisites"
++    "compile generated prerequisites")
 +_qwe_ninja_multipass(
 +    "phony/third_party/protobuf/copy_google_protobuf;phony/third_party/protobuf/copy_google_protobuf_internal"
 +    "bundled Python protobuf runtime")
@@ -488,34 +517,33 @@ index bfcc76cb80..8542e63c01 100644
 +if(NOT result EQUAL 0)
 +    message(FATAL_ERROR "Failed to repack QtWebEngineCore resources")
 +endif()
-+# QtRepairWebEngineNinja.py creates this from the generated inputs used by the
-+# retained first-party compile graph. Build that exact set instead of a broad
-+# static generator list, which also makes omitted test-only branches ready.
-+_qwe_ninja_multipass(
-+    "qtwebengine_generated_prerequisites"
-+    "compile generated prerequisites")
 +set(object_targets)
++set(retained_object_absolute_paths)
 +set(object_target_batch_size 0)
-+foreach(rsp_line IN LISTS rsp_lines)
-+    string(REGEX REPLACE "^\"|\"$" "" object_path "${rsp_line}")
-+    if(NOT object_path MATCHES "(^|/)obj/(.*third_party|net/third_party|skia)/" OR object_path MATCHES "(^|/)obj/third_party/blink/renderer/")
-+        file(RELATIVE_PATH object_target "${BUILDDIR}" "${object_path}")
-+        if(NOT EXISTS "${BUILDDIR}/${object_target}")
-+            list(APPEND object_targets "${object_target}")
-+            math(EXPR object_target_batch_size "${object_target_batch_size} + 1")
-+            if(object_target_batch_size GREATER_EQUAL 100)
-+                execute_process(
-+                    COMMAND "${CMAKE_COMMAND}" -E env
-+                        "NODEJS_EXECUTABLE=${NODEJS_EXECUTABLE}"
-+                        "${NINJA_EXECUTABLE}" -C "${BUILDDIR}" ${object_targets}
-+                    RESULT_VARIABLE result)
-+                if(NOT result EQUAL 0)
-+                    message(FATAL_ERROR
-+                        "Failed to build QtWebEngineCore object targets")
-+                endif()
-+                set(object_targets)
-+                set(object_target_batch_size 0)
++foreach(object_path IN LISTS retained_object_paths)
++    if(IS_ABSOLUTE "${object_path}")
++        set(object_absolute_path "${object_path}")
++    else()
++        get_filename_component(object_absolute_path "${object_path}"
++            ABSOLUTE BASE_DIR "${BUILDDIR}")
++    endif()
++    list(APPEND retained_object_absolute_paths "${object_absolute_path}")
++    file(RELATIVE_PATH object_target "${BUILDDIR}" "${object_absolute_path}")
++    if(NOT EXISTS "${object_absolute_path}")
++        list(APPEND object_targets "${object_target}")
++        math(EXPR object_target_batch_size "${object_target_batch_size} + 1")
++        if(object_target_batch_size GREATER_EQUAL 100)
++            execute_process(
++                COMMAND "${CMAKE_COMMAND}" -E env
++                    "NODEJS_EXECUTABLE=${NODEJS_EXECUTABLE}"
++                    "${NINJA_EXECUTABLE}" -C "${BUILDDIR}" ${object_targets}
++                RESULT_VARIABLE result)
++            if(NOT result EQUAL 0)
++                message(FATAL_ERROR
++                    "Failed to build QtWebEngineCore object targets")
 +            endif()
++            set(object_targets)
++            set(object_target_batch_size 0)
 +        endif()
 +    endif()
 +endforeach()
@@ -529,6 +557,18 @@ index bfcc76cb80..8542e63c01 100644
 +        message(FATAL_ERROR
 +            "Failed to build QtWebEngineCore object targets")
 +    endif()
++endif()
++set(missing_retained_objects)
++foreach(object_path IN LISTS retained_object_absolute_paths)
++    if(NOT EXISTS "${object_path}")
++        list(APPEND missing_retained_objects "${object_path}")
++    endif()
++endforeach()
++if(missing_retained_objects)
++    list(LENGTH missing_retained_objects missing_retained_object_count)
++    list(GET missing_retained_objects 0 first_missing_retained_object)
++    message(FATAL_ERROR
++        "${missing_retained_object_count} retained QtWebEngineCore objects do not exist after the Ninja build. First missing object: ${first_missing_retained_object}")
 +endif()
 +set(packaged_archive_suffixes)
 +foreach(packaged_archive_line IN LISTS packaged_archive_rsp_lines)
@@ -588,7 +628,9 @@ index bfcc76cb80..8542e63c01 100644
 +            COMMAND ${CMAKE_COMMAND}
 +                -DINPUT_RSP=${arg_BUILDDIR}/${arg_TARGET}_objects.rsp
 +                -DARCHIVES_RSP=${arg_BUILDDIR}/${arg_TARGET}_archives.rsp
++                -DPACKAGED_OBJECTS_RSP=${QTWEBENGINE_THIRDPARTY_OBJECT_LIST_FILE}
 +                -DPACKAGED_ARCHIVES_RSP=${QTWEBENGINE_THIRDPARTY_ARCHIVE_LIST_FILE}
++                -DOBJECT_MANIFEST_HELPER=${webengine_object_manifest_helper}
 +                -DBUILDDIR=${arg_BUILDDIR}
 +                -DNINJA_EXECUTABLE=$<TARGET_FILE:Ninja::ninja>
 +                -DNODEJS_EXECUTABLE=${Nodejs_EXECUTABLE}
@@ -599,7 +641,11 @@ index bfcc76cb80..8542e63c01 100644
 +            COMMAND ${CMAKE_COMMAND} -E touch ${arg_OUTPUT} ${arg_BUILDDIR}/${arg_TARGET}
 +            VERBATIM
 +            COMMAND_EXPAND_LISTS
-+            DEPENDS run_${arg_MODULE}_NinjaReady ${arg_DEPENDS}
++            DEPENDS
++                run_${arg_MODULE}_NinjaReady
++                ${arg_DEPENDS}
++                ${QTWEBENGINE_THIRDPARTY_OBJECT_LIST_FILE}
++                ${webengine_object_manifest_helper}
 +        )
 +        return()
 +    endif()
@@ -625,6 +671,104 @@ index bfcc76cb80..8542e63c01 100644
      add_custom_command(
          OUTPUT
              ${arg_OUTPUT}
+diff --git a/cmake/QtWebEngineThirdPartyObjectManifest.cmake b/cmake/QtWebEngineThirdPartyObjectManifest.cmake
+new file mode 100644
+--- /dev/null
++++ b/cmake/QtWebEngineThirdPartyObjectManifest.cmake
+@@ -0,0 +1,93 @@
++function(qwe_clean_response_file_path input output)
++    string(STRIP "${input}" path)
++    if(path MATCHES "^\"(.*)\"$")
++        set(path "${CMAKE_MATCH_1}")
++    endif()
++    string(REPLACE "\\" "/" path "${path}")
++    set(${output} "${path}" PARENT_SCOPE)
++endfunction()
++
++function(qwe_normalize_object_path input output)
++    qwe_clean_response_file_path("${input}" path)
++    if(path MATCHES "(^|/)obj/(.+)$")
++        set(path "obj/${CMAKE_MATCH_2}")
++    else()
++        set(path "")
++    endif()
++    set(${output} "${path}" PARENT_SCOPE)
++endfunction()
++
++function(qwe_read_object_manifest manifest output)
++    if(NOT EXISTS "${manifest}")
++        message(FATAL_ERROR
++            "QtWebEngine third-party object manifest does not exist: ${manifest}")
++    endif()
++    file(STRINGS "${manifest}" manifest_lines)
++    set(objects)
++    foreach(manifest_line IN LISTS manifest_lines)
++        qwe_normalize_object_path("${manifest_line}" object)
++        if(object STREQUAL "")
++            message(FATAL_ERROR
++                "Invalid QtWebEngine third-party object manifest entry: ${manifest_line}")
++        endif()
++        list(APPEND objects "${object}")
++    endforeach()
++    list(REMOVE_DUPLICATES objects)
++    set(${output} "${objects}" PARENT_SCOPE)
++endfunction()
++
++function(qwe_classify_object_response input manifest retained_lines_output
++        retained_paths_output stats_output)
++    qwe_read_object_manifest("${manifest}" supplied_objects)
++    file(STRINGS "${input}" response_lines)
++
++    set(retained_lines)
++    set(retained_paths)
++    set(raw_objects)
++    set(raw_count 0)
++    set(removed_count 0)
++    set(retained_count 0)
++    foreach(response_line IN LISTS response_lines)
++        qwe_clean_response_file_path("${response_line}" object_path)
++        if(object_path STREQUAL "")
++            continue()
++        endif()
++        math(EXPR raw_count "${raw_count} + 1")
++        qwe_normalize_object_path("${object_path}" object)
++        if(NOT object STREQUAL "")
++            list(APPEND raw_objects "${object}")
++        endif()
++        list(FIND supplied_objects "${object}" supplied_index)
++        if(NOT object STREQUAL "" AND NOT supplied_index EQUAL -1)
++            math(EXPR removed_count "${removed_count} + 1")
++        else()
++            list(APPEND retained_lines "${response_line}")
++            list(APPEND retained_paths "${object_path}")
++            math(EXPR retained_count "${retained_count} + 1")
++        endif()
++    endforeach()
++    list(REMOVE_DUPLICATES raw_objects)
++
++    set(absent_count 0)
++    foreach(supplied_object IN LISTS supplied_objects)
++        list(FIND raw_objects "${supplied_object}" raw_index)
++        if(raw_index EQUAL -1)
++            math(EXPR absent_count "${absent_count} + 1")
++        endif()
++    endforeach()
++
++    set(${retained_lines_output} "${retained_lines}" PARENT_SCOPE)
++    set(${retained_paths_output} "${retained_paths}" PARENT_SCOPE)
++    set(${stats_output}
++        "${raw_count};${removed_count};${retained_count};${absent_count}"
++        PARENT_SCOPE)
++endfunction()
++
++function(qwe_report_object_classification stats)
++    list(GET stats 0 raw_count)
++    list(GET stats 1 removed_count)
++    list(GET stats 2 retained_count)
++    list(GET stats 3 absent_count)
++    message(STATUS
++        "QtWebEngineCore objects: raw=${raw_count}, exact supplied matches removed=${removed_count}, retained=${retained_count}, manifest entries absent from raw response=${absent_count}")
++endfunction()
 diff --git a/src/3rdparty/gn/src/gn/ninja_binary_target_writer.cc b/src/3rdparty/gn/src/gn/ninja_binary_target_writer.cc
 index 838c1ddc8b..9b7fcbeb0c 100644
 --- a/src/3rdparty/gn/src/gn/ninja_binary_target_writer.cc
