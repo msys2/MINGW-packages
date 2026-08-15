@@ -13,14 +13,14 @@ import sys
 import QtWebEngineNinjaGraph as ninjagraph
 
 
-def read_manifest(path, rebase_on_obj=False):
-    """Read an rsp/manifest into a set of build-dir-relative posix paths.
+def read_manifest_entries(path, rebase_on_obj=False):
+    """Read ordered build-dir-relative paths from an rsp/manifest.
 
     Entries may be absolute in either msys (/ucrt64/...) or mixed
     (E:/msys64/...) form depending on who wrote them, so rebasing keys off the
     /obj/ component rather than stripping a prefix we would have to guess.
     """
-    entries = set()
+    entries = []
     if not path.is_file():
         return entries
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -33,8 +33,12 @@ def read_manifest(path, rebase_on_obj=False):
             if not separator:
                 continue
             token = "obj/" + tail
-        entries.add(token.removeprefix("./"))
+        entries.append(token.removeprefix("./"))
     return entries
+
+
+def read_manifest(path, rebase_on_obj=False):
+    return set(read_manifest_entries(path, rebase_on_obj))
 
 
 def read_prebuilt_outputs(path):
@@ -51,14 +55,14 @@ def read_prebuilt_outputs(path):
     return entries
 
 
-def unpack_object_archive(archive, build_dir):
+def unpack_object_archive(archive, build_dir, object_paths):
     """Materialise the producer's loose source_set objects into the build dir.
 
     GN source_sets do not go through an archive: their objects are named
-    individually on the final link line.  The producer ships them packed into a
-    single .a purely as transport, with member names carrying the full
-    build-relative path, so unpacking restores exactly the files the link
-    expects.
+    individually on the final link line. The producer archive is transport only.
+    LLVM ar flattens its member names, so pair members with the ordered manifest
+    and require each basename to match before restoring the full ``obj/...``
+    destination. This also preserves colliding basenames from different paths.
 
     Linking the packed archive instead would be smaller but not equivalent --
     archive members are pulled in only to satisfy an undefined symbol, so
@@ -135,8 +139,21 @@ def unpack_object_archive(archive, build_dir):
                 sys.exit(
                     "error: {} has unsafe member name {!r}".format(archive, name)
                 )
+            if members >= len(object_paths):
+                sys.exit(
+                    "error: {} has more object members than the manifest".format(
+                        archive
+                    )
+                )
 
-            destination = build_dir / member_path
+            object_path = pathlib.PurePosixPath(object_paths[members])
+            if member_path.name != object_path.name:
+                sys.exit(
+                    "error: {} member {} is {!r}, expected manifest object {!r}".format(
+                        archive, members, name, object_paths[members]
+                    )
+                )
+            destination = build_dir / object_path
             # Re-writing 3 GB on every configure is pure wall-clock; the objects
             # are immutable build output, so a size match means identical.
             if destination.is_file() and destination.stat().st_size == len(payload):
@@ -147,6 +164,19 @@ def unpack_object_archive(archive, build_dir):
             destination.write_bytes(payload)
             members += 1
 
+    if members != len(object_paths):
+        sys.exit(
+            "error: {} has {} object members but the manifest lists {}".format(
+                archive, members, len(object_paths)
+            )
+        )
+    missing = [path for path in object_paths if not (build_dir / path).is_file()]
+    if missing:
+        sys.exit(
+            "error: {} did not restore manifest object {!r}".format(
+                archive, missing[0]
+            )
+        )
     return members
 
 
@@ -155,15 +185,17 @@ private_dir = pathlib.Path(sys.argv[2]) if len(sys.argv) > 2 else None
 prebuilt_manifest = pathlib.Path(sys.argv[3]) if len(sys.argv) > 3 else None
 
 supplied_archives = set()
+supplied_object_entries = []
 supplied_objects = set()
 if private_dir is not None:
     supplied_archives = read_manifest(
         private_dir / "qtwebengine-thirdparty-archives.rsp",
         rebase_on_obj=True,
     )
-    supplied_objects = read_manifest(
+    supplied_object_entries = read_manifest_entries(
         private_dir / "qtwebengine-thirdparty-objects.rsp"
     )
+    supplied_objects = set(supplied_object_entries)
 prebuilt_outputs = (read_prebuilt_outputs(prebuilt_manifest)
                     if prebuilt_manifest is not None else set())
 
@@ -185,7 +217,9 @@ if supplied_objects:
                 private_dir, len(supplied_objects), object_archive.name
             )
         )
-    unpacked_objects = unpack_object_archive(object_archive, build_dir)
+    unpacked_objects = unpack_object_archive(
+        object_archive, build_dir, supplied_object_entries
+    )
 
 
 def is_supplied_archive(path: str) -> bool:
