@@ -1,0 +1,235 @@
+diff --git a/src/dconfig.cpp b/src/dconfig.cpp
+index b6031ced..346a696a 100644
+--- a/src/dconfig.cpp
++++ b/src/dconfig.cpp
+@@ -20,6 +20,10 @@
+ #include <QThread>
+ #ifdef Q_OS_LINUX
+ #include <unistd.h>
++#elif defined(Q_OS_WIN)
++#include <windows.h>
++#include <lmcons.h>
++#include <QCryptographicHash>
+ #endif
+ 
+ // https://gitlabwh.uniontech.com/wuhan/se/deepin-specifications/-/issues/3
+@@ -33,6 +37,24 @@ Q_DECLARE_LOGGING_CATEGORY(cfLog)
+ #endif
+ static QString NoAppId;
+ 
++#if defined(Q_OS_WIN)
++// Generate a unique user ID from Windows username (similar to Unix UID)
++static uint getWindowsUserId()
++{
++    WCHAR username[UNLEN + 1];
++    DWORD size = UNLEN + 1;
++    if (GetUserNameW(username, &size)) {
++        QByteArray nameData = QString::fromWCharArray(username).toUtf8();
++        QByteArray hash = QCryptographicHash::hash(nameData, QCryptographicHash::Md5);
++        // Use first 4 bytes as uint
++        uint uid = 0;
++        memcpy(&uid, hash.constData(), sizeof(uint));
++        return uid;
++    }
++    return 0;
++}
++#endif
++
+ /*!
+ @~english
+     @class Dtk::Core::DConfigBackend
+@@ -177,7 +199,11 @@ class Q_DECL_HIDDEN FileBackend : public DConfigBackend
+             return true;
+ 
+         configFile.reset(new DConfigFile(owner->appId,owner->name, owner->subpath));
++#ifdef Q_OS_LINUX
+         configCache.reset(configFile->createUserCache(getuid()));
++#else
++        configCache.reset(configFile->createUserCache(getWindowsUserId()));
++#endif
+         const QString &prefix = localPrefix();
+ 
+         if (!configFile->load(prefix) || !configCache->load(prefix))
+@@ -190,7 +216,11 @@ class Q_DECL_HIDDEN FileBackend : public DConfigBackend
+         std::unique_ptr<DConfigFile> file(new DConfigFile(NoAppId, owner->name, owner->subpath));
+         const bool canFallbackToGeneric = !file->meta()->metaPath(prefix).isEmpty();
+         if (canFallbackToGeneric) {
++#ifdef Q_OS_LINUX
+             std::unique_ptr<DConfigCache> cache(file->createUserCache(getuid()));
++#else
++            std::unique_ptr<DConfigCache> cache(file->createUserCache(getWindowsUserId()));
++#endif
+             if (file->load(prefix) && cache->load(prefix)) {
+                 genericConfigFile.reset(file.release());
+                 genericConfigCache.reset(cache.release());
+diff --git a/src/dconfigfile.cpp b/src/dconfigfile.cpp
+index af1d5884..9e973e7b 100644
+--- a/src/dconfigfile.cpp
++++ b/src/dconfigfile.cpp
+@@ -22,8 +22,13 @@
+ #include <QDateTime>
+ #include <QRegularExpression>
+ 
++#ifdef Q_OS_LINUX
+ #include <unistd.h>
+ #include <pwd.h>
++#elif defined(Q_OS_WIN)
++#include <windows.h>
++#include <lmcons.h>
++#endif
+ 
+ // https://gitlabwh.uniontech.com/wuhan/se/deepin-specifications/-/issues/3
+ 
+@@ -238,8 +243,21 @@ inline void overrideValue(QLatin1String subkey, const QJsonValue &from, QVariant
+ }
+ 
+ inline static QString getUserName(const uint uid) {
++#ifdef Q_OS_LINUX
+     passwd *pw = getpwuid(uid);
+     return pw ? QString::fromLocal8Bit(pw->pw_name) : QString();
++#elif defined(Q_OS_WIN)
++    Q_UNUSED(uid)
++    WCHAR username[UNLEN + 1];
++    DWORD size = UNLEN + 1;
++    if (GetUserNameW(username, &size)) {
++        return QString::fromWCharArray(username);
++    }
++    return QString();
++#else
++    Q_UNUSED(uid)
++    return QString();
++#endif
+ }
+ 
+ /*!
+@@ -304,7 +322,11 @@ QStringList DConfigMeta::genericMetaDirs(const QString &localPrefix)
+     QStringList paths;
+     // lower priority is higher.
+     for (auto item: DStandardPaths::paths(DStandardPaths::DSG::DataDir)) {
+-        paths.prepend(QDir::cleanPath(QString("%1/%2/configs").arg(localPrefix, item)));
++        if (localPrefix.isEmpty()) {
++            paths.prepend(QDir::cleanPath(QString("%1/configs").arg(item)));
++        } else {
++            paths.prepend(QDir::cleanPath(QString("%1/%2/configs").arg(localPrefix, item)));
++        }
+     }
+     return paths;
+ }
+@@ -1112,11 +1134,16 @@ class Q_DECL_HIDDEN DConfigCacheImpl : public DConfigCache {
+         if (prefix.isEmpty()) {
+             // If target user is current user or system user, then get the home path by environment variable first.
+             QString homePath;
++#ifdef Q_OS_LINUX
+             if (userid == InvalidUID || (getuid() == userid)) {
+                 homePath = DStandardPaths::homePath();
+             } else {
+                 homePath = DStandardPaths::homePath(getuid());
+             }
++#else
++            Q_UNUSED(userid)
++            homePath = DStandardPaths::homePath();
++#endif
+ 
+             if (homePath.isEmpty())
+                 return QString();
+@@ -1124,7 +1151,11 @@ class Q_DECL_HIDDEN DConfigCacheImpl : public DConfigCache {
+             // fallback to default application cache directory.
+             prefix = homePath + QStringLiteral("/.config/dsg/configs");
+         }
+-        return QDir::cleanPath(QString("%1/%2/%3").arg(localPrefix, prefix + suffix, configKey.appId));
++        if (localPrefix.isEmpty()) {
++            return QDir::cleanPath(QString("%1/%2").arg(prefix + suffix, configKey.appId));
++        } else {
++            return QDir::cleanPath(QString("%1/%2/%3").arg(localPrefix, prefix + suffix, configKey.appId));
++        }
+     }
+ 
+     inline QString applicationCacheDir(const QString &localPrefix) const
+@@ -1286,8 +1317,12 @@ bool DConfigCacheImpl::save(const QString &localPrefix, QJsonDocument::JsonForma
+     cacheChanged = false;
+     const QString &dir = getCacheDir(localPrefix);
+     if (dir.isEmpty()) {
++#ifdef Q_OS_LINUX
+         qCWarning(cfLog, "Falied on saveing, the config cache directory is empty for the user[%d], "
+                          "the current user[%d].", userid, getuid());
++#else
++        qCWarning(cfLog, "Falied on saveing, the config cache directory is empty for the user[%d].", userid);
++#endif
+         return false;
+     }
+     QString path = cacheDir(dir);
+diff --git a/src/filesystem/dstandardpaths.cpp b/src/filesystem/dstandardpaths.cpp
+index fa1a9c03..90e35a88 100644
+--- a/src/filesystem/dstandardpaths.cpp
++++ b/src/filesystem/dstandardpaths.cpp
+@@ -163,12 +163,7 @@ QString DStandardPaths::path(DStandardPaths::XDG type)
+         const QByteArray &path = qgetenv("XDG_STATE_HOME");
+         if (!path.isEmpty())
+             return QString::fromLocal8Bit(path);
+-#ifdef Q_OS_LINUX
+         return homePath() + QStringLiteral("/.local/state");
+-#else
+-        // TODO: handle it on mac
+-        return QString();
+-#endif
+     }
+     }
+     return QString();
+@@ -187,9 +182,17 @@ QStringList DStandardPaths::paths(DSG type)
+     if (type == DSG::DataDir) {
+         const QByteArray &path = qgetenv("DSG_DATA_DIRS");
+         if (path.isEmpty()) {
++#ifdef Q_OS_LINUX
+             return {QLatin1String(PREFIX"/share/dsg")};
++#else
++            return {QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + QStringLiteral("/dsg")};
++#endif
+         }
++#ifdef Q_OS_WIN
++        const auto list = path.split(';');
++#else
+         const auto list = path.split(':');
++#endif
+         paths.reserve(list.size());
+         for (const auto &i : list)
+             paths.push_back(QString::fromLocal8Bit(i));
+diff --git a/src/glob.cmake b/src/glob.cmake
+index 558b797d..8d59e27c 100644
+--- a/src/glob.cmake
++++ b/src/glob.cmake
+@@ -21,16 +21,17 @@ set(OUTER_HEADER
+   ${CMAKE_CURRENT_LIST_DIR}/../include/global/ddesktopentry.h
+ )
+ 
++if(DEFINED D_DSG_APP_DATA_FALLBACK)
++    add_definitions(-DD_DSG_APP_DATA_FALLBACK="${D_DSG_APP_DATA_FALLBACK}")
++endif()
++list(APPEND OUTER_SOURCE
++  ${CMAKE_CURRENT_LIST_DIR}/dconfigfile.cpp
++)
++list(APPEND OUTER_HEADER
++  ${CMAKE_CURRENT_LIST_DIR}/../include/global/dconfigfile.h
++)
++
+ if(LINUX)
+-  if(DEFINED D_DSG_APP_DATA_FALLBACK)
+-      add_definitions(-DD_DSG_APP_DATA_FALLBACK="${D_DSG_APP_DATA_FALLBACK}")
+-  endif()
+-  list(APPEND OUTER_SOURCE
+-    ${CMAKE_CURRENT_LIST_DIR}/dconfigfile.cpp
+-  )
+-  list(APPEND OUTER_HEADER
+-    ${CMAKE_CURRENT_LIST_DIR}/../include/global/dconfigfile.h
+-  )
+ #   generic dbus interfaces
+   if(NOT DEFINED DTK_DISABLE_DBUS_CONFIG)
+     include(${CMAKE_CURRENT_LIST_DIR}/dbus/dbus.cmake)
+@@ -39,7 +40,7 @@ if(LINUX)
+     add_definitions(-DD_DISABLE_DBUS_CONFIG)
+   endif()
+ else()
+-    add_definitions(-DD_DISABLE_DCONFIG)
++    add_definitions(-DD_DISABLE_DBUS_CONFIG)
+ endif()
+ 
+ list(APPEND glob_SRC
