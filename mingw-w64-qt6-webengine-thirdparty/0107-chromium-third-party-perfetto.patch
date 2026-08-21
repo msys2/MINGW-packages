@@ -1,0 +1,273 @@
+diff --git a/src/3rdparty/chromium/third_party/perfetto/gn/BUILD.gn b/src/3rdparty/chromium/third_party/perfetto/gn/BUILD.gn
+index 6ac0622..b3fa98c 100644
+--- a/src/3rdparty/chromium/third_party/perfetto/gn/BUILD.gn
++++ b/src/3rdparty/chromium/third_party/perfetto/gn/BUILD.gn
+@@ -319,7 +319,7 @@ config("protobuf_gen_config") {
+       "-Wno-undef",
+     ]
+   }
+-  if (!is_clang && is_win) {
++  if (!is_clang && is_msvc) {
+     # MSVC
+     cflags += [
+       "/wd4838",  # conversion from 'unsigned long' to 'int' requires a
+diff --git a/src/3rdparty/chromium/third_party/perfetto/gn/perfetto.gni b/src/3rdparty/chromium/third_party/perfetto/gn/perfetto.gni
+index 5fd06f7..aef84a7 100644
+--- a/src/3rdparty/chromium/third_party/perfetto/gn/perfetto.gni
++++ b/src/3rdparty/chromium/third_party/perfetto/gn/perfetto.gni
+@@ -395,9 +395,11 @@ declare_args() {
+   perfetto_use_system_zlib = false
+ }
+ 
+-if (is_win) {
++if (is_msvc) {
+   # clang-cl
+   perfetto_isystem_cflag = "/I"
++} else if (is_mingw) {
++  perfetto_isystem_cflag = "-I"
+ } else {
+   perfetto_isystem_cflag = "-isystem"
+ }
+diff --git a/src/3rdparty/chromium/third_party/perfetto/include/perfetto/protozero/message_arena.h b/src/3rdparty/chromium/third_party/perfetto/include/perfetto/protozero/message_arena.h
+index 9e4fef4..3f429c5 100644
+--- a/src/3rdparty/chromium/third_party/perfetto/include/perfetto/protozero/message_arena.h
++++ b/src/3rdparty/chromium/third_party/perfetto/include/perfetto/protozero/message_arena.h
+@@ -66,7 +66,10 @@ class MessageArena {
+   // but could happen if some client does some overly clever std::move() trick).
+   void Reset() {
+     PERFETTO_DCHECK(!blocks_.empty());
+-    blocks_.resize(1);
++    auto first = blocks_.begin();
++    auto after_first = first;
++    if (++after_first != blocks_.end())
++      blocks_.erase_after(first, blocks_.end());
+     auto& block = blocks_.front();
+     block.entries = 0;
+     PERFETTO_ASAN_POISON(block.storage, sizeof(block.storage));
+diff --git a/src/3rdparty/chromium/third_party/perfetto/gn/standalone/BUILD.gn b/src/3rdparty/chromium/third_party/perfetto/gn/standalone/BUILD.gn
+index 254a157..319386f 100644
+--- a/src/3rdparty/chromium/third_party/perfetto/gn/standalone/BUILD.gn
++++ b/src/3rdparty/chromium/third_party/perfetto/gn/standalone/BUILD.gn
+@@ -40,7 +40,7 @@ hermetic_clang_suppressions = [ "-Wno-c99-designator" ]
+ # is_clang -> could be clang-on-linux, clang-on-mac or clang-cl.exe.
+ 
+ config("extra_warnings") {
+-  if (is_win) {
++  if (is_msvc) {
+     cflags = [
+       "/W2",
+       "/wd4244",  # conversion from 'float' to 'int', possible loss of data
+@@ -150,10 +150,10 @@ config("rtti_cflags") {
+   # configurations (specifically, those that use -fsanitize=vptr). Since we
+   # don't know if anyone linking in perfetto will use -fsanitize=vptr, don't
+   # pass -fno-rtti when is_ubsan is true.
+   if (!is_ubsan) {
+-    if (is_win) {
++    if (is_msvc) {
+       cflags_cc = [ "/GR-" ]
+     } else {
+       cflags_cc = [ "-fno-rtti" ]
+     }
+   }
+@@ -164,7 +164,7 @@ config("c++17") {
+ 
+ # Used in buildtools dependencies for standalone builds.
+ config("c++17") {
+-  if (is_win) {
++  if (is_msvc) {
+     cflags_cc = [ "/std:c++17" ]
+   } else {
+     cflags_cc = [ "-std=c++17" ]
+@@ -167,7 +167,7 @@ config("c++17") {
+ # Used in buildtools dependencies for standalone builds.
+ config("c++20") {
+   visibility = [ "//buildtools:libc++config" ]
+-  if (is_win) {
++  if (is_msvc) {
+     cflags_cc = [ "/std:c++20" ]
+   } else {
+     cflags_cc = [ "-std=c++20" ]
+@@ -203,7 +203,7 @@ config("default") {
+     ]
+   }
+ 
+-  if (is_clang || !is_win) {  # Clang or GCC, but not MSVC.
++  if (is_clang || !is_msvc) {  # Clang or GCC, but not MSVC.
+     cflags += [
+       "-fstrict-aliasing",
+       "-Wformat",
+@@ -217,12 +217,12 @@ config("default") {
+     cflags += [ "-Wno-deprecated" ]
+   }
+ 
+-  if (!is_clang && is_win) {
++  if (!is_clang && is_msvc) {
+     # MSVC
+     cflags += [ "/permissive-" ]
+   }
+ 
+-  if (is_win) {
++  if (is_msvc) {
+     cflags += [
+       "/bigobj",  # Some of our files are bigger than the regular limits.
+       "/Gy",  # Enable function-level linking.
+@@ -240,6 +240,8 @@ config("default") {
+     if (!use_custom_libcxx) {
+       defines += [ "_HAS_EXCEPTIONS=0" ]  # Disables exceptions in MSVC STL.
+     }
++  } else if (is_mingw) {
++    cflags += [ "-fstack-protector-strong" ]
+   } else if (!is_wasm) {  # !is_win
+     cflags += [
+       "-g",
+@@ -250,7 +252,7 @@ config("default") {
+ 
+   # Treat warnings as errors, but give up on fuzzer builds.
+   if (!is_fuzzer) {
+-    if (is_win) {
++    if (is_msvc) {
+       cflags += [ "/WX" ]
+     } else {
+       cflags += [ "-Werror" ]
+@@ -259,7 +261,7 @@ config("default") {
+ 
+   if (is_clang) {
+     cflags += [ "-fcolor-diagnostics" ]
+-    if (!is_win) {
++    if (!is_msvc) {
+       cflags += [ "-fdiagnostics-show-template-tree" ]
+     }
+   }
+@@ -282,7 +284,7 @@ config("default") {
+     ldflags += [ "-flto=full" ]
+   }
+ 
+-  if (is_win) {
++  if (is_msvc) {
+     # We support only x86/x64 builds on Windows.
+     assert(current_cpu == "x64" || current_cpu == "x86")
+   } else if (current_cpu == "arm") {
+@@ -352,23 +354,25 @@ config("default") {
+     libs += [ "socket" ]
+   }
+ 
+-  if (is_win && !is_clang) {
++  if (is_msvc && !is_clang) {
+     # When using MSVC we need to manually pass the include dirs. clang-cl.exe
+     # doesn't need them because it's smart enough to figure out the right path
+     # by querying the registry on its own.
+     include_dirs = win_msvc_inc_dirs  # Defined in msvc.gni.
+   }
+ 
+-  if (is_win) {
++  if (is_msvc) {
+     cflags += [ "/Zi" ]
+   }
+   if (is_debug) {
+-    if (is_win) {
++    if (is_msvc) {
+       if (is_clang) {
+         # Required to see symbols in windbg when building with clang-cl.exe.
+         cflags += [ "-gcodeview-ghash" ]
+         ldflags = [ "/DEBUG:GHASH" ]
+       }
++    } else if (is_mingw) {
++      cflags += [ "-g" ]
+     } else if (!is_qnx) {
+       libs += [ "dl" ]
+     }
+@@ -407,7 +411,7 @@ config("default") {
+ 
+ config("debug_noopt") {
+   cflags = []
+-  if (is_win) {
++  if (is_msvc) {
+     cflags = [ "/Od" ]
+   } else {
+     cflags = [ "-O0" ]
+@@ -419,7 +423,7 @@ config("debug_noopt") {
+ 
+ config("release") {
+   # Compiler flags for release builds.
+-  if (is_win) {
++  if (is_msvc) {
+     cflags = [
+       "/O2",
+       "/Zc:inline",
+@@ -431,7 +435,7 @@ config("release") {
+   } else {
+     cflags = [ "-O3" ]
+   }
+-  if (!is_win) {
++  if (!is_msvc) {
+     cflags += [
+       "-fdata-sections",
+       "-ffunction-sections",
+@@ -439,13 +443,15 @@ config("release") {
+   }
+ 
+   # Linker flags for release builds.
+-  if (is_win) {
++  if (is_msvc) {
+     ldflags = [
+       "/OPT:REF",
+       "/OPT:ICF",
+       "/INCREMENTAL:NO",
+       "/FIXED:NO",
+     ]
++  } else if (is_mingw) {
++    ldflags = [ "-Wl,--gc-sections" ]
+   } else if (is_mac) {
+     ldflags = [ "-dead_strip" ]
+   } else if (is_qnx) {
+diff --git a/src/3rdparty/chromium/third_party/perfetto/gn/standalone/toolchain/llvm.gni b/src/3rdparty/chromium/third_party/perfetto/gn/standalone/toolchain/llvm.gni
+index 13bae47..8d924f4 100644
+--- a/src/3rdparty/chromium/third_party/perfetto/gn/standalone/toolchain/llvm.gni
++++ b/src/3rdparty/chromium/third_party/perfetto/gn/standalone/toolchain/llvm.gni
+@@ -45,7 +45,7 @@ if (is_linux_host) {
+ 
+   # _mac_toolchain_dirs[0] contains the mac toolchain dir.
+   mac_clangrt_dir = _mac_toolchain_dirs[1]
+-} else if (is_win_host) {
++} else if (is_msvc) {
+   if (is_hermetic_clang) {
+     # Use the toolchain pulled by //tools/install-build-deps. This tracks
+     # chromium's llvm dist.
+diff --git a/src/3rdparty/chromium/third_party/perfetto/gn/standalone/toolchain/msvc.gni b/src/3rdparty/chromium/third_party/perfetto/gn/standalone/toolchain/msvc.gni
+index 7ec7313..d809c14 100644
+--- a/src/3rdparty/chromium/third_party/perfetto/gn/standalone/toolchain/msvc.gni
++++ b/src/3rdparty/chromium/third_party/perfetto/gn/standalone/toolchain/msvc.gni
+@@ -15,7 +15,7 @@
+ # We should never get in here by accident from the Chromium tree.
+ assert(!defined(build_with_chromium) || !build_with_chromium)
+ 
+-if (is_win_host) {
++if (is_msvc) {
+   _find_msvc_out = exec_script("win_find_msvc.py", [], "list lines")
+ 
+   # The output looks like this (without the line number "N:" part):
+diff --git a/src/3rdparty/chromium/third_party/perfetto/include/perfetto/ext/base/sys_types.h b/src/3rdparty/chromium/third_party/perfetto/include/perfetto/ext/base/sys_types.h
+index fa04a63..2f584a5 100644
+--- a/src/3rdparty/chromium/third_party/perfetto/include/perfetto/ext/base/sys_types.h
++++ b/src/3rdparty/chromium/third_party/perfetto/include/perfetto/ext/base/sys_types.h
+@@ -27,7 +27,7 @@
+ 
+ #if PERFETTO_BUILDFLAG(PERFETTO_OS_WIN)
+ 
+-#if !PERFETTO_BUILDFLAG(PERFETTO_COMPILER_GCC)
++#if PERFETTO_BUILDFLAG(PERFETTO_COMPILER_MSVC)
+ // MinGW has these. clang-cl and MSVC, which use just the Windows SDK, don't.
+ using uid_t = int;
+ using pid_t = int;
+diff --git a/src/3rdparty/chromium/third_party/perfetto/src/base/string_utils.cc b/src/3rdparty/chromium/third_party/perfetto/src/base/string_utils.cc
+index 2defa73..ece8d4e 100644
+--- a/src/3rdparty/chromium/third_party/perfetto/src/base/string_utils.cc
++++ b/src/3rdparty/chromium/third_party/perfetto/src/base/string_utils.cc
+@@ -21,6 +21,7 @@
+ #include <string.h>
+ 
+ #include <algorithm>
++#include <limits>
+ 
+ #if PERFETTO_BUILDFLAG(PERFETTO_OS_APPLE)
+ #include <xlocale.h>
