@@ -46,73 +46,17 @@
 !
 !
        MODULE MPI_CONSTANTS
-
-#ifdef __GNUC__
-       USE, INTRINSIC :: ISO_C_BINDING, ONLY: C_INT, C_CHAR
-#endif
-
        IMPLICIT NONE
 
        INTEGER MPI_SOURCE, MPI_TAG, MPI_ERROR
        PARAMETER (MPI_SOURCE=3,MPI_TAG=4,MPI_ERROR=5)
        INTEGER MPI_STATUS_SIZE
        PARAMETER (MPI_STATUS_SIZE=5)
-
-#ifdef __GNUC__
-       ! define structure layout of common blocks exported from DLL
-       TYPE, BIND(C) :: mpipriv1_layout
-       ! COMMON /MPIPRIV1/ MPI_BOTTOM, MPI_IN_PLACE, MPI_STATUS_IGNORE
-           INTEGER(C_INT) :: bottom
-           INTEGER(C_INT) :: in_place
-           INTEGER(C_INT) :: status_ignore(MPI_STATUS_SIZE)
-       END TYPE mpipriv1_layout
-
-       TYPE, BIND(C) :: mpipriv2_layout
-       ! COMMON /MPIPRIV2/ MPI_STATUSES_IGNORE, MPI_ERRCODES_IGNORE
-           INTEGER(C_INT) :: statuses_ignore(MPI_STATUS_SIZE,1)
-           INTEGER(C_INT) :: errcodes_ignore(1)
-       END TYPE mpipriv2_layout
-
-       TYPE, BIND(C) :: mpifcmb5_layout
-       ! COMMON /MPIFCMB5/ MPI_UNWEIGHTED
-           INTEGER(C_INT) :: unweighted
-       END TYPE mpifcmb5_layout
-
-       TYPE, BIND(C) :: mpifcmb9_layout
-       ! COMMON /MPIFCMB9/ MPI_WEIGHTS_EMPTY
-           INTEGER(C_INT) :: weights_empty
-       END TYPE mpifcmb9_layout
-
-       TYPE, BIND(C) :: mpiprivc_layout
-       ! COMMON /MPIPRIVC/ MPI_ARGVS_NULL, MPI_ARGV_NULL
-           CHARACTER(KIND=C_CHAR) :: argvs_null(1,1)
-           CHARACTER(KIND=C_CHAR) :: argv_null(1)
-       END TYPE mpiprivc_layout
-
-       ! bind global structure instance directly to members of common block exported from DLL
-       TYPE(mpipriv1_layout), BIND(C, NAME="mpipriv1"), TARGET :: mpipriv1_data
-       !GCC$ ATTRIBUTES DLLIMPORT :: mpipriv1_data
-       TYPE(mpipriv2_layout), BIND(C, NAME="mpipriv2"), TARGET :: mpipriv2_data
-       !GCC$ ATTRIBUTES DLLIMPORT :: mpipriv2_data
-       TYPE(mpifcmb5_layout), BIND(C, NAME="mpifcmb5"), TARGET :: mpifcmb5_data
-       !GCC$ ATTRIBUTES DLLIMPORT :: mpifcmb5_data
-       TYPE(mpifcmb9_layout), BIND(C, NAME="mpifcmb9"), TARGET :: mpifcmb9_data
-       !GCC$ ATTRIBUTES DLLIMPORT :: mpifcmb9_data
-       TYPE(mpiprivc_layout), BIND(C, NAME="mpiprivc"), TARGET :: mpiprivc_data
-       !GCC$ ATTRIBUTES DLLIMPORT :: mpiprivc_data
-
-       INTEGER, POINTER :: MPI_STATUS_IGNORE(:) => mpipriv1_data%status_ignore
-       INTEGER, POINTER :: MPI_STATUSES_IGNORE(:,:) => mpipriv2_data%statuses_ignore
-       INTEGER, POINTER :: MPI_ERRCODES_IGNORE(:) => mpipriv2_data%errcodes_ignore
-       CHARACTER*1, POINTER :: MPI_ARGVS_NULL(:,:) => mpiprivc_data%argvs_null
-       CHARACTER*1, POINTER :: MPI_ARGV_NULL(:) => mpiprivc_data%argv_null
-#else
        INTEGER MPI_STATUS_IGNORE(MPI_STATUS_SIZE)
        INTEGER MPI_STATUSES_IGNORE(MPI_STATUS_SIZE,1)
        INTEGER MPI_ERRCODES_IGNORE(1)
        CHARACTER*1 MPI_ARGVS_NULL(1,1)
        CHARACTER*1 MPI_ARGV_NULL(1)
-#endif
        INTEGER MPI_SUCCESS
        PARAMETER (MPI_SUCCESS=0)
        INTEGER MPI_ERR_OTHER
@@ -566,12 +510,6 @@
        PARAMETER (MPI_DISTRIBUTE_DFLT_DARG=-49767)
        INTEGER (KIND=8) MPI_DISPLACEMENT_CURRENT
        PARAMETER (MPI_DISPLACEMENT_CURRENT=-54278278)
-#ifdef __GNUC__
-       INTEGER, POINTER :: MPI_BOTTOM   => mpipriv1_data%bottom
-       INTEGER, POINTER :: MPI_IN_PLACE => mpipriv1_data%in_place
-       INTEGER, POINTER :: MPI_UNWEIGHTED   => mpifcmb5_data%unweighted
-       INTEGER, POINTER :: MPI_WEIGHTS_EMPTY => mpifcmb9_data%weights_empty
-#else
        INTEGER MPI_BOTTOM, MPI_IN_PLACE
        INTEGER MPI_UNWEIGHTED, MPI_WEIGHTS_EMPTY
 
@@ -586,7 +524,6 @@
 
        COMMON /MPIPRIVC/ MPI_ARGVS_NULL, MPI_ARGV_NULL
 !DEC$ ATTRIBUTES DLLIMPORT :: /MPIPRIVC/
-#endif
 
        END MODULE MPI_CONSTANTS
 
