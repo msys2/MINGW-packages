@@ -1816,7 +1816,7 @@ function qemu2016day06 {
 	cat menuet32/readme.txt
 	(
 		cd menuet32
-		unzip -o -q ../M32-086.ZIP
+		bsdunzip -o -q ../M32-086.ZIP
 		execute $(accelQemuSystemI386) $(accel) $(audio AC97) -m 512 -drive file=M32-086.IMG,format=raw,if=floppy
 	)
 	removeDir menuet32
@@ -2181,7 +2181,7 @@ function qemu2014day08 {
 	cat qemu-xmas-uefi-zork/README
 	(
 		cd qemu-xmas-uefi-zork
-		unzip -o -q ../zork1.zip
+		bsdunzip -o -q ../zork1.zip
 		mkdir -p zork.img/EFI/BOOT
 		mv BOOTX64.EFI zork.img/EFI/BOOT/
 		mv -f startup.nsh Frotz.efi DATA/ZORK1.DAT zork.img/
@@ -2359,7 +2359,7 @@ case $BLOCK in
 		;;
 	2016)
 		DIR="$DOWNLOADDIR/qemu-advent-calendar/2016"
-		require ${MINGW_PACKAGE_PREFIX}-qemu wget unzip p7zip
+		require ${MINGW_PACKAGE_PREFIX}-qemu ${MINGW_PACKAGE_PREFIX}-unzip wget p7zip
 		perform qemu2016day01
 		ignoreSize && perform qemu2016day02
 		perform qemu2016day03
@@ -2389,7 +2389,7 @@ case $BLOCK in
 		;;
 	2014)
 		DIR="$DOWNLOADDIR/qemu-advent-calendar/2014"
-		require ${MINGW_PACKAGE_PREFIX}-qemu wget unzip
+		require ${MINGW_PACKAGE_PREFIX}-qemu ${MINGW_PACKAGE_PREFIX}-unzip wget
 		perform qemu2014day01
 		perform qemu2014day02
 		perform qemu2014day03
