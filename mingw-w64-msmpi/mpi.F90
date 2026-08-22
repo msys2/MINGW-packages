@@ -48,7 +48,7 @@
        MODULE MPI_CONSTANTS
 
 #ifdef __GNUC__
-       USE, INTRINSIC :: ISO_C_BINDING, ONLY: C_INT, C_CHAR
+       USE, INTRINSIC :: ISO_C_BINDING, ONLY: C_INT
 #endif
 
        IMPLICIT NONE
@@ -67,12 +67,6 @@
            INTEGER(C_INT) :: status_ignore(MPI_STATUS_SIZE)
        END TYPE mpipriv1_layout
 
-       TYPE, BIND(C) :: mpipriv2_layout
-       ! COMMON /MPIPRIV2/ MPI_STATUSES_IGNORE, MPI_ERRCODES_IGNORE
-           INTEGER(C_INT) :: statuses_ignore(MPI_STATUS_SIZE,1)
-           INTEGER(C_INT) :: errcodes_ignore(1)
-       END TYPE mpipriv2_layout
-
        TYPE, BIND(C) :: mpifcmb5_layout
        ! COMMON /MPIFCMB5/ MPI_UNWEIGHTED
            INTEGER(C_INT) :: unweighted
@@ -83,36 +77,21 @@
            INTEGER(C_INT) :: weights_empty
        END TYPE mpifcmb9_layout
 
-       TYPE, BIND(C) :: mpiprivc_layout
-       ! COMMON /MPIPRIVC/ MPI_ARGVS_NULL, MPI_ARGV_NULL
-           CHARACTER(KIND=C_CHAR) :: argvs_null(1,1)
-           CHARACTER(KIND=C_CHAR) :: argv_null(1)
-       END TYPE mpiprivc_layout
-
        ! bind global structure instance directly to members of common block exported from DLL
        TYPE(mpipriv1_layout), BIND(C, NAME="mpipriv1"), TARGET :: mpipriv1_data
        !GCC$ ATTRIBUTES DLLIMPORT :: mpipriv1_data
-       TYPE(mpipriv2_layout), BIND(C, NAME="mpipriv2"), TARGET :: mpipriv2_data
-       !GCC$ ATTRIBUTES DLLIMPORT :: mpipriv2_data
        TYPE(mpifcmb5_layout), BIND(C, NAME="mpifcmb5"), TARGET :: mpifcmb5_data
        !GCC$ ATTRIBUTES DLLIMPORT :: mpifcmb5_data
        TYPE(mpifcmb9_layout), BIND(C, NAME="mpifcmb9"), TARGET :: mpifcmb9_data
        !GCC$ ATTRIBUTES DLLIMPORT :: mpifcmb9_data
-       TYPE(mpiprivc_layout), BIND(C, NAME="mpiprivc"), TARGET :: mpiprivc_data
-       !GCC$ ATTRIBUTES DLLIMPORT :: mpiprivc_data
+#endif
 
-       INTEGER, POINTER :: MPI_STATUS_IGNORE(:) => mpipriv1_data%status_ignore
-       INTEGER, POINTER :: MPI_STATUSES_IGNORE(:,:) => mpipriv2_data%statuses_ignore
-       INTEGER, POINTER :: MPI_ERRCODES_IGNORE(:) => mpipriv2_data%errcodes_ignore
-       CHARACTER*1, POINTER :: MPI_ARGVS_NULL(:,:) => mpiprivc_data%argvs_null
-       CHARACTER*1, POINTER :: MPI_ARGV_NULL(:) => mpiprivc_data%argv_null
-#else
        INTEGER MPI_STATUS_IGNORE(MPI_STATUS_SIZE)
        INTEGER MPI_STATUSES_IGNORE(MPI_STATUS_SIZE,1)
        INTEGER MPI_ERRCODES_IGNORE(1)
        CHARACTER*1 MPI_ARGVS_NULL(1,1)
        CHARACTER*1 MPI_ARGV_NULL(1)
-#endif
+
        INTEGER MPI_SUCCESS
        PARAMETER (MPI_SUCCESS=0)
        INTEGER MPI_ERR_OTHER
