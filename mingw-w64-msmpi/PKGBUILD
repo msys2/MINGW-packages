@@ -9,16 +9,17 @@ _realname=msmpi
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
 pkgver=10.1.1
-pkgrel=21
+pkgrel=22
 pkgdesc="Microsoft MPI SDK (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw64' 'ucrt64' 'clang64')
 url="https://docs.microsoft.com/en-us/message-passing-interface/microsoft-mpi"
 license=('spdx:MIT')
-depends=("${MINGW_PACKAGE_PREFIX}-cc")
-makedepends=("${MINGW_PACKAGE_PREFIX}-fc")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-fc")
 checkdepends=("${MINGW_PACKAGE_PREFIX}-tcl")
-optdepends=("${MINGW_PACKAGE_PREFIX}-fc: build FORTRAN code"
+optdepends=("${MINGW_PACKAGE_PREFIX}-cc: build C or C++ code"
+            "${MINGW_PACKAGE_PREFIX}-fc: build FORTRAN code"
             "${MINGW_PACKAGE_PREFIX}-tcl: test suite")
 source=(
   'mpi.c'
@@ -29,6 +30,9 @@ source=(
   'mpifptr.h.i686'
   'msmpi.def.x86_64'
   'msmpi.def.i686'
+  'msmpif.f90'
+  'msmpifec.c'
+  'msmpifec.def'
   'hello_mpi.c'
   'hello_mpi.cpp'
   'hello_mpi.F'
@@ -37,14 +41,17 @@ source=(
   'testme-0.tm'
   'buildme-0.tm'
 )
-sha256sums=('17086fb1cf949251e4ae1549a06d292c58e468c822cca3ac1851e57e79d8ab20'
+sha256sums=('ed828846d5086c7fd503a8a0e52bf6245132c187bbbf0f5ec8fe006032f62cef'
             'baee3f18f38650e7182956baa0d3d8f8e5c26d8603ccee4871a4dbd160c13660'
-            '681be9e946eea309e419254e4032b8df3d53621e1d93b850cb0a75f8900cca57'
-            'defa8f2da4c79d0be4020d23f228462f589d3a0d4b792ea8bda26878a3c8e529'
+            '215d8c0f11bb00af47bbcda14c196a88bb73b0ed876751ecc778175c9d44e7fd'
+            '7cb73b767392ac2354dd41ceb39455f5bf6b5480344fc483f0adf3442ed7ecea'
             'edd76b5096bd31052be13e2d3306d931277d9c983b147ecf8aef0761d4ae8fb3'
             '126bb8230844ad1de5f7e368c12008d2eea9831cb149b4a6952c775c08b294a2'
-            'fd18184993872fc4eaea825e85f974dca4b020598d838c424c6c112c2328cf2a'
-            '7b8ed9d3e257e439678cc648164164d6817f7fde68530055b392f67d97bf8ec8'
+            '7e8be35bd1286d671dd3d47ffa1c3eaca09bf0cb6286f2474dc0eb71ea976d75'
+            '90c90a29ed4084dccf227920f1600ebde7d33c02f308551c764bd19d36b0d7fc'
+            '05caa0fa05b1a6afeae62590758e2543c5f59fe998d4b55cf5b4db771e65f515'
+            'e09de455b0ba7581c38f2367148d465791a248a824764fbfc35adc8836f37ba2'
+            'c4e4d85d01d1ef052596589d100920bd53523eb7006f66c39ddc1d36acaa242c'
             'ea8203492942fa900c4946741ad88af8957c4d058e06eb618ffae0e5e967b71b'
             '9483053c0f3ce15d850f69565f2b4e53630cee75073c27432cd08ecc596a57d9'
             'c9f63c1ca20f8ebfe26ad455342f34c27bc1a1a83778240388e9f18b26c2e889'
@@ -71,6 +78,9 @@ build() {
   mpic="$srcdir/mpi.c"
   if [[ ${MSYSTEM} == CLANG64 ]]; then
     sed -e "s|gfortran|flang|g" -i ${mpic}
+    FC=flang
+  else
+    FC=gfortran
   fi
   cflags="-s -O2 -DNDEBUG"
   $CC ${cflags} -o bin/mpicc.exe -DCC "${mpic}"
@@ -84,7 +94,21 @@ build() {
 
   # FORTRAN90 MPI modules
   bin/mpifort -c -Jinclude "${srcdir}"/mpi.F90
-  rm mpi.o
+
+  # Helper library with sentinel variables (not in COMMON blocks)
+  # and replacement functions
+  # Replace some functions to avoid shared variables in COMMON blocks with
+  # Intel Fortran layout. They are not supported by GFortran or LLVM Flang.
+  $FC -c -o msmpif.o $srcdir/msmpif.f90
+  $CC ${cflags} -c -o msmpifec.o -Iinclude $srcdir/msmpifec.c
+  if [[ ${MSYSTEM} == CLANG64 ]]; then
+    _extra_linker_flags="-Wl,$srcdir/msmpifec.def"
+  fi
+  $FC -shared -o bin/libmsmpifec.dll -Wl,--out-implib,lib/libmsmpifec.dll.a \
+    $_extra_linker_flags msmpif.o msmpifec.o
+
+  # Remove temporary object and module files.
+  rm *.o *.mod
 }
 
 package() {
@@ -105,7 +129,7 @@ package() {
     Version: ${pkgver}
     Description: ${pkgdesc}
     Cflags: -I\${includedir}
-    Libs: -L\${libdir} -l:libmsmpi.dll.a
+    Libs: -L\${libdir} -l:libmsmpi.dll.a -lmsmpifec
   " | sed '/^\s*$/d;s/^\s*//' > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/${_realname}.pc"
 
 }
