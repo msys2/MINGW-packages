@@ -1,0 +1,308 @@
+From 964e1a50d35c03367d5648c6eb584b4eb9d9943b Mon Sep 17 00:00:00 2001
+From: Zhongteng Gui <dragon-archer@outlook.com>
+Date: Mon, 10 Aug 2026 01:03:50 +0800
+Subject: [PATCH] lto, mingw: Do not export symbols from some frontends
+
+This patch workarounds bootstrapping on x86_64-w64-mingw32 targets with
+bootstrap-lto-lean and --enable-plugin enabled. Note that
+i686-w64-mingw32 targets still fails with bootstrap-lto-lean even
+without --enable-plugin due to segfault in lto1.exe.
+
+--enable-plugin adds -Wl,--export-all-symbols and -Wl,--out-implib=$@.a
+to PLUGINLIBS on mingw hosts, so that a plugin can resolve back into the
+compiler it is loaded by. These options are also passed to frontends
+that do not install compiler-proper import libraries.
+
+With bootstrap-lto-lean, their PE export tables can exceed the 16-bit
+ordinal limit and some LTO symbols cannot be exported with their
+resulting types.
+
+Define a backend library list without the mingw plugin export options
+and use it for gnat1, f951, lto1, lto-dump, cc1obj, and cc1objplus.
+
+Unlike the executables, libgccjit still needs its public import library.
+Generate a PE definition file from the existing libgccjit export list,
+disable automatic exports, and keep --out-implib for the public API.
+
+cc1 and cc1plus also still need to export their public APIs, so add
+-fno-lto to them, also add -ffat-lto-objects to the bootstrap-lto-lean
+config for mingw targets so that cc1 and cc1plus can be linked with LTO
+objects.
+
+config/ChangeLog:
+
+	PR lto/115300
+	bootstrap-lto-lean.mk (STAGE3_CFLAGS): Add -ffat-lto-objects for
+	mingw targets.
+	(STAGEfeedback_CFLAGS): Likewise.
+
+gcc/ChangeLog:
+
+	PR lto/115300
+	Makefile.in (BACKENDLIBS_NO_PLUGIN_EXPORTS): New variable,
+	similar to BACKENDLIBS but without PLUGINLIBS.
+	(PLUGIN_IMPLIB_LINKFLAGS): New variable, expands to -fno-lto if
+	plugin_implib is yes and ALL_LINKERFLAGS contains
+	-ffat-lto-objects.
+
+gcc/ada/ChangeLog:
+
+	PR lto/115300
+	gcc-interface/Make-lang.in (gnat1): Use
+	$(BACKENDLIBS_NO_PLUGIN_EXPORTS) instead of $(BACKENDLIBS).
+
+gcc/c/ChangeLog:
+
+	PR lto/115300
+	Make-lang.in (cc1): Add $(PLUGIN_IMPLIB_LINKFLAGS) to the link
+	command.
+
+gcc/cp/ChangeLog:
+
+	PR lto/115300
+	Make-lang.in (cc1plus): Add $(PLUGIN_IMPLIB_LINKFLAGS) to the
+	link command.
+
+gcc/fortran/ChangeLog:
+
+	PR lto/115300
+	Make-lang.in (f951): Use $(BACKENDLIBS_NO_PLUGIN_EXPORTS)
+	instead of $(BACKENDLIBS).
+
+gcc/jit/ChangeLog:
+
+	PR lto/115300
+	Make-lang.in (LIBGCCJIT_DEF_FILE): New variable, dynamically
+	generated from libgccjit.exports.
+	(LIBGCCJIT_EXTRA_OPTS): Add $(LIBGCCJIT_DEF_FILE).
+	(libgccjit): Add $(LIBGCCJIT_DEF_FILE) to the link command and
+	use $(BACKENDLIBS_NO_PLUGIN_EXPORTS) instead of $(BACKENDLIBS).
+	(jit.mostlyclean): Add cleanup of $(LIBGCCJIT_DEF_FILE).
+	libgccjit.exports: Adjust comments.
+
+gcc/lto/ChangeLog:
+
+	PR lto/115300
+	Make-lang.in (lto1): Use $(BACKENDLIBS_NO_PLUGIN_EXPORTS)
+	instead of $(BACKENDLIBS).
+	(lto-dump): Likewise.
+
+gcc/objc/ChangeLog:
+
+	PR lto/115300
+	Make-lang.in (cc1obj): Use $(BACKENDLIBS_NO_PLUGIN_EXPORTS)
+	instead of $(BACKENDLIBS).
+
+gcc/objcp/ChangeLog:
+
+	PR lto/115300
+	Make-lang.in (cc1objplus): Use $(BACKENDLIBS_NO_PLUGIN_EXPORTS)
+	instead of $(BACKENDLIBS).
+
+Signed-off-by: Zhongteng Gui <dragon-archer@outlook.com>
+---
+ config/bootstrap-lto-lean.mk       |  4 ++++
+ gcc/Makefile.in                    |  4 ++++
+ gcc/ada/gcc-interface/Make-lang.in |  2 +-
+ gcc/c/Make-lang.in                 |  2 +-
+ gcc/cp/Make-lang.in                |  2 +-
+ gcc/fortran/Make-lang.in           |  2 +-
+ gcc/jit/Make-lang.in               | 15 +++++++++++----
+ gcc/jit/libgccjit.exports          |  2 +-
+ gcc/lto/Make-lang.in               |  4 ++--
+ gcc/objc/Make-lang.in              |  2 +-
+ gcc/objcp/Make-lang.in             |  2 +-
+ 11 files changed, 28 insertions(+), 13 deletions(-)
+
+diff --git a/config/bootstrap-lto-lean.mk b/config/bootstrap-lto-lean.mk
+index 42cb3394c70..5f3d2b56fbf 100644
+--- a/config/bootstrap-lto-lean.mk
++++ b/config/bootstrap-lto-lean.mk
+@@ -5,6 +5,10 @@ STAGE3_CFLAGS += -flto=jobserver
+ override STAGEtrain_CFLAGS := $(filter-out -flto=jobserver,$(STAGEtrain_CFLAGS))
+ STAGEtrain_GENERATOR_CFLAGS += -flto=jobserver
+ STAGEfeedback_CFLAGS += -flto=jobserver
++ifneq (,$(findstring mingw,$(host_os)))
++STAGE3_CFLAGS += -ffat-lto-objects
++STAGEfeedback_CFLAGS += -ffat-lto-objects
++endif
+ 
+ # assumes the host supports the linker plugin
+ LTO_AR = $$r/$(HOST_SUBDIR)/prev-gcc/gcc-ar$(exeext) -B$$r/$(HOST_SUBDIR)/prev-gcc/
+diff --git a/gcc/Makefile.in b/gcc/Makefile.in
+index 8ecef4ccdc7..0a28272fb21 100644
+--- a/gcc/Makefile.in
++++ b/gcc/Makefile.in
+@@ -1161,6 +1161,10 @@ LIBS = @LIBS@ libcommon.a $(CPPLIB) $(LIBINTL) $(LIBICONV) $(LIBBACKTRACE) \
+ 	$(LIBIBERTY) $(LIBDECNUMBER) $(HOST_LIBS)
+ BACKENDLIBS = $(ISLLIBS) $(GMPLIBS) $(PLUGINLIBS) $(HOST_LIBS) \
+ 	$(ZLIB) $(ZSTD_LIB)
++BACKENDLIBS_NO_PLUGIN_EXPORTS = $(if $(filter yes,$(plugin_implib)),\
++	$(filter-out $(PLUGINLIBS),$(BACKENDLIBS)),$(BACKENDLIBS))
++PLUGIN_IMPLIB_LINKFLAGS = $(if $(and $(filter yes,$(plugin_implib)),\
++	$(filter -ffat-lto-objects,$(ALL_LINKERFLAGS))),-fno-lto)
+ # Any system libraries needed just for GNAT.
+ SYSLIBS = @GNAT_LIBEXC@
+ 
+diff --git a/gcc/ada/gcc-interface/Make-lang.in b/gcc/ada/gcc-interface/Make-lang.in
+index c0c1a0640f6..232d7546fa4 100644
+--- a/gcc/ada/gcc-interface/Make-lang.in
++++ b/gcc/ada/gcc-interface/Make-lang.in
+@@ -794,7 +794,7 @@ gnat1$(exeext): $(TARGET_ADA_SRCS) $(GNAT1_OBJS) $(ADA_BACKEND) $(EXTRA_HOST_OBJ
+ 		$(EXTRA_HOST_OBJS) $(LIBDEPS) $(ada.prev)
+ 	@$(call LINK_PROGRESS,$(INDEX.ada),start)
+ 	+$(GCC_LLINK) -o $@ $(GNAT1_OBJS) $(ADA_BACKEND) $(EXTRA_HOST_OBJS) $(CFLAGS) \
+-	  libcommon-target.a $(LIBS) $(SYSLIBS) $(BACKENDLIBS) $(GNATLIB)
++	  libcommon-target.a $(LIBS) $(SYSLIBS) $(BACKENDLIBS_NO_PLUGIN_EXPORTS) $(GNATLIB)
+ 	$(RM) stamp-gnatlib2-rts stamp-tools
+ 	@$(call LINK_PROGRESS,$(INDEX.ada),end)
+ 
+diff --git a/gcc/c/Make-lang.in b/gcc/c/Make-lang.in
+index ecfa366afe3..3e49d488bf5 100644
+--- a/gcc/c/Make-lang.in
++++ b/gcc/c/Make-lang.in
+@@ -85,7 +85,7 @@ cc1-checksum.cc : build/genchecksum$(build_exeext) checksum-options \
+ 
+ cc1$(exeext): $(C_OBJS) cc1-checksum.o $(BACKEND) $(LIBDEPS)
+ 	@$(call LINK_PROGRESS,$(INDEX.c),start)
+-	+$(LLINKER) $(ALL_LINKERFLAGS) $(LDFLAGS) -o $@ $(C_OBJS) \
++	+$(LLINKER) $(ALL_LINKERFLAGS) $(PLUGIN_IMPLIB_LINKFLAGS) $(LDFLAGS) -o $@ $(C_OBJS) \
+ 	  cc1-checksum.o $(BACKEND) $(LIBS) $(BACKENDLIBS)
+ 	@$(call LINK_PROGRESS,$(INDEX.c),end)
+ 
+diff --git a/gcc/cp/Make-lang.in b/gcc/cp/Make-lang.in
+index e262854face..8aba89623a6 100644
+--- a/gcc/cp/Make-lang.in
++++ b/gcc/cp/Make-lang.in
+@@ -144,7 +144,7 @@ cc1plus-checksum.cc : build/genchecksum$(build_exeext) checksum-options \
+ 
+ cc1plus$(exeext): $(CXX_OBJS) cc1plus-checksum.o $(BACKEND) $(CODYLIB) $(LIBDEPS) $(c++.prev)
+ 	@$(call LINK_PROGRESS,$(INDEX.c++),start)
+-	+$(LLINKER) $(ALL_LINKERFLAGS) $(LDFLAGS) -o $@ \
++	+$(LLINKER) $(ALL_LINKERFLAGS) $(PLUGIN_IMPLIB_LINKFLAGS) $(LDFLAGS) -o $@ \
+ 	      $(CXX_OBJS) cc1plus-checksum.o $(BACKEND) $(CODYLIB) \
+ 		$(LIBS) $(BACKENDLIBS)
+ 	@$(call LINK_PROGRESS,$(INDEX.c++),end)
+diff --git a/gcc/fortran/Make-lang.in b/gcc/fortran/Make-lang.in
+index 7dca21f8290..d6bd9c57492 100644
+--- a/gcc/fortran/Make-lang.in
++++ b/gcc/fortran/Make-lang.in
+@@ -97,7 +97,7 @@ f951$(exeext): $(F95_OBJS) $(BACKEND) $(LIBDEPS) attribs.o $(fortran.prev)
+ 	@$(call LINK_PROGRESS,$(INDEX.fortran),start)
+ 	+$(LLINKER) $(ALL_LINKERFLAGS) $(LDFLAGS) -o $@ \
+ 		$(F95_OBJS) $(BACKEND) $(ZLIB) $(LIBS) attribs.o \
+-		$(BACKENDLIBS)
++		$(BACKENDLIBS_NO_PLUGIN_EXPORTS)
+ 	@$(call LINK_PROGRESS,$(INDEX.fortran),end)
+ 
+ gt-fortran-trans.h    : s-gtype; @true
+diff --git a/gcc/jit/Make-lang.in b/gcc/jit/Make-lang.in
+index b0c1294aa4a..9144dd4ba58 100644
+--- a/gcc/jit/Make-lang.in
++++ b/gcc/jit/Make-lang.in
+@@ -47,6 +47,7 @@ LIBGCCJIT_RELEASE_NUM = 1
+ ifneq (,$(findstring mingw,$(target)))
+ LIBGCCJIT_FILENAME = libgccjit-$(LIBGCCJIT_VERSION_NUM).dll
+ LIBGCCJIT_IMPORT_LIB = libgccjit.dll.a
++LIBGCCJIT_DEF_FILE = libgccjit.def
+ 
+ jit: $(LIBGCCJIT_FILENAME) \
+ 	$(FULL_DRIVER_NAME)
+@@ -156,7 +157,13 @@ jit-warn = $(STRICT_WARN)
+ ifneq (,$(findstring mingw,$(target)))
+ JIT_LDFLAGS = $(LDFLAGS)
+ # Create import library
+-LIBGCCJIT_EXTRA_OPTS = -Wl,--out-implib,$(LIBGCCJIT_IMPORT_LIB)
++LIBGCCJIT_EXTRA_OPTS = $(LIBGCCJIT_DEF_FILE) -Wl,--exclude-all-symbols \
++ -Wl,--out-implib,$(LIBGCCJIT_IMPORT_LIB)
++
++$(LIBGCCJIT_DEF_FILE): $(srcdir)/jit/libgccjit.exports
++	echo EXPORTS > $@.tmp
++	$(AWK) '/^_/ { sub(/^_/, ""); print }' $< >> $@.tmp
++	$(SHELL) $(srcdir)/../move-if-change $@.tmp $@
+ else
+ ifneq (,$(findstring darwin,$(host)))
+ LIBGCCJIT_VERS = $(LIBGCCJIT_CURRENT).$(LIBGCCJIT_REVISION).$(LIBGCCJIT_AGE)
+@@ -185,12 +192,12 @@ EXTRA_GCC_OBJS_EXCLUSIVE = $(foreach _obj1, $(EXTRA_GCC_OBJS), \
+ $(LIBGCCJIT_FILENAME): $(jit_OBJS) \
+ 	libbackend.a libcommon-target.a libcommon.a \
+ 	$(CPPLIB) $(LIBDECNUMBER) \
+-	$(LIBDEPS) $(srcdir)/jit/libgccjit.map \
++	$(LIBDEPS) $(srcdir)/jit/libgccjit.map $(LIBGCCJIT_DEF_FILE) \
+ 	$(EXTRA_GCC_OBJS_EXCLUSIVE) $(jit.prev)
+ 	@$(call LINK_PROGRESS,$(INDEX.jit),start)
+ 	+$(LLINKER) $(ALL_LINKERFLAGS) $(JIT_LDFLAGS) -o $@ -shared \
+ 	     $(jit_OBJS) libbackend.a libcommon-target.a libcommon.a \
+-	     $(CPPLIB) $(LIBDECNUMBER) $(EXTRA_GCC_LIBS) $(LIBS) $(BACKENDLIBS) \
++	     $(CPPLIB) $(LIBDECNUMBER) $(EXTRA_GCC_LIBS) $(LIBS) $(BACKENDLIBS_NO_PLUGIN_EXPORTS) \
+ 	     $(EXTRA_GCC_OBJS_EXCLUSIVE) \
+ 	     $(LIBGCCJIT_EXTRA_OPTS)
+ 	@$(call LINK_PROGRESS,$(INDEX.jit),end)
+@@ -429,7 +436,7 @@ jit.uninstall:
+ jit.mostlyclean:
+ 	-rm -f $(LIBGCCJIT_FILENAME) $(LIBGCCJIT_SYMLINK)
+ 	-rm -f $(LIBGCCJIT_LINKER_NAME_SYMLINK) $(FULL_DRIVER_NAME)
+-	-rm -f $(LIBGCCJIT_SONAME)
++	-rm -f $(LIBGCCJIT_SONAME) $(LIBGCCJIT_DEF_FILE) $(LIBGCCJIT_DEF_FILE).tmp
+ 	-rm -f $(jit_OBJS)
+ 
+ jit.clean:
+diff --git a/gcc/jit/libgccjit.exports b/gcc/jit/libgccjit.exports
+index 17864c7010b..435d588c7d1 100644
+--- a/gcc/jit/libgccjit.exports
++++ b/gcc/jit/libgccjit.exports
+@@ -1,4 +1,4 @@
+-# Linker export list for Darwin libgccjit.dylib
++# Linker export list for libgccjit
+ 
+ #   Contributed by Iain Sandoe <iain@sandoe.co.uk>.
+ #
+diff --git a/gcc/lto/Make-lang.in b/gcc/lto/Make-lang.in
+index a54bdf63c64..d3a5e659482 100644
+--- a/gcc/lto/Make-lang.in
++++ b/gcc/lto/Make-lang.in
+@@ -91,13 +91,13 @@ lto-warn = $(STRICT_WARN)
+ $(LTO_EXE): $(LTO_OBJS) $(BACKEND) $(LIBDEPS) $(lto1.prev)
+ 	@$(call LINK_PROGRESS,$(INDEX.lto1),start)
+ 	+$(LLINKER) $(ALL_LINKERFLAGS) $(LDFLAGS) -o $@ \
+-		$(LTO_OBJS) $(BACKEND) $(BACKENDLIBS) $(LIBS)
++		$(LTO_OBJS) $(BACKEND) $(BACKENDLIBS_NO_PLUGIN_EXPORTS) $(LIBS)
+ 	@$(call LINK_PROGRESS,$(INDEX.lto1),end)
+ 
+ $(LTO_DUMP_EXE): $(LTO_DUMP_OBJS) $(BACKEND) $(LIBDEPS) $(lto2.prev)
+ 	@$(call LINK_PROGRESS,$(INDEX.lto2),start)
+ 	+$(LLINKER) $(ALL_LINKERFLAGS) $(LDFLAGS) -o $@ \
+-		$(LTO_DUMP_OBJS) $(BACKEND) $(BACKENDLIBS) $(LIBS)
++		$(LTO_DUMP_OBJS) $(BACKEND) $(BACKENDLIBS_NO_PLUGIN_EXPORTS) $(LIBS)
+ 	@$(call LINK_PROGRESS,$(INDEX.lto2),end)
+ 
+ lto/lto-dump.o: $(LTO_OBJS)
+diff --git a/gcc/objc/Make-lang.in b/gcc/objc/Make-lang.in
+index 678ed9aa124..3015d96da22 100644
+--- a/gcc/objc/Make-lang.in
++++ b/gcc/objc/Make-lang.in
+@@ -77,7 +77,7 @@ cc1obj$(exeext): $(OBJC_OBJS) $(C_AND_OBJC_OBJS) cc1obj-checksum.o $(BACKEND) \
+ 	@$(call LINK_PROGRESS,$(INDEX.objc),start)
+ 	+$(LLINKER) $(ALL_LINKERFLAGS) $(LDFLAGS) -o $@ \
+ 	      $(OBJC_OBJS) $(C_AND_OBJC_OBJS) cc1obj-checksum.o \
+-	      $(BACKEND) $(LIBS) $(BACKENDLIBS)
++	      $(BACKEND) $(LIBS) $(BACKENDLIBS_NO_PLUGIN_EXPORTS)
+ 	@$(call LINK_PROGRESS,$(INDEX.objc),end)
+ 
+ objc.srcextra:
+diff --git a/gcc/objcp/Make-lang.in b/gcc/objcp/Make-lang.in
+index 7beb9379817..c402a30a2b3 100644
+--- a/gcc/objcp/Make-lang.in
++++ b/gcc/objcp/Make-lang.in
+@@ -80,7 +80,7 @@ cc1objplus$(exeext): $(OBJCXX_OBJS) cc1objplus-checksum.o $(BACKEND) \
+ 	@$(call LINK_PROGRESS,$(INDEX.obj-c++),start)
+ 	+$(LLINKER) $(ALL_LINKERFLAGS) $(LDFLAGS) -o $@ \
+ 		$(OBJCXX_OBJS) cc1objplus-checksum.o $(BACKEND) \
+-		  $(CODYLIB) $(LIBS) $(BACKENDLIBS)
++		  $(CODYLIB) $(LIBS) $(BACKENDLIBS_NO_PLUGIN_EXPORTS)
+ 	@$(call LINK_PROGRESS,$(INDEX.obj-c++),end)
+ 
+ # Objective C++ language specific files.
+-- 
+2.55.0.windows.3
+
