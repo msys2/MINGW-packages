@@ -3,8 +3,8 @@
 _realname=dosbox-staging
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-pkgver=0.82.2
-pkgrel=3
+pkgver=0.83.0
+pkgrel=1
 pkgdesc="Emulator with builtin DOS for running DOS Games (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
@@ -17,69 +17,84 @@ depends=(
     "${MINGW_PACKAGE_PREFIX}-opusfile"
     "${MINGW_PACKAGE_PREFIX}-SDL2"
     "${MINGW_PACKAGE_PREFIX}-SDL2_image"
-    "${MINGW_PACKAGE_PREFIX}-SDL2_net"
-    "${MINGW_PACKAGE_PREFIX}-zlib"
+    "${MINGW_PACKAGE_PREFIX}-zlib-ng"
     "${MINGW_PACKAGE_PREFIX}-libslirp"
     "${MINGW_PACKAGE_PREFIX}-munt-mt32emu"
     "${MINGW_PACKAGE_PREFIX}-speexdsp"
     "${MINGW_PACKAGE_PREFIX}-iir"
 )
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
-             "${MINGW_PACKAGE_PREFIX}-meson"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
              "${MINGW_PACKAGE_PREFIX}-ninja"
-             "${MINGW_PACKAGE_PREFIX}-pkgconf")
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-asio")
 source=("https://github.com/dosbox-staging/dosbox-staging/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz"
-        "enet.h::https://github.com/zpl-c/enet/raw/refs/tags/v2.6.5/include/enet.h")
-sha256sums=('387c97b373c3164ab5abbbc2b210bf94b5567057abe44ee1e8b4d4e725bd422c'
-            '6cb8f4606f064650e46d7d295c19f2885aa94eb07b6222c5c9c97ecf6c493603')
+        "enet.h::https://github.com/zpl-c/enet/raw/refs/tags/v2.6.5/include/enet.h"
+        "0001-cmake-add-windows-install-rules.patch"
+        "0002-cmake-add-relocatable-windows-resource-path.patch"
+        "0003-missing-include.patch"
+        "0004-mingw-fixes.patch"
+        "0005-cmake-support-arm64.patch")
+sha256sums=('9b36be5a666784adaeffa560bd0950691f851a76bdb97e7ae3c989561e91caf3'
+            '6cb8f4606f064650e46d7d295c19f2885aa94eb07b6222c5c9c97ecf6c493603'
+            'ddd930fb7a565bc70a4b8bf19b84f78d90685d75412bd2d9448ac7e6677bbc76'
+            '00860b8759ae9ef68ca6859e6d8ccb9eb800f89faf70aed8a97db1ee6ac05851'
+            '455125a298eaca7be5d4fb0e8eff1ad30358c119cf3036243830e2543590383e'
+             'abf961bf397e85d5ccf51dd440e54acc506548aa053179659aa851c00ae70e1e'
+             'c2c511571388f5947c4ac028868211cd87241fd1ad6c24669db409b015073e68')
 noextract=("${_realname}-${pkgver}.tar.gz")
 
 prepare() {
   bsdtar -xf "${_realname}-${pkgver}.tar.gz" || bsdtar -xf "${_realname}-${pkgver}.tar.gz"
 
   cd "${_realname}-${pkgver}"
-  echo -e "#!python\nprint('${pkgver}')" > scripts/get-version.sh
-
   # Use newer enet.h v2.6.5 (from https://github.com/zpl-c/enet), because that
   # has some fixes which are not in the older version 2.3.6 used by dosbox-staging
   # and would cause compile errors instead.
-  cp ${srcdir}/enet.h src/libs/enet/include/enet.h
+  cp "${srcdir}/enet.h" src/libs/enet/include/enet.h
+
+  patch -Np1 -i "${srcdir}/0001-cmake-add-windows-install-rules.patch"
+  patch -Np1 -i "${srcdir}/0002-cmake-add-relocatable-windows-resource-path.patch"
+  patch -Np1 -i "${srcdir}/0003-missing-include.patch"
+  patch -Np1 -i "${srcdir}/0004-mingw-fixes.patch"
+  patch -Np1 -i "${srcdir}/0005-cmake-support-arm64.patch"
 }
 
 build() {
-  mkdir -p build-${MSYSTEM} && cd build-${MSYSTEM}
-
   declare -a extra_config
   if check_option "debug" "n"; then
-    extra_config+=("--buildtype=release")
+    extra_config+=("-DCMAKE_BUILD_TYPE=Release")
   else
-    extra_config+=("--buildtype=debug")
+    extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
   fi
 
-  MSYS2_ARG_CONV_EXCL="--prefix=" \
-  ${MINGW_PREFIX}/bin/meson \
-    --prefix="${MINGW_PREFIX}" \
-    --wrap-mode=nodownload \
-    --auto-features=enabled \
+  LDFLAGS+=" -pthread" \
+  CFLAGS+=" -D_WIN32_WINNT=0x0A00" \
+  CXXFLAGS+=" -D_WIN32_WINNT=0x0A00" \
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  cmake \
+    -GNinja \
+    -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+    -DUSE_SYSTEM_LIBS=ON \
+    -DOPT_TESTS=OFF \
     "${extra_config[@]}" \
-    -Dunit_tests=disabled \
-    -Ddefault_library=shared \
-    ../${_realname}-${pkgver}
+    -S "${srcdir}/${_realname}-${pkgver}" \
+    -B "${srcdir}/build-${MSYSTEM}"
 
-  ${MINGW_PREFIX}/bin/meson compile
+  cmake --build "${srcdir}/build-${MSYSTEM}"
 }
 
 check() {
-  cd "${srcdir}/build-${MSYSTEM}"
-
-  ${MINGW_PREFIX}/bin/meson test
+  ctest \
+    --test-dir "${srcdir}/build-${MSYSTEM}" \
+    --output-on-failure
 }
 
 package() {
-  cd "${srcdir}/build-${MSYSTEM}"
+  local builddir="${srcdir}/build-${MSYSTEM}"
 
-  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/meson install
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake --install "${builddir}"
 
-  install -Dm644 "${srcdir}"/${_realname}-${pkgver}/LICENSE \
-    "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" \
+    "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
 }
