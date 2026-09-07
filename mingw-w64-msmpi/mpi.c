@@ -23,7 +23,7 @@ int main(int argc, char** argv) {
         // Force forward slash as a file name separator
         s = strlen(argv[0]);
         while(s >= 0) if(argv[0][s--] == '\\') argv[0][s+1] = '/';
-#define SZ 32767	
+#define SZ 32767
 	char* lpath = malloc(SZ*sizeof(char));
 	snprintf(lpath, SZ, "-L%s/lib", argv[0]);
 	char* ipath = malloc(SZ*sizeof(char));
@@ -37,6 +37,9 @@ int main(int argc, char** argv) {
 	if(!show) for(int x = 1; x < argc; ++x) args[i++] = argv[x];
 	args[i++] = lpath;
 	args[i++] = "-l:libmsmpi.dll.a";
+#if defined(FC)
+	args[i++] = "-lmsmpifec";
+#endif
 	args[i] = NULL;
 	if(show) {
 		for(int x = 0; args[x]; ++x) printf("%s ", args[x]);
