@@ -32,8 +32,8 @@ _realname=mumps
 
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=5.9.0
-pkgrel=5
+pkgver=5.9.1
+pkgrel=1
 pkgdesc="MUltifrontal Massively Parallel sparse direct solver (mingw-w64)"
 arch=('any')
 mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
@@ -43,26 +43,29 @@ depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
          "${MINGW_PACKAGE_PREFIX}-fc-libs"
          "${MINGW_PACKAGE_PREFIX}-openblas"
          "${MINGW_PACKAGE_PREFIX}-metis"
-         $([[ ${CARCH} == aarch64 ]] || echo "${MINGW_PACKAGE_PREFIX}-parmetis")
-         "${MINGW_PACKAGE_PREFIX}-scotch"
-         $([[ ${CARCH} == aarch64 ]] || echo "${MINGW_PACKAGE_PREFIX}-scalapack"))
+         $([[ ${CARCH} == aarch64 ]] || echo \
+           "${MINGW_PACKAGE_PREFIX}-msmpi" \
+           "${MINGW_PACKAGE_PREFIX}-parmetis" \
+           "${MINGW_PACKAGE_PREFIX}-scalapack")
+         "${MINGW_PACKAGE_PREFIX}-scotch")
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-fc"
-             "${MINGW_PACKAGE_PREFIX}-pkgconf"
-             $([[ ${CARCH} == aarch64 ]] || echo "${MINGW_PACKAGE_PREFIX}-msmpi"))
+             "${MINGW_PACKAGE_PREFIX}-pkgconf")
 optdepends=("${MINGW_PACKAGE_PREFIX}-tcl: build & run test suite")
 source=("https://mumps-solver.org/MUMPS_${pkgver}.tar.gz"
         "0001-makefile.inc.patch"
         "0002-skip-examples.patch"
         "0003-fix-win32.patch"
+        "0004-mpi-module.patch"
         "mumps.tcl"
         "testme-0.tm"
         "buildme-0.tm"
         "xyz-0.tm")
-sha256sums=('02c6efdb91749ec0f82351d40f3f860547272a1eb1d899126a4265b4d6bcc4ca'
+sha256sums=('659c9b57646b5a003ac618baa1faf9dd2044e46c732b3daaccbc7158003e1b46'
             '9964c88184f19644ef66c219114708f1276ffc2ccd1a34c1f8dd72aa866f4159'
             'bbefd4a5f841536132f32c1ffc684a58b778901cd777445ca817dbb34d983450'
             '357c13b985e75604fd9f59f2f174e6c75fd9133d0806e2db2d584d33e32b108d'
+            '1576d619dafa58c1d0563f13e8d31c6be2ab3b910c2459255e1b8ea856076960'
             'e967554f139833fe6f10ccc5fcd82a346b480b2827475ea9bd50eeb5d017b2b0'
             '47aa9a8a03627ffeb299191ede391f5aa96071c1b09fb294ec6712e3beb0b799'
             'e9585cccd9269c9ff3d68a6f9bb313d4cd64b86e5cc8d7b1f2db585e53c7a04d'
@@ -81,7 +84,8 @@ prepare() {
   apply_patch_with_msg \
     "0001-makefile.inc.patch" \
     "0002-skip-examples.patch" \
-    "0003-fix-win32.patch"
+    "0003-fix-win32.patch" \
+    "0004-mpi-module.patch"
 }
 
 seq_pc="metis scotch openblas"
@@ -95,21 +99,21 @@ build() {
     export FFLAGS="${CFLAGS} -fallow-argument-mismatch -fallow-invalid-boz"
   else
     export FC=flang
-    export FFLAGS="-O2"
+    # MPI_IN_PLACE is unusable with MS-MPI and LLVM Flang: It needs to be
+    # dllimported from a central library. But LLVM does not support the
+    # DLLIMPORT attribute.
+    # Define AVOID_MPI_IN_PLACE to select alternative code paths that do not
+    # require a working implementation of MPI_IN_PLACE.
+    export FFLAGS="-O2 -DAVOID_MPI_IN_PLACE"
   fi
-  # MPI_IN_PLACE is unusable with MS-MPI and gfortran: mpif.h keeps the sentinel
-  # in COMMON /MPIPRIV1/ and imports the block with a !DEC$ directive, Intel
-  # syntax that gfortran treats as a comment. So gfortran uses its own
-  # zero-filled copy, the address matches nothing the C layer compares against,
-  # and MPI reads that memory as a real send buffer.
-  # Define AVOID_MPI_IN_PLACE to select alternative code paths that do not
-  # require a working implementation of MPI_IN_PLACE.
-  FFLAGS="$FFLAGS -DAVOID_MPI_IN_PLACE"
   declare -a _mods=(SEQ SHM)
   [[ ${CARCH} == aarch64 ]] || _mods+=(PAR)
   for mod in ${_mods[@]}; do
     cp Makefile.inc.${mod} Makefile.inc
-    for x in clean s d c z; do make -j $x; done
+    if [[ $mod == PAR ]]; then
+      FFLAGS="${FFLAGS} -DMUMPS_PREFER_MPI_MODULE"
+    fi
+    for x in clean s d c z; do make -j1 $x; done
     if [[ $mod == SEQ ]]; then
       cp libseq/libmpiseq_seq.a lib/libmumps_mpi_seq.a
       cp PORD/lib/libpord_seq.a lib/libmumps_pord.a
@@ -117,16 +121,19 @@ build() {
   done
   cd lib
   rm -rf libmumps-*.a
-  strip -S *.a # Thin archives require the constituent archives to be stripped beforehand
   for x in s d c z; do
     (
       rm -rf .a; mkdir .a; cd .a
-      for a in lib${x}mumps_seq.a libmumps_common_seq.a libmumps_pord.a libmumps_mpi_seq.a; do ar x ../$a; done
+      for a in lib${x}mumps_seq.a libmumps_common_seq.a libmumps_pord.a libmumps_mpi_seq.a; do
+        ar x ../$a
+      done
     )
     ar cr libmumps-${x}so.a .a/*.o
     (
       rm -rf .a; mkdir .a; cd .a
-      for a in lib${x}mumps_shm.a libmumps_common_shm.a libmumps_pord.a libmumps_mpi_seq.a; do ar x ../$a; done
+      for a in lib${x}mumps_shm.a libmumps_common_shm.a libmumps_pord.a libmumps_mpi_seq.a; do
+        ar x ../$a
+      done
     )
     ar cr libmumps-${x}to.a .a/*.o
     # TODO export only the required driver routine to reduce the exported symbol table size
@@ -135,7 +142,9 @@ build() {
     if [[ ${CARCH} != aarch64 ]]; then
       (
         rm -rf .a; mkdir .a; cd .a
-        for a in lib${x}mumps_mpi.a libmumps_common_mpi.a libmumps_pord.a; do ar x ../$a; done
+        for a in lib${x}mumps_mpi.a libmumps_common_mpi.a libmumps_pord.a; do
+          ar x ../$a
+        done
       )
       ar cr libmumps-${x}mo.a .a/*.o
       mpifort -shared -fopenmp -Wl,--enable-auto-import -Wl,--export-all-symbols -o libmumps-${x}mo.dll -Wl,--out-implib,libmumps-${x}mo.dll.a -Wl,--whole-archive libmumps-${x}mo.a -Wl,--no-whole-archive -lptesmumps $(pkg-config ${mpi_pc} --libs)
