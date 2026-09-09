@@ -423,7 +423,7 @@ MSMPIF_API void
 mpi_comm_spawn_(const char *command, const char *argv_block, const int *maxprocs,
     const int *info, const int *root, const int *comm, int *intercomm,
     int array_of_errcodes[], int *ierr,
-    int d1, int d2)
+    size_t command_len, size_t argv_block_len)
 {
   char *cmd = NULL;
   char **argv = NULL;
@@ -434,7 +434,7 @@ mpi_comm_spawn_(const char *command, const char *argv_block, const int *maxprocs
      Trim and copy COMMAND
      --------------------------- */
   {
-    const char *p = command + d1 - 1;
+    const char *p = command + command_len - 1;
     while (p > command && *p == ' ')
       p--;
     int len = (int)(p - command + 1);
@@ -453,7 +453,7 @@ mpi_comm_spawn_(const char *command, const char *argv_block, const int *maxprocs
      Build ARGV array for C interface
      Fortran passes a flat block:
        argv_block = [entry0][entry1][entry2]...
-     Each entry is CHARACTER(d2)
+     Each entry is CHARACTER(argv_block_len)
      MS-MPI terminates when an entry is all blanks.
      --------------------------- */
   {
@@ -462,12 +462,12 @@ mpi_comm_spawn_(const char *command, const char *argv_block, const int *maxprocs
     /* Count entries until all-blank */
     for (argc = 0;; argc++)
     {
-      const char *end = p + d2 - 1;
+      const char *end = p + argv_block_len - 1;
       while (end > p && *end == ' ')
         end--;
       if (*end == ' ')  /* all blank */
         break;
-      p += d2;
+      p += argv_block_len;
     }
 
     argv = (char **)malloc((argc + 1) * sizeof(char *));
@@ -477,7 +477,7 @@ mpi_comm_spawn_(const char *command, const char *argv_block, const int *maxprocs
       goto cleanup;
     }
 
-    argv_storage = (char *)malloc(argc * (d2 + 1));
+    argv_storage = (char *)malloc(argc * (argv_block_len + 1));
     if (!argv_storage)
     {
       *ierr = MPI_ERR_NO_MEM;
@@ -486,13 +486,13 @@ mpi_comm_spawn_(const char *command, const char *argv_block, const int *maxprocs
 
     for (int i = 0; i < argc; i++)
     {
-      const char *src = argv_block + i * d2;
-      const char *end = src + d2 - 1;
+      const char *src = argv_block + i * argv_block_len;
+      const char *end = src + argv_block_len - 1;
       while (end > src && *end == ' ')
         end--;
       int len = (int)(end - src + 1);
 
-      char *dest = argv_storage + i * (d2 + 1);
+      char *dest = argv_storage + i * (argv_block_len + 1);
       memcpy(dest, src, len);
       dest[len] = '\0';
       argv[i] = dest;
@@ -522,7 +522,7 @@ mpi_comm_spawn_multiple_(const int *count,
     const char *commands_block, const char *argv_block, const int maxprocs[],
     const int infos[], const int *root, const int *comm, int *intercomm,
     int array_of_errcodes[], int *ierr,
-    int d2, int d3)
+    size_t commands_block_len, size_t argv_block_len)
 {
   char **commands = NULL;
   char *commands_storage = NULL;
@@ -534,7 +534,7 @@ mpi_comm_spawn_multiple_(const int *count,
      Build COMMANDS array
      Fortran passes flat block:
        commands_block = [cmd0][cmd1]...[cmdN-1]
-     Each entry is CHARACTER(d2)
+     Each entry is CHARACTER(commands_block_len)
      --------------------------- */
   {
     int asize = ncmd + 1; /* extra NULL terminator */
@@ -546,7 +546,7 @@ mpi_comm_spawn_multiple_(const int *count,
       goto cleanup;
     }
 
-    commands_storage = (char *)malloc(asize * (d2 + 1));
+    commands_storage = (char *)malloc(asize * (commands_block_len + 1));
     if (!commands_storage)
     {
       *ierr = MPI_ERR_NO_MEM;
@@ -555,13 +555,13 @@ mpi_comm_spawn_multiple_(const int *count,
 
     for (int i = 0; i < ncmd; i++)
     {
-      const char *src = commands_block + i * d2;
-      const char *end = src + d2 - 1;
+      const char *src = commands_block + i * commands_block_len;
+      const char *end = src + commands_block_len - 1;
       while (end > src && *end == ' ')
         end--;
       int len = (int)(end - src + 1);
 
-      char *dest = commands_storage + i * (d2 + 1);
+      char *dest = commands_storage + i * (commands_block_len + 1);
       memcpy(dest, src, len);
       dest[len] = '\0';
       commands[i] = dest;
@@ -574,10 +574,10 @@ mpi_comm_spawn_multiple_(const int *count,
   /* ---------------------------
      Build ARGV array-of-arrays
      Fortran passes a 2D block:
-       argv_block(k, i) with CHARACTER(d3)
+       argv_block(k, i) with CHARACTER(argv_block_len)
      laid out column-major:
-       row k starts at argv_block + k*d3
-       next arg for same command is + (*count)*d3
+       row k starts at argv_block + k*argv_block_len
+       next arg for same command is + (*count)*argv_block_len
      Each row is terminated by an all-blank entry.
      --------------------------- */
   {
@@ -597,20 +597,20 @@ mpi_comm_spawn_multiple_(const int *count,
 
     for (int k = 0; k < ncmd; k++)
     {
-      const char *p = argv_block + k * d3;
+      const char *p = argv_block + k * argv_block_len;
       int argc = 0;
 
       /* Count arguments until all-blank entry */
       for (;;)
       {
-        const char *end = p + d3 - 1;
+        const char *end = p + argv_block_len - 1;
         while (end > p && *end == ' ')
           end--;
         if (*end == ' ' && end == p)
           break; /* all blank => terminator */
 
         argc++;
-        p += ncmd * d3;
+        p += ncmd * argv_block_len;
       }
 
       /* Allocate pointers and storage for this command's args */
@@ -621,7 +621,7 @@ mpi_comm_spawn_multiple_(const int *count,
         goto cleanup;
       }
 
-      char *pdata = (char *)malloc(argc * (d3 + 1));
+      char *pdata = (char *)malloc(argc * (argv_block_len + 1));
       if (!pdata)
       {
         free(pargs);
@@ -633,21 +633,21 @@ mpi_comm_spawn_multiple_(const int *count,
       argv_storage[k] = pdata;
 
       /* Copy each argument, trimming and null-terminating */
-      p = argv_block + k * d3;
+      p = argv_block + k * argv_block_len;
       for (int i = 0; i < argc; i++)
       {
         const char *src = p;
-        const char *end = src + d3 - 1;
+        const char *end = src + argv_block_len - 1;
         while (end > src && *end == ' ')
           end--;
         int len = (int)(end - src + 1);
 
-        char *dest = pdata + i * (d3 + 1);
+        char *dest = pdata + i * (argv_block_len + 1);
         memcpy(dest, src, len);
         dest[len] = '\0';
 
         pargs[i] = dest;
-        p += ncmd * d3;
+        p += ncmd * argv_block_len;
       }
 
       pargs[argc] = NULL; /* terminate argv[k] */
