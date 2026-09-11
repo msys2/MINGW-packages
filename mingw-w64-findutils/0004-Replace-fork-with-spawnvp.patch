@@ -1,0 +1,329 @@
+From 4b693437d320b5c49a290fb8dacf2033fb97a256 Mon Sep 17 00:00:00 2001
+From: Cyril Arnould <cyril.arnould@outlook.com>
+Date: Tue, 13 Jun 2023 21:13:12 +0200
+Subject: [PATCH 04/17] Replace fork with spawnvp
+
+Adapted from ezwinports to new process handling
+---
+ find/defs.h   |   3 ++
+ find/exec.c   | 138 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ xargs/xargs.c |  74 ++++++++++++++++++++++++++-
+ 3 files changed, 214 insertions(+), 1 deletion(-)
+
+diff --git a/find/defs.h b/find/defs.h
+index 86006905..886e1b12 100644
+--- a/find/defs.h
++++ b/find/defs.h
+@@ -343,6 +343,9 @@ bool is_fts_enabled(int *ftsoptions);
+ 
+ /* find library function declarations.  */
+ 
++/* xgetcwd.c */
++char *xgetcwd (void);
++
+ /* find global function declarations.  */
+ 
+ /* SymlinkOption represents the choice of
+diff --git a/find/exec.c b/find/exec.c
+index 62d45525..6c2a179c 100644
+--- a/find/exec.c
++++ b/find/exec.c
+@@ -277,6 +277,91 @@ prep_child_for_exec (bool close_stdin, const struct saved_cwd *wd)
+   return ok;
+ }
+ 
++#ifdef __MINGW32__
++
++/* More sensible spawnvp function: the library one requires arguments
++   with embedded special characters to be quoted.  */
++static char **
++quote_spawn_args (const char * const *argv)
++{
++  /* These characters should include anything that is special to _any_
++     program, including both Windows and Unixy shells.  */
++  const char need_quotes[] = " \t#;\"\'*?[]&|<>|(){}$`^";
++  int i = 0;
++  char **qargv;
++
++  while (argv[i])
++    i++;
++  qargv = malloc ((i + 1)*sizeof(argv[0]));
++
++  if (!qargv)
++    return NULL;
++  for (i = 0; argv[i]; i++)
++    {
++      if (strpbrk (argv[i], need_quotes))
++	{
++	  size_t len = strlen (argv[i]) + 3;
++	  const char *p = argv[i];
++	  char *q;
++
++	  for ( ; *p; p++)
++	    {
++	      if (*p == '\"')
++		len++;
++	    }
++	  qargv[i] = xmalloc (len);
++	  (qargv[i])[0] = '\"';
++	  for (p = argv[i], q = qargv[i] + 1; *p; p++)
++	    {
++	      if (*p == '\"')
++		*q++ = '\\';
++	      *q++ = *p;
++	    }
++	  memcpy (q, "\"", 2);
++	}
++      else
++	qargv[i] = strdup (argv[i]);
++#if 0
++      printf ("%d: `%s'\n", i, qargv[i]);
++#endif
++    }
++  qargv[i] = NULL;
++
++  return qargv;
++}
++
++static void
++free_args (char **args)
++{
++  if (args)
++    {
++      int i;
++
++      for (i = 0; args[i]; i++)
++	free (args[i]);
++      free (args);
++    }
++}
++
++int
++w32_spawnvp (int mode, const char *cmd, const char * const *argv)
++{
++  int ret;
++  char **qargv = quote_spawn_args (argv);
++
++  if (!qargv)
++    qargv = (char **)argv;
++#ifdef __MINGW64__
++  ret = spawnvp (mode, cmd, (char * const *)qargv);
++#else
++  ret = spawnvp (mode, cmd, (const char * const *)qargv);
++#endif
++
++  free_args (qargv);
++  return ret;
++}
++
++#endif	/* __MINGW32__ */
+ 
+ int
+ launch (struct buildcmd_control *ctl, void *usercontext, int argc, char **argv)
+@@ -311,7 +396,59 @@ launch (struct buildcmd_control *ctl, void *usercontext, int argc, char **argv)
+       first_time = 0;
+       signal (SIGCHLD, SIG_DFL);
+     }
++  
++#if defined(__MINGW32__) || defined(_MSC_VER) || defined(__MSDOS__)
++{
++  char *cwd;
++  int wait_ret = 0;
++  cwd = xgetcwd ();
+ 
++  assert (NULL != execp->wd_for_exec);
++  if (!prep_child_for_exec (execp->close_stdin, execp->wd_for_exec))
++    {
++      _exit (1);
++    }
++  else
++    {
++      if (fd_leak_check_is_enabled ())
++        {
++          complain_about_leaky_fds ();
++        }
++    }
++#ifdef __MSDOS__
++  child_pid = spawnvp (P_WAIT, argv[0], argv);
++  if (child_pid == -1)
++    error (0, errno, "%s", argv[0]);
++  execp->last_child_status |= (child_pid & 0xff);
++#else
++#ifdef __MINGW32__
++  child_pid = w32_spawnvp (_P_NOWAIT, argv[0],
++			   (const char * const *)argv);
++#else
++  child_pid = spawnvp (_P_NOWAIT, argv[0],
++		       (const char * const *)argv);
++#endif
++  if (child_pid == -1)
++    error (0, errno, "%s", argv[0]);
++  else
++    wait_ret = _cwait (&execp->last_child_status, child_pid, 0);
++  if (wait_ret == -1)
++    {
++      error (0, errno, _("error waiting for %s"), argv[0]);
++      state.exit_status = 1;
++      return 0;		/* FAIL */
++    }
++#endif
++  
++  if (chdir (cwd) < 0)
++    {
++      error (0, errno, "%s", cwd);
++      _exit (1);
++    }
++  if (cwd)
++	  free (cwd);
++}
++#else /* _WIN32 */
+   child_pid = fork ();
+   if (child_pid == -1)
+     die (EXIT_FAILURE, errno, _("cannot fork"));
+@@ -351,6 +488,7 @@ launch (struct buildcmd_control *ctl, void *usercontext, int argc, char **argv)
+ 	  return 0;		/* FAIL */
+ 	}
+     }
++#endif /* _WIN32 */ 
+ 
+   if (WIFSIGNALED (execp->last_child_status))
+     {
+diff --git a/xargs/xargs.c b/xargs/xargs.c
+index 2951b005..16e828ff 100644
+--- a/xargs/xargs.c
++++ b/xargs/xargs.c
+@@ -70,6 +70,9 @@
+ #include "gcc-function-attributes.h"
+ #include "system.h"
+ 
++#if defined(__MINGW32__) || defined(_MSC_VER) || defined(__MSDOS__)
++# include "xgetcwd.h"
++#endif
+ 
+ #ifndef LONG_MAX
+ # define LONG_MAX (~(1 << (sizeof (long) * 8 - 1)))
+@@ -1224,8 +1227,10 @@ prep_child_for_exec (void)
+ 
+      We use 0 here in order to avoid generating a data structure that appears
+      to indicate that we (the child) have a child. */
++#if !defined(__MINGW32__) && !defined(_MSC_VER)
+   unsigned int slot = add_proc (0);
+   set_slot_var (slot);
++#endif
+ 
+   if (!keep_stdin || open_tty)
+     {
+@@ -1295,7 +1300,33 @@ xargs_do_exec (struct buildcmd_control *ctl, void *usercontext, int argc, char *
+     {
+       if (!query_before_executing && print_command)
+ 	print_args (false);
+-
++#if defined(__MINGW32__) || defined(_MSC_VER) || defined(__MSDOS__)
++      {
++	char *cwd = xgetcwd ();
++	int e;
++	prep_child_for_exec();
++#ifdef __MSDOS__
++	child = spawnvp (P_WAIT, argv[0], argv);
++#else
++	while ((child = spawnvp (_P_NOWAIT, argv[0],
++# ifdef __MINGW64__
++				 (char * const *)argv)) < 0
++# else
++				 (const char * const *)argv)) < 0
++# endif
++	       && errno == ENOMEM && procs_executing)
++	  wait_for_proc (false, 1u);
++#endif
++	e = errno;	/* errno will be clobbered by wait_for_proc and chdir */
++	chdir (cwd);
++	if (cwd)
++	  free (cwd);
++	if (child == -1 && !(e == ENOENT || e == ENOEXEC))
++	  error (0, e, "%s", argv[0]);
++      }
++      add_proc (child);
++    }
++#else
+       /* Before forking, reap any already-exited child. We do this so
+ 	 that we don't leave unreaped children around while we build a
+ 	 new command line.  For example this command will spend most
+@@ -1438,6 +1469,7 @@ xargs_do_exec (struct buildcmd_control *ctl, void *usercontext, int argc, char *
+ 	} /* switch on bytes read */
+       close (fd[0]);
+     }
++#endif
+   return 1;			/* Success */
+ }
+ 
+@@ -1492,12 +1524,45 @@ add_proc (pid_t pid)
+ static void
+ wait_for_proc (bool all, unsigned int minreap)
+ {
++#if defined(__MSDOS__)
++  if (procs_executing)
++	procs_executing--;
++#else
+   unsigned int reaped = 0;
+ 
+   while (procs_executing)
+     {
+       unsigned int i;
+       int status;
++
++#if defined(__MINGW32__) || defined(_MSC_VER)
++      do
++	{
++	  for (i = 0; i < pids_alloc; i++)
++	    {
++	      DWORD waited, dstatus;
++
++	      if (!pids[i])
++		continue;
++	      if (pids[i] == -1) /* spawnvp failed */
++		{
++		  status = 127;	/* mimic Unixy shell */
++		  break;
++		}
++	      waited = WaitForSingleObject ((HANDLE)pids[i], 10UL);
++	      if (waited == WAIT_OBJECT_0) /* this process finished */
++		{
++		  GetExitCodeProcess ((HANDLE)pids[i], &dstatus);
++		  CloseHandle ((HANDLE)pids[i]);
++		  status = dstatus;
++		  break;
++		}
++	      else if (waited == WAIT_FAILED)
++		error (1, errno, _("error waiting for child process"));
++	    }
++	}
++      while (i == pids_alloc);	/* A child died that we didn't start? */    
++#else      
+       pid_t pid;
+       int wflags = 0;
+ 
+@@ -1569,6 +1634,7 @@ wait_for_proc (bool all, unsigned int minreap)
+ 	    }
+ 	  break;
+ 	}
++#endif
+ 
+       /* Remove the child from the list.  */
+       pids[i] = 0;
+@@ -1586,7 +1652,13 @@ wait_for_proc (bool all, unsigned int minreap)
+ 	       _("%s: terminated by signal %d"), bc_state.cmd_argv[0], WTERMSIG (status));
+       if (WEXITSTATUS (status) != 0)
+ 	child_error = XARGS_EXIT_CLIENT_EXIT_NONZERO;
++
++#if defined(__MINGW32__) || defined(_MSC_VER)
++      if (!all)
++	break;
++#endif
+     }
++#endif
+ }
+ 
+ /* Wait for all child processes to finish.  */
+-- 
+2.41.0
+
