@@ -1,0 +1,153 @@
+# Contributor: Paul Galbraith <paul@galbraiths.ca>
+# Based on mingw-w64-arm-none-eabi-newlib
+
+# Leave at 1 until the i686-elf gcc package exists. With 0, newlib
+# makedepends on that package, which nothing provides yet, and newlib
+# and gcc then depend on each other; .ci/ci-get-build-order.py reports
+# the cycle and orders the builds wrongly. Bootstrap mode builds a
+# throwaway C-only GCC here instead. Set to 0 once the gcc package
+# has landed.
+_bootstrap=1
+
+_realname=newlib
+_target=i686-elf
+_gccver=16.1.0
+
+pkgbase=mingw-w64-${_target}-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_target}-${_realname}")
+pkgver=4.6.0.20260123
+pkgrel=1
+pkgdesc="Newlib C library for the ${_target} target (mingw-w64)"
+arch=('any')
+mingw_arch=('ucrt64' 'clang64')
+url="https://sourceware.org/newlib/"
+license=('spdx:GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND LGPL-3.0-only AND 0BSD AND BSD-2-Clause AND BSD-3-Clause-Clear AND custom')
+groups=("${MINGW_PACKAGE_PREFIX}-${_target}-toolchain")
+depends=("${MINGW_PACKAGE_PREFIX}-${_target}-binutils")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-autotools"
+             "${MINGW_PACKAGE_PREFIX}-gmp"
+             "${MINGW_PACKAGE_PREFIX}-mpc"
+             "${MINGW_PACKAGE_PREFIX}-mpfr"
+             "${MINGW_PACKAGE_PREFIX}-isl"
+             "${MINGW_PACKAGE_PREFIX}-texinfo"
+             $( (( _bootstrap )) || echo "${MINGW_PACKAGE_PREFIX}-${_target}-gcc"))
+options=('!strip' '!emptydirs')
+source=(
+  "https://sourceware.org/pub/newlib/newlib-${pkgver}.tar.gz"
+  "001-newlib-name-jmp_buf-struct.patch"
+  $( (( !_bootstrap )) || echo "https://ftp.gnu.org/gnu/gcc/gcc-${_gccver}/gcc-${_gccver}.tar.xz")
+)
+sha256sums=(
+  '6ff27e3bf022666f43f7802255be680eeff722ac181b1725d21e2e8318604ee3'
+  '1623c2774c3f328da0f8067f6e8007d301f40dd84463a8d34addba92571434df'
+  $( (( !_bootstrap )) || echo '50efb4d94c3397aff3b0d61a5abd748b4dd31d9d3f2ab7be05b171d36a510f79')
+)
+noextract=("newlib-${pkgver}.tar.gz")
+
+prepare() {
+  cd "${srcdir}"
+  # bsdtar doesn't like the symlinks
+  tar -xzf newlib-${pkgver}.tar.gz || true
+
+  # Without this, GCC 16 cannot build libstdc++'s C++23 std module: newlib's
+  # i386 jmp_buf is a typedef of an unnamed struct, and C++ modules reject
+  # unnamed types as TU-local. The failure is quiet, the module is skipped
+  # and the rest of the build carries on.
+  cd "${srcdir}"/newlib-${pkgver}
+  patch -p1 -i "${srcdir}"/001-newlib-name-jmp_buf-struct.patch
+}
+
+# Newlib is required to build GCC, but GCC is also required to compile newlib
+# So we must build a minimal GCC first, to avoid the circular dependency
+_build_gcc() {
+  cp -a ${MINGW_PREFIX}/${_target} "${srcdir}"/gcc-install-${MSYSTEM}
+
+  # clang 22 crashes compiling gcc's sources while emitting the
+  # -Wmismatched-tags diagnostic. -Wno-mismatched-tags does not prevent it:
+  # gcc's build system re-adds its own warning flags after these, so only a
+  # blanket -w survives.
+  if [[ ${CC} == clang ]]; then
+    CFLAGS+=" -w"
+    CXXFLAGS+=" -w"
+  fi
+
+  # gcc's x-mingw32-utf8 fragment builds utf8-mingw32.o with a relocatable
+  # link (-r), which lld does not support. The manifest is not needed here.
+  declare -a _extra_config
+  if [[ ${CC} == clang ]]; then
+    _extra_config+=("--disable-win32-utf8-manifest")
+  fi
+
+  local _GCC_LDFLAGS="${LDFLAGS} -Wl,--disable-dynamicbase"
+  ../gcc-${_gccver}/configure \
+    --build=${MINGW_CHOST} \
+    --host=${MINGW_CHOST} \
+    --prefix=/ \
+    --target=${_target} \
+    --enable-languages=c \
+    --disable-nls \
+    --disable-libssp \
+    --disable-shared \
+    --disable-threads \
+    --disable-libgomp \
+    --disable-werror \
+    --disable-lto \
+    --disable-libffi \
+    --disable-decimal-float \
+    --disable-libmudflap \
+    --disable-libquadmath \
+    --disable-libstdcxx-pch \
+    --disable-libsanitizer \
+    --disable-tls \
+    --disable-multilib \
+    --without-headers \
+    --with-libelf \
+    --with-newlib \
+    --with-host-libstdcxx="-static-libgcc -Wl,-Bstatic,-lstdc++,-Bdynamic -lm" \
+    --with-sysroot=${MINGW_PREFIX} \
+    --with-build-sysroot="${srcdir}"/gcc-install-${MSYSTEM} \
+    --with-build-time-tools=${MINGW_PREFIX}/${_target}/bin \
+    "${_extra_config[@]}" \
+    LDFLAGS="${_GCC_LDFLAGS}"
+
+  make all-gcc
+  make DESTDIR="${srcdir}"/gcc-install-${MSYSTEM} install-gcc
+}
+
+build() {
+  if (( _bootstrap )); then
+    mkdir -p gcc-install-${MSYSTEM}
+    mkdir -p gcc-build-${MSYSTEM} && cd gcc-build-${MSYSTEM}
+    _build_gcc
+    export PATH="${srcdir}/gcc-install-${MSYSTEM}/bin:${PATH}"
+  fi
+
+  mkdir -p "${srcdir}"/build-${MSYSTEM} && cd "${srcdir}"/build-${MSYSTEM}
+
+  # The application supplies its own syscalls: there is no OS underneath.
+  # libgloss provides the stubs in libnosys, plus cygmon-crt0.o for i386.
+  ../newlib-${pkgver}/configure \
+    --build=${MINGW_CHOST} \
+    --host=${MINGW_CHOST} \
+    --target=${_target} \
+    --prefix=${MINGW_PREFIX} \
+    --enable-newlib-io-long-long \
+    --enable-newlib-io-c99-formats \
+    --enable-newlib-register-fini \
+    --enable-newlib-retargetable-locking \
+    --disable-newlib-supplied-syscalls \
+    --disable-nls
+  make
+}
+
+package() {
+  cd "${srcdir}"/build-${MSYSTEM}
+
+  make DESTDIR="${pkgdir}" install
+
+  find "${pkgdir}"${MINGW_PREFIX}/${_target}/lib \( -name "*.a" -or -name "*.o" \) -exec ${_target}-objcopy -R .comment -R .note -R .debug_info -R .debug_aranges -R .debug_pubnames -R .debug_pubtypes -R .debug_abbrev -R .debug_line -R .debug_str -R .debug_ranges -R .debug_loc '{}' \;
+
+  # Avoid conflict with other targets newlib
+  mv "${pkgdir}"${MINGW_PREFIX}/share/info/porting.info "${pkgdir}"${MINGW_PREFIX}/share/info/${_target}-porting.info
+}
