@@ -105,7 +105,7 @@ index 859227d..d453c70 100644
 +TARGET_LINK_LIBRARIES(mariadb-plugin mysqlservices)
  
 +IF(NOT MARIADB_CLIENT_SKIP_BINLOG)
- MYSQL_ADD_EXECUTABLE(mariadb-binlog mysqlbinlog.cc)
+ MYSQL_ADD_EXECUTABLE(mariadb-binlog mysqlbinlog.cc mysqlbinlog-engine.cc)
  TARGET_LINK_LIBRARIES(mariadb-binlog ${CLIENT_LIB} mysys_ssl)
 +  TARGET_LINK_LIBRARIES(mariadb-binlog mysqlservices)
 +ENDIF()
@@ -445,22 +445,11 @@ diff --git a/cmake/submodules.cmake b/cmake/submodules.cmake
 index 34dcfbe..7a939b8 100644
 --- a/cmake/submodules.cmake
 +++ b/cmake/submodules.cmake
-@@ -1,5 +1,6 @@
- # update submodules automatically
- 
+@@ -1,3 +1,4 @@
 +OPTION(USE_SYSTEM_LIBMARIADB "Use system-installed MariaDB Connector/C instead of submodule" OFF)
  OPTION(UPDATE_SUBMODULES "Update submodules automatically" ON)
- IF(NOT UPDATE_SUBMODULES)
-   RETURN()
-@@ -43,7 +44,7 @@ IF(GIT_EXECUTABLE AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
-   ENDIF()
- ENDIF()
  
--IF(update_result OR NOT EXISTS ${CMAKE_SOURCE_DIR}/libmariadb/CMakeLists.txt)
-+IF(NOT USE_SYSTEM_LIBMARIADB AND (update_result OR NOT EXISTS ${CMAKE_SOURCE_DIR}/libmariadb/CMakeLists.txt))
-   MESSAGE(FATAL_ERROR "No MariaDB Connector/C! Run
-     ${GIT_EXECUTABLE} submodule update --init --recursive
- Then restart the build.${SUBMODULE_UPDATE_CONFIG_MESSAGE}")
+ IF(NOT UPDATE_SUBMODULES)
 diff --git a/config.h.cmake b/config.h.cmake
 index cf3c1af..967c994 100644
 --- a/config.h.cmake
@@ -702,7 +691,7 @@ index ad8dd84..13d4fa6 100644
 --- a/mysys/CMakeLists.txt
 +++ b/mysys/CMakeLists.txt
 @@ -50,14 +50,20 @@ SET(MYSYS_SOURCES  array.c charset-def.c charset.c my_default.c
-                                 my_timezone.cc  my_thread_name.cc
+                                 my_timezone.cc my_compr_int.cc my_thread_name.cc
                                  my_virtual_mem.c)
  
 -IF (WIN32)
@@ -719,7 +708,7 @@ index ad8dd84..13d4fa6 100644
 +IF (WIN32)
 +  SET (MYSYS_SOURCES ${MYSYS_SOURCES}
      my_winerr.c
-     my_winfile.c
+     my_winfile.cc
 -    my_minidump.cc
      my_win_popen.cc)
  ENDIF()
@@ -860,25 +849,21 @@ index 7bfbdef..05c8dcb 100644
    DBUG_RETURN(my_win_fstat(Filedes, stat_area));
  #else
    DBUG_RETURN(fstat(Filedes, (struct stat *) stat_area));
-@@ -351,14 +351,14 @@ MY_STAT *my_stat(const char *path, MY_STAT *stat_area, myf my_flags)
+@@ -359,11 +359,11 @@ MY_STAT *my_stat(const char *path, MY_STAT *stat_area, myf my_flags)
      if (!(stat_area= (MY_STAT *) my_malloc(key_memory_MY_STAT, sizeof(MY_STAT),
                                             my_flags)))
-       goto error;
+       goto err;
 -#ifndef _WIN32
+-  if (!stat((char *) path, (struct stat *) stat_area))
 +#if defined(_MSC_VER)
 +  if (!my_win_stat(path, stat_area))
-+    DBUG_RETURN(stat_area);
-+#else
-   if (!stat((char *) path, (struct stat *) stat_area))
-   {
      DBUG_RETURN(stat_area);
-   }
--#else
+ #else
 -  if (!my_win_stat(path, stat_area))
--    DBUG_RETURN(stat_area);
++  if (!stat((char *) path, (struct stat *) stat_area))
+     DBUG_RETURN(stat_area);
  #endif
    DBUG_PRINT("error",("Got errno: %d from stat", errno));
-   my_errno= errno;
 diff --git a/mysys/my_mkdir.c b/mysys/my_mkdir.c
 index 00bcca7..da81ff2 100644
 --- a/mysys/my_mkdir.c
