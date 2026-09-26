@@ -1,0 +1,61 @@
+From 9a5d0f30aa557ccd33f8356bc4d6d1d15feb8cf3 Mon Sep 17 00:00:00 2001
+From: hbadi <badi.hamid@gmail.com>
+Date: Sat, 8 Aug 2026 22:33:30 +0200
+Subject: [PATCH] sys: fix PetscProcessPlacementView() build on Windows
+
+hwloc defines hwloc_pid_t as a HANDLE when it is built against
+windows.h, so passing getpid() to hwloc_get_proc_cpubind() fails to
+compile on every Windows target. This makes --with-hwloc unusable with
+MinGW-w64 and with Intel oneAPI on Windows alike; the discriminant is
+the platform hwloc was built for, not the compiler in use.
+
+Select the process identifier on HWLOC_HAVE_WINDOWS_H, which hwloc
+publishes in its installed autogen/config.h and which is exactly the
+condition under which hwloc_pid_t becomes a HANDLE. hwloc.h already
+includes windows.h, so no further header is required. GetCurrentProcess()
+returns the pseudo-handle hwloc expects, while GetCurrentProcessId()
+returns the numeric identifier wanted for display; normalising the
+latter to unsigned long keeps a single format string.
+
+Tested on MSYS2/MinGW-w64 against hwloc 2.14.0, where -process_view now
+reports "MPI rank 0 Process id: 42796 coreid 0". No PETSc CI job
+configures hwloc on Windows, which is why this went unnoticed; the MSYS2
+petsc package has carried an equivalent downstream patch since 3.18.3.
+---
+ src/sys/utils/memc.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/src/sys/utils/memc.c b/src/sys/utils/memc.c
+index 9ef9e6395a6..ffbb3f9d712 100644
+--- a/src/sys/utils/memc.c
++++ b/src/sys/utils/memc.c
+@@ -51,6 +51,14 @@ PetscErrorCode PetscMemcmp(const void *str1, const void *str2, size_t len, Petsc
+ #if defined(PETSC_HAVE_HWLOC)
+   #include <petsc/private/petscimpl.h>
+   #include <hwloc.h>
++  #if defined(HWLOC_HAVE_WINDOWS_H)
++    // hwloc_pid_t is a HANDLE on Windows, and hwloc.h has already included windows.h
++    #define PetscHwlocSelf() GetCurrentProcess()
++    #define PetscHwlocPid()  ((unsigned long)GetCurrentProcessId())
++  #else
++    #define PetscHwlocSelf() getpid()
++    #define PetscHwlocPid()  ((unsigned long)getpid())
++  #endif
+ #endif
+ 
+ /*@
+@@ -84,9 +92,9 @@ PetscErrorCode PetscProcessPlacementView(PetscViewer viewer)
+   hwloc_topology_load(topology);
+   set = hwloc_bitmap_alloc();
+ 
+-  PetscCallExternal(hwloc_get_proc_cpubind, topology, getpid(), set, HWLOC_CPUBIND_PROCESS);
++  PetscCallExternal(hwloc_get_proc_cpubind, topology, PetscHwlocSelf(), set, HWLOC_CPUBIND_PROCESS);
+   PetscCall(PetscViewerASCIIPushSynchronized(viewer));
+-  PetscCall(PetscViewerASCIISynchronizedPrintf(viewer, "MPI rank %d Process id: %d coreid %d\n", rank, getpid(), hwloc_bitmap_first(set)));
++  PetscCall(PetscViewerASCIISynchronizedPrintf(viewer, "MPI rank %d Process id: %lu coreid %d\n", rank, PetscHwlocPid(), hwloc_bitmap_first(set)));
+   PetscCall(PetscViewerFlush(viewer));
+   hwloc_bitmap_free(set);
+   hwloc_topology_destroy(topology);
+-- 
+2.53.0.windows.2
+
