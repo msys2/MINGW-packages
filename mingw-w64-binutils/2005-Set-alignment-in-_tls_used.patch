@@ -1,0 +1,122 @@
+From 101f424909cf2f564c7a4f5bf4cc8d23d363709e Mon Sep 17 00:00:00 2001
+From: LIU Hao <lh_mouse@126.com>
+Date: Tue, 15 Sep 2026 17:16:29 +0800
+Subject: [PATCH] Write alignment of `.tls` into `_tls_used.Characteristics`
+
+Since Windows 8.1 SDK, Microsoft have replaced
+`IMAGE_TLS_DIRECTORY{32,64}::Characteristics` with
+
+   union {
+     DWORD Characteristics;
+     struct {
+       DWORD Reserved0 : 20;
+       DWORD Alignment : 4;
+       DWORD Reserved1 : 8;
+     };
+   };
+
+When a user defines an over-aligned thread-local variable like
+
+   alignas(128) thread_local int overaligned = 42;
+
+the alignment of TLS template data is now encoded in `_tls_used.Alignment`,
+in the same way as the characteristics of a section. The system will
+allocate storage for TLS variables with this alignment, so the variables
+will be aligned properly.
+
+This matches output of Clang (and also MSVC):
+
+   $ echo 'alignas(128) thread_local int overaligned = 42;
+   > int main(void) { return overaligned; }' \
+   > | clang++ -xc++ - \
+   > && llvm-readobj --coff-tls-directory a.exe
+
+   File: a.exe
+   Format: COFF-x86-64
+   Arch: x86_64
+   AddressSize: 64bit
+   TLSDirectory {
+     StartAddressOfRawData: 0x140007000
+     EndAddressOfRawData: 0x140007088
+     AddressOfIndex: 0x140005018
+     AddressOfCallBacks: 0x1400034C8
+     SizeOfZeroFill: 0x0
+     Characteristics [ (0x800000)
+       IMAGE_SCN_ALIGN_128BYTES (0x800000)
+     ]
+   }
+
+On older systems, `_tls_used.Characteristics` is ignored and TLS variables
+are always allocated with default alignment (tested on Windows 98 SE, XP
+SP3 and 7 SP2); it doesn't fail at least.
+
+Signed-off-by: LIU Hao <lh_mouse@126.com>
+---
+ bfd/peXXigen.c | 51 +++++++++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 46 insertions(+), 5 deletions(-)
+
+diff --git a/bfd/peXXigen.c b/bfd/peXXigen.c
+index f604a84ec0a..8cd3df808a6 100644
+--- a/bfd/peXXigen.c
++++ b/bfd/peXXigen.c
+@@ -4615,11 +4615,52 @@ _bfd_XXi_final_link_postscript (bfd * abfd, struct coff_final_link_info *pfinfo)
+ 	   || h1->root.type == bfd_link_hash_defweak)
+ 	  && h1->root.u.def.section != NULL
+ 	  && h1->root.u.def.section->output_section != NULL)
+-	pe_data (abfd)->pe_opthdr.DataDirectory[PE_TLS_TABLE].VirtualAddress =
+-	  (h1->root.u.def.value
+-	   + h1->root.u.def.section->output_section->vma
+-	   + h1->root.u.def.section->output_offset
+-	   - pe_data (abfd)->pe_opthdr.ImageBase);
++	{
++	  pe_data (abfd)->pe_opthdr.DataDirectory[PE_TLS_TABLE].VirtualAddress =
++	    (h1->root.u.def.value
++	     + h1->root.u.def.section->output_section->vma
++	     + h1->root.u.def.section->output_offset
++	     - pe_data (abfd)->pe_opthdr.ImageBase);
++
++	  /* Set the alignment of the output `.tls` section which contains
++	     TLS template data, into `_tls_used.Characteristics`.  The other
++	     bits are set to zeros.  */
++	  asection *tls_sect = bfd_get_section_by_name (abfd, ".tls");
++	  if (tls_sect != NULL)
++	    {
++	      /* Valid alignment values are 1 to 2**13 (8192 bytes).  */
++	      if (tls_sect->alignment_power <= 13)
++		{
++#if !defined(COFF_WITH_pep) && !defined(COFF_WITH_pex64) && !defined(COFF_WITH_peAArch64) && !defined(COFF_WITH_peLoongArch64) && !defined (COFF_WITH_peRiscV64)
++		  uint32_t offset_of_Characteristics = 0x14;
++#else
++		  uint32_t offset_of_Characteristics = 0x24;
++#endif
++		  char temp[4];
++		  bfd_put_32 (abfd, IMAGE_SCN_ALIGN_POWER_CONST (tls_sect->alignment_power), temp);
++		  if (!bfd_set_section_contents (abfd,
++						 h1->root.u.def.section->output_section,
++						 temp,
++						 (h1->root.u.def.value
++						  + h1->root.u.def.section->output_offset
++						  + offset_of_Characteristics),
++						 4))
++		    {
++		      _bfd_error_handler
++			(_("%pB: unable to fill in DataDirectory[%d]: could not write %s.Characteristics"),
++			 abfd, PE_TLS_TABLE, name);
++		      result = false;
++		    }
++		}
++	      else
++		{
++		  _bfd_error_handler
++		    (_("%pB: unable to fill in DataDirectory[%d]: alignment of .tls section (%d) is too large"),
++		     abfd, PE_TLS_TABLE, 1 << tls_sect->alignment_power);
++		  result = false;
++		}
++	    }
++	}
+       else
+ 	{
+ 	  _bfd_error_handler
+-- 
+2.55.0
+
