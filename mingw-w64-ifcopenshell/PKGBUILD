@@ -5,9 +5,9 @@ _realname=ifcopenshell
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
 _vername=bonsai
-_pkgver=0.8.5-post1
+_pkgver=0.9.0
 pkgver=${_pkgver//-/_}
-pkgrel=3
+pkgrel=1
 pkgdesc="Open source IFC library and geometry engine (mingw-w64)"
 arch=('any')
 mingw_arch=('ucrt64' 'clang64' 'clangarm64')
@@ -16,8 +16,6 @@ msys2_repository_url='https://github.com/IfcOpenShell/IfcOpenShell'
 license=('spdx:LGPL-3.0-or-later')
 depends=(
   "${MINGW_PACKAGE_PREFIX}-cc-libs"
-  "${MINGW_PACKAGE_PREFIX}-boost-libs"
-  "${MINGW_PACKAGE_PREFIX}-hdf5"
   "${MINGW_PACKAGE_PREFIX}-libxml2"
   "${MINGW_PACKAGE_PREFIX}-mpfr"
   "${MINGW_PACKAGE_PREFIX}-gmp"
@@ -34,58 +32,61 @@ makedepends=(
   "${MINGW_PACKAGE_PREFIX}-boost"
   "${MINGW_PACKAGE_PREFIX}-cgal"
   "${MINGW_PACKAGE_PREFIX}-eigen3"
-  "${MINGW_PACKAGE_PREFIX}-lld"
   "${MINGW_PACKAGE_PREFIX}-nlohmann-json"
   "${MINGW_PACKAGE_PREFIX}-svgpp"
   "${MINGW_PACKAGE_PREFIX}-swig"
 )
 source=("https://github.com/IfcOpenShell/IfcOpenShell/archive/refs/tags/${_vername}-${_pkgver}.tar.gz"
-        "001-hdf5-target-fallback.patch"
+        "001-fix-build.patch"
         "002-svgfill-mingw-noimplib.patch"
         "003-python-init-dll-dir-mingw.patch"
-        "004-svgfill-svgpp-cache-var.patch"
-        "005-build-fix.patch")
-sha256sums=('d2d566cf97e784de10c70f3be747cf7bf7b19a1ccb711b7bcf25cf884325c76d'
-            '3e76ca1c2efcaad3ba893a6d2d0df5a5a8dd4a2ecec9d583c20ede9af1654003'
+        "004-svgfill-svgpp-cache-var.patch")
+sha256sums=('7371c99a983e2f22fc716ffce34ec962ab68987fe66a158c0e2d3581554922d6'
+            '39caac2b67d91b6491bdc4228ba700b460803cbb4d40814b8fe2b71b06615d63'
             '19ae15aedec6bb2783c488085275c5fb2c3ff807e8ccea9749a5564ced88df16'
             '46b67742bd92d4ed37d2b4f9603ed3bb5a67510425fc21c98591bd35d48406d1'
-            '6388baaec79d0af9b56024130ecee42af0a8c418f327c5fa20e0aa1a1f1e5fb4'
-            '10e3a1efb163564b84038c26aa1c2d29ffdca1a00172ee913995d170f64c20fd')
+            '6388baaec79d0af9b56024130ecee42af0a8c418f327c5fa20e0aa1a1f1e5fb4')
+noextract=("${_vername}-${_pkgver}.tar.gz")
+
+# Helper macros to help make tasks easier #
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying $_patch"
+    patch -Np1 -i "${srcdir}/$_patch"
+  done
+}
+# ======================================= #
 
 _iosdir="IfcOpenShell-${_vername}-${_pkgver}"
 
 prepare() {
+  echo "Extracting ${_vername}-${_pkgver}.tar.gz ..."
+  ${MINGW_PREFIX}/bin/bsdtar.exe -xzf ${_vername}-${_pkgver}.tar.gz || true
+
   # svgpp is supplied by mingw-w64-${MINGW_PACKAGE_PREFIX}-svgpp at
   # ${MINGW_PREFIX}/include/svgpp/. Patch 004 makes SVGPP_INCLUDE a CACHE PATH
   # so we can redirect svgfill's submodule check at the system location below.
   cd "${srcdir}/${_iosdir}"
-  patch -Nbp1 -i "${srcdir}/001-hdf5-target-fallback.patch"
-  patch -Nbp1 -i "${srcdir}/002-svgfill-mingw-noimplib.patch"
-  patch -Nbp1 -i "${srcdir}/003-python-init-dll-dir-mingw.patch"
-  patch -Nbp1 -i "${srcdir}/004-svgfill-svgpp-cache-var.patch"
-  patch -Nbp1 -i "${srcdir}/005-build-fix.patch"
+  apply_patch_with_msg \
+    001-fix-build.patch \
+    002-svgfill-mingw-noimplib.patch \
+    003-python-init-dll-dir-mingw.patch \
+    004-svgfill-svgpp-cache-var.patch
 }
 
 build() {
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
   local _py_ver
   _py_ver=$(${MINGW_PREFIX}/bin/python -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 
-  # Use LLVM lld instead of GNU ld. MinGW's ld has O(n^2)-ish behavior on
-  # heavy C++ template linking; IfcParse ships ~36 huge per-schema object
-  # files (Ifc2x3/Ifc4/Ifc4x1/Ifc4x2/Ifc4x3 variants) that made GNU ld peak
-  # at 7 GB RAM and not finish. lld handles the link faster AND enforces the
-  # PE export-table ordinal limit (65535) correctly — without lld, GNU ld
-  # silently misbuilds when that limit is exceeded.
-  #
-  # --exclude-all-symbols: MinGW's default behavior exports every non-static
-  # symbol from a DLL. libIfcParse.dll contains ~244k exportable symbols (8
-  # IFC schemas × thousands of class template instantiations), which blows
-  # past the PE format's 16-bit ordinal ceiling of 65535. Disabling the
-  # default auto-export means only symbols explicitly marked with the
-  # IFC_PARSE_API (__declspec(dllexport)) annotation get exported, which is
-  # what upstream expects on MSVC builds anyway.
-  local _ld_flags="-fuse-ld=lld -Wl,--exclude-all-symbols"
-
+  CXXFLAGS+=" -w" \
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=;-DPYTHON_MODULE_INSTALL_DIR=" \
     ${MINGW_PREFIX}/bin/cmake \
       -S "${_iosdir}/cmake" \
@@ -94,13 +95,7 @@ build() {
       -Wno-author \
       -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
       -DSVGPP_INCLUDE="${MINGW_PREFIX}/include" \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_EXE_LINKER_FLAGS_INIT="${_ld_flags}" \
-      -DCMAKE_SHARED_LINKER_FLAGS_INIT="${_ld_flags}" \
-      -DCMAKE_MODULE_LINKER_FLAGS_INIT="${_ld_flags}" \
-      -DBUILD_SHARED_LIBS=OFF \
-      -DBUILD_EXAMPLES=OFF \
-      -DBUILD_QTVIEWER=OFF \
+      -DBUILD_SHARED_LIBS=ON \
       -DBUILD_IFCPYTHON=ON \
       -DBUILD_CONVERT=ON \
       -DBUILD_GEOMSERVER=ON \
@@ -110,30 +105,13 @@ build() {
       -DWITH_GMPXX=OFF \
       -DCOLLADA_SUPPORT=OFF \
       -DGLTF_SUPPORT=ON \
-      -DHDF5_SUPPORT=ON \
       -DIFCXML_SUPPORT=ON \
       -DUSD_SUPPORT=OFF \
-      -DEIGEN_DIR="${MINGW_PREFIX}/include/eigen3" \
-      -DOCC_INCLUDE_DIR="${MINGW_PREFIX}/include/opencascade" \
-      -DOCC_LIBRARY_DIR="${MINGW_PREFIX}/lib" \
-      -DHDF5_INCLUDE_DIR="${MINGW_PREFIX}/include" \
-      -DHDF5_LIBRARY_DIR="${MINGW_PREFIX}/lib" \
-      -DLIBXML2_INCLUDE_DIR="${MINGW_PREFIX}/include/libxml2" \
-      -DLIBXML2_LIBRARIES="${MINGW_PREFIX}/lib/libxml2.dll.a" \
-      -DGMP_INCLUDE_DIR="${MINGW_PREFIX}/include" \
-      -DMPFR_INCLUDE_DIR="${MINGW_PREFIX}/include" \
-      -DJSON_INCLUDE_DIR="${MINGW_PREFIX}/include" \
-      -DSWIG_EXECUTABLE="${MINGW_PREFIX}/bin/swig.exe" \
-      -DPython_ROOT_DIR="${MINGW_PREFIX}" \
       -DPython_FIND_REGISTRY=NEVER \
-      -DPython_FIND_STRATEGY=LOCATION \
       -DPython_EXECUTABLE="${MINGW_PREFIX}/bin/python" \
-      -DPython3_ROOT_DIR="${MINGW_PREFIX}" \
-      -DPython3_FIND_REGISTRY=NEVER \
-      -DPython3_FIND_STRATEGY=LOCATION \
-      -DPython3_EXECUTABLE="${MINGW_PREFIX}/bin/python" \
       -DPYTHON_EXECUTABLE="${MINGW_PREFIX}/bin/python" \
-      -DPYTHON_MODULE_INSTALL_DIR="${MINGW_PREFIX}/lib/python${_py_ver}/site-packages"
+      -DPYTHON_MODULE_INSTALL_DIR="${MINGW_PREFIX}/lib/python${_py_ver}/site-packages" \
+      "${_extra_config[@]}"
 
   ${MINGW_PREFIX}/bin/cmake --build "build-${MSYSTEM}"
 }
