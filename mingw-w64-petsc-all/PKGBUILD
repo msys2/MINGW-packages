@@ -1,0 +1,219 @@
+# Maintainer: hbadi <badi.hamid@gmail.com>
+# Contributor: Oleg A. Khlybov <fougas@mail.ru>   (base petsc recipe this one derives from)
+
+# PETSc for a single compute node, carrying the widest set of solvers that the
+# MSYS2 packages can supply.
+#
+# This is NOT a drop-in replacement for the `petsc` package and never claims to
+# be one: `petsc` ships twelve build flavors, this ships a single one, so
+# declaring provides=petsc would break slepc and anything else asking for a
+# flavor that is not here. Both packages install side by side under distinct
+# prefixes.
+#
+# Flavor `dto`, following the naming of the base package:
+#   d - double precision real
+#   t - multithreaded (OpenMP, MPIUNI)
+#   o - optimized
+#
+#   pkg-config petsc-all-dto --cflags
+#
+# 32-bit indices, matching the base package, which never sets
+# --with-64-bit-indices either. This is what lets METIS, PaStiX and SuperLU in:
+# all three are packaged with 32-bit index types and PETSc hands its PetscInt
+# arrays straight to them.
+
+_realname=petsc-all
+_petscver=3.25.4
+# v3.1.0 plus the fixes PETSc pins, see config/BuildSystem/config/packages/hypre.py
+_hyprecommit=85b779557005b2eb94c231c1b516e988b87f4e53
+
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=${_petscver}
+pkgrel=1
+pkgdesc='Sparse iterative (non)linear solver package, single-node build with the full solver set (mingw-w64)'
+arch=('any')
+# Watch the clang environments: OpenMP paired with MUMPS was measured hanging in
+# the solve under flang, see https://github.com/msys2/MINGW-packages/issues/30888
+# That measurement predates this recipe and has to be replayed against it in CI.
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url="https://petsc.org/"
+msys2_repository_url="https://gitlab.com/petsc/petsc"
+license=('spdx:BSD-2-Clause')
+depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
+         "${MINGW_PACKAGE_PREFIX}-fc-libs"
+         "${MINGW_PACKAGE_PREFIX}-fftw"
+         "${MINGW_PACKAGE_PREFIX}-hdf5"
+         "${MINGW_PACKAGE_PREFIX}-hwloc"
+         "${MINGW_PACKAGE_PREFIX}-libyaml"
+         "${MINGW_PACKAGE_PREFIX}-metis"
+         "${MINGW_PACKAGE_PREFIX}-mumps"
+         "${MINGW_PACKAGE_PREFIX}-omp"
+         "${MINGW_PACKAGE_PREFIX}-openblas"
+         "${MINGW_PACKAGE_PREFIX}-pastix"
+         "${MINGW_PACKAGE_PREFIX}-suitesparse"
+         "${MINGW_PACKAGE_PREFIX}-superlu")
+makedepends=('python'
+             "${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-fc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf")
+source=("https://web.cels.anl.gov/projects/petsc/download/release-snapshots/petsc-${_petscver}.tar.gz"
+        "hypre-${_hyprecommit}.tar.gz::https://github.com/hypre-space/hypre/archive/${_hyprecommit}.tar.gz"
+        '0001-hwloc-windows-pid.patch')
+noextract=("petsc-${_petscver}.tar.gz" "hypre-${_hyprecommit}.tar.gz")
+sha256sums=('12c990fb39a5764ac8311211d09c01ed80fb983136c75bf7b558312b2509dbbd'
+            '76051b711e4d684270c888f7be0b0524f626e19eca3b091939321e0fb68bbc25'
+            '7523e224ded68c7c3e674f496b6b06b379e2aec91d7849dc65fde53a66bcc006')
+
+_variant=dto
+
+# The Fortran runtime PETSc drags in differs by environment: the clang ones use
+# flang. Needed both when linking and in the generated .pc file, hence a function
+# rather than a variable local to build().
+_fcruntime() {
+  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+    echo "-lflang_rt.runtime"
+  else
+    echo "-lgfortran -lquadmath"
+  fi
+}
+
+prepare() {
+  mkdir -p "${srcdir}/build-${MSYSTEM}"
+  cd "${srcdir}/build-${MSYSTEM}"
+  tar xzf "${srcdir}/petsc-${_petscver}.tar.gz"
+
+  cd "petsc-${_petscver}"
+  # hwloc_pid_t is a HANDLE on Windows, so passing getpid() to
+  # hwloc_get_proc_cpubind() does not compile. Submitted upstream as
+  # https://gitlab.com/petsc/petsc/-/merge_requests/9491 ; drop this patch once
+  # it lands in a release.
+  patch -Nbp1 -i "${srcdir}/0001-hwloc-windows-pid.patch"
+}
+
+build() {
+  cd "${srcdir}/build-${MSYSTEM}/petsc-${_petscver}"
+  export PETSC_DIR="$(pwd)"
+
+  local cflags="${CFLAGS}"
+  local fflags fc libs
+  # Same split as the base petsc recipe: the clang environments use flang, whose
+  # runtime is named differently and which does not take the gfortran leniency
+  # flags.
+  libs="$(_fcruntime)"
+  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+    fc=flang
+    cflags+=" -Wno-incompatible-function-pointer-types"
+    [[ ${CARCH} == aarch64 ]] && fflags='-march=armv8.1-a' || fflags='-march=nocona -mtune=generic'
+    fflags+=" -O2 -I${MINGW_PREFIX}/include"
+  else
+    fc=gfortran
+    fflags="${cflags} -fallow-invalid-boz -fallow-argument-mismatch -I${MINGW_PREFIX}/include"
+  fi
+
+  # Everything comes from pacman except hypre. The packaged hypre is built
+  # against MS-MPI (HYPRE_config.h has HYPRE_SEQUENTIAL undefined) and cannot be
+  # handed MPIUNI communicators, so PETSc builds its own from the tarball
+  # declared in source(). No network access at build time.
+  #
+  # PaStiX needs more than the single library PETSc's liblist assumes: it
+  # delegates its sparse-matrix structures to libspm and schedules through
+  # StarPU. The closure below is what `pkg-config --libs pastix` reports.
+  #
+  # netCDF, zlib and muParser are deliberately absent. configure accepts them and
+  # records them in PETSC_HAVE_PACKAGES, but nothing links: `nm -u libpetsc.a`
+  # reports zero undefined symbols for the three, and the DLL imports none of
+  # them. netCDF in particular only reaches PETSc through ExodusII
+  # (ExodusII.py: deps = [hdf5, netcdf, pnetcdf]), which MSYS2 does not package,
+  # so plexexodusii2.c -- the single file including netcdf.h -- is never built.
+  # Declaring them would impose install-time dependencies on libraries the
+  # package never calls.
+  /usr/bin/python configure --PETSC_ARCH="${_variant}" \
+    --with-cc="${CC}" --with-cxx="${CXX}" --with-fc="${fc}" \
+    --with-precision=double --with-scalar-type=real \
+    --with-debugging=0 \
+    --with-openmp=1 \
+    --with-mpi=0 \
+    --with-single-library=1 \
+    --with-shared-libraries=0 \
+    --with-windows-graphics=0 --with-x=0 \
+    --with-pthread=1 --with-pthread-include="${MINGW_PREFIX}/include" --with-pthread-lib=-lpthread \
+    --with-openblas=1 --with-openblas-dir="${MINGW_PREFIX}" \
+    --with-hwloc=1 --with-hwloc-include="${MINGW_PREFIX}/include" --with-hwloc-lib=-lhwloc \
+    --with-mumps=1 --with-mumps-include="${MINGW_PREFIX}/include" \
+    --with-mumps-lib=[-lmumps-${_variant},-lesmumps] \
+    --with-suitesparse=1 --with-suitesparse-include="${MINGW_PREFIX}/include/suitesparse" \
+    --with-suitesparse-lib=[-lspqr,-lumfpack,-lklu,-lcholmod,-lamd] \
+    --with-metis=1 --with-metis-include="${MINGW_PREFIX}/include" --with-metis-lib=-lmetis \
+    --with-superlu=1 --with-superlu-include="${MINGW_PREFIX}/include/superlu" \
+    --with-superlu-lib=-lsuperlu \
+    --with-pastix=1 --with-pastix-include="${MINGW_PREFIX}/include" \
+    --with-pastix-lib=[-lpastix,-lpastix_kernels,-lpastix_starpu,-lstarpu-1.4,-lspm] \
+    --download-hypre="${srcdir}/hypre-${_hyprecommit}.tar.gz" \
+    --with-fftw=1 --with-fftw-include="${MINGW_PREFIX}/include" --with-fftw-lib=-lfftw3 \
+    --with-hdf5=1 --with-hdf5-include="${MINGW_PREFIX}/include" --with-hdf5-lib=[-lhdf5_hl,-lhdf5] \
+    --with-yaml=1 --with-yaml-include="${MINGW_PREFIX}/include" --with-yaml-lib=-lyaml \
+    CFLAGS="${cflags}" CXXFLAGS="${CXXFLAGS}" FFLAGS="${fflags}" \
+    CPPFLAGS="${CPPFLAGS}" LDFLAGS="${LDFLAGS} -fopenmp" \
+    LIBS="${libs}" MAKEFLAGS="${MAKEFLAGS}"
+
+  # MAKE_LOAD is cleared: the -l load limit PETSc adds divides parallelism by
+  # eight under MSYS2.
+  make MAKE_LOAD= PETSC_ARCH="${_variant}" all
+
+  # The base package does the same: build static, then link the DLL from the
+  # archive, so both a .a and a .dll ship. --with-shared-libraries=1 would give
+  # the DLL only.
+  cd "${_variant}/lib"
+  strip -S libpetsc.a
+  local ext
+  ext=$(sed -n 's/^PETSC_EXTERNAL_LIB_BASIC *= *//p' petsc/conf/petscvariables)
+  # Handed to package() for Libs.private. Deliberately NOT expressed as
+  # Requires.private in the .pc: pkg-config folds a private requirement's Cflags
+  # into --cflags, which would put mumps/mpi_seq -- MUMPS's own MPI stub -- on
+  # every consumer's include path, and drag in StarPU's -DSTARPU_OPENCL_DATADIR
+  # whose embedded quotes break the compile line.
+  # Strip references to the build tree: PETSc points -L and -rpath at its own
+  # arch lib directory, which does not exist once installed. The archives found
+  # there -- libHYPRE.a above all, built by --download-hypre -- ship inside the
+  # package, so ${libdir}/${_variant} from Libs covers them.
+  printf '%s' "${ext}" | tr ' ' '\n' | grep -vF "${srcdir}" | tr '\n' ' ' \
+    > "${srcdir}/external-libs"
+  "${CC}" -shared -fopenmp -Wl,--enable-auto-import -Wl,--export-all-symbols \
+    -o "libpetsc-all-${_variant}.dll" -Wl,--out-implib,libpetsc.dll.a \
+    -Wl,--whole-archive libpetsc.a -Wl,--no-whole-archive \
+    ${LDFLAGS} ${ext} ${libs}
+}
+
+package() {
+  local builddir="${srcdir}/build-${MSYSTEM}/petsc-${_petscver}"
+  local incdir="${pkgdir}${MINGW_PREFIX}/include/${_realname}"
+  local libdir="${pkgdir}${MINGW_PREFIX}/lib/${_realname}"
+
+  install -d "${pkgdir}${MINGW_PREFIX}"/{bin,lib/pkgconfig} "${incdir}" "${libdir}/${_variant}"
+
+  cp -R "${builddir}/include/." "${incdir}/"
+  install -d "${incdir}/${_variant}"
+  cp -R "${builddir}/${_variant}/include/." "${incdir}/${_variant}/"
+  find "${incdir}" \( ! \( -name '*.h' -o -name '*.hpp' -o -name '*.mod' \) -a -type f \) -delete
+
+  cp "${builddir}/${_variant}/lib"/*.a "${libdir}/${_variant}/"
+  cp "${builddir}/${_variant}/lib"/*.dll "${pkgdir}${MINGW_PREFIX}/bin/"
+
+  cat > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/${_realname}-${_variant}.pc" <<EOF
+prefix=${MINGW_PREFIX}
+libdir=\${prefix}/lib/${_realname}
+includedir=\${prefix}/include/${_realname}
+Name: ${_realname}
+URL: ${url}
+Version: ${pkgver}
+Description: Single-node PETSc with the full solver set, OpenMP multithreaded double precision
+Cflags: -I\${includedir}/${_variant} -I\${includedir} -fopenmp
+Libs: -L\${libdir}/${_variant} -lpetsc
+Libs.private: -L\${libdir}/${_variant} -lpetsc $(cat "${srcdir}/external-libs") $(_fcruntime)
+EOF
+
+  install -Dm644 "${builddir}/LICENSE" \
+    "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+}
