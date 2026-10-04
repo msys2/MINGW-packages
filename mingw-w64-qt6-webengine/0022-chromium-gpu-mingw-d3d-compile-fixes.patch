@@ -1,0 +1,103 @@
+MinGW compile fixes for the D3D shared-image pipeline enabled by 0021.
+
+Two issues fall out of building d3d_image_backing.cc, dcomp_surface_image_backing.cc,
+and dxgi_swap_chain_image_backing.cc with mingw-w64 ucrt64:
+
+1) make_optional<gl::DCLayerOverlayImage>(size, comptr, ...)
+
+   The DCLayerOverlayImage ctor takes Microsoft::WRL::ComPtr<IUnknown>
+   (ui/gl/dc_layer_overlay_image.h). Call sites pass a derived
+   ComPtr<IDCompositionSurface>/ComPtr<IDXGISwapChain1>/ComPtr<IDCompositionTexture>
+   and rely on the WRL-provided converting copy ctor. With mingw-w64's
+   wrl/client.h, that converting ctor isn't selected by std::is_constructible_v
+   the way Microsoft's WRL does, so make_optional's SFINAE rejects every
+   overload:
+
+     no matching function for call to
+     'make_optional<gl::DCLayerOverlayImage>(const gfx::Size&,
+       Microsoft::WRL::ComPtr<IDCompositionSurface>&, uint64_t&)'
+     ...
+     no type named 'type' in 'struct std::enable_if<false,
+       std::optional<gl::DCLayerOverlayImage> >'
+
+   Fix: build a ComPtr<IUnknown> explicitly at each call site (the
+   converting ctor IS available when invoked directly), construct the
+   DCLayerOverlayImage by value, and let std::optional implicitly wrap it.
+
+2) DCOMPOSITION_ERROR_SURFACE_BEING_RENDERED
+
+   Used by dcomp_surface_image_backing.cc in a DCHECK. mingw-w64 ucrt64's
+   dcomp.h does not define this HRESULT. Per MSDN it is 0x88760822. Define
+   it conditionally in the only translation unit that references it.
+
+diff --git a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/d3d_image_backing.cc b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/d3d_image_backing.cc
+--- a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/d3d_image_backing.cc
++++ b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/d3d_image_backing.cc
+@@ -1349,14 +1349,17 @@
+ std::optional<gl::DCLayerOverlayImage>
+ D3DImageBacking::GetDCLayerOverlayImage() {
+   if (dcomp_texture_) {
+-    return std::make_optional<gl::DCLayerOverlayImage>(
+-        size(), dcomp_texture_, /*dcomp_surface_serial=*/0);
++    return gl::DCLayerOverlayImage(
++        size(), Microsoft::WRL::ComPtr<IUnknown>(dcomp_texture_),
++        /*dcomp_surface_serial=*/0);
+   }
+   if (swap_chain_) {
+-    return std::make_optional<gl::DCLayerOverlayImage>(size(), swap_chain_);
++    return gl::DCLayerOverlayImage(
++        size(), Microsoft::WRL::ComPtr<IUnknown>(swap_chain_));
+   }
+-  return std::make_optional<gl::DCLayerOverlayImage>(size(), d3d11_texture_,
+-                                                     array_slice_);
++  // d3d11_texture_ goes to the ID3D11Texture2D ctor overload; no IUnknown
++  // conversion needed.
++  return gl::DCLayerOverlayImage(size(), d3d11_texture_, array_slice_);
+ }
+ 
+ bool D3DImageBacking::HasStagingTextureForTesting() const {
+diff --git a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.h b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.h
+--- a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.h
++++ b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.h
+@@ -91,8 +91,9 @@
+   // For DCompSurfaceOverlayImageRepresentation implementation.
+   friend class DCompSurfaceOverlayImageRepresentation;
+   std::optional<gl::DCLayerOverlayImage> GetDCLayerOverlayImage() {
+-    return std::make_optional<gl::DCLayerOverlayImage>(size(), dcomp_surface_,
+-                                                       dcomp_surface_serial_);
++    return gl::DCLayerOverlayImage(
++        size(), Microsoft::WRL::ComPtr<IUnknown>(dcomp_surface_),
++        dcomp_surface_serial_);
+   }
+ 
+   Microsoft::WRL::ComPtr<ID3D11Texture2D> BeginDraw(
+diff --git a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dxgi_swap_chain_image_backing.h b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dxgi_swap_chain_image_backing.h
+--- a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dxgi_swap_chain_image_backing.h
++++ b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dxgi_swap_chain_image_backing.h
+@@ -88,8 +88,8 @@
+   friend class DXGISwapChainOverlayImageRepresentation;
+   bool Present(bool should_synchronize_present_with_vblank);
+   std::optional<gl::DCLayerOverlayImage> GetDCLayerOverlayImage() {
+-    return std::make_optional<gl::DCLayerOverlayImage>(size(),
+-                                                       dxgi_swap_chain_);
++    return gl::DCLayerOverlayImage(
++        size(), Microsoft::WRL::ComPtr<IUnknown>(dxgi_swap_chain_));
+   }
+ 
+   friend class SkiaGLImageRepresentationDXGISwapChain;
+diff --git a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.cc b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.cc
+--- a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.cc
++++ b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.cc
+@@ -35,6 +35,12 @@
+ #include "gpu/command_buffer/service/shared_image/skia_graphite_dawn_image_representation.h"
+ #endif
+ 
++#if defined(__MINGW32__) && !defined(DCOMPOSITION_ERROR_SURFACE_BEING_RENDERED)
++// mingw-w64 ucrt64's dcomp.h does not define this HRESULT. Value taken
++// from the Windows SDK / MSDN documentation.
++#define DCOMPOSITION_ERROR_SURFACE_BEING_RENDERED ((HRESULT)0x88760822L)
++#endif
++
+ namespace gpu {
+ 
+ namespace {

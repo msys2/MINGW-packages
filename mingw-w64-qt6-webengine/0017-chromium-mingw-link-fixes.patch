@@ -1,0 +1,373 @@
+diff --git a/cmake/Functions.cmake b/cmake/Functions.cmake
+index 0a60bef73f..0eaef54d8d 100644
+--- a/cmake/Functions.cmake
++++ b/cmake/Functions.cmake
+@@ -182,12 +182,30 @@ function(add_linker_options target buildDir completeStatic)
+             endif()
+         endif()
+         target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${objects_rsp}>")
+-        if(NOT completeStatic)
+-            get_copy_of_response_file(archives_rsp ${target} archives)
+-            target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${archives_rsp}>")
+-        endif()
+         get_copy_of_response_file(libs_rsp ${target} libs)
+-        target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${libs_rsp}>")
++        if(MINGW)
++            # GNU ld is single-pass over static archives; Chromium has cyclic
++            # dependencies among its static libs and between archives and the
++            # system import libraries (-lcrypt32, -licuuc, -lpng, -lwebp, ...).
++            # Wrap both archives and libs in --start-group/--end-group so the
++            # linker iterates until all references are resolved.
++            if(NOT completeStatic)
++                get_copy_of_response_file(archives_rsp ${target} archives)
++                target_link_libraries(${cmakeTarget} PRIVATE
++                    "$<1:-Wl,--start-group $<$<CONFIG:${config}>:@${archives_rsp}> $<$<CONFIG:${config}>:@${libs_rsp}> -Wl,--end-group>"
++                )
++            else()
++                target_link_libraries(${cmakeTarget} PRIVATE
++                    "$<1:-Wl,--start-group $<$<CONFIG:${config}>:@${libs_rsp}> -Wl,--end-group>"
++                )
++            endif()
++        else()
++            if(NOT completeStatic)
++                get_copy_of_response_file(archives_rsp ${target} archives)
++                target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${archives_rsp}>")
++            endif()
++            target_link_options(${cmakeTarget} PRIVATE "$<$<CONFIG:${config}>:@${libs_rsp}>")
++        endif()
+         # we need libs rsp also when linking process with sandbox lib
+         set_property(TARGET ${cmakeTarget} PROPERTY LIBS_RSP ${libs_rsp})
+     endif()
+diff --git a/src/3rdparty/chromium/base/strings/to_string.h b/src/3rdparty/chromium/base/strings/to_string.h
+index 96e61daa9e..f90ea1bcb2 100644
+--- a/src/3rdparty/chromium/base/strings/to_string.h
++++ b/src/3rdparty/chromium/base/strings/to_string.h
+@@ -14,6 +14,7 @@
+ #include <tuple>
+ #include <type_traits>
+ #include <utility>
++#include <cstdint> // for int64_t
+ 
+ #include "base/types/supports_ostream_operator.h"
+ 
+diff --git a/src/3rdparty/chromium/components/tracing/BUILD.gn b/src/3rdparty/chromium/components/tracing/BUILD.gn
+index 9c0d250be3..284cfed349 100644
+--- a/src/3rdparty/chromium/components/tracing/BUILD.gn
++++ b/src/3rdparty/chromium/components/tracing/BUILD.gn
+@@ -47,6 +47,15 @@ component("startup_tracing") {
+       "common/system_log_event_utils_win.cc",
+       "common/system_log_event_utils_win.h",
+     ]
++    if (is_mingw) {
++      # TlmProvider / base::trace_event::ETWInterceptor / ETWKeywordToTrack-
++      # EventConfig are only built under is_msvc (see base/trace_event), so
++      # the consumers here cannot link against them on MinGW.
++      sources -= [
++        "common/etw_export_win.cc",
++        "common/etw_export_win.h",
++      ]
++    }
+   }
+ 
+   defines = [ "TRACING_IMPLEMENTATION" ]
+diff --git a/src/3rdparty/chromium/components/system_cpu/BUILD.gn b/src/3rdparty/chromium/components/system_cpu/BUILD.gn
+index dd7e851dea..69c9c91454 100644
+--- a/src/3rdparty/chromium/components/system_cpu/BUILD.gn
++++ b/src/3rdparty/chromium/components/system_cpu/BUILD.gn
+@@ -44,8 +44,13 @@ source_set("system_cpu") {
+       "cpu_probe_win.cc",
+       "cpu_probe_win.h",
+     ]
++    if (is_msvc) {
++      libs += [ "pdh.lib" ]
++    }
++    if (is_mingw) {
++      libs += [ "pdh" ]
++    }
+ 
+-    libs += [ "pdh.lib" ]
+   }
+ }
+ 
+diff --git a/src/3rdparty/chromium/components/ukm/singular_ukm_entry.h b/src/3rdparty/chromium/components/ukm/singular_ukm_entry.h
+index 806929e265..d5bb47decc 100644
+--- a/src/3rdparty/chromium/components/ukm/singular_ukm_entry.h
++++ b/src/3rdparty/chromium/components/ukm/singular_ukm_entry.h
+@@ -126,8 +126,8 @@ class SingularUkmEntry {
+ 
+  private:
+   SingularUkmEntry(SourceId source_id,
+-                   mojo::PendingRemote<mojom::SingularUkmInterface> interface)
+-      : source_id_(source_id), interface_(std::move(interface)) {
++                   mojo::PendingRemote<mojom::SingularUkmInterface> myinterface)
++      : source_id_(source_id), interface_(std::move(myinterface)) {
+     CHECK(interface_);
+   }
+ 
+diff --git a/src/3rdparty/chromium/content/browser/renderer_host/media/in_process_video_capture_device_launcher.cc b/src/3rdparty/chromium/content/browser/renderer_host/media/in_process_video_capture_device_launcher.cc
+index c058a57699..8f2ffce7b1 100644
+--- a/src/3rdparty/chromium/content/browser/renderer_host/media/in_process_video_capture_device_launcher.cc
++++ b/src/3rdparty/chromium/content/browser/renderer_host/media/in_process_video_capture_device_launcher.cc
+@@ -402,7 +402,7 @@ InProcessVideoCaptureDeviceLauncher::CreateDeviceClient(
+     base::WeakPtr<media::VideoFrameReceiver> receiver_on_io_thread) {
+   DCHECK_CURRENTLY_ON(BrowserThread::IO);
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_MSVC)
+   scoped_refptr<media::VideoCaptureBufferPool> buffer_pool =
+       base::MakeRefCounted<media::VideoCaptureBufferPoolImpl>(
+           requested_buffer_type, buffer_pool_max_buffer_count,
+diff --git a/src/3rdparty/chromium/device/fido/win/util.cc b/src/3rdparty/chromium/device/fido/win/util.cc
+index b1b039e9aa..67e578edd0 100644
+--- a/src/3rdparty/chromium/device/fido/win/util.cc
++++ b/src/3rdparty/chromium/device/fido/win/util.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <windows.foundation.h>
+ #include <windows.security.credentials.ui.h>
++#include <windows.foundation.collections.h>
+ 
+ #include "base/functional/callback.h"
+ #include "base/functional/callback_helpers.h"
+@@ -18,6 +19,7 @@
+ #include "base/win/core_winrt_util.h"
+ #include "base/win/post_async_results.h"
+ 
++#if !defined(__MINGW32__)
+ namespace device::fido::win {
+ 
+ namespace {
+@@ -27,7 +29,6 @@ using ABI::Windows::Security::Credentials::UI::IUserConsentVerifierStatics;
+ using ABI::Windows::Security::Credentials::UI::UserConsentVerifierAvailability;
+ using enum ABI::Windows::Security::Credentials::UI::
+     UserConsentVerifierAvailability;
+-using Microsoft::WRL::ComPtr;
+ 
+ enum BiometricAvailability {
+   kUnknown = 0,
+@@ -50,7 +51,7 @@ void DeviceHasBiometricsAvailableInternal(
+     return;
+   }
+ 
+-  ComPtr<IUserConsentVerifierStatics> factory;
++  Microsoft::WRL::ComPtr<IUserConsentVerifierStatics> factory;
+   HRESULT hr = base::win::GetActivationFactory<
+       IUserConsentVerifierStatics,
+       RuntimeClass_Windows_Security_Credentials_UI_UserConsentVerifier>(
+@@ -59,7 +60,7 @@ void DeviceHasBiometricsAvailableInternal(
+     std::move(callback).Run(false);
+     return;
+   }
+-  ComPtr<IAsyncOperation<UserConsentVerifierAvailability>> async_op;
++  Microsoft::WRL::ComPtr<IAsyncOperation<UserConsentVerifierAvailability>> async_op;
+   hr = factory->CheckAvailabilityAsync(&async_op);
+   if (FAILED(hr)) {
+     std::move(callback).Run(false);
+@@ -132,3 +133,20 @@ void DeviceHasBiometricsAvailable(base::OnceCallback<void(bool)> callback) {
+ }
+ 
+ }  // namespace device::fido::win
++
++#else  // defined(__MINGW32__)
++
++// MinGW lacks the WinRT UserConsentVerifier API surface used above. Provide
++// stubs so device::fido::FidoRequestHandlerBase can link.
++namespace device::fido::win {
++
++ScopedBiometricsOverride::ScopedBiometricsOverride(bool has_biometrics) {}
++ScopedBiometricsOverride::~ScopedBiometricsOverride() = default;
++
++void DeviceHasBiometricsAvailable(base::OnceCallback<void(bool)> callback) {
++  std::move(callback).Run(false);
++}
++
++}  // namespace device::fido::win
++
++#endif // #if !defined(__MINGW32__)
+diff --git a/src/3rdparty/chromium/gpu/ipc/service/gpu_channel_shared_image_interface.cc b/src/3rdparty/chromium/gpu/ipc/service/gpu_channel_shared_image_interface.cc
+index 5b4c176de1..9847cf00a0 100644
+--- a/src/3rdparty/chromium/gpu/ipc/service/gpu_channel_shared_image_interface.cc
++++ b/src/3rdparty/chromium/gpu/ipc/service/gpu_channel_shared_image_interface.cc
+@@ -104,7 +104,7 @@ GpuChannelSharedImageInterface::CreateSharedImageForAndroidVideo(
+ }
+ #endif
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_MSVC)
+ scoped_refptr<ClientSharedImage>
+ GpuChannelSharedImageInterface::CreateSharedImageForD3D11Video(
+     const SharedImageInfo& si_info,
+diff --git a/src/3rdparty/chromium/gpu/ipc/service/gpu_channel_shared_image_interface.h b/src/3rdparty/chromium/gpu/ipc/service/gpu_channel_shared_image_interface.h
+index 40592624fe..6aaed07329 100644
+--- a/src/3rdparty/chromium/gpu/ipc/service/gpu_channel_shared_image_interface.h
++++ b/src/3rdparty/chromium/gpu/ipc/service/gpu_channel_shared_image_interface.h
+@@ -117,7 +117,7 @@ class GPU_IPC_SERVICE_EXPORT GpuChannelSharedImageInterface
+       scoped_refptr<RefCountedLock> drdc_lock);
+ #endif
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_MSVC)
+   scoped_refptr<ClientSharedImage> CreateSharedImageForD3D11Video(
+       const SharedImageInfo& si_info,
+       Microsoft::WRL::ComPtr<ID3D11Texture2D> texture,
+diff --git a/src/3rdparty/chromium/media/gpu/windows/d3d_com_defs.h b/src/3rdparty/chromium/media/gpu/windows/d3d_com_defs.h
+index 7aa2e985d2..c69ac546c5 100644
+--- a/src/3rdparty/chromium/media/gpu/windows/d3d_com_defs.h
++++ b/src/3rdparty/chromium/media/gpu/windows/d3d_com_defs.h
+@@ -8,7 +8,26 @@
+ #include <d3d11.h>
+ #include <d3d11_4.h>
+ #include <d3d12.h>
++#if defined(__MINGW32__)
++#include <directx/d3d12video.h>
++// MinGW's <directx/d3d12video.h> declares these interfaces with MIDL_INTERFACE
++// (which only emits __declspec(uuid) under MSVC); register the IIDs explicitly
++// so __mingw_uuidof<>() / IID_PPV_ARGS resolves them.
++__CRT_UUID_DECL(ID3D12VideoDevice,
++                0x1f052807, 0x0b46, 0x4acc,
++                0x8a, 0x89, 0x36, 0x4f, 0x79, 0x37, 0x18, 0xa4);
++__CRT_UUID_DECL(ID3D12VideoDecoder,
++                0xc59b6bdc, 0x7720, 0x4074,
++                0xa1, 0x36, 0x17, 0xa1, 0x56, 0x03, 0x74, 0x70);
++__CRT_UUID_DECL(ID3D12VideoDecoderHeap,
++                0x0946b7c9, 0xebf6, 0x4047,
++                0xbb, 0x73, 0x86, 0x83, 0xe2, 0x7d, 0xbb, 0x1f);
++__CRT_UUID_DECL(ID3D12VideoDecodeCommandList,
++                0x3b60536e, 0xad29, 0x4e64,
++                0xa2, 0x69, 0xf8, 0x53, 0x83, 0x7e, 0x5e, 0x53);
++#else
+ #include <d3d12video.h>
++#endif
+ #include <dxgi1_6.h>
+ #include <mfapi.h>
+ #include <mftransform.h>
+diff --git a/src/3rdparty/chromium/printing/BUILD.gn b/src/3rdparty/chromium/printing/BUILD.gn
+index f443c6237c..f3c76c3e02 100644
+--- a/src/3rdparty/chromium/printing/BUILD.gn
++++ b/src/3rdparty/chromium/printing/BUILD.gn
+@@ -187,7 +187,12 @@ component("metafile") {
+       "emf_win.h",
+     ]
+ 
+-    libs = [ "xpsprint.lib" ]
++    if (is_msvc) {
++      libs = [ "xpsprint.lib" ]
++    }
++    if (is_mingw) {
++      libs = [ "ole32" ]
++    }
+   }
+ }
+
+diff --git a/src/3rdparty/chromium/printing/common/metafile_utils.cc b/src/3rdparty/chromium/printing/common/metafile_utils.cc
+index 5fc8ea832c..682b3ab23f 100644
+--- a/src/3rdparty/chromium/printing/common/metafile_utils.cc
++++ b/src/3rdparty/chromium/printing/common/metafile_utils.cc
+@@ -47,7 +47,15 @@
+ // clang-format off
+ #include "base/win/wincrypt_shim.h"
+ 
++// MinGW's xpsobjectmodel.h declares the XPS CLSIDs with DEFINE_GUID() but
++// ships no static lib that defines them; emit a concrete instance here.
++#if defined(__MINGW32__)
++#define INITGUID
++#endif
+ #include <XpsObjectModel.h>
++#if defined(__MINGW32__)
++#undef INITGUID
++#endif
+ #include <objbase.h>
+ // clang-format on
+ 
+diff --git a/src/3rdparty/chromium/services/device/geolocation/location_provider_manager.cc b/src/3rdparty/chromium/services/device/geolocation/location_provider_manager.cc
+index 5236505d8d..b1fe959b2c 100644
+--- a/src/3rdparty/chromium/services/device/geolocation/location_provider_manager.cc
++++ b/src/3rdparty/chromium/services/device/geolocation/location_provider_manager.cc
+@@ -380,7 +380,7 @@ LocationProviderManager::NewSystemLocationProvider() {
+   CHECK(geolocation_system_permission_manager_);
+   return device::NewSystemLocationProvider(
+       geolocation_system_permission_manager_->GetSystemGeolocationSource());
+-#elif BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
++#elif BUILDFLAG(IS_MSVC) || BUILDFLAG(IS_ANDROID)
+   return device::NewSystemLocationProvider();
+ #else
+   return nullptr;
+diff --git a/src/3rdparty/chromium/services/tracing/public/cpp/trace_startup.cc b/src/3rdparty/chromium/services/tracing/public/cpp/trace_startup.cc
+index 787209431f..3943fa6166 100644
+--- a/src/3rdparty/chromium/services/tracing/public/cpp/trace_startup.cc
++++ b/src/3rdparty/chromium/services/tracing/public/cpp/trace_startup.cc
+@@ -108,9 +108,9 @@ void InitTracingPostThreadPoolStartAndFeatureList(bool enable_consumer) {
+   // https://crbug.com/764357
+   TraceLog::GetInstance();
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_MSVC)
+   tracing::EnableETWExport();
+-#endif  // BUILDFLAG(IS_WIN)
++#endif  // BUILDFLAG(IS_MSVC)
+ 
+   auto& startup_config = TraceStartupConfig::GetInstance();
+ 
+diff --git a/src/3rdparty/chromium/services/video_capture/video_capture_service_impl.h b/src/3rdparty/chromium/services/video_capture/video_capture_service_impl.h
+index 75ac363d2d..abb8ac5f4a 100644
+--- a/src/3rdparty/chromium/services/video_capture/video_capture_service_impl.h
++++ b/src/3rdparty/chromium/services/video_capture/video_capture_service_impl.h
+@@ -35,7 +35,7 @@
+ #include "media/device_monitors/device_monitor_mac.h"
+ #endif
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_MSVC)
+ #include "media/device_monitors/system_message_window_win.h"
+ #endif
+ 
+@@ -94,7 +94,7 @@ class VideoCaptureServiceImpl : public mojom::VideoCaptureService {
+ #if BUILDFLAG(IS_MAC)
+   std::unique_ptr<media::DeviceMonitorMac> video_capture_device_monitor_mac_;
+ #endif
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_MSVC)
+   std::unique_ptr<media::SystemMessageWindowWin>
+       video_capture_system_message_window_win_;
+ #endif
+diff --git a/src/3rdparty/chromium/third_party/skia/src/xps/SkXPSDevice.cpp b/src/3rdparty/chromium/third_party/skia/src/xps/SkXPSDevice.cpp
+index bfb9b7e0c4..80533f1f87 100644
+--- a/src/3rdparty/chromium/third_party/skia/src/xps/SkXPSDevice.cpp
++++ b/src/3rdparty/chromium/third_party/skia/src/xps/SkXPSDevice.cpp
+@@ -17,7 +17,15 @@
+ #define _UNICODE
+ #endif
+ #include <ObjBase.h>
++// MinGW's xpsobjectmodel.h declares the XPS CLSIDs with DEFINE_GUID() but
++// ships no static lib that defines them; emit a concrete instance here.
++#if defined(__MINGW32__)
++#define INITGUID
++#endif
+ #include <XpsObjectModel.h>
++#if defined(__MINGW32__)
++#undef INITGUID
++#endif
+ #include <T2EmbApi.h>
+ #include <FontSub.h>
+ #include <limits>
+@@ -323,7 +331,7 @@ bool SkXPSDevice::endSheet() {
+     return true;
+ }
+ 
+-static HRESULT subset_typeface(const SkXPSDevice::TypefaceUse& current) {
++HRESULT subset_typeface(const SkXPSDevice::TypefaceUse& current) {
+     //The CreateFontPackage API is only supported on desktop, not in UWP
+     #if defined(SK_WINUWP)
+     return E_NOTIMPL;
+diff --git a/src/3rdparty/gn/src/gn/pool.h b/src/3rdparty/gn/src/gn/pool.h
+index e031136086..a9f53ebff2 100644
+--- a/src/3rdparty/gn/src/gn/pool.h
++++ b/src/3rdparty/gn/src/gn/pool.h
+@@ -6,6 +6,7 @@
+ #define TOOLS_GN_POOL_H_
+ 
+ #include <string>
++#include <cstdint> // for int64_t
+ 
+ #include "gn/item.h"
+ 

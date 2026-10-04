@@ -1,0 +1,72 @@
+Provide local stubs for ICU NumberFormatterSettings and
+NumberRangeFormatterSettings ctor/dtor under clang/mingw.
+
+ICU's <unicode/numberformatter.h> declares (extern template class
+U_I18N_API NumberFormatterSettings<...>) and the same for
+NumberRangeFormatterSettings, decorating the template members with
+__declspec(dllimport) when using shared system ICU. Clang strictly
+honours that: it emits __imp_*C2Ev / __imp_*D2Ev references for the
+empty-bodied ctor/dtor of the affected template instantiations.
+
+ICU itself never ships those particular symbols -- they are empty
+= default and the optimizer drops them before the DLL export table --
+so the link of mksnapshot.exe fails with five undefined references:
+
+  __imp__ZN6icu_78number23NumberFormatterSettings
+        INS0_26UnlocalizedNumberFormatterEEC2Ev  (and the D2Ev twin)
+  __imp__ZN6icu_78number28NumberRangeFormatterSettings
+        INS0_31UnlocalizedNumberRangeFormatterEEC2Ev  (and D2Ev twin)
+  __imp__ZN6icu_78number28NumberRangeFormatterSettings
+        INS0_29LocalizedNumberRangeFormatterEEC2Ev   (ctor only;
+        the matching D2Ev is exported by libicuin.dll.a)
+
+GCC instantiates these locally despite the dllimport tag and so never
+asks for them.
+
+Two halves are needed for the mingw fix:
+
+  1. A real function with the Itanium-mangled name. This is what the
+     indirect import-table call ultimately jumps to.
+  2. A const data symbol __imp_<mangled> holding the address of the
+     stub. The call site loads from __imp_<mangled> -- GNU ld does NOT
+     synthesize this slot from a local function definition (auto-import
+     covers DLL DATA imports only). v8 TUs (JSDurationFormat,
+     JSPluralRules, JSNumberFormat::GetRangeFormatter) all go through
+     the indirect __imp_* call, so the data slot must be explicit.
+
+Both halves live in js-number-format.cc (already linked into every v8
+build that touches Intl) under an __clang__ && __MINGW32__ guard so
+the GCC build is untouched. The mangled name is version-locked to
+icu_78 -- a future MSYS2 ICU bump will require updating the namespace
+token in each line.
+
+--- a/src/3rdparty/chromium/v8/src/objects/js-number-format.cc
++++ b/src/3rdparty/chromium/v8/src/objects/js-number-format.cc
+@@ -2203,3 +2203,27 @@ const std::set<std::string>& JSNumberFormat::GetAvailableLocales() {
+
+ }  // namespace internal
+ }  // namespace v8
++
++#if defined(__clang__) && defined(__MINGW32__)
++// Resolve clang's __imp_* references to ICU template ctor/dtor that
++// libicuin.dll does not export. Each stub pairs a no-op function with
++// a const data symbol __imp_<mangled> pointing at it, since GNU ld
++// does not synthesize the import-table slot from a local function
++// definition (auto-import covers DLL DATA imports only).
++//
++// Namespace token icu_78 is encoded in the mangled name -- update on
++// MSYS2 ICU version bumps.
++#define V8_ICU_DLLIMPORT_STUB(mangled)                               \
++  extern "C" void mangled() {}                                       \
++  extern "C" void (*const __imp_##mangled)() = &mangled
++// NumberFormatterSettings<UnlocalizedNumberFormatter> ctor/dtor
++V8_ICU_DLLIMPORT_STUB(_ZN6icu_786number23NumberFormatterSettingsINS0_26UnlocalizedNumberFormatterEEC2Ev);
++V8_ICU_DLLIMPORT_STUB(_ZN6icu_786number23NumberFormatterSettingsINS0_26UnlocalizedNumberFormatterEED2Ev);
++// NumberRangeFormatterSettings<UnlocalizedNumberRangeFormatter> ctor/dtor
++V8_ICU_DLLIMPORT_STUB(_ZN6icu_786number28NumberRangeFormatterSettingsINS0_31UnlocalizedNumberRangeFormatterEEC2Ev);
++V8_ICU_DLLIMPORT_STUB(_ZN6icu_786number28NumberRangeFormatterSettingsINS0_31UnlocalizedNumberRangeFormatterEED2Ev);
++// NumberRangeFormatterSettings<LocalizedNumberRangeFormatter> ctor only
++// (the matching D2Ev is already exported by libicuin.dll.a).
++V8_ICU_DLLIMPORT_STUB(_ZN6icu_786number28NumberRangeFormatterSettingsINS0_29LocalizedNumberRangeFormatterEEC2Ev);
++#undef V8_ICU_DLLIMPORT_STUB
++#endif
