@@ -3,11 +3,11 @@
 _realname=mold
 pkgbase="mingw-w64-${_realname}"
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=2.42.1
+pkgver=3.0.0
 pkgrel=1
 pkgdesc='A Modern Linker (mingw-w64)'
 arch=('any')
-mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+mingw_arch=('ucrt64' 'clang64' 'clangarm64')
 url='https://github.com/rui314/mold'
 msys2_repository_url='https://github.com/rui314/mold'
 license=('spdx:MIT')
@@ -19,64 +19,48 @@ msys2_references=(
 depends=(
   "${MINGW_PACKAGE_PREFIX}-cc-libs"
   "${MINGW_PACKAGE_PREFIX}-dlfcn"
-  "${MINGW_PACKAGE_PREFIX}-libblake3"
-  "${MINGW_PACKAGE_PREFIX}-libwinpthread"
-  "${MINGW_PACKAGE_PREFIX}-tbb"
   "${MINGW_PACKAGE_PREFIX}-zlib"
   "${MINGW_PACKAGE_PREFIX}-zstd"
 )
 makedepends=(
-  "${MINGW_PACKAGE_PREFIX}-cc"
-  "${MINGW_PACKAGE_PREFIX}-cmake"
-  "${MINGW_PACKAGE_PREFIX}-ninja"
+  "${MINGW_PACKAGE_PREFIX}-pkgconf"
+  "${MINGW_PACKAGE_PREFIX}-rust"
 )
 source=(
   "https://github.com/rui314/mold/archive/v${pkgver}/${_realname}-${pkgver}.tar.gz"
-  '002-cmake-copy-instead-symlink.patch'
+  "zstd-sys.tar.gz::https://static.crates.io/crates/zstd-sys/2.1.0+zstd.1.5.7/download"
 )
-noextract=("${_realname}-${pkgver}.tar.gz")
-sha256sums=('0580221bfdad7148ceeafd0ad3c1c7b3ca9e66b45950405230cc3f81a205c816'
-            '0c0c755132035defbe857977fd1c0dcd4251f4a241506f1f249ce5be3c534576')
+sha256sums=('1dee837e227b0c3f2661def602ef8ddc0b889ae5b1d28c1ddec5f29e08e5ceb5'
+            '0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0')
 
 prepare() {
-  tar -xzf "${_realname}-${pkgver}.tar.gz" || true
-
   cd "${_realname}-${pkgver}"
 
-  patch -Np1 -i "${srcdir}"/002-cmake-copy-instead-symlink.patch
+  sed -i "s/statik(true)/statik(false)/" "../zstd-sys-2.1.0+zstd.1.5.7/build.rs"
+  cat >> Cargo.toml <<END
+
+[patch.crates-io]
+zstd-sys.path = "../zstd-sys-2.1.0+zstd.1.5.7"
+END
+  cargo update -p zstd-sys
+  cargo fetch --locked --target "${RUST_CHOST}"
 }
 
 build() {
-  declare -a _extra_config
-  if check_option "debug" "n"; then
-    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
-  else
-    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
-  fi
-
-  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
-    cmake \
-      -GNinja \
-      -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
-      -DCMAKE_INSTALL_LIBEXECDIR='lib' \
-      "${_extra_config[@]}" \
-      -DMOLD_USE_MIMALLOC=OFF \
-      -DMOLD_USE_SYSTEM_TBB=ON \
-      -DMOLD_USE_MOLD=OFF \
-      -DBUILD_TESTING=OFF \
-      -S "${_realname}-${pkgver}" \
-      -B "build-${MSYSTEM}"
-
-  cmake --build "build-${MSYSTEM}"
+  cd "${_realname}-${pkgver}"
+  export ZSTD_SYS_USE_PKG_CONFIG=1
+  export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 # release profile lacks codegen-units=1
+  cargo build --release --frozen --package mold-cli
 }
 
 check() {
-  cmake -DBUILD_TESTING=ON -S "${_realname}-${pkgver}" -B "build-${MSYSTEM}"
-  cmake --build "build-${MSYSTEM}"
-
-  ctest --test-dir "build-${MSYSTEM}" --output-on-failure
+  cd "${_realname}-${pkgver}"
+  cargo test --frozen --package mold-cli
 }
 
 package() {
-  DESTDIR="${pkgdir}" cmake --install "build-${MSYSTEM}"
+  # install-mold.sh is not useful for Windows
+  install -Dm755 "target/release/${_realname}.exe" -t "${pkgdir}${MINGW_PREFIX}/bin"
+  install -Dm644 "docs/${_realname}.1" -t "${pkgdir}${MINGW_PREFIX}/share/man/man1"
+  install -Dm644 LICENSE -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}"
 }
