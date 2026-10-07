@@ -1,0 +1,197 @@
+diff --git a/c10/util/logging_is_google_glog.h b/c10/util/logging_is_google_glog.h
+index 13760c573..661e8dfd1 100644
+--- a/c10/util/logging_is_google_glog.h
++++ b/c10/util/logging_is_google_glog.h
+@@ -16,6 +16,13 @@
+ #include <cuda.h>
+ #endif
+ 
++// glog >= 0.7 refuses to be included unless GLOG_USE_GLOG_EXPORT is defined.
++// The glog::glog CMake target propagates it, but consumers that do not use
++// CMake (e.g. torch.utils.cpp_extension) would fail to include c10 headers.
++#ifndef GLOG_USE_GLOG_EXPORT
++#define GLOG_USE_GLOG_EXPORT
++#endif
++
+ #if !defined(__CUDACC__) && !defined(C10_USE_MINIMAL_GLOG)
+ #include <glog/stl_logging.h>
+ 
+diff --git a/torch/csrc/Exceptions.h b/torch/csrc/Exceptions.h
+index 21d52f793..56179aad9 100644
+--- a/torch/csrc/Exceptions.h
++++ b/torch/csrc/Exceptions.h
+@@ -287,9 +287,18 @@ struct PyTorchError : public std::exception {
+ 
+ // Translates to Python TypeError
+ struct TypeError : public PyTorchError {
++// GCC rejects dllimport on in-class (inline) definitions with
++// "definition is marked dllimport", which breaks every extension that
++// includes <torch/extension.h> with MinGW-w64 GCC. The constructors are
++// inline anyway, so only annotate them where the attribute is accepted.
++#if defined(_WIN32) && !defined(_MSC_VER)
++  TypeError() = default;
++  TypeError(std::string msg_) : PyTorchError(std::move(msg_)) {}
++#else
+   TORCH_PYTHON_API TypeError() = default;
+   TORCH_PYTHON_API TypeError(std::string msg_)
+       : PyTorchError(std::move(msg_)) {}
++#endif
+   using PyTorchError::PyTorchError;
+   PyObject* python_type() override {
+     return PyExc_TypeError;
+diff --git a/torch/utils/cpp_extension.py b/torch/utils/cpp_extension.py
+index 98eeda729..69b2667d1 100644
+--- a/torch/utils/cpp_extension.py
++++ b/torch/utils/cpp_extension.py
+@@ -32,13 +32,16 @@ from torch._utils_internal import get_file_path
+ 
+ 
+ IS_WINDOWS = sys.platform == 'win32'
++# MinGW-w64 based Python (e.g. MSYS2) runs on win32 but builds extensions
++# with a GNU-style toolchain (GCC or Clang) instead of MSVC.
++IS_MINGW = IS_WINDOWS and sysconfig.get_platform().startswith('mingw')
+ IS_MACOS = sys.platform.startswith('darwin')
+ IS_LINUX = sys.platform.startswith('linux')
+ LIB_EXT = '.pyd' if IS_WINDOWS else '.so'
+ EXEC_EXT = '.exe' if IS_WINDOWS else ''
+ CLIB_PREFIX = '' if IS_WINDOWS else 'lib'
+ CLIB_EXT = '.dll' if IS_WINDOWS else '.so'
+-SHARED_FLAG = '/DLL' if IS_WINDOWS else '-shared'
++SHARED_FLAG = '/DLL' if IS_WINDOWS and not IS_MINGW else '-shared'
+ 
+ # Torch root used below to locate compiled artifacts (lib/, include/, bin/).
+ # Editable installs using scikit-build-core redirect mode place these in the
+@@ -480,7 +483,7 @@ PLAT_TO_VCVARS = {
+ min_supported_cpython = "0x030A0000"  # Python 3.10 hexcode
+ 
+ def get_cxx_compiler():
+-    if IS_WINDOWS:
++    if IS_WINDOWS and not IS_MINGW:
+         compiler = os.environ.get('CXX', 'cl')
+     else:
+         compiler = os.environ.get('CXX', 'c++')
+@@ -599,7 +602,7 @@ def get_compiler_abi_compatibility_and_version(compiler) -> tuple[bool, TorchVer
+         # There is no particular minimum version we need for clang, so we're good here.
+         return (True, TorchVersion('0.0.0'))
+     try:
+-        if IS_LINUX:
++        if IS_LINUX or IS_MINGW:
+             minimum_required_version = MINIMUM_GCC_VERSION
+             compiler_info = subprocess.check_output([compiler, '-dumpfullversion', '-dumpversion'])
+         else:
+@@ -1029,11 +1032,12 @@ class BuildExtension(_LazyBuildExt):
+                 sycl_dlink_post_cflags += _get_sycl_device_flags(sycl_post_cflags)
+                 sycl_post_cflags = [shlex.quote(f) for f in sycl_post_cflags]
+ 
++            quote = _windows_quote if IS_MINGW else shlex.quote
+             _write_ninja_file_and_compile_objects(
+                 sources=sources,
+                 objects=objects,
+-                cflags=[shlex.quote(f) for f in extra_cc_cflags + common_cflags],
+-                post_cflags=[shlex.quote(f) for f in post_cflags],
++                cflags=[quote(f) for f in extra_cc_cflags + common_cflags],
++                post_cflags=[quote(f) for f in post_cflags],
+                 cuda_cflags=cuda_cflags,
+                 cuda_post_cflags=cuda_post_cflags,
+                 cuda_dlink_post_cflags=cuda_dlink_post_cflags,
+@@ -1441,8 +1445,12 @@ def CppExtension(name, sources, *args, **kwargs):
+     if not kwargs.get('py_limited_api', False):
+         # torch_python uses more than the python limited api
+         libraries.append('torch_python')
+-    if IS_WINDOWS:
++    if IS_WINDOWS and not IS_MINGW:
+         libraries.append("sleef")
++    if IS_MINGW and _torch_uses_glog():
++        # PE images must resolve all symbols at link time; c10 headers
++        # reference glog when PyTorch was built with USE_GLOG.
++        libraries.append('glog')
+ 
+     kwargs['libraries'] = libraries
+ 
+@@ -2574,8 +2582,17 @@ def verify_ninja_availability() -> None:
+         raise RuntimeError("Ninja is required to load C++ extensions (pip install ninja to get it)")
+ 
+ 
++def _torch_uses_glog() -> bool:
++    cmake_macros = os.path.join(_TORCH_PATH, 'include', 'torch', 'headeronly', 'macros', 'cmake_macros.h')
++    try:
++        with open(cmake_macros) as f:
++            return re.search(r'^#define C10_USE_GLOG\b', f.read(), re.MULTILINE) is not None
++    except OSError:
++        return False
++
++
+ def _prepare_ldflags(extra_ldflags, with_cuda, with_sycl, verbose, is_standalone):
+-    if IS_WINDOWS:
++    if IS_WINDOWS and not IS_MINGW:
+         python_lib_path = os.path.join(sys.base_exec_prefix, 'libs')
+ 
+         extra_ldflags.append('c10.lib')
+@@ -2613,7 +2630,17 @@ def _prepare_ldflags(extra_ldflags, with_cuda, with_sycl, verbose, is_standalone
+         if not is_standalone:
+             extra_ldflags.append('-ltorch_python')
+ 
+-        if is_standalone:
++        if IS_MINGW:
++            # PE images cannot have undefined symbols, so link everything the
++            # extension may reference: glog (used by c10 headers) and Python.
++            if _torch_uses_glog():
++                extra_ldflags.append('-lglog')
++            if not is_standalone:
++                python_libdir = sysconfig.get_config_var('LIBDIR')
++                if python_libdir:
++                    extra_ldflags.append(f'-L{python_libdir}')
++                extra_ldflags.append(f"-lpython{sysconfig.get_config_var('LDVERSION') or sysconfig.get_python_version()}")
++        elif is_standalone:
+             extra_ldflags.append(f"-Wl,-rpath,{TORCH_LIB_PATH}")
+ 
+     if with_cuda:
+@@ -2876,7 +2903,7 @@ def _run_ninja_build(build_directory: str, verbose: bool, error_prefix: str) ->
+         command.extend(['-j', str(num_workers)])
+     env = os.environ.copy()
+     # Try to activate the vc env for the users
+-    if IS_WINDOWS and 'VSCMD_ARG_TGT_ARCH' not in env:
++    if IS_WINDOWS and not IS_MINGW and 'VSCMD_ARG_TGT_ARCH' not in env:
+         from setuptools import distutils  # type: ignore[attr-defined]
+ 
+         plat_name = distutils.util.get_platform()
+@@ -2993,13 +3020,19 @@ def _write_ninja_file_to_build_library(path,
+         common_cflags.append('-DTORCH_API_INCLUDE_EXTENSION_H')
+ 
+     # Windows does not understand `-isystem` and quotes flags later.
+-    if IS_WINDOWS:
++    if IS_MINGW:
++        common_cflags += [f'-I{include}' for include in user_includes]
++        for include in system_includes:
++            common_cflags += ['-isystem', include]
++    elif IS_WINDOWS:
+         common_cflags += [f'-I{include}' for include in user_includes + system_includes]
+     else:
+         common_cflags += [f'-I{shlex.quote(include)}' for include in user_includes]
+         common_cflags += [f'-isystem {shlex.quote(include)}' for include in system_includes]
+ 
+-    if IS_WINDOWS:
++    if IS_MINGW:
++        cflags = _nt_quote_args(common_cflags + ['-std=c++20'] + extra_cflags)
++    elif IS_WINDOWS:
+         COMMON_HIP_FLAGS.extend(['-fms-runtime-lib=dll'])
+         cflags = common_cflags + ['/std:c++20'] + extra_cflags
+         cflags += COMMON_MSVC_FLAGS + (COMMON_HIP_FLAGS if IS_HIP_EXTENSION else [])
+@@ -3191,7 +3224,7 @@ e.
+ 
+     # See https://ninja-build.org/build.ninja.html for reference.
+     compile_rule = ['rule compile']
+-    if IS_WINDOWS:
++    if IS_WINDOWS and not IS_MINGW:
+         compiler_name = "$cxx" if IS_HIP_EXTENSION else "cl"
+         compile_rule.append(
+             f'  command = {compiler_name} '
+@@ -3275,7 +3308,7 @@ e.
+ 
+     if library_target is not None:
+         link_rule = ['rule link']
+-        if IS_WINDOWS:
++        if IS_WINDOWS and not IS_MINGW:
+             cl_paths = subprocess.check_output(['where',
+                                                 'cl']).decode(*SUBPROCESS_DECODE_ARGS).split('\r\n')
+             if len(cl_paths) >= 1:
