@@ -1,0 +1,272 @@
+diff --git a/cmake/maintainer.cmake b/cmake/maintainer.cmake
+index d532009..4bcac29 100644
+--- a/cmake/maintainer.cmake
++++ b/cmake/maintainer.cmake
+@@ -48,8 +48,10 @@ IF(SIZEOF_VOIDP EQUAL 8)
+   STRING_APPEND(MY_WARNING_FLAGS " -Wmissing-format-attribute")
+ ENDIF()
+ 
+-# Clang 6.0 and newer on Windows treat -Wall as -Weverything; use /W4 instead
+-IF(WIN32_CLANG)
++# clang-cl (MSVC frontend) treats -Wall as -Weverything; use /W4 instead.
++# GNU-frontend clang (MinGW-w64, e.g. MSYS2 CLANG64) uses regular
++# -Wall/-Wextra options; /W4 would be parsed as an input file there.
++IF(WIN32_CLANG AND MSVC)
+   STRING(REPLACE "-Wall -Wextra" "/W4" MY_WARNING_FLAGS "${MY_WARNING_FLAGS}")
+ ENDIF()
+ 
+diff --git a/cmake/os/Windows.cmake b/cmake/os/Windows.cmake
+index aefb982..b9e7fce 100644
+--- a/cmake/os/Windows.cmake
++++ b/cmake/os/Windows.cmake
+@@ -35,8 +35,14 @@ INCLUDE (CheckTypeSize)
+ 
+ IF(MY_COMPILER_IS_CLANG)
+   SET(WIN32_CLANG 1)
+-  SET(CMAKE_INCLUDE_SYSTEM_FLAG_C "/imsvc ")
+-  SET(CMAKE_INCLUDE_SYSTEM_FLAG_CXX "/imsvc ")
++  IF(MSVC)
++    # clang-cl keeps the MSVC driver convention for SYSTEM include
++    # directories. GNU-frontend clang (MinGW-w64, e.g. MSYS2 CLANG64)
++    # keeps the default -isystem flags set up by CMake; /imsvc would be
++    # parsed as an input file there.
++    SET(CMAKE_INCLUDE_SYSTEM_FLAG_C "/imsvc ")
++    SET(CMAKE_INCLUDE_SYSTEM_FLAG_CXX "/imsvc ")
++  ENDIF()
+   ADD_DEFINITIONS(-DWIN32_CLANG)
+ ENDIF()
+ 
+diff --git a/cmake/ssl.cmake b/cmake/ssl.cmake
+index 26ebbb1..9af3059 100644
+--- a/cmake/ssl.cmake
++++ b/cmake/ssl.cmake
+@@ -375,7 +375,10 @@ MACRO (MYSQL_CHECK_SSL)
+       HINTS ${OPENSSL_ROOT_DIR}/include
+     )
+ 
+-    IF (WIN32)
++    IF (WIN32 AND NOT MINGW AND NOT WIN32_CLANG)
++      # MSVC-only requirement: MSYS2/MinGW OpenSSL is built against the
++      # same CRT as the application, so applink.c is not needed and is
++      # not shipped by the mingw-w64-openssl package.
+       FIND_FILE(OPENSSL_APPLINK_C
+         NAMES openssl/applink.c
+         NO_DEFAULT_PATH
+diff --git a/extra/zstd/CMakeLists.txt b/extra/zstd/CMakeLists.txt
+index 483397b..aae5a28 100644
+--- a/extra/zstd/CMakeLists.txt
++++ b/extra/zstd/CMakeLists.txt
+@@ -47,7 +47,11 @@ SET(ZSTD_SRCS
+ )
+ 
+ IF((LINUX AND NOT LINUX_ARM) OR
+-    (APPLE AND NOT APPLE_ARM))
++    (APPLE AND NOT APPLE_ARM) OR
++    (WIN32 AND MY_COMPILER_IS_GNU_OR_CLANG))
++  # MinGW GCC/Clang enable ZSTD_ENABLE_ASM_X86_64_BMI2 on Windows just like
++  # on Linux, so the assembly loop must be built there as well. MSVC
++  # disables the asm code path (no __GNUC__) and needs no assembler.
+   ENABLE_LANGUAGE(ASM)
+   LIST(APPEND ZSTD_SRCS
+     ${ZSTD_VERSION_DIR}/lib/decompress/huf_decompress_amd64.S
+diff --git a/include/my_inttypes.h b/include/my_inttypes.h
+index da09fb8..c1320da 100644
+--- a/include/my_inttypes.h
++++ b/include/my_inttypes.h
+@@ -41,7 +41,7 @@
+ #endif
+ 
+ #if defined(_WIN32) && !defined(MYSQL_ABI_CHECK)
+-#include <BaseTsd.h>
++#include <basetsd.h>
+ typedef unsigned int uint;
+ typedef unsigned short ushort;
+ #endif
+diff --git a/include/mysql/components/services/bits/my_io_bits.h b/include/mysql/components/services/bits/my_io_bits.h
+index 8a1a36b..ccb8318 100644
+--- a/include/mysql/components/services/bits/my_io_bits.h
++++ b/include/mysql/components/services/bits/my_io_bits.h
+@@ -51,7 +51,10 @@
+ typedef int File; /* File descriptor */
+ #if defined(_WIN32) && !defined(MYSQL_ABI_CHECK)
+ typedef int MY_MODE;
++#ifndef _MODE_T_
++/* MinGW provides mode_t through sys/types.h (included above). */
+ typedef int mode_t;
++#endif
+ typedef int socket_len_t;
+ typedef SOCKET my_socket;
+ #else
+diff --git a/include/mysql/psi/mysql_socket.h b/include/mysql/psi/mysql_socket.h
+index c415408..ae9e47f 100644
+--- a/include/mysql/psi/mysql_socket.h
++++ b/include/mysql/psi/mysql_socket.h
+@@ -43,7 +43,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
+ #include "mysql/psi/psi_socket.h"
+ /* For socket api */
+ #ifdef _WIN32
+-#include <MSWSock.h>
++#include <mswsock.h>
+ #ifdef WIN32_LEAN_AND_MEAN
+ #include <winsock2.h>
+ #include <ws2def.h>
+diff --git a/libbinlogevents/include/binlog_event.h b/libbinlogevents/include/binlog_event.h
+index 1e31385..5f199f3 100644
+--- a/libbinlogevents/include/binlog_event.h
++++ b/libbinlogevents/include/binlog_event.h
+@@ -49,7 +49,7 @@
+ #include "my_io.h"
+ 
+ #if defined(_WIN32)
+-#include <Winsock2.h>
++#include <winsock2.h>
+ #else
+ #include <sys/times.h>
+ #endif
+diff --git a/libmysql/CMakeLists.txt b/libmysql/CMakeLists.txt
+index 8ab5cb3..43b1e39 100644
+--- a/libmysql/CMakeLists.txt
++++ b/libmysql/CMakeLists.txt
+@@ -360,6 +360,14 @@ MERGE_LIBRARIES_SHARED(libmysql ${LIBS_TO_MERGE}
+   ${UNIX_VERSION}
+   )
+ 
++IF(WIN32 AND NOT UNIX_OUTPUT_NAME)
++  # MinGW prefixes shared libraries with "lib" and import libraries with
++  # "lib" too (liblibmysql.dll / liblibmysql.dll.a). Keep the canonical
++  # Windows names used across the MySQL client ecosystem: libmysql.dll
++  # and its import library libmysql.dll.a.
++  SET_TARGET_PROPERTIES(libmysql PROPERTIES PREFIX "" IMPORT_PREFIX "")
++ENDIF()
++
+ # Downgrade warning for strncat in my_crypt_genhash.
+ IF((WITH_LTO OR CMAKE_COMPILER_FLAG_WITH_LTO) AND MY_COMPILER_IS_GNU)
+   MY_TARGET_LINK_OPTIONS(libmysql "-Wno-error=stringop-truncation")
+diff --git a/libmysql/authentication_kerberos/sspi_authentication_client.h b/libmysql/authentication_kerberos/sspi_authentication_client.h
+index 2aeadc1..12c09fa 100644
+--- a/libmysql/authentication_kerberos/sspi_authentication_client.h
++++ b/libmysql/authentication_kerberos/sspi_authentication_client.h
+@@ -43,7 +43,7 @@
+ 
+ #include <sspi.h>
+ 
+-#include <SecExt.h>
++#include <secext.h>
+ 
+ #include <stdarg.h>
+ 
+diff --git a/libmysql/authentication_kerberos/sspi_utility.h b/libmysql/authentication_kerberos/sspi_utility.h
+index 0350536..4db36b0 100644
+--- a/libmysql/authentication_kerberos/sspi_utility.h
++++ b/libmysql/authentication_kerberos/sspi_utility.h
+@@ -37,7 +37,7 @@
+ 
+ #include <sspi.h>
+ 
+-#include <SecExt.h>
++#include <secext.h>
+ 
+ #include <stdarg.h>
+ 
+diff --git a/libmysql/authentication_win/CMakeLists.txt b/libmysql/authentication_win/CMakeLists.txt
+index c140af3..148c557 100644
+--- a/libmysql/authentication_win/CMakeLists.txt
++++ b/libmysql/authentication_win/CMakeLists.txt
+@@ -40,7 +40,7 @@ SET(PLUGIN_SOURCES
+   )
+ 
+ ADD_CONVENIENCE_LIBRARY(auth_win_client ${PLUGIN_SOURCES} ${HEADERS}
+-  LINK_LIBRARIES Secur32)
++  LINK_LIBRARIES secur32)
+ 
+ # In IDE, group headers in a separate folder.
+ 
+diff --git a/mysys/my_thr_init.cc b/mysys/my_thr_init.cc
+index 0dd4e6a..27b8d1e 100644
+--- a/mysys/my_thr_init.cc
++++ b/mysys/my_thr_init.cc
+@@ -401,8 +401,14 @@ CODE_STATE **my_thread_var_dbug() {
+ static void my_sigabrt_handler(int sig [[maybe_unused]]) { __debugbreak(); }
+ 
+ static void install_sigabrt_handler() {
++#if defined(_MSC_VER)
+   /*abort() should not override our exception filter*/
+   _set_abort_behavior(0, _CALL_REPORTFAULT);
++#endif
++  /*
++    MinGW uses the classic msvcrt import library, which does not export
++    _set_abort_behavior(). The signal() override below is sufficient there.
++  */
+   signal(SIGABRT, my_sigabrt_handler);
+ }
+ #endif
+diff --git a/mysys/stacktrace.cc b/mysys/stacktrace.cc
+index 3c69ad3..8c60662 100644
+--- a/mysys/stacktrace.cc
++++ b/mysys/stacktrace.cc
+@@ -620,12 +620,22 @@ void my_create_minidump(const char *name, HANDLE process, DWORD pid) {
+ }
+ 
+ void my_safe_puts_stderr(const char *val, size_t len) {
++#if defined(_MSC_VER)
+   __try {
+     my_write_stderr(val, len);
+     my_safe_printf_stderr("%s", "\n");
+   } __except (EXCEPTION_EXECUTE_HANDLER) {
+     my_safe_printf_stderr("%s", "is an invalid string pointer\n");
+   }
++#else
++  /*
++    MinGW GCC does not support MSVC-style __try/__except statements.
++    Fall back to a plain call; the SEH guard only protects against
++    unmapped memory during crash handling.
++  */
++  my_write_stderr(val, len);
++  my_safe_printf_stderr("%s", "\n");
++#endif
+ }
+ #endif /* _WIN32 */
+ 
+diff --git a/utilities/CMakeLists.txt b/utilities/CMakeLists.txt
+index bf28999..90e2991 100644
+--- a/utilities/CMakeLists.txt
++++ b/utilities/CMakeLists.txt
+@@ -33,12 +33,17 @@ IF(NOT CMAKE_CROSSCOMPILING)
+     )
+ ENDIF()
+ 
+-MYSQL_ADD_EXECUTABLE(comp_client_err
+-  comp_client_err.cc
+-  ${CMAKE_SOURCE_DIR}/libmysql/errmsg.cc
+-  LINK_LIBRARIES mysys
+-  SKIP_INSTALL
+-  )
++IF(NOT CMAKE_CROSSCOMPILING)
++  MYSQL_ADD_EXECUTABLE(comp_client_err
++    comp_client_err.cc
++    ${CMAKE_SOURCE_DIR}/libmysql/errmsg.cc
++    LINK_LIBRARIES mysys
++    SKIP_INSTALL
++    )
++ELSE()
++  # When cross-compiling, comp_client_err is prebuilt on the host and
++  # resolved through PATH by the custom commands below.
++ENDIF()
+ 
+ ADD_CUSTOM_COMMAND(OUTPUT ${PROJECT_BINARY_DIR}/include/mysqlclient_ername.h
+   COMMAND comp_client_err
+@@ -104,8 +109,12 @@ ADD_DEFINITIONS(-DMUTEX_EVENT)
+ # The copied shared libraries must be available at build time.
+ IF(TARGET copy_openssl_dlls)
+   ADD_DEPENDENCIES(GenError copy_openssl_dlls)
+-  ADD_DEPENDENCIES(comp_client_err copy_openssl_dlls)
+-  ADD_DEPENDENCIES(comp_err copy_openssl_dlls)
++  IF(TARGET comp_client_err)
++    ADD_DEPENDENCIES(comp_client_err copy_openssl_dlls)
++  ENDIF()
++  IF(TARGET comp_err)
++    ADD_DEPENDENCIES(comp_err copy_openssl_dlls)
++  ENDIF()
+ ENDIF()
+ 
+ MYSQL_ADD_EXECUTABLE(static_thread_local_test
