@@ -1,0 +1,312 @@
+diff --git a/src/3rdparty/chromium/gpu/command_buffer/service/BUILD.gn b/src/3rdparty/chromium/gpu/command_buffer/service/BUILD.gn
+index 40c4f28f41..818fcb78ba 100644
+--- a/src/3rdparty/chromium/gpu/command_buffer/service/BUILD.gn
++++ b/src/3rdparty/chromium/gpu/command_buffer/service/BUILD.gn
+@@ -101,10 +101,12 @@ if (is_win) {
+   config("service_win_linker_flags") {
+     # This is in a separate config so the flags can be applied to dependents.
+     # ldflags in GN aren't automatically inherited.
+-    ldflags = [
+-      # Linking with OneCore.lib causes the following dlls to load.
+-      "/DELAYLOAD:api-ms-win-core-handle-l1-1-0.dll",
+-    ]
++    if (is_msvc) {
++      ldflags = [
++        # Linking with OneCore.lib causes the following dlls to load.
++        "/DELAYLOAD:api-ms-win-core-handle-l1-1-0.dll",
++      ]
++    }
+   }
+ }
+ 
+@@ -639,11 +629,17 @@ target(link_target_type, "gles2_sources") {
+       "shared_image/dxgi_swap_chain_image_representation.cc",
+       "shared_image/dxgi_swap_chain_image_representation.h",
+     ]
+-    libs = [
+-      "d3d12.lib",
+-      "dxguid.lib",
+-      "onecore.lib",
+-    ]
++    if (is_msvc) {
++      libs = [
++        "d3d12.lib",
++        "dxguid.lib",
++        "onecore.lib",
++      ]
++    } else {
++      # MinGW uses bare lib names; onecore is part of -lkernel32 transitively
++      # via the toolchain config, so we only need d3d12/dxguid/dxcore here.
++      libs = [ "d3d12", "dxguid", "dxcore" ]
++    }
+     all_dependent_configs = [ ":service_win_linker_flags" ]
+   }
+ }
+diff --git a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/d3d_image_backing.cc b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/d3d_image_backing.cc
+--- a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/d3d_image_backing.cc
++++ b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/d3d_image_backing.cc
+@@ -1349,14 +1349,17 @@
+ std::optional<gl::DCLayerOverlayImage>
+ D3DImageBacking::GetDCLayerOverlayImage() {
+   if (dcomp_texture_) {
+-    return std::make_optional<gl::DCLayerOverlayImage>(
+-        size(), dcomp_texture_, /*dcomp_surface_serial=*/0);
++    return gl::DCLayerOverlayImage(
++        size(), Microsoft::WRL::ComPtr<IUnknown>(dcomp_texture_),
++        /*dcomp_surface_serial=*/0);
+   }
+   if (swap_chain_) {
+-    return std::make_optional<gl::DCLayerOverlayImage>(size(), swap_chain_);
++    return gl::DCLayerOverlayImage(
++        size(), Microsoft::WRL::ComPtr<IUnknown>(swap_chain_));
+   }
+-  return std::make_optional<gl::DCLayerOverlayImage>(size(), d3d11_texture_,
+-                                                     array_slice_);
++  // d3d11_texture_ goes to the ID3D11Texture2D ctor overload; no IUnknown
++  // conversion needed.
++  return gl::DCLayerOverlayImage(size(), d3d11_texture_, array_slice_);
+ }
+ 
+ bool D3DImageBacking::HasStagingTextureForTesting() const {
+diff --git a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.cc b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.cc
+--- a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.cc
++++ b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.cc
+@@ -35,6 +35,12 @@
+ #include "gpu/command_buffer/service/shared_image/skia_graphite_dawn_image_representation.h"
+ #endif
+ 
++#if defined(__MINGW32__) && !defined(DCOMPOSITION_ERROR_SURFACE_BEING_RENDERED)
++// mingw-w64 ucrt64's dcomp.h does not define this HRESULT. Value taken
++// from the Windows SDK / MSDN documentation.
++#define DCOMPOSITION_ERROR_SURFACE_BEING_RENDERED ((HRESULT)0x88760822L)
++#endif
++
+ namespace gpu {
+ 
+ namespace {
+diff --git a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.h b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.h
+--- a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.h
++++ b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dcomp_surface_image_backing.h
+@@ -91,8 +91,9 @@
+   // For DCompSurfaceOverlayImageRepresentation implementation.
+   friend class DCompSurfaceOverlayImageRepresentation;
+   std::optional<gl::DCLayerOverlayImage> GetDCLayerOverlayImage() {
+-    return std::make_optional<gl::DCLayerOverlayImage>(size(), dcomp_surface_,
+-                                                       dcomp_surface_serial_);
++    return gl::DCLayerOverlayImage(
++        size(), Microsoft::WRL::ComPtr<IUnknown>(dcomp_surface_),
++        dcomp_surface_serial_);
+   }
+ 
+   Microsoft::WRL::ComPtr<ID3D11Texture2D> BeginDraw(
+diff --git a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dxgi_swap_chain_image_backing.h b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dxgi_swap_chain_image_backing.h
+--- a/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dxgi_swap_chain_image_backing.h
++++ b/src/3rdparty/chromium/gpu/command_buffer/service/shared_image/dxgi_swap_chain_image_backing.h
+@@ -88,8 +88,8 @@
+   friend class DXGISwapChainOverlayImageRepresentation;
+   bool Present(bool should_synchronize_present_with_vblank);
+   std::optional<gl::DCLayerOverlayImage> GetDCLayerOverlayImage() {
+-    return std::make_optional<gl::DCLayerOverlayImage>(size(),
+-                                                       dxgi_swap_chain_);
++    return gl::DCLayerOverlayImage(
++        size(), Microsoft::WRL::ComPtr<IUnknown>(dxgi_swap_chain_));
+   }
+ 
+   friend class SkiaGLImageRepresentationDXGISwapChain;
+diff --git a/src/3rdparty/chromium/gpu/config/BUILD.gn b/src/3rdparty/chromium/gpu/config/BUILD.gn
+index f49a550850..87b96c70a9 100644
+--- a/src/3rdparty/chromium/gpu/config/BUILD.gn
++++ b/src/3rdparty/chromium/gpu/config/BUILD.gn
+@@ -244,7 +244,11 @@ source_set("config_sources") {
+     if (!is_qtwebengine) {
+       deps += [ "//third_party/microsoft_dxheaders:dxguids" ]
+     }
+-    libs = [ "dxgi.lib" ]
++    if (is_msvc) {
++      libs = [ "dxgi.lib" ]
++    } else {
++      libs = [ "dxgi", "dxcore" ]
++    }
+   }
+   if (is_mac) {
+     sources += [ "gpu_info_collector_mac.mm" ]
+diff --git a/src/3rdparty/chromium/gpu/config/gpu_info_collector_win.cc b/src/3rdparty/chromium/gpu/config/gpu_info_collector_win.cc
+index 4bd1190db6..06a92d671a 100644
+--- a/src/3rdparty/chromium/gpu/config/gpu_info_collector_win.cc
++++ b/src/3rdparty/chromium/gpu/config/gpu_info_collector_win.cc
+@@ -5,7 +5,14 @@
+ #include "gpu/config/gpu_info_collector.h"
+ 
+ // C system before C++ system.
++#if defined(__MINGW32__)
++#include <directx/DirectML.h>
++__CRT_UUID_DECL(IDMLDevice, 
++    0xa0884f9a, 0xd2be, 0x4355,
++    0xaa, 0x5d, 0x59, 0x01, 0x28, 0x1a, 0xd1, 0xd2);
++#else
+ #include <DirectML.h>
++#endif 
+ #include <d3d11.h>
+ #include <d3d11_3.h>
+ #include <dxgi.h>
+@@ -36,8 +45,25 @@
+ #include "third_party/microsoft_dxheaders/src/include/directx/dxcore.h"
+ #else
+ #include <d3d12.h>
++#if defined(__MINGW32__)
++// MinGW's libdxcore.a is just an import lib without the GUID values, and
++// dxguids/dxguids.h does not define the DXCORE_ADAPTER_ATTRIBUTE_* GUIDs.
++// Define INITGUID so the DEFINE_GUID() statements in dxcore_interface.h emit
++// concrete instances in this translation unit.
++#ifndef INITGUID
++#define INITGUID
++#include <guiddef.h> // # adrpo: to define __mingw_uuidof_s before using it in codecapi.h
++#undef INITGUID
++#else
++#include <guiddef.h>
++#endif
++#include <directx/dxcore.h>
++#include <dxguids/dxguids.h>
++
++#else
+ #include <dxcore.h>
+ #endif
++#endif
+ #include "third_party/re2/src/re2/re2.h"
+ #include "ui/gl/direct_composition_support.h"
+ #include "ui/gl/gl_angle_util_win.h"
+@@ -453,7 +479,7 @@ void GetGpuSupportedDirectXVersion(uint32_t& d3d12_feature_level,
+     // Check to see if the adapter supports Direct3D 12.
+     for (auto level : feature_levels) {
+       if (SUCCEEDED(d3d12_create_device_proc(dxgi_adapter.Get(), level,
+-                                             _uuidof(ID3D12Device),
++                                             __uuidof(ID3D12Device),
+                                              &d3d12_device))) {
+         d3d12_feature_level = level;
+         break;
+diff --git a/src/3rdparty/chromium/gpu/ipc/common/BUILD.gn b/src/3rdparty/chromium/gpu/ipc/common/BUILD.gn
+index 2886b9ad0c..de10731720 100644
+--- a/src/3rdparty/chromium/gpu/ipc/common/BUILD.gn
++++ b/src/3rdparty/chromium/gpu/ipc/common/BUILD.gn
+@@ -102,7 +102,7 @@ source_set("ipc_common_sources") {
+       "gpu_memory_buffer_impl_dxgi.h",
+     ]
+     libs = [
+-      "d3d11.lib",
+-      "dxguid.lib",
++      "d3d11",
++      "dxguid",
+     ]
+   }
+   if (use_ozone) {
+diff --git a/src/3rdparty/chromium/gpu/ipc/common/device_perf_info_mojom_traits.cc b/src/3rdparty/chromium/gpu/ipc/common/device_perf_info_mojom_traits.cc
+index 2886b9ad0c..de10731720 100644
+--- a/src/3rdparty/chromium/gpu/ipc/common/device_perf_info_mojom_traits.cc
++++ b/src/3rdparty/chromium/gpu/ipc/common/device_perf_info_mojom_traits.cc
+@@ -14,7 +14,11 @@
+ EnumTraits<gpu::mojom::Direct3DFeatureLevel, D3D_FEATURE_LEVEL>::ToMojom(
+     D3D_FEATURE_LEVEL d3d_feature_level) {
+   switch (d3d_feature_level) {
++#ifdef __MINGW32__
++    case 0:
++#else
+     case D3D_FEATURE_LEVEL_1_0_GENERIC:
++#endif
+       return gpu::mojom::Direct3DFeatureLevel::k1_0_Generic;
+     case D3D_FEATURE_LEVEL_1_0_CORE:
+       return gpu::mojom::Direct3DFeatureLevel::k1_0_Core;
+@@ -55,7 +55,11 @@
+ // TODO(crbug.com/362650376): This case is valid only for SDK version
+ // 10.0.26100.0 and up.
+ #ifdef NTDDI_WIN11_GE
++#ifdef __MINGW32__
++      *out = (D3D_FEATURE_LEVEL)0;
++#else
+       *out = D3D_FEATURE_LEVEL_1_0_GENERIC;
++#endif
+       return true;
+ #else
+       // Should be impossible
+diff --git a/src/3rdparty/chromium/gpu/ipc/service/BUILD.gn b/src/3rdparty/chromium/gpu/ipc/service/BUILD.gn
+index 973cd337f2..7014eab659 100644
+--- a/src/3rdparty/chromium/gpu/ipc/service/BUILD.gn
++++ b/src/3rdparty/chromium/gpu/ipc/service/BUILD.gn
+@@ -100,11 +100,20 @@ component("service") {
+       "gpu_memory_buffer_factory_dxgi.h",
+       "image_transport_surface_win.cc",
+     ]
+-    libs += [
+-      "d3d11.lib",
+-      "dcomp.lib",
+-      "dxguid.lib",
+-    ]
++    if (is_msvc) {
++      libs += [
++        "d3d11.lib",
++        "dcomp.lib",
++        "dxguid.lib",
++      ]
++    } else {
++      libs += [
++        "d3d11",
++        "dcomp",
++        "dxguid",
++        "dxcore",
++      ]
++    }
+   }
+   if (is_apple) {
+     sources += [
+diff --git a/src/3rdparty/chromium/gpu/skia_bindings/gl_bindings_skia_cmd_buffer.cc b/src/3rdparty/chromium/gpu/skia_bindings/gl_bindings_skia_cmd_buffer.cc
+index dd654c969c..df8ba0e35e 100644
+--- a/src/3rdparty/chromium/gpu/skia_bindings/gl_bindings_skia_cmd_buffer.cc
++++ b/src/3rdparty/chromium/gpu/skia_bindings/gl_bindings_skia_cmd_buffer.cc
+@@ -52,8 +52,8 @@ namespace skia_bindings {
+ sk_sp<GrGLInterface> CreateGLES2InterfaceBindings(
+     GLES2Interface* impl,
+     ContextSupport* context_support) {
+-  sk_sp<GrGLInterface> interface(new GrGLInterface);
+-  interface->fStandard = kGLES_GrGLStandard;
++  sk_sp<GrGLInterface> myinterface(new GrGLInterface);
++  myinterface->fStandard = kGLES_GrGLStandard;
+ 
+   // Allowing Skia to use GL ES 3.0 caused a perf test regression (see Issue
+   // 719572). Until that can be understood we are limiting to ES 2.0 (with
+@@ -67,10 +67,10 @@ sk_sp<GrGLInterface> CreateGLES2InterfaceBindings(
+       gles_bind(&GLES2Interface::GetStringi, impl, context_support);
+   auto get_integerv =
+       gles_bind(&GLES2Interface::GetIntegerv, impl, context_support);
+-  interface->fExtensions.init(kGLES_GrGLStandard, get_string, get_stringi,
++  myinterface->fExtensions.init(kGLES_GrGLStandard, get_string, get_stringi,
+                               get_integerv);
+ 
+-  GrGLInterface::Functions* functions = &interface->fFunctions;
++  GrGLInterface::Functions* functions = &myinterface->fFunctions;
+   functions->fActiveTexture =
+       gles_bind(&GLES2Interface::ActiveTexture, impl, context_support);
+   functions->fAttachShader =
+@@ -405,7 +405,7 @@ sk_sp<GrGLInterface> CreateGLES2InterfaceBindings(
+     // This method is only used for GL_PROGRAM_BINARY_RETRIEVABLE_HINT in ES3.
+     LOG(FATAL) << "Skia shouldn't use program binaries over the command buffer";
+   };
+-  return interface;
++  return myinterface;
+ }
+ 
+ }  // namespace skia_bindings
+diff --git a/src/3rdparty/chromium/gpu/skia_bindings/grcontext_for_gles2_interface.cc b/src/3rdparty/chromium/gpu/skia_bindings/grcontext_for_gles2_interface.cc
+index f4331e8c54..6d90f43b0c 100644
+--- a/src/3rdparty/chromium/gpu/skia_bindings/grcontext_for_gles2_interface.cc
++++ b/src/3rdparty/chromium/gpu/skia_bindings/grcontext_for_gles2_interface.cc
+@@ -40,9 +40,9 @@ GrContextForGLES2Interface::GrContextForGLES2Interface(
+   // rolls are in.
+   options.fInternalMultisampleCount = 0;
+   options.fSupportBilerpFromGlyphAtlas = support_bilerp_from_flyph_atlas;
+-  sk_sp<GrGLInterface> interface(
++  sk_sp<GrGLInterface> myinterface(
+       skia_bindings::CreateGLES2InterfaceBindings(gl, context_support));
+-  gr_context_ = GrDirectContexts::MakeGL(std::move(interface), options);
++  gr_context_ = GrDirectContexts::MakeGL(std::move(myinterface), options);
+   if (gr_context_) {
+     gr_context_->setResourceCacheLimit(max_resource_cache_bytes);
+     context_support_->SetGrContext(gr_context_.get());

@@ -1,0 +1,84 @@
+Fix clang warnings in base comparison types and Qt qWarning() calls.
+
+base::StrongAlias, base::TimeDelta and base::TimeBase only provide
+==, !=, <, <=, > and >=. Classes holding such members with a defaulted
+operator<=> (autofill::Section::FieldIdentifier, autofill::Section,
+autofill::LoyaltyCard, resource_attribution::ResultMetadata and
+friends) get it implicitly deleted, and clang warns with
+-Wdefaulted-function-deleted. Provide operator<=> on those types.
+
+Also fix two -Wformat warnings in QtWebEngine core:
+- profile_qt.cpp used "%ull" (= %u followed by "ll") for a qulonglong.
+- content_main_delegate_qt.cpp passed FilePath::value() (std::wstring on
+  Windows) to "%s"; use AsUTF8Unsafe() instead.
+
+--- a/src/3rdparty/chromium/base/time/time.h
++++ b/src/3rdparty/chromium/base/time/time.h
+@@ -344,6 +344,9 @@
+   constexpr bool operator>=(TimeDelta other) const {
+     return delta_ >= other.delta_;
+   }
++  constexpr std::strong_ordering operator<=>(TimeDelta other) const {
++    return delta_.RawValue() <=> other.delta_.RawValue();
++  }
+ 
+   // Returns this delta, ceiled/floored/rounded-away-from-zero to the nearest
+   // multiple of |interval|.
+@@ -515,6 +518,10 @@
+   constexpr bool operator>=(const TimeBase<TimeClass>& other) const {
+     return us_ >= other.us_;
+   }
++  constexpr std::strong_ordering operator<=>(
++      const TimeBase<TimeClass>& other) const {
++    return us_.RawValue() <=> other.us_.RawValue();
++  }
+ 
+  protected:
+   constexpr explicit TimeBase(int64_t us) : us_(us) {}
+--- a/src/3rdparty/chromium/base/types/strong_alias.h
++++ b/src/3rdparty/chromium/base/types/strong_alias.h
+@@ -119,6 +119,11 @@
+   constexpr bool operator>=(const StrongAlias& other) const {
+     return value_ >= other.value_;
+   }
++  constexpr auto operator<=>(const StrongAlias& other) const
++    requires std::three_way_comparable<UnderlyingType>
++  {
++    return value_ <=> other.value_;
++  }
+ 
+   // If UnderlyingType can be serialised into trace, its alias is also
+   // serialisable.
+--- a/src/core/content_main_delegate_qt.cpp
++++ b/src/core/content_main_delegate_qt.cpp
+@@ -233,7 +233,7 @@
+     if (base::PathService::OverrideAndCreateIfNeeded(key, path, false, false))
+         return;
+ 
+-    qWarning("Path override failed for key %s and path '%s'", keyName, path.value().c_str());
++    qWarning("Path override failed for key %s and path '%s'", keyName, path.AsUTF8Unsafe().c_str());
+ }
+ 
+ #define SafeOverridePath(KEY, PATH) SafeOverridePathImpl(#KEY, KEY, PATH)
+--- a/src/core/profile_qt.cpp
++++ b/src/core/profile_qt.cpp
+@@ -270,7 +270,7 @@
+     auto it = std::find(storagePaths.begin(), storagePaths.end(), thisStoragePath);
+     if (it == storagePaths.end()) {
+         if (storagePaths.size() >= (PATH_QT_END - PATH_QT_START)) {
+-            qWarning("Number of profile paths exceeded %ull, storage may break",
++            qWarning("Number of profile paths exceeded %llu, storage may break",
+                      static_cast<qulonglong>(PATH_QT_END - PATH_QT_START));
+             return;
+         }
+--- a/src/3rdparty/chromium/third_party/blink/renderer/core/layout/masonry/masonry_layout_algorithm.cc
++++ b/src/3rdparty/chromium/third_party/blink/renderer/core/layout/masonry/masonry_layout_algorithm.cc
+@@ -294,7 +294,7 @@
+     const auto& item_node = masonry_item.node;
+     const auto& item_style = item_node.Style();
+     const LayoutResult* result =
+-        is_for_layout ? result = item_node.Layout(space)
++        is_for_layout ? item_node.Layout(space)
+                       : LayoutMasonryItemForMeasure(masonry_item, space,
+                                                     *sizing_constraint);
+ 

@@ -1,0 +1,54 @@
+Keep libstdc++'s __try/__catch pair consistent with the mingw SEH override.
+
+The mingw toolchain patch (0002) installs an override in build_config.h
+that maps SEH constructs to C++ exceptions on mingw:
+
+  #if defined(OS_WIN) && defined(COMPILER_GCC)
+  #undef __try
+  #define __try try
+  #undef __except
+  #define __except(x) catch(...)
+  #endif
+
+This is fine for chromium code that writes `__try { ... } __except(...) { ... }`
+but it also clobbers libstdc++'s own __try macro. libstdc++ pairs __try
+with __catch (not __except); under -fno-exceptions exception_defines.h
+defines them as `if (true)` / `if (false)`. After the chromium override
+the pair becomes `try { ... } if (false) { ... }`, which is not a valid
+C++ try-block.
+
+GCC's -fno-exceptions accepts that mismatch with only the
+-Wtemplate-body warning (suppressed by chromium's precompile.h).
+Clang treats it as an error: the parser sees `try { ... }`, looks for
+the matching `catch`, finds `if (false)` instead and emits
+
+  bits/forward_list.tcc:167: error: expected catch
+
+This fires from every Qt-side TU that pulls in perfetto (which
+includes <forward_list>) -- and once perfetto is in the include chain
+it cascades into every libstdc++ template body that uses __try/__catch.
+
+Extend the chromium override so the libstdc++ pair is consistent too:
+map __catch to catch(X) and __throw_exception_again to throw. Real
+try/catch inside a libstdc++ system header is accepted by clang under
+-fno-exceptions (only user-code try blocks are rejected), and the
+templates remain dead code paths after dead-store elimination just as
+they did with the `if (false)` form -- no runtime exception machinery
+gets pulled in.
+
+--- a/src/3rdparty/chromium/build/build_config.h
++++ b/src/3rdparty/chromium/build/build_config.h
+@@ -439,6 +439,13 @@
+ #define __try try
+ #undef __except
+ #define __except(x) catch(...)
++// libstdc++ pairs __try with __catch / __throw_exception_again (not
++// __except). Keep its expansion consistent with the override above so
++// template bodies parse as `try { ... } catch(X) { ... }`.
++#undef __catch
++#define __catch(X) catch(X)
++#undef __throw_exception_again
++#define __throw_exception_again throw
+ #endif
+ 
+ #endif  // BUILD_BUILD_CONFIG_H_
