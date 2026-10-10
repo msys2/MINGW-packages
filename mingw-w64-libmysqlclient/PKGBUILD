@@ -1,0 +1,134 @@
+# Maintainer: Taozuhong <taozuhong@hotmail.com>
+
+_realname=libmysqlclient
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=8.0.46
+pkgrel=1
+pkgdesc="MySQL client library (mingw-w64)"
+arch=('any')
+mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+url="https://www.mysql.com/"
+msys2_repository_url="https://github.com/mysql/mysql-server"
+license=('spdx:GPL-2.0-only WITH Universal-FOSS-exception-1.0')
+depends=("${MINGW_PACKAGE_PREFIX}-openssl"
+         "${MINGW_PACKAGE_PREFIX}-zlib"
+         "${MINGW_PACKAGE_PREFIX}-zstd")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-ninja")
+source=("https://cdn.mysql.com/Downloads/MySQL-8.0/mysql-boost-${pkgver}.tar.gz"
+        "0001-mysql-${pkgver}-mingw.patch")
+sha256sums=('dff4332ee7f8f37fc0516c66763600a22a81c8192c743c477b6484206e314f2f'
+            '4b2c41a982d775e3cd328c8dc0ed5d9aeb8eeeed712e2956ce895add6cea12eb')
+
+apply_patch_with_msg() {
+  for _patch in "$@"
+  do
+    msg2 "Applying ${_patch}"
+    patch -Nbp1 -i "${srcdir}/${_patch}"
+  done
+}
+
+prepare() {
+  cd "${srcdir}/mysql-${pkgver}"
+  apply_patch_with_msg \
+    "0001-mysql-${pkgver}-mingw.patch"
+}
+
+build() {
+  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
+
+  declare -a _extra_config
+  if check_option "debug" "n"; then
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    _extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  # Client library only (no server, no CLI tools), against the MSYS2 system
+  # OpenSSL/zlib/zstd packages; Boost comes bundled in the mysql-boost tarball.
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  ${MINGW_PREFIX}/bin/cmake.exe -G "Ninja" \
+    -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+    "${_extra_config[@]}" \
+    -DWITHOUT_SERVER=1 \
+    -DWITH_UNIT_TESTS=OFF \
+    -DWITH_SSL=system \
+    -DWITH_ZLIB=system \
+    -DWITH_ZSTD=system \
+    -DWITH_BOOST="${srcdir}/mysql-${pkgver}/boost/boost_1_77_0" \
+    "${srcdir}/mysql-${pkgver}"
+
+  ${MINGW_PREFIX}/bin/cmake.exe --build . --target libmysql mysqlclient
+}
+
+# check() intentionally omitted: the unit test suite belongs to the server
+# build and is disabled (WITH_UNIT_TESTS=OFF).
+
+package() {
+  cd "${srcdir}/build-${MSYSTEM}"
+
+  # Runtime DLL and import library (canonical MySQL Windows names)
+  install -Dm644 library_output_directory/libmysql.dll \
+    "${pkgdir}${MINGW_PREFIX}/bin/libmysql.dll"
+  install -Dm644 libmysql/libmysql.dll.a \
+    "${pkgdir}${MINGW_PREFIX}/lib/libmysql.dll.a"
+
+  # Client API compatibility alias: lets -lmysqlclient resolve the import
+  # library (dynamic linking), matching libmysqlclient.so on Linux.
+  install -Dm644 libmysql/libmysql.dll.a \
+    "${pkgdir}${MINGW_PREFIX}/lib/libmysqlclient.dll.a"
+
+  # Static merged client library (force it with -Wl,-Bstatic -lmysqlclient)
+  install -Dm644 archive_output_directory/libmysqlclient.a \
+    "${pkgdir}${MINGW_PREFIX}/lib/libmysqlclient.a"
+
+  # Client API headers only - the exact set upstream ships in its
+  # Development component (include/CMakeLists.txt HEADERS /
+  # HEADERS_MYSQL_DIR), plus my_io.h and my_io_bits.h so that
+  # <mysql_com.h> also compiles standalone, and the generated
+  # mysql_version.h / mysqld_error.h.
+  _inc="${pkgdir}${MINGW_PREFIX}/include/mysql"
+  install -d -m755 "${_inc}/mysql/components/services/bits"
+  install -m644 "${srcdir}/mysql-${pkgver}"/include/{errmsg.h,field_types.h,my_command.h,my_compress.h,my_io.h,my_list.h,mysql.h,mysql_com.h,mysql_time.h} \
+    "${_inc}/"
+  install -m644 "${srcdir}/mysql-${pkgver}"/include/mysql/{client_plugin.h,plugin_auth_common.h,udf_registration_types.h} \
+    "${_inc}/mysql/"
+  install -m644 "${srcdir}/mysql-${pkgver}/include/mysql/components/services/bits/my_io_bits.h" \
+    "${_inc}/mysql/components/services/bits/my_io_bits.h"
+  # generated API headers
+  install -m644 include/mysql_version.h include/mysqld_error.h "${_inc}/"
+
+  # pkg-config metadata
+  install -d -m755 "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig"
+  cat > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/mysqlclient.pc" <<EOF
+prefix=${MINGW_PREFIX}
+includedir=\${prefix}/include/mysql
+libdir=\${prefix}/lib
+
+Name: mysqlclient
+Description: MySQL client library
+Version: ${pkgver}
+URL: https://www.mysql.com/
+Cflags: -I\${includedir}
+Libs: -L\${libdir} -lmysqlclient
+Libs.private: -lssl -lcrypto -lz -lzstd -lws2_32 -ldnsapi -lcrypt32 -lsecur32 -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+EOF
+  cat > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/libmysql.pc" <<EOF
+prefix=${MINGW_PREFIX}
+includedir=\${prefix}/include/mysql
+libdir=\${prefix}/lib
+
+Name: libmysql
+Description: MySQL client library
+Version: ${pkgver}
+URL: https://www.mysql.com/
+Cflags: -I\${includedir}
+Libs: -L\${libdir} -lmysql
+EOF
+
+  # License
+  install -Dm644 "${srcdir}/mysql-${pkgver}/LICENSE" \
+    "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE"
+}
