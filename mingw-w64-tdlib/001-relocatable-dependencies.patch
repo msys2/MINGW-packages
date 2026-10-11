@@ -1,0 +1,205 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -79,6 +79,7 @@
+   set(ZLIB_FOUND 1)
+   set(ZLIB_LIBRARIES)
+   set(ZLIB_INCLUDE_DIR)
++  add_library(ZLIB::ZLIB INTERFACE IMPORTED)
+ 
+   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -s ALLOW_MEMORY_GROWTH=1 -s MEMFS_APPEND_TO_TYPED_ARRAYS=1 -s USE_ZLIB=1 -s MODULARIZE=1 \
+     -s EXPORT_NAME=\"'createTdwebModule'\" -s WEBSOCKET_URL=\"'wss:#'\" -s EXPORTED_RUNTIME_METHODS=\"['FS','cwrap']\" -lidbfs.js -lworkerfs.js")
+@@ -93,7 +94,7 @@
+ endif()
+ 
+ if (NOT TD_GENERATE_SOURCE_FILES)
+-  if (NOT OPENSSL_FOUND)
++  if (NOT TARGET OpenSSL::Crypto)
+     find_package(OpenSSL)
+   endif()
+   if (OPENSSL_FOUND)
+@@ -197,7 +198,8 @@
+       DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/tde2e"
+     )
+   endif()
+-  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/tde2eConfig.cmake" "include(\"\${CMAKE_CURRENT_LIST_DIR}/tde2eStaticTargets.cmake\")\n")
++  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/tde2eConfig.cmake"
++    "include(CMakeFindDependencyMacro)\nfind_dependency(OpenSSL)\nfind_dependency(ZLIB)\ninclude(\"\${CMAKE_CURRENT_LIST_DIR}/tde2eStaticTargets.cmake\")\n")
+   include(CMakePackageConfigHelpers)
+   write_basic_package_version_file("tde2eConfigVersion.cmake"
+     VERSION "${TDLib_VERSION}"
+@@ -1359,7 +1361,7 @@
+ add_library(tdmtproto STATIC ${TD_MTPROTO_SOURCE})
+ target_include_directories(tdmtproto PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDE_DIR}>)
+ target_include_directories(tdmtproto SYSTEM PRIVATE ${OPENSSL_INCLUDE_DIR})
+-target_link_libraries(tdmtproto PUBLIC tdactor tdnet tdutils PRIVATE ${OPENSSL_CRYPTO_LIBRARY} ${CMAKE_DL_LIBS} ${ZLIB_LIBRARIES})
++target_link_libraries(tdmtproto PUBLIC tdactor tdnet tdutils PRIVATE OpenSSL::Crypto ${CMAKE_DL_LIBS} ZLIB::ZLIB)
+ if (WIN32)
+   if (MINGW)
+     target_link_libraries(tdmtproto PRIVATE ws2_32 mswsock crypt32)
+--- a/CMake/GeneratePkgConfig.cmake
++++ b/CMake/GeneratePkgConfig.cmake
+@@ -30,10 +30,14 @@
+ 
+ function(generate_pkgconfig TARGET DESCRIPTION)
+   # message("Generating pkg-config for ${TARGET}")
+-  get_filename_component(PREFIX "${CMAKE_INSTALL_PREFIX}" REALPATH)
++  get_filename_component(INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}" ABSOLUTE)
++  get_filename_component(PKGCONFIG_DIR "${CMAKE_INSTALL_LIBDIR}/pkgconfig" ABSOLUTE
++    BASE_DIR "${INSTALL_PREFIX}")
++  file(RELATIVE_PATH PREFIX_FROM_PKGCONFIG "${PKGCONFIG_DIR}" "${INSTALL_PREFIX}")
++  set(PREFIX "\${pcfiledir}/${PREFIX_FROM_PKGCONFIG}")
+ 
+   get_target_property(LIBRARY_TYPE "${TARGET}" TYPE)
+-  if ("${LIBRARY_TYPE}" STREQUAL "INTERFACE_LIBRARY")
++  if ("${LIBRARY_TYPE}" STREQUAL "INTERFACE_LIBRARY" OR "${LIBRARY_TYPE}" STREQUAL "SHARED_LIBRARY")
+     get_target_property(LIST "${TARGET}" INTERFACE_LINK_LIBRARIES)
+   else()
+     get_target_property(LIST "${TARGET}" LINK_LIBRARIES)
+@@ -71,17 +75,21 @@
+   set(REQS "")
+   set(LIBS "")
+   foreach (LIB ${LIST})
+-    if (TARGET "${LIB}")
++    if ("${LIB}" STREQUAL "OpenSSL::Crypto")
++      list(APPEND REQS libcrypto)
++    elseif ("${LIB}" STREQUAL "OpenSSL::SSL")
++      list(APPEND REQS libssl)
++    elseif ("${LIB}" STREQUAL "ZLIB::ZLIB")
++      list(APPEND REQS zlib)
++    elseif (TARGET "${LIB}")
+       if ("${LIBRARY_TYPE}" STREQUAL "SHARED_LIBRARY")
+         get_target_property(LIB_TYPE "${LIB}" TYPE)
+         if ("${LIB_TYPE}" STREQUAL "STATIC_LIBRARY")
+           continue()
+         endif()
+       endif()
+-      set(HAS_REQS 1)
+       list(APPEND REQS "${LIB}")
+     else()
+-      set(HAS_LIBS 1)
+       get_relative_link(LINK "${LIB}")
+       if (NOT "${LINK}" STREQUAL "")
+         list(APPEND LIBS "${LINK}")
+@@ -89,14 +97,15 @@
+     endif()
+   endforeach()
+ 
+-  if (HAS_REQS)
++  if (REQS)
++    list(REMOVE_DUPLICATES REQS)
+     set(REQUIRES "")
+     foreach (REQ ${REQS})
+       set(REQUIRES "${REQUIRES} ${REQ}")
+     endforeach()
+     set(REQUIRES "Requires.private:${REQUIRES}\n")
+   endif()
+-  if (HAS_LIBS)
++  if (LIBS)
+     set(LIBRARIES "")
+     list(REVERSE LIBS)
+     list(REMOVE_DUPLICATES LIBS)
+--- a/TdConfig.cmake
++++ b/TdConfig.cmake
+@@ -1,8 +1,9 @@
+ include(CMakeFindDependencyMacro)
+-#TODO: write all external dependencies
+ if (EXISTS "${CMAKE_CURRENT_LIST_DIR}/TdTargets.cmake")
+   include("${CMAKE_CURRENT_LIST_DIR}/TdTargets.cmake")
+ endif()
+ if (EXISTS "${CMAKE_CURRENT_LIST_DIR}/TdStaticTargets.cmake")
++  find_dependency(OpenSSL COMPONENTS Crypto SSL)
++  find_dependency(ZLIB)
+   include("${CMAKE_CURRENT_LIST_DIR}/TdStaticTargets.cmake")
+ endif()
+--- a/tdutils/CMakeLists.txt
++++ b/tdutils/CMakeLists.txt
+@@ -10,7 +10,7 @@
+   set(CMAKE_INSTALL_LIBDIR "lib")
+ endif()
+ 
+-if (NOT ZLIB_FOUND AND TDUTILS_USE_EXTERNAL_DEPENDENCIES)
++if (NOT TARGET ZLIB::ZLIB AND TDUTILS_USE_EXTERNAL_DEPENDENCIES)
+   find_package(ZLIB)
+ endif()
+ if (ZLIB_FOUND)
+@@ -18,7 +18,7 @@
+   message(STATUS "Found ZLIB: ${ZLIB_INCLUDE_DIR} ${ZLIB_LIBRARIES}")
+ 
+   # OpenSSL internally depends on zlib
+-  if (NOT OPENSSL_FOUND)
++  if (NOT TARGET OpenSSL::Crypto)
+     find_package(OpenSSL)
+   endif()
+   if (OPENSSL_FOUND)
+@@ -363,7 +363,7 @@
+ target_include_directories(tdutils PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>)
+ 
+ if (OPENSSL_FOUND)
+-  target_link_libraries(tdutils PRIVATE ${OPENSSL_CRYPTO_LIBRARY} ${CMAKE_DL_LIBS} ${ZLIB_LIBRARIES})
++  target_link_libraries(tdutils PRIVATE OpenSSL::Crypto ${CMAKE_DL_LIBS} ZLIB::ZLIB)
+   target_include_directories(tdutils SYSTEM PRIVATE ${OPENSSL_INCLUDE_DIR})
+ 
+   if (WIN32)
+@@ -376,7 +376,7 @@
+ endif()
+ 
+ if (ZLIB_FOUND)
+-  target_link_libraries(tdutils PRIVATE ${ZLIB_LIBRARIES})
++  target_link_libraries(tdutils PRIVATE ZLIB::ZLIB)
+   target_include_directories(tdutils SYSTEM PRIVATE ${ZLIB_INCLUDE_DIR})
+ endif()
+ 
+--- a/tdnet/CMakeLists.txt
++++ b/tdnet/CMakeLists.txt
+@@ -8,7 +8,7 @@
+   set(CMAKE_INSTALL_LIBDIR "lib")
+ endif()
+ 
+-if (NOT OPENSSL_FOUND)
++if (NOT TARGET OpenSSL::Crypto)
+   find_package(OpenSSL REQUIRED)
+   find_package(ZLIB REQUIRED)
+ endif()
+@@ -66,9 +66,9 @@
+ target_include_directories(tdnet SYSTEM PRIVATE $<BUILD_INTERFACE:${OPENSSL_INCLUDE_DIR}>)
+ target_link_libraries(tdnet PUBLIC tdutils tdactor)
+ if (NOT EMSCRIPTEN)
+-  target_link_libraries(tdnet PRIVATE ${OPENSSL_SSL_LIBRARY})
++  target_link_libraries(tdnet PRIVATE OpenSSL::SSL)
+ endif()
+-target_link_libraries(tdnet PRIVATE ${OPENSSL_CRYPTO_LIBRARY} ${CMAKE_DL_LIBS} ${ZLIB_LIBRARIES})
++target_link_libraries(tdnet PRIVATE OpenSSL::Crypto ${CMAKE_DL_LIBS} ZLIB::ZLIB)
+ 
+ if (WIN32)
+   if (MINGW)
+--- a/tde2e/CMakeLists.txt
++++ b/tde2e/CMakeLists.txt
+@@ -70,7 +70,7 @@
+ if (NOT CMAKE_CROSSCOMPILING)
+   add_dependencies(tde2e tl_generate_common)
+ endif()
+-target_link_libraries(tde2e PRIVATE tdutils ${OPENSSL_CRYPTO_LIBRARY} ${CMAKE_DL_LIBS} ${ZLIB_LIBRARIES})
++target_link_libraries(tde2e PRIVATE tdutils OpenSSL::Crypto ${CMAKE_DL_LIBS} ZLIB::ZLIB)
+ target_include_directories(tde2e SYSTEM PRIVATE $<BUILD_INTERFACE:${OPENSSL_INCLUDE_DIR}>)
+ target_include_directories(tde2e PRIVATE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..> $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDE_DIR}>)
+ target_include_directories(tde2e PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
+--- a/sqlite/CMakeLists.txt
++++ b/sqlite/CMakeLists.txt
+@@ -8,7 +8,7 @@
+   set(CMAKE_INSTALL_LIBDIR "lib")
+ endif()
+ 
+-if (NOT OPENSSL_FOUND)
++if (NOT TARGET OpenSSL::Crypto)
+   find_package(OpenSSL REQUIRED)
+   find_package(ZLIB REQUIRED)
+ endif()
+@@ -26,7 +26,7 @@
+ add_library(tdsqlite STATIC ${SQLITE_SOURCE})
+ target_include_directories(tdsqlite PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
+ target_include_directories(tdsqlite SYSTEM PRIVATE ${OPENSSL_INCLUDE_DIR})
+-target_link_libraries(tdsqlite PRIVATE ${OPENSSL_CRYPTO_LIBRARY} ${CMAKE_DL_LIBS} ${ZLIB_LIBRARIES})
++target_link_libraries(tdsqlite PRIVATE OpenSSL::Crypto ${CMAKE_DL_LIBS} ZLIB::ZLIB)
+ if (WIN32)
+   if (MINGW)
+     target_link_libraries(tdsqlite PRIVATE ws2_32 mswsock crypt32)
