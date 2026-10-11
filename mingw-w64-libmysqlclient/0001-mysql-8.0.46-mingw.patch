@@ -1,0 +1,512 @@
+diff --git a/cmake/maintainer.cmake b/cmake/maintainer.cmake
+index d5320094..4bcac29f 100644
+--- a/cmake/maintainer.cmake
++++ b/cmake/maintainer.cmake
+@@ -48,8 +48,10 @@ IF(SIZEOF_VOIDP EQUAL 8)
+   STRING_APPEND(MY_WARNING_FLAGS " -Wmissing-format-attribute")
+ ENDIF()
+ 
+-# Clang 6.0 and newer on Windows treat -Wall as -Weverything; use /W4 instead
+-IF(WIN32_CLANG)
++# clang-cl (MSVC frontend) treats -Wall as -Weverything; use /W4 instead.
++# GNU-frontend clang (MinGW-w64, e.g. MSYS2 CLANG64) uses regular
++# -Wall/-Wextra options; /W4 would be parsed as an input file there.
++IF(WIN32_CLANG AND MSVC)
+   STRING(REPLACE "-Wall -Wextra" "/W4" MY_WARNING_FLAGS "${MY_WARNING_FLAGS}")
+ ENDIF()
+ 
+diff --git a/cmake/os/Windows.cmake b/cmake/os/Windows.cmake
+index aefb9828..b9e7fcea 100644
+--- a/cmake/os/Windows.cmake
++++ b/cmake/os/Windows.cmake
+@@ -35,8 +35,14 @@ INCLUDE (CheckTypeSize)
+ 
+ IF(MY_COMPILER_IS_CLANG)
+   SET(WIN32_CLANG 1)
+-  SET(CMAKE_INCLUDE_SYSTEM_FLAG_C "/imsvc ")
+-  SET(CMAKE_INCLUDE_SYSTEM_FLAG_CXX "/imsvc ")
++  IF(MSVC)
++    # clang-cl keeps the MSVC driver convention for SYSTEM include
++    # directories. GNU-frontend clang (MinGW-w64, e.g. MSYS2 CLANG64)
++    # keeps the default -isystem flags set up by CMake; /imsvc would be
++    # parsed as an input file there.
++    SET(CMAKE_INCLUDE_SYSTEM_FLAG_C "/imsvc ")
++    SET(CMAKE_INCLUDE_SYSTEM_FLAG_CXX "/imsvc ")
++  ENDIF()
+   ADD_DEFINITIONS(-DWIN32_CLANG)
+ ENDIF()
+ 
+diff --git a/cmake/ssl.cmake b/cmake/ssl.cmake
+index 26ebbb17..9af3059d 100644
+--- a/cmake/ssl.cmake
++++ b/cmake/ssl.cmake
+@@ -375,7 +375,10 @@ MACRO (MYSQL_CHECK_SSL)
+       HINTS ${OPENSSL_ROOT_DIR}/include
+     )
+ 
+-    IF (WIN32)
++    IF (WIN32 AND NOT MINGW AND NOT WIN32_CLANG)
++      # MSVC-only requirement: MSYS2/MinGW OpenSSL is built against the
++      # same CRT as the application, so applink.c is not needed and is
++      # not shipped by the mingw-w64-openssl package.
+       FIND_FILE(OPENSSL_APPLINK_C
+         NAMES openssl/applink.c
+         NO_DEFAULT_PATH
+diff --git a/extra/zstd/CMakeLists.txt b/extra/zstd/CMakeLists.txt
+index 483397b8..50ade5de 100644
+--- a/extra/zstd/CMakeLists.txt
++++ b/extra/zstd/CMakeLists.txt
+@@ -47,7 +47,13 @@ SET(ZSTD_SRCS
+ )
+ 
+ IF((LINUX AND NOT LINUX_ARM) OR
+-    (APPLE AND NOT APPLE_ARM))
++    (APPLE AND NOT APPLE_ARM) OR
++    (WIN32 AND MY_COMPILER_IS_GNU_OR_CLANG AND
++     CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64"))
++  # MinGW GCC/Clang on x86 enable ZSTD_ENABLE_ASM_X86_64_BMI2 on Windows
++  # just like on Linux, so the assembly loop must be built there as well.
++  # MSVC disables the asm code path (no __GNUC__) and needs no assembler,
++  # and Windows on ARM (e.g. MSYS2 CLANGARM64) must use the C loop too.
+   ENABLE_LANGUAGE(ASM)
+   LIST(APPEND ZSTD_SRCS
+     ${ZSTD_VERSION_DIR}/lib/decompress/huf_decompress_amd64.S
+diff --git a/include/my_inttypes.h b/include/my_inttypes.h
+index da09fb87..c1320da8 100644
+--- a/include/my_inttypes.h
++++ b/include/my_inttypes.h
+@@ -41,7 +41,7 @@
+ #endif
+ 
+ #if defined(_WIN32) && !defined(MYSQL_ABI_CHECK)
+-#include <BaseTsd.h>
++#include <basetsd.h>
+ typedef unsigned int uint;
+ typedef unsigned short ushort;
+ #endif
+diff --git a/include/mysql/components/services/bits/my_io_bits.h b/include/mysql/components/services/bits/my_io_bits.h
+index 8a1a36bf..ccb8318c 100644
+--- a/include/mysql/components/services/bits/my_io_bits.h
++++ b/include/mysql/components/services/bits/my_io_bits.h
+@@ -51,7 +51,10 @@
+ typedef int File; /* File descriptor */
+ #if defined(_WIN32) && !defined(MYSQL_ABI_CHECK)
+ typedef int MY_MODE;
++#ifndef _MODE_T_
++/* MinGW provides mode_t through sys/types.h (included above). */
+ typedef int mode_t;
++#endif
+ typedef int socket_len_t;
+ typedef SOCKET my_socket;
+ #else
+diff --git a/include/mysql/psi/mysql_socket.h b/include/mysql/psi/mysql_socket.h
+index c4154085..ae9e47f2 100644
+--- a/include/mysql/psi/mysql_socket.h
++++ b/include/mysql/psi/mysql_socket.h
+@@ -43,7 +43,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
+ #include "mysql/psi/psi_socket.h"
+ /* For socket api */
+ #ifdef _WIN32
+-#include <MSWSock.h>
++#include <mswsock.h>
+ #ifdef WIN32_LEAN_AND_MEAN
+ #include <winsock2.h>
+ #include <ws2def.h>
+diff --git a/libbinlogevents/include/binlog_event.h b/libbinlogevents/include/binlog_event.h
+index 1e313858..5f199f35 100644
+--- a/libbinlogevents/include/binlog_event.h
++++ b/libbinlogevents/include/binlog_event.h
+@@ -49,7 +49,7 @@
+ #include "my_io.h"
+ 
+ #if defined(_WIN32)
+-#include <Winsock2.h>
++#include <winsock2.h>
+ #else
+ #include <sys/times.h>
+ #endif
+diff --git a/libmysql/CMakeLists.txt b/libmysql/CMakeLists.txt
+index 8ab5cb32..43b1e39a 100644
+--- a/libmysql/CMakeLists.txt
++++ b/libmysql/CMakeLists.txt
+@@ -360,6 +360,14 @@ MERGE_LIBRARIES_SHARED(libmysql ${LIBS_TO_MERGE}
+   ${UNIX_VERSION}
+   )
+ 
++IF(WIN32 AND NOT UNIX_OUTPUT_NAME)
++  # MinGW prefixes shared libraries with "lib" and import libraries with
++  # "lib" too (liblibmysql.dll / liblibmysql.dll.a). Keep the canonical
++  # Windows names used across the MySQL client ecosystem: libmysql.dll
++  # and its import library libmysql.dll.a.
++  SET_TARGET_PROPERTIES(libmysql PROPERTIES PREFIX "" IMPORT_PREFIX "")
++ENDIF()
++
+ # Downgrade warning for strncat in my_crypt_genhash.
+ IF((WITH_LTO OR CMAKE_COMPILER_FLAG_WITH_LTO) AND MY_COMPILER_IS_GNU)
+   MY_TARGET_LINK_OPTIONS(libmysql "-Wno-error=stringop-truncation")
+diff --git a/libmysql/authentication_kerberos/sspi_authentication_client.h b/libmysql/authentication_kerberos/sspi_authentication_client.h
+index 2aeadc13..12c09faa 100644
+--- a/libmysql/authentication_kerberos/sspi_authentication_client.h
++++ b/libmysql/authentication_kerberos/sspi_authentication_client.h
+@@ -43,7 +43,7 @@
+ 
+ #include <sspi.h>
+ 
+-#include <SecExt.h>
++#include <secext.h>
+ 
+ #include <stdarg.h>
+ 
+diff --git a/libmysql/authentication_kerberos/sspi_utility.h b/libmysql/authentication_kerberos/sspi_utility.h
+index 0350536c..4db36b0e 100644
+--- a/libmysql/authentication_kerberos/sspi_utility.h
++++ b/libmysql/authentication_kerberos/sspi_utility.h
+@@ -37,7 +37,7 @@
+ 
+ #include <sspi.h>
+ 
+-#include <SecExt.h>
++#include <secext.h>
+ 
+ #include <stdarg.h>
+ 
+diff --git a/libmysql/authentication_win/CMakeLists.txt b/libmysql/authentication_win/CMakeLists.txt
+index c140af33..148c5573 100644
+--- a/libmysql/authentication_win/CMakeLists.txt
++++ b/libmysql/authentication_win/CMakeLists.txt
+@@ -40,7 +40,7 @@ SET(PLUGIN_SOURCES
+   )
+ 
+ ADD_CONVENIENCE_LIBRARY(auth_win_client ${PLUGIN_SOURCES} ${HEADERS}
+-  LINK_LIBRARIES Secur32)
++  LINK_LIBRARIES secur32)
+ 
+ # In IDE, group headers in a separate folder.
+ 
+diff --git a/mysys/my_default.cc b/mysys/my_default.cc
+index e7492d35..c10e5a0d 100644
+--- a/mysys/my_default.cc
++++ b/mysys/my_default.cc
+@@ -41,12 +41,12 @@
+ 
+   The following arguments are handled automatically;  If used, they must be
+   first argument on the command line!
+-  --no-defaults	; no options are read, except for the ones provided in the
++  --no-defaults ; no options are read, except for the ones provided in the
+                    login file.
+-  --defaults-file=full-path-to-default-file	; Only this file will be read.
++  --defaults-file=full-path-to-default-file     ; Only this file will be read.
+   --defaults-extra-file=full-path-to-default-file ; Read this file before ~/
+   --defaults-group-suffix  ; Also read groups with concat(group, suffix)
+-  --print-defaults	  ; Print the modified command line and exit
++  --print-defaults        ; Print the modified command line and exit
+   --login-path=login-path-name ; Read options under login-path-name from
+                                 the login file.
+ */
+@@ -56,6 +56,7 @@
+ #include <fcntl.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <cstdlib>  // std::free
+ #include <sys/types.h>
+ 
+ #include "m_ctype.h"
+@@ -546,8 +547,8 @@ static int handle_default_option(void *in_ctx, const char *group_name,
+ 
+   SYNOPSIS
+     get_defaults_options()
+-    argc			Pointer to argc of original program
+-    argv			Pointer to argv of original program
++    argc                        Pointer to argc of original program
++    argv                        Pointer to argv of original program
+     defaults                    --defaults-file option
+     extra_defaults              --defaults-extra-file option
+     group_suffix                --defaults-group-suffix option
+@@ -610,13 +611,13 @@ int get_defaults_options(int argc, char **argv, char **defaults,
+ 
+   SYNOPSIS
+     load_defaults()
+-    conf_file			Basename for configuration file to search for.
++    conf_file                   Basename for configuration file to search for.
+                                 If this is a path, then only this file is read.
+-    groups			Which [group] entries to read.
++    groups                      Which [group] entries to read.
+                                 Points to an null terminated array of pointers
+-    argc			Pointer to argc of original program
+-    argv			Pointer to argv of original program
+-    alloc			MEM_ROOT to allocate new argv on
++    argc                        Pointer to argc of original program
++    argv                        Pointer to argv of original program
++    alloc                       MEM_ROOT to allocate new argv on
+ 
+   NOTES
+ 
+@@ -640,13 +641,13 @@ bool my_defaults_read_login_file = true;
+ 
+   SYNOPSIS
+     my_load_defaults()
+-    conf_file			Basename for configuration file to search for.
++    conf_file                   Basename for configuration file to search for.
+                                 If this is a path, then only this file is read.
+-    groups			Which [group] entries to read.
++    groups                      Which [group] entries to read.
+                                 Points to an null terminated array of pointers
+-    argc			Pointer to argc of original program
+-    argv			Pointer to argv of original program
+-    alloc			MEM_ROOT to allocate new argv on
++    argc                        Pointer to argc of original program
++    argv                        Pointer to argv of original program
++    alloc                       MEM_ROOT to allocate new argv on
+     default_directories         Pointer to a location where a pointer to the
+   list of default directories will be stored
+ 
+@@ -817,14 +818,14 @@ static int search_default_file(Process_option_func opt_handler,
+ 
+   SYNOPSIS
+    get_argument()
+-   keyword		Include directive keyword
+-   kwlen		Length of keyword
+-   ptr			Pointer to the keyword in the line under process
+-   line			line number
++   keyword              Include directive keyword
++   kwlen                Length of keyword
++   ptr                  Pointer to the keyword in the line under process
++   line                 line number
+ 
+   RETURN
+-   0	error
+-   #	Returns pointer to the argument after the keyword.
++   0    error
++   #    Returns pointer to the argument after the keyword.
+ */
+ 
+ static char *get_argument(const char *keyword, size_t kwlen, char *ptr,
+@@ -864,10 +865,10 @@ static char *get_argument(const char *keyword, size_t kwlen, char *ptr,
+                                 every separate option.
+     handler_ctx                 Pointer to the structure to store actual
+                                 parameters of the function.
+-    dir				directory to read
+-    ext				Extension for configuration file
++    dir                         directory to read
++    ext                         Extension for configuration file
+     config_file                 Name of configuration file
+-    group			groups to read
++    group                       groups to read
+     recursion_level             the level of recursion, got while processing
+                                 "!include" or "!includedir"
+     is_login_file               TRUE, when login file is being processed.
+@@ -875,8 +876,8 @@ static char *get_argument(const char *keyword, size_t kwlen, char *ptr,
+ 
+   RETURN
+     0   Success
+-    -1	Fatal error, abort
+-     1	File not found (Warning)
++    -1  Fatal error, abort
++     1  File not found (Warning)
+ */
+ 
+ static int search_default_file_with_ext(Process_option_func opt_handler,
+diff --git a/mysys/my_malloc.cc b/mysys/my_malloc.cc
+index c68a6661..c2d1d062 100644
+--- a/mysys/my_malloc.cc
++++ b/mysys/my_malloc.cc
+@@ -32,6 +32,7 @@
+ 
+ #include <errno.h>
+ #include <stdlib.h>
++#include <cstdlib>  // std::calloc, std::malloc, std::free, std::realloc
+ #include <string.h>
+ #include <sys/types.h>
+ 
+diff --git a/mysys/my_thr_init.cc b/mysys/my_thr_init.cc
+index 0dd4e6a4..27b8d1eb 100644
+--- a/mysys/my_thr_init.cc
++++ b/mysys/my_thr_init.cc
+@@ -401,8 +401,14 @@ CODE_STATE **my_thread_var_dbug() {
+ static void my_sigabrt_handler(int sig [[maybe_unused]]) { __debugbreak(); }
+ 
+ static void install_sigabrt_handler() {
++#if defined(_MSC_VER)
+   /*abort() should not override our exception filter*/
+   _set_abort_behavior(0, _CALL_REPORTFAULT);
++#endif
++  /*
++    MinGW uses the classic msvcrt import library, which does not export
++    _set_abort_behavior(). The signal() override below is sufficient there.
++  */
+   signal(SIGABRT, my_sigabrt_handler);
+ }
+ #endif
+diff --git a/mysys/my_thread.cc b/mysys/my_thread.cc
+index 60dfb4d1..0503887e 100644
+--- a/mysys/my_thread.cc
++++ b/mysys/my_thread.cc
+@@ -240,6 +240,11 @@ void my_thread_self_setname(const char *name [[maybe_unused]]) {
+   debuggee & debugger using the special values used below. We use it always in
+   case there is a debugger attached, even if the new Win10 API for thread names
+   is available. */
++  /* MSVC-style SEH statements: mingw-w64 GCC supports them, but the GNU
++  driver of clang (MSYS2 CLANG64 / CLANGARM64) does not. The thread name
++  has already been set via SetThreadDescription above, so skip the
++  legacy debugger handshake where __try is not available. */
++#if defined(_MSC_VER) || (defined(__GNUC__) && !defined(__clang__))
+   constexpr DWORD MS_VC_EXCEPTION = 0x406D1388;
+ #pragma pack(push, 8)
+   struct THREADNAME_INFO {
+@@ -264,6 +269,7 @@ void my_thread_self_setname(const char *name [[maybe_unused]]) {
+   } __except (EXCEPTION_EXECUTE_HANDLER) {
+   }
+ #pragma warning(pop)
++#endif /* _MSC_VER || (GNUC && !clang) */
+ 
+ #else
+   /* Do nothing for this platform. */
+diff --git a/mysys/my_time.cc b/mysys/my_time.cc
+index b943b603..89de370e 100644
+--- a/mysys/my_time.cc
++++ b/mysys/my_time.cc
+@@ -51,6 +51,7 @@
+ #include <cctype>     // std::isspace
+ #include <climits>    // UINT_MAX
+ #include <cstdio>     // std::sprintf
++#include <cstdlib>    // std::abs
+ #include <cstring>    // std::memset
+ 
+ #include "field_types.h"     // enum_field_types
+@@ -1031,9 +1032,9 @@ uint year_2000_handling(uint year) {
+ /**
+   Calculate nr of day since year 0 in new date-system (from 1615).
+ 
+-  @param year	  Year (exact 4 digit year, no year conversions)
++  @param year     Year (exact 4 digit year, no year conversions)
+   @param month  Month
+-  @param day	  Day
++  @param day      Day
+ 
+   @note 0000-00-00 is a valid date, and will return 0
+ 
+@@ -2162,9 +2163,9 @@ int calc_weekday(long daynr, bool sunday_first_day_of_week) {
+   Calculate the week number from a MYSQL_TIME value.
+ 
+   The bits in week_format has the following meaning:
+-   WEEK_MONDAY_FIRST (0)  If not set	Sunday is first day of week
+-                          If set	Monday is first day of week
+-   WEEK_YEAR (1)	  If not set	Week is in range 0-53
++   WEEK_MONDAY_FIRST (0)  If not set    Sunday is first day of week
++                          If set        Monday is first day of week
++   WEEK_YEAR (1)          If not set    Week is in range 0-53
+ 
+         Week 0 is returned for the the last week of the previous year (for
+         a date at start of january) In this case one can get 53 for the
+@@ -2172,15 +2173,15 @@ int calc_weekday(long daynr, bool sunday_first_day_of_week) {
+         relevant for the given year. Note that this flag is only
+         relevant if WEEK_JANUARY is not set.
+ 
+-                          If set	 Week is in range 1-53.
++                          If set         Week is in range 1-53.
+ 
+         In this case one may get week 53 for a date in January (when
+         the week is that last week of previous year) and week 1 for a
+         date in December.
+ 
+-  WEEK_FIRST_WEEKDAY (2)  If not set	Weeks are numbered according
++  WEEK_FIRST_WEEKDAY (2)  If not set    Weeks are numbered according
+                                         to ISO 8601:1988
+-                          If set	The week that contains the first
++                          If set        The week that contains the first
+                                         'first-day-of-week' is week 1.
+ 
+         ISO 8601:1988 means that if the week containing January 1 has
+diff --git a/mysys/stacktrace.cc b/mysys/stacktrace.cc
+index 3c69ad3c..8c60662e 100644
+--- a/mysys/stacktrace.cc
++++ b/mysys/stacktrace.cc
+@@ -620,12 +620,22 @@ void my_create_minidump(const char *name, HANDLE process, DWORD pid) {
+ }
+ 
+ void my_safe_puts_stderr(const char *val, size_t len) {
++#if defined(_MSC_VER)
+   __try {
+     my_write_stderr(val, len);
+     my_safe_printf_stderr("%s", "\n");
+   } __except (EXCEPTION_EXECUTE_HANDLER) {
+     my_safe_printf_stderr("%s", "is an invalid string pointer\n");
+   }
++#else
++  /*
++    MinGW GCC does not support MSVC-style __try/__except statements.
++    Fall back to a plain call; the SEH guard only protects against
++    unmapped memory during crash handling.
++  */
++  my_write_stderr(val, len);
++  my_safe_printf_stderr("%s", "\n");
++#endif
+ }
+ #endif /* _WIN32 */
+ 
+diff --git a/sql-common/bind_params.cc b/sql-common/bind_params.cc
+index 96597660..600533bf 100644
+--- a/sql-common/bind_params.cc
++++ b/sql-common/bind_params.cc
+@@ -32,6 +32,7 @@
+ #include <my_sys.h>
+ #include <my_time.h>
+ #include <cstdint>
++#include <cstdlib>  // std::abs
+ #include "m_string.h"
+ #include "my_config.h"
+ #include "mysql.h"
+@@ -106,8 +107,8 @@ static void store_param_type(unsigned char **pos, MYSQL_BIND *param) {
+ 
+   SYNOPSIS
+     store_param_xxx()
+-    net			MySQL NET connection
+-    param		MySQL bind param
++    net                 MySQL NET connection
++    param               MySQL bind param
+ 
+   DESCRIPTION
+     These functions are invoked from mysql_stmt_execute() by
+diff --git a/utilities/CMakeLists.txt b/utilities/CMakeLists.txt
+index bf289994..90e29919 100644
+--- a/utilities/CMakeLists.txt
++++ b/utilities/CMakeLists.txt
+@@ -33,12 +33,17 @@ IF(NOT CMAKE_CROSSCOMPILING)
+     )
+ ENDIF()
+ 
+-MYSQL_ADD_EXECUTABLE(comp_client_err
+-  comp_client_err.cc
+-  ${CMAKE_SOURCE_DIR}/libmysql/errmsg.cc
+-  LINK_LIBRARIES mysys
+-  SKIP_INSTALL
+-  )
++IF(NOT CMAKE_CROSSCOMPILING)
++  MYSQL_ADD_EXECUTABLE(comp_client_err
++    comp_client_err.cc
++    ${CMAKE_SOURCE_DIR}/libmysql/errmsg.cc
++    LINK_LIBRARIES mysys
++    SKIP_INSTALL
++    )
++ELSE()
++  # When cross-compiling, comp_client_err is prebuilt on the host and
++  # resolved through PATH by the custom commands below.
++ENDIF()
+ 
+ ADD_CUSTOM_COMMAND(OUTPUT ${PROJECT_BINARY_DIR}/include/mysqlclient_ername.h
+   COMMAND comp_client_err
+@@ -104,8 +109,12 @@ ADD_DEFINITIONS(-DMUTEX_EVENT)
+ # The copied shared libraries must be available at build time.
+ IF(TARGET copy_openssl_dlls)
+   ADD_DEPENDENCIES(GenError copy_openssl_dlls)
+-  ADD_DEPENDENCIES(comp_client_err copy_openssl_dlls)
+-  ADD_DEPENDENCIES(comp_err copy_openssl_dlls)
++  IF(TARGET comp_client_err)
++    ADD_DEPENDENCIES(comp_client_err copy_openssl_dlls)
++  ENDIF()
++  IF(TARGET comp_err)
++    ADD_DEPENDENCIES(comp_err copy_openssl_dlls)
++  ENDIF()
+ ENDIF()
+ 
+ MYSQL_ADD_EXECUTABLE(static_thread_local_test
