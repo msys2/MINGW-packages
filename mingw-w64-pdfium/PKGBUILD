@@ -1,5 +1,8 @@
 # Maintainer: Taozuhong <taozuhong@hotmail.com>
 
+# PDFium does not publish version tags; its releases are the per-milestone
+# branch heads "chromium/<version>" on pdfium.googlesource.com. This package
+# tracks the latest branch head.
 _realname=pdfium
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
@@ -33,6 +36,13 @@ _nasm_rev=525a09a813be0f75b646ee93fc2a31c27b87d722
 _test_fonts_rev=7f51783942943e965cd56facf786544ccfc07713
 _harfbuzz_rev=ff36703b95013ec1d437e6038e1aa7c881275f4e
 
+# gn is bootstrapped from source instead of using the distro binary: the
+# prebuilt MSYS2 mingw-w64-*-gn packages have been observed to segfault
+# (ucrt64), and building the exact revision MSYS2 itself packages, with
+# the same verified patch set, removes the dependence on that binary.
+
+_gn_rev=9ece3f5254c273cb46606a6571963f931c3b012d
+
 # harfbuzz and openjpeg2 are built from the bundled sources pinned by
 # pdfium's DEPS instead of the MSYS2 packages: the system-library wiring
 # goes through pkg-config, whose POSIX-style paths are not understood by
@@ -43,10 +53,20 @@ depends=("${MINGW_PACKAGE_PREFIX}-zlib"
          "${MINGW_PACKAGE_PREFIX}-libpng"
          "${MINGW_PACKAGE_PREFIX}-libjpeg-turbo"
          "${MINGW_PACKAGE_PREFIX}-lcms2")
+# The native MinGW Python is mandatory: gn (a native Windows binary) runs
+# every exec_script() during 'gn gen' and every action command in the
+# generated ninja files, always passing Windows-style absolute script
+# paths (D:/...). The MSYS2 POSIX Python in /usr/bin resolves such
+# arguments relative to the cwd and fails with "can't open file
+# '<cwd>/D:/...': [Errno 2]", so the build must not rely on it.
+# pkgconf provides the pkg-config binary probed at 'gn gen' time for the
+# system lcms2 wiring (build/config/linux/pkg-config.py wrapper).
+# gn itself is NOT a makedepend: it is bootstrapped from the pinned
+# sources (see _gn_rev above), so the build never touches the distro
+# mingw-w64-*-gn binaries (the ucrt64 one segfaults).
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-binutils"
              "${MINGW_PACKAGE_PREFIX}-ninja"
-             "${MINGW_PACKAGE_PREFIX}-gn"
              "${MINGW_PACKAGE_PREFIX}-python"
              "${MINGW_PACKAGE_PREFIX}-pkgconf")
 options=('!strip')  # keep the import library and DLL as-is
@@ -65,14 +85,27 @@ source=("pdfium-${_pdfium_rev}.tar.gz::https://pdfium.googlesource.com/pdfium/+a
         "pdfium-libjpeg_turbo-${_libjpeg_rev}.tar.gz::https://chromium.googlesource.com/chromium/deps/libjpeg_turbo/+archive/${_libjpeg_rev}.tar.gz"
         "pdfium-nasm-${_nasm_rev}.tar.gz::https://chromium.googlesource.com/chromium/deps/nasm/+archive/${_nasm_rev}.tar.gz"
         "pdfium-test_fonts-${_test_fonts_rev}.tar.gz::https://chromium.googlesource.com/chromium/src/third_party/test_fonts/+archive/${_test_fonts_rev}.tar.gz"
+        "pdfium-gn-${_gn_rev}.tar.gz::https://gn.googlesource.com/gn/+archive/${_gn_rev}.tar.gz"
         001-pdfium-mingw-build.patch
         101-build-mingw-toolchain.patch
         201-icu-mingw.patch
         202-libjpeg-turbo-mingw.patch
         203-libyuv-mingw.patch
         204-abseil-cpp-mingw.patch
-        205-buildtools-libcxx-mingw.patch)
+        205-buildtools-libcxx-mingw.patch
+        301-gn-gen-mingw.patch
+        302-gn-missing-header.patch
+        303-gn-msvc-flags.patch
+        304-gn-arm64-arch.patch)
+
+# Integrity note: the googlesource gitiles "+archive" endpoints build each
+# tarball on the fly and stamp every tar header with the archive generation
+# time, so the byte stream (and its sha256) differs on every download of the
+# very same URL. Static checksums are therefore impossible for these sources
+# and integrity is anchored by the exact commit SHA pinned in each URL above.
+# The local patch files below are still verified with real sha256sums.
 sha256sums=('SKIP'
+            'SKIP'
             'SKIP'
             'SKIP'
             'SKIP'
@@ -93,7 +126,18 @@ sha256sums=('SKIP'
             'b472ee97d734ce34938b89e7a4d8bedf7a97527ebbe6c46b042722e16b0baad1'
             'd63d5548627666e4c15f0307837195f9e595982c5ae1c2e1c12f0e120dd0c9b1'
             '9cf6a5e9e576d38898bc8f9586f542f0731577e281334990ca64e35d5fe1c22f'
-            '8ed528985b8a157df60605bddaa9a2c859b6fda046e3778f73b533681717f598')
+            '8ed528985b8a157df60605bddaa9a2c859b6fda046e3778f73b533681717f598'
+            '01045719f76a1127dc54586b8f1dc6111cc6210440d1d72a0afbc876d29d3c36'
+            '350c02266816fdb734243d3c8d04a7b7e79abc62057302c5ff02af323d6cc0f2'
+            '67f58d677f63bf5e9919f63d68afa007b1a2d14c5fae13cd5487bd1c41cf69de'
+            '1cd84e9f2c8e4daf4bdb12ae7accc15b57d3f2abf87ff40ebf2c5e180ddeca3f')
+
+# googlesource archives have no top-level directory: makepkg's automatic
+# bsdtar extraction would spill every archive flat into $srcdir, mixing all
+# trees and dropping a stray .gn into $srcdir, which then hijacks gn's
+# source-root detection ("Unable to load //build/dotfile_settings.gni").
+# Skip automatic extraction and unpack into the assembled tree in prepare()
+# instead; makepkg still downloads and checksum-verifies the tarballs.
 noextract=("pdfium-*.tar.gz")
 
 apply_patch_with_msg() {
@@ -147,6 +191,10 @@ prepare() {
   tar -xzf "${_sdest}/pdfium-nasm-${_nasm_rev}.tar.gz"              -C third_party/nasm
   tar -xzf "${_sdest}/pdfium-test_fonts-${_test_fonts_rev}.tar.gz"  -C third_party/test_fonts
 
+  # gn, bootstrapped from source (see the comment at _gn_rev above).
+  mkdir -p "${srcdir}/gn-src"
+  tar -xzf "${_sdest}/pdfium-gn-${_gn_rev}.tar.gz"                  -C "${srcdir}/gn-src"
+
   apply_patch_with_msg \
     001-pdfium-mingw-build.patch
   msg2 "Applying 101-build-mingw-toolchain.patch"
@@ -161,7 +209,26 @@ prepare() {
   patch -d third_party/abseil-cpp -Np1 -i "${srcdir}/204-abseil-cpp-mingw.patch"
   msg2 "Applying 205-buildtools-libcxx-mingw.patch"
   patch -d buildtools -Np1 -i "${srcdir}/205-buildtools-libcxx-mingw.patch"
+  msg2 "Applying 301-gn-gen-mingw.patch"
+  patch -d "${srcdir}/gn-src" -Np1 -i "${srcdir}/301-gn-gen-mingw.patch"
+  msg2 "Applying 302-gn-missing-header.patch"
+  patch -d "${srcdir}/gn-src" -Np1 -i "${srcdir}/302-gn-missing-header.patch"
+  msg2 "Applying 303-gn-msvc-flags.patch"
+  patch -d "${srcdir}/gn-src" -Np1 -i "${srcdir}/303-gn-msvc-flags.patch"
+  msg2 "Applying 304-gn-arm64-arch.patch"
+  patch -d "${srcdir}/gn-src" -Np1 -i "${srcdir}/304-gn-arm64-arch.patch"
 
+  # Pin the script interpreter used by gn itself: exec_script() probes at
+  # 'gn gen' time (concurrent links, build timestamp, the pkg-config
+  # wrapper for the system lcms2 wiring) AND every action command in the
+  # generated ninja files go through the interpreter named by
+  # script_executable in the .gn dotfile. The relative "python3" patched
+  # in above is resolved through PATH by gn's Windows path search and can
+  # land on /usr/bin/python3, the MSYS2 POSIX Python, which cannot open
+  # the Windows-style absolute script paths gn passes. Pin the native
+  # MinGW Python by absolute mixed-style Windows path instead; the
+  # dotfile is re-read on ninja's implicit 'gn gen' regeneration, so the
+  # setting stays stable for the whole build.
   local _gn_python="" _pycand
   if command -v cygpath >/dev/null 2>&1; then
     for _pycand in python3.exe python.exe; do
@@ -192,7 +259,6 @@ prepare() {
     echo "# absolute script paths."
     echo "script_executable = \"${_gn_python}\""
   } >> .gn
-
   # Files normally generated by `gclient sync` / its hooks.
   cat > build/config/gclient_args.gni <<GCLIENTEOF
 # Generated for this standalone build; mirrors gclient's gclient_gn_args.
@@ -219,8 +285,9 @@ build() {
   # the MSYS2 POSIX equivalents in /usr/bin.
   export PATH="${MINGW_PREFIX}/bin:${PATH}"
 
-  # Toolchain selection per MSYS2 environment.
-  case "${MSYSTEM}" in
+  # Toolchain selection per MSYS2 environment. MSYSTEM is uppercase in
+  # MSYS2 shells (UCRT64, CLANG64, ...), so normalize before matching.
+  case "${MSYSTEM,,}" in
     clang64|clangarm64)
       _is_clang=true
       _cc="clang"
@@ -232,10 +299,27 @@ build() {
       _cxx="g++"
       ;;
   esac
-  case "${MSYSTEM}" in
+  case "${MSYSTEM,,}" in
     clangarm64) _target_cpu="arm64" ;;
     *)          _target_cpu="x64" ;;
   esac
+
+  # Bootstrap gn from the pinned sources (see _gn_rev above): the distro
+  # mingw-w64-*-gn binaries are not used, so every environment builds the
+  # exact same meta-generator with the same toolchain that compiles pdfium.
+  local _gn_bin="${srcdir}/gn-src/out/gn"
+  if [[ ! -f "${_gn_bin}" && ! -f "${_gn_bin}.exe" ]]; then
+    msg2 "Bootstrapping gn (${_gn_rev})"
+    ( cd "${srcdir}/gn-src" \
+        && CXX="${_cxx}" LD="${_cxx}" AR="ar" \
+           python3 build/gen.py --allow-warnings --no-static-libstdc++ \
+        && ninja -C out gn ) || return 1
+  fi
+  [[ -f "${_gn_bin}.exe" ]] && _gn_bin="${_gn_bin}.exe"
+  if [[ ! -f "${_gn_bin}" ]]; then
+    echo "gn bootstrap failed" >&2
+    return 1
+  fi
 
   # Build inside the source tree (out-<MSYSTEM> under the pdfium checkout):
   # gn finds the source root (.gn) by walking up from the output directory,
@@ -256,10 +340,13 @@ build() {
 target_os = "win"
 target_cpu = "${_target_cpu}"
 is_mingw = true
-mingw_toolprefix = "${MINGW_CHOST}-"
+# MSYS2 MINGW toolchains only provide UNPREFIXED tool names on PATH
+# (ar.exe, gcc.exe, ...; the \${MINGW_CHOST}-* variants of binutils live
+# in a dedicated subdirectory that is not searched), so use plain names.
+mingw_toolprefix = ""
 mingw_cc = "${_cc}"
 mingw_cxx = "${_cxx}"
-mingw_ar = "${MINGW_CHOST}-ar"
+mingw_ar = "ar"
 is_clang = ${_is_clang}
 is_debug = ${_is_debug}
 symbol_level = ${_symbol_level}
@@ -289,7 +376,7 @@ clang_base_path = "${MINGW_PREFIX}"
 use_sysroot = false
 ARGSGNEOF
 
-  gn gen .
+  "${_gn_bin}" gen .
   ninja pdfium
 }
 
