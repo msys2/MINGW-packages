@@ -97,6 +97,14 @@ sha256sums=('SKIP'
             '9cf6a5e9e576d38898bc8f9586f542f0731577e281334990ca64e35d5fe1c22f'
             '8ed528985b8a157df60605bddaa9a2c859b6fda046e3778f73b533681717f598')
 
+# googlesource archives have no top-level directory: makepkg's automatic
+# bsdtar extraction would spill every archive flat into $srcdir, mixing all
+# trees and dropping a stray .gn into $srcdir, which then hijacks gn's
+# source-root detection ("Unable to load //build/dotfile_settings.gni").
+# Skip automatic extraction and unpack into the assembled tree in prepare()
+# instead; makepkg still downloads and checksum-verifies the tarballs.
+noextract=("pdfium-*.tar.gz")
+
 apply_patch_with_msg() {
   for _patch in "$@"
   do
@@ -108,28 +116,44 @@ apply_patch_with_msg() {
 prepare() {
   msg2 "Assembling standalone pdfium source tree"
 
+  # With noextract=() above, makepkg leaves the tarballs in $SRCDEST
+  # (falling back to $startdir when SRCDEST is unset, and $srcdir for
+  # some makepkg versions / local-source setups).
+  local _sdest=""
+  local _cand
+  for _cand in "${SRCDEST}" "${startdir}" "${srcdir}"; do
+    if [[ -n "${_cand}" && -f "${_cand}/pdfium-${_pdfium_rev}.tar.gz" ]]; then
+      _sdest="${_cand}"
+      break
+    fi
+  done
+  if [[ -z "${_sdest}" ]]; then
+    echo "pdfium source tarballs not found in SRCDEST/startdir/srcdir" >&2
+    return 1
+  fi
+
   # Main checkout (the googlesource archive has no top-level directory).
   mkdir -p "${srcdir}/${_realname}"
   cd "${srcdir}/${_realname}"
-  tar -xzf "${srcdir}/pdfium-${_pdfium_rev}.tar.gz"
+  tar -xzf "${_sdest}/pdfium-${_pdfium_rev}.tar.gz"
 
   # Dependencies pinned by pdfium's DEPS, assembled without depot_tools.
   mkdir -p build buildtools
   mkdir -p third_party/{abseil-cpp,dragonbox/src,fast_float/src,googletest/src,libjpeg_turbo,libyuv,nasm,simdutf,test_fonts,freetype/src,icu}
   mkdir -p build/util
-  tar -xzf "${srcdir}/pdfium-build-${_build_rev}.tar.gz"            -C build
-  tar -xzf "${srcdir}/pdfium-buildtools-${_buildtools_rev}.tar.gz"  -C buildtools
-  tar -xzf "${srcdir}/pdfium-abseil-cpp-${_abseil_rev}.tar.gz"      -C third_party/abseil-cpp
-  tar -xzf "${srcdir}/pdfium-dragonbox-${_dragonbox_rev}.tar.gz"    -C third_party/dragonbox/src
-  tar -xzf "${srcdir}/pdfium-fast_float-${_fast_float_rev}.tar.gz"  -C third_party/fast_float/src
-  tar -xzf "${srcdir}/pdfium-googletest-${_gtest_rev}.tar.gz"       -C third_party/googletest/src
-  tar -xzf "${srcdir}/pdfium-libyuv-${_libyuv_rev}.tar.gz"          -C third_party/libyuv
-  tar -xzf "${srcdir}/pdfium-simdutf-${_simdutf_rev}.tar.gz"        -C third_party/simdutf
-  tar -xzf "${srcdir}/pdfium-freetype2-${_freetype_rev}.tar.gz"     -C third_party/freetype/src
-  tar -xzf "${srcdir}/pdfium-icu-${_icu_rev}.tar.gz"                -C third_party/icu
-  tar -xzf "${srcdir}/pdfium-libjpeg_turbo-${_libjpeg_rev}.tar.gz"  -C third_party/libjpeg_turbo
-  tar -xzf "${srcdir}/pdfium-nasm-${_nasm_rev}.tar.gz"              -C third_party/nasm
-  tar -xzf "${srcdir}/pdfium-test_fonts-${_test_fonts_rev}.tar.gz"  -C third_party/test_fonts
+  tar -xzf "${_sdest}/pdfium-build-${_build_rev}.tar.gz"            -C build
+  tar -xzf "${_sdest}/pdfium-buildtools-${_buildtools_rev}.tar.gz"  -C buildtools
+  tar -xzf "${_sdest}/pdfium-abseil-cpp-${_abseil_rev}.tar.gz"      -C third_party/abseil-cpp
+  tar -xzf "${_sdest}/pdfium-dragonbox-${_dragonbox_rev}.tar.gz"    -C third_party/dragonbox/src
+  tar -xzf "${_sdest}/pdfium-fast_float-${_fast_float_rev}.tar.gz"  -C third_party/fast_float/src
+  tar -xzf "${_sdest}/pdfium-googletest-${_gtest_rev}.tar.gz"       -C third_party/googletest/src
+  tar -xzf "${_sdest}/pdfium-libyuv-${_libyuv_rev}.tar.gz"          -C third_party/libyuv
+  tar -xzf "${_sdest}/pdfium-simdutf-${_simdutf_rev}.tar.gz"        -C third_party/simdutf
+  tar -xzf "${_sdest}/pdfium-freetype2-${_freetype_rev}.tar.gz"     -C third_party/freetype/src
+  tar -xzf "${_sdest}/pdfium-icu-${_icu_rev}.tar.gz"                -C third_party/icu
+  tar -xzf "${_sdest}/pdfium-libjpeg_turbo-${_libjpeg_rev}.tar.gz"  -C third_party/libjpeg_turbo
+  tar -xzf "${_sdest}/pdfium-nasm-${_nasm_rev}.tar.gz"              -C third_party/nasm
+  tar -xzf "${_sdest}/pdfium-test_fonts-${_test_fonts_rev}.tar.gz"  -C third_party/test_fonts
 
   apply_patch_with_msg \
     001-pdfium-mingw-build.patch
@@ -185,7 +209,11 @@ build() {
     *)          _target_cpu="x64" ;;
   esac
 
-  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
+  # Build inside the source tree (out-<MSYSTEM> under the pdfium checkout):
+  # gn finds the source root (.gn) by walking up from the output directory,
+  # so the output directory MUST be a descendant of ${srcdir}/${_realname}.
+  mkdir -p "${srcdir}/${_realname}/out-${MSYSTEM}"
+  cd "${srcdir}/${_realname}/out-${MSYSTEM}"
 
   if check_option "debug" "y"; then
     _is_debug=true
@@ -233,7 +261,7 @@ ARGSGNEOF
 }
 
 package() {
-  local _build="${srcdir}/build-${MSYSTEM}"
+  local _build="${srcdir}/${_realname}/out-${MSYSTEM}"
   local _prefix="${pkgdir}${MINGW_PREFIX}"
 
   cd "${srcdir}/${_realname}"
