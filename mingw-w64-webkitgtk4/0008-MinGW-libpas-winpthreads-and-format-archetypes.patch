@@ -1,0 +1,374 @@
+From 38a374dfe6712745f873d8548d39f993223535e9 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Sun, 11 Oct 2026 07:05:57 +0000
+Subject: [PATCH] libpas/MinGW: use winpthreads instead of the MSVC pthread
+ emulation
+
+pas_thread.h typedefs (INIT_ONCE/SRWLOCK/CONDITION_VARIABLE based)
+conflict with the winpthreads declarations that C++ TUs pull in via
+libstdc++'s gthr layer (<atomic>); on MinGW include the real <pthread.h>
+and drop the emulation implementation, adapt the thread-main signatures,
+and align the printf format archetypes with mingw-w64's own stdio.h
+mapping (gnu_printf for MinGW gcc, plain printf for clang/hosts) so
+%zu-style pas_log/err/unifdef format strings check cleanly.
+---
+ Source/ThirdParty/mingw-compat/include/err.h  | 30 +++++++++++-----
+ Source/ThirdParty/unifdef/unifdef.c           | 34 +++++++++----------
+ Source/ThirdParty/unifdef/unifdef.h           |  2 ++
+ .../bmalloc/libpas/src/libpas/pas_scavenger.c |  5 ++-
+ .../libpas/src/libpas/pas_status_reporter.c   |  4 ++-
+ Source/bmalloc/libpas/src/libpas/pas_thread.c |  9 +++--
+ Source/bmalloc/libpas/src/libpas/pas_thread.h | 13 +++++++
+ Source/bmalloc/libpas/src/libpas/pas_utils.h  | 13 +++++++
+ 8 files changed, 81 insertions(+), 29 deletions(-)
+
+diff --git a/Source/ThirdParty/mingw-compat/include/err.h b/Source/ThirdParty/mingw-compat/include/err.h
+index 9ae8293e..81b0c1e3 100644
+--- a/Source/ThirdParty/mingw-compat/include/err.h
++++ b/Source/ThirdParty/mingw-compat/include/err.h
+@@ -60,13 +60,27 @@
+ extern "C" {
+ #endif
+ 
++/* Under MinGW gcc the plain printf archetype checks against the MSVCRT
++   printf (ms_printf), while the C runtime's vfprintf() itself is declared
++   with the gnu_printf archetype (C99-conformant __mingw_printf is used at
++   runtime thanks to __USE_MINGW_ANSI_STDIO). Mirror mingw-w64's own
++   stdio.h mapping so these attributes match the implementations called
++   below; clang already checks the plain printf archetype as C99, and
++   non-MinGW hosts keep it too. */
++#if defined(__MINGW32__) && defined(__GNUC__) && !defined(__clang__) \
++    && (defined(_UCRT) || __USE_MINGW_ANSI_STDIO)
++#define MINGW_COMPAT_PRINTF_ARCHETYPE __gnu_printf__
++#else
++#define MINGW_COMPAT_PRINTF_ARCHETYPE printf
++#endif
++
+ /* The v-variants carry the format(printf, N, 0) attribute exactly like
+    glibc does. Callers that forward their own format parameter to them
+    (e.g. unifdef's debug() wrapper, which is declared with
+    format(printf, 1, 2)) are then exempt from -Wformat-nonliteral and
+    -Wformat-security for the forwarded format. */
+ 
+-__attribute__((format(printf, 1, 0)))
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 1, 0)))
+ static inline void vwarnx(const char* fmt, va_list ap)
+ {
+     if (fmt && *fmt)
+@@ -74,7 +88,7 @@ static inline void vwarnx(const char* fmt, va_list ap)
+     fputc('\n', stderr);
+ }
+ 
+-__attribute__((format(printf, 1, 0)))
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 1, 0)))
+ static inline void vwarn(const char* fmt, va_list ap)
+ {
+     int saved_errno = errno;
+@@ -87,7 +101,7 @@ static inline void vwarn(const char* fmt, va_list ap)
+     fputc('\n', stderr);
+ }
+ 
+-__attribute__((format(printf, 1, 2)))
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 1, 2)))
+ static inline void warnx(const char* fmt, ...)
+ {
+     va_list ap;
+@@ -97,7 +111,7 @@ static inline void warnx(const char* fmt, ...)
+     va_end(ap);
+ }
+ 
+-__attribute__((format(printf, 1, 2)))
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 1, 2)))
+ static inline void warn(const char* fmt, ...)
+ {
+     va_list ap;
+@@ -107,7 +121,7 @@ static inline void warn(const char* fmt, ...)
+     va_end(ap);
+ }
+ 
+-__attribute__((format(printf, 2, 3)))
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 2, 3)))
+ static inline void errx(int eval, const char* fmt, ...)
+ {
+     va_list ap;
+@@ -118,7 +132,7 @@ static inline void errx(int eval, const char* fmt, ...)
+     exit(eval);
+ }
+ 
+-__attribute__((format(printf, 2, 3)))
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 2, 3)))
+ static inline void err(int eval, const char* fmt, ...)
+ {
+     va_list ap;
+@@ -129,14 +143,14 @@ static inline void err(int eval, const char* fmt, ...)
+     exit(eval);
+ }
+ 
+-__attribute__((format(printf, 2, 0)))
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 2, 0)))
+ static inline void verrx(int eval, const char* fmt, va_list ap)
+ {
+     vwarnx(fmt, ap);
+     exit(eval);
+ }
+ 
+-__attribute__((format(printf, 2, 0)))
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 2, 0)))
+ static inline void verr(int eval, const char* fmt, va_list ap)
+ {
+     vwarn(fmt, ap);
+diff --git a/Source/ThirdParty/unifdef/unifdef.c b/Source/ThirdParty/unifdef/unifdef.c
+index 4ff95c44..5a6374bc 100644
+--- a/Source/ThirdParty/unifdef/unifdef.c
++++ b/Source/ThirdParty/unifdef/unifdef.c
+@@ -215,7 +215,7 @@ static void             addsym2(bool, const char *, const char *);
+ static char            *astrcat(const char *, const char *);
+ static void             cleantemp(void);
+ static void             closeio(void);
+-static void             debug(const char *, ...) __attribute__((format(printf, 1, 2)));
++static void             debug(const char *, ...) __attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 1, 2)));
+ static void             debugsym(const char *, int);
+ static bool             defundef(void);
+ static void             defundefile(const char *);
+@@ -1019,7 +1019,7 @@ eval_unary(const struct ops *ops, long *valp, const char **cpp)
+ 
+ 	cp = skipcomment(*cpp);
+ 	if (*cp == '!') {
+-		debug("eval%d !", prec(ops));
++		debug("eval%ld !", prec(ops));
+ 		cp++;
+ 		lt = eval_unary(ops, valp, &cp);
+ 		if (lt == LT_ERROR)
+@@ -1029,7 +1029,7 @@ eval_unary(const struct ops *ops, long *valp, const char **cpp)
+ 			lt = *valp ? LT_TRUE : LT_FALSE;
+ 		}
+ 	} else if (*cp == '~') {
+-		debug("eval%d ~", prec(ops));
++		debug("eval%ld ~", prec(ops));
+ 		cp++;
+ 		lt = eval_unary(ops, valp, &cp);
+ 		if (lt == LT_ERROR)
+@@ -1039,7 +1039,7 @@ eval_unary(const struct ops *ops, long *valp, const char **cpp)
+ 			lt = *valp ? LT_TRUE : LT_FALSE;
+ 		}
+ 	} else if (*cp == '-') {
+-		debug("eval%d -", prec(ops));
++		debug("eval%ld -", prec(ops));
+ 		cp++;
+ 		lt = eval_unary(ops, valp, &cp);
+ 		if (lt == LT_ERROR)
+@@ -1050,7 +1050,7 @@ eval_unary(const struct ops *ops, long *valp, const char **cpp)
+ 		}
+ 	} else if (*cp == '(') {
+ 		cp++;
+-		debug("eval%d (", prec(ops));
++		debug("eval%ld (", prec(ops));
+ 		lt = eval_table(eval_ops, valp, &cp);
+ 		if (lt == LT_ERROR)
+ 			return (LT_ERROR);
+@@ -1058,7 +1058,7 @@ eval_unary(const struct ops *ops, long *valp, const char **cpp)
+ 		if (*cp++ != ')')
+ 			return (LT_ERROR);
+ 	} else if (isdigit((unsigned char)*cp)) {
+-		debug("eval%d number", prec(ops));
++		debug("eval%ld number", prec(ops));
+ 		*valp = strtol(cp, &ep, 0);
+ 		if (ep == cp)
+ 			return (LT_ERROR);
+@@ -1075,20 +1075,20 @@ eval_unary(const struct ops *ops, long *valp, const char **cpp)
+ 		sym = findsym(&cp);
+ 		cp = skipcomment(cp);
+ 		if (defparen && *cp++ != ')') {
+-			debug("eval%d defined missing ')'", prec(ops));
++			debug("eval%ld defined missing ')'", prec(ops));
+ 			return (LT_ERROR);
+ 		}
+ 		if (sym < 0) {
+-			debug("eval%d defined unknown", prec(ops));
++			debug("eval%ld defined unknown", prec(ops));
+ 			lt = LT_IF;
+ 		} else {
+-			debug("eval%d defined %s", prec(ops), symname[sym]);
++			debug("eval%ld defined %s", prec(ops), symname[sym]);
+ 			*valp = (value[sym] != NULL);
+ 			lt = *valp ? LT_TRUE : LT_FALSE;
+ 		}
+ 		constexpr = false;
+ 	} else if (!endsym(*cp)) {
+-		debug("eval%d symbol", prec(ops));
++		debug("eval%ld symbol", prec(ops));
+ 		sym = findsym(&cp);
+ 		if (sym < 0) {
+ 			lt = LT_IF;
+@@ -1105,12 +1105,12 @@ eval_unary(const struct ops *ops, long *valp, const char **cpp)
+ 		}
+ 		constexpr = false;
+ 	} else {
+-		debug("eval%d bad expr", prec(ops));
++		debug("eval%ld bad expr", prec(ops));
+ 		return (LT_ERROR);
+ 	}
+ 
+ 	*cpp = cp;
+-	debug("eval%d = %d", prec(ops), *valp);
++	debug("eval%ld = %ld", prec(ops), *valp);
+ 	return (lt);
+ }
+ 
+@@ -1125,7 +1125,7 @@ eval_table(const struct ops *ops, long *valp, const char **cpp)
+ 	long val = 0;
+ 	Linetype lt, rt;
+ 
+-	debug("eval%d", prec(ops));
++	debug("eval%ld", prec(ops));
+ 	cp = *cpp;
+ 	lt = ops->inner(ops+1, valp, &cp);
+ 	if (lt == LT_ERROR)
+@@ -1145,7 +1145,7 @@ eval_table(const struct ops *ops, long *valp, const char **cpp)
+ 		if (op->str == NULL)
+ 			break;
+ 		cp += strlen(op->str);
+-		debug("eval%d %s", prec(ops), op->str);
++		debug("eval%ld %s", prec(ops), op->str);
+ 		rt = ops->inner(ops+1, &val, &cp);
+ 		if (rt == LT_ERROR)
+ 			return (LT_ERROR);
+@@ -1153,8 +1153,8 @@ eval_table(const struct ops *ops, long *valp, const char **cpp)
+ 	}
+ 
+ 	*cpp = cp;
+-	debug("eval%d = %d", prec(ops), *valp);
+-	debug("eval%d lt = %s", prec(ops), linetype_name[lt]);
++	debug("eval%ld = %ld", prec(ops), *valp);
++	debug("eval%ld lt = %s", prec(ops), linetype_name[lt]);
+ 	return (lt);
+ }
+ 
+@@ -1172,7 +1172,7 @@ ifeval(const char **cpp)
+ 	debug("eval %s", *cpp);
+ 	constexpr = killconsts ? false : true;
+ 	ret = eval_table(eval_ops, &val, cpp);
+-	debug("eval = %d", val);
++	debug("eval = %ld", val);
+ 	return (constexpr ? LT_IF : ret == LT_ERROR ? LT_IF : ret);
+ }
+ 
+diff --git a/Source/ThirdParty/unifdef/unifdef.h b/Source/ThirdParty/unifdef/unifdef.h
+index 37a7f357..c91dcb86 100644
+--- a/Source/ThirdParty/unifdef/unifdef.h
++++ b/Source/ThirdParty/unifdef/unifdef.h
+@@ -50,6 +50,8 @@ mktempmode(char *tmp, int mode)
+ 	   meaningless for the temporary file that is renamed over the
+ 	   output file on Windows. */
+ 	fchmod(fd, mode & (S_IRWXU|S_IRWXG|S_IRWXO));
++#else
++	(void)mode;	/* MinGW: no permission bits to apply */
+ #endif
+ 	return (fdopen(fd, "wb"));
+ }
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_scavenger.c b/Source/bmalloc/libpas/src/libpas/pas_scavenger.c
+index 82e65dd1..ee24c307 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_scavenger.c
++++ b/Source/bmalloc/libpas/src/libpas/pas_scavenger.c
+@@ -179,7 +179,10 @@ static bool handle_expendable_memory(pas_expendable_memory_scavenge_kind kind)
+     return should_go_again;
+ }
+ 
+-#if PAS_OS(WINDOWS)
++#if PAS_OS(WINDOWS) && !defined(__MINGW32__)
++/* MSVC: the libpas pthread emulation uses unsigned thread functions
++   (_beginthreadex). MinGW uses real winpthreads with the POSIX
++   void* signature, so it takes the generic branch below. */
+ #define R_NULL 0
+ 
+ unsigned scavenger_thread_main(void* arg)
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_status_reporter.c b/Source/bmalloc/libpas/src/libpas/pas_status_reporter.c
+index 4d12ba5c..61580e8e 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_status_reporter.c
++++ b/Source/bmalloc/libpas/src/libpas/pas_status_reporter.c
+@@ -1012,7 +1012,9 @@ static void pas_sleep(unsigned microseconds)
+ #endif
+ }
+ 
+-#if PAS_OS(WINDOWS)
++#if PAS_OS(WINDOWS) && !defined(__MINGW32__)
++/* MSVC: unsigned thread function via the libpas pthread emulation;
++   MinGW uses real winpthreads with the POSIX void* signature. */
+ #define R_NULL 0
+ 
+ static unsigned status_reporter_thread_main(void* arg)
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_thread.c b/Source/bmalloc/libpas/src/libpas/pas_thread.c
+index 9bea5f05..f02a9bc4 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_thread.c
++++ b/Source/bmalloc/libpas/src/libpas/pas_thread.c
+@@ -24,11 +24,16 @@
+ 
+ /* Implement the subset of pthreads that libpas requires to run on Windows
+    It's not a complete implementation - we only care about implementing the
+-   subset required to get libpas working. */
++   subset required to get libpas working.
++
++   MinGW environments (MSYS2 mingw64 / ucrt64 / clang64 / clangarm64) use
++   the system winpthreads implementation instead of this emulation (see
++   pas_thread.h); compiling this file there would clash with the real
++   pthread_once / pthread_mutex_* / pthread_cond_* symbols. */
+ 
+ #include "pas_config.h"
+ 
+-#if LIBPAS_ENABLED && PAS_OS(WINDOWS)
++#if LIBPAS_ENABLED && PAS_OS(WINDOWS) && !defined(__MINGW32__)
+ #include "pas_thread.h"
+ #include "pas_log.h"
+ #include "pas_utils.h"
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_thread.h b/Source/bmalloc/libpas/src/libpas/pas_thread.h
+index 1c08f6a3..45c24a48 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_thread.h
++++ b/Source/bmalloc/libpas/src/libpas/pas_thread.h
+@@ -26,6 +26,19 @@
+ 
+ #if !PAS_OS(WINDOWS)
+ #include <pthread.h>
++#elif defined(__MINGW32__)
++
++/* MinGW environments (MSYS2 mingw64 / ucrt64 / clang64 / clangarm64) ship
++   the winpthreads implementation of the pthread API. C++ translation units
++   may already have pulled in the system <pthread.h> through the C++
++   standard library's gthr layer (<atomic>, <mutex>, ...), so keeping the
++   MSVC-oriented emulation below would conflict with the system pthread
++   types (INIT_ONCE/SRWLOCK/CONDITION_VARIABLE vs long/intptr_t) and
++   functions. Use the real winpthreads declarations instead; they provide
++   the full subset libpas needs (pthread_once, mutexes, condition
++   variables, pthread_getname_np, ...). */
++#include <pthread.h>
++
+ #else
+ 
+ /* Implement the subset of pthread that libpas requires to run on Windows */
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_utils.h b/Source/bmalloc/libpas/src/libpas/pas_utils.h
+index 433b26f0..265124ed 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_utils.h
++++ b/Source/bmalloc/libpas/src/libpas/pas_utils.h
+@@ -96,7 +96,20 @@ PAS_BEGIN_EXTERN_C;
+ #define PAS_ALIGNOF(type) _Alignof(type)
+ #endif
+ 
++/* On MinGW targets the plain __printf__ archetype checks against the
++   MSVCRT printf, which does not know C99 length modifiers like %zu that
++   libpas uses extensively - even when __USE_MINGW_ANSI_STDIO=1 makes the
++   actual runtime function __mingw_printf (C99-conformant). Mirror the
++   mapping mingw-w64's own stdio.h uses for __MINGW_PRINTF_FORMAT:
++   gcc on UCRT or ANSI-stdio targets checks against __gnu_printf__; clang
++   already accepts %zu with the plain archetype, and MSVC/non-MinGW hosts
++   keep the default. */
++#if defined(__MINGW32__) && defined(__GNUC__) && !defined(__clang__) \
++    && (defined(_UCRT) || __USE_MINGW_ANSI_STDIO)
++#define PAS_FORMAT_PRINTF(fmt, args) __attribute__((format(__gnu_printf__, fmt, args)))
++#else
+ #define PAS_FORMAT_PRINTF(fmt, args) __attribute__((format(__printf__, fmt, args)))
++#endif
+ 
+ #define PAS_UNUSED __attribute__((unused))
+ 
+-- 
+2.47.3
+
