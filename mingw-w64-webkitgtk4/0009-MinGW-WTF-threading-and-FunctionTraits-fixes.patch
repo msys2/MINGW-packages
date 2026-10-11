@@ -1,0 +1,125 @@
+From f55681e32aaaffce0047e26434de6897deac613a Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Sun, 11 Oct 2026 09:24:33 +0000
+Subject: [PATCH 1/2] WTF/MinGW: fix Threading guards, CONTEXT allocation and
+ SysV FunctionTraits
+
+- Threading.h: the GLib port builds WTF threading on winpthreads
+  (USE(PTHREADS) = 1 on Windows, see PlatformUse.h), but s_key was only
+  declared when !OS(WINDOWS) while its users compile under
+  (!OS(WINDOWS) || USE(PTHREADS)); declaring s_key for the latter
+  removes the two 'undeclared identifier s_key' errors that hit every
+  translation unit including Threading.h.
+- Threading.h: signalHandlerSuspendResume(int, siginfo_t*, ...) is only
+  implemented for POSIX (ThreadingPOSIX.cpp guards it with
+  !OS(DARWIN) && !OS(WINDOWS)); matching the declaration keeps
+  siginfo_t, which mingw-w64 headers do not provide, out of Windows
+  builds.
+- Threading.cpp: same guard adjustment for the s_key storage.
+- ThreadingPOSIX.cpp: PlatformRegisters is the external WinAPI CONTEXT
+  on Windows, which cannot carry the TZoneMalloc marker required by
+  WTF::makeUnique; use std::make_unique for it.
+- FunctionTraits.h: route the sysv_abi specializations through a type
+  alias. GCC drops attributes placed between the return type and (*)
+  when parsing template partial specializations, collapsing
+  FunctionTraits<Result SYSV_ABI (*)(Args...)> into the plain pointer
+  specialization ('redefinition' error); the alias keeps the attribute
+  alive on gcc and clang alike.
+---
+ Source/WTF/wtf/FunctionTraits.h         | 13 +++++++++++--
+ Source/WTF/wtf/Threading.cpp            |  2 +-
+ Source/WTF/wtf/Threading.h              |  9 +++++++--
+ Source/WTF/wtf/posix/ThreadingPOSIX.cpp |  5 ++++-
+ 4 files changed, 23 insertions(+), 6 deletions(-)
+
+diff --git a/Source/WTF/wtf/FunctionTraits.h b/Source/WTF/wtf/FunctionTraits.h
+index ac54804e..ffda29a5 100644
+--- a/Source/WTF/wtf/FunctionTraits.h
++++ b/Source/WTF/wtf/FunctionTraits.h
+@@ -81,8 +81,17 @@ struct FunctionTraits<Result(Args...)> {
+ };
+ 
+ #if OS(WINDOWS) && CPU(X86_64)
++/* Alias so the sysv_abi attribute lives in a position where every
++   compiler that supports it keeps it: GCC drops attributes written
++   between the return type and (*) when parsing template partial
++   specializations, which made the pointer specialization below
++   collapse into FunctionTraits<Result (*)(Args...)> and fail with a
++   redefinition error. */
+ template<typename Result, typename... Args>
+-struct FunctionTraits<Result SYSV_ABI(Args...)> : public FunctionTraits<Result(Args...)> {
++using SysVFunction = Result SYSV_ABI(Args...);
++
++template<typename Result, typename... Args>
++struct FunctionTraits<SysVFunction<Result, Args...>> : public FunctionTraits<Result(Args...)> {
+ };
+ #endif
+ 
+@@ -92,7 +101,7 @@ struct FunctionTraits<Result(*)(Args...)> : public FunctionTraits<Result(Args...
+ 
+ #if OS(WINDOWS) && CPU(X86_64)
+ template<typename Result, typename... Args>
+-struct FunctionTraits<Result SYSV_ABI (*)(Args...)> : public FunctionTraits<Result(Args...)> {
++struct FunctionTraits<SysVFunction<Result, Args...>*> : public FunctionTraits<Result(Args...)> {
+ };
+ #endif
+ 
+diff --git a/Source/WTF/wtf/Threading.cpp b/Source/WTF/wtf/Threading.cpp
+index d4da2f0a..188fa34e 100644
+--- a/Source/WTF/wtf/Threading.cpp
++++ b/Source/WTF/wtf/Threading.cpp
+@@ -462,7 +462,7 @@ void Thread::dump(PrintStream& out) const
+     out.print("Thread:", RawPointer(this));
+ }
+ 
+-#if !HAVE(FAST_TLS) && !OS(WINDOWS)
++#if !HAVE(FAST_TLS) && (!OS(WINDOWS) || USE(PTHREADS))
+ ThreadSpecificKey Thread::s_key = InvalidThreadSpecificKey;
+ #endif
+ 
+diff --git a/Source/WTF/wtf/Threading.h b/Source/WTF/wtf/Threading.h
+index 293da637..93e1c949 100644
+--- a/Source/WTF/wtf/Threading.h
++++ b/Source/WTF/wtf/Threading.h
+@@ -335,7 +335,9 @@ protected:
+     void establishPlatformSpecificHandle(PlatformThreadHandle, ThreadIdentifier);
+ #endif
+ 
+-#if USE(PTHREADS) && !OS(DARWIN)
++#if USE(PTHREADS) && !OS(DARWIN) && !OS(WINDOWS)
++    /* No signal-based suspend/resume on Windows (the GLib port uses
++       winpthreads, but the handler machinery only exists on POSIX). */
+     static void signalHandlerSuspendResume(int, siginfo_t*, void* ucontext);
+ #endif
+ 
+@@ -371,7 +373,10 @@ protected:
+     // For pthread, the Thread instance is ref'ed and held in thread-specific storage. It will be deref'ed by destructTLS at thread destruction time.
+     // It employs pthreads-specific 2-pass destruction to reliably remove Thread.
+ 
+-#if !HAVE(FAST_TLS) && !OS(WINDOWS)
++#if !HAVE(FAST_TLS) && (!OS(WINDOWS) || USE(PTHREADS))
++    /* Windows normally uses the native TLS slot (no s_key), but the GLib
++       port builds WTF threading on winpthreads (USE(PTHREADS) = 1, see
++       PlatformUse.h) and goes through the pthread key below. */
+     static WTF_EXPORT_PRIVATE ThreadSpecificKey s_key;
+     // One time initialization for this class as a whole.
+     // This method must be called before initializeTLS() and it is not thread-safe.
+diff --git a/Source/WTF/wtf/posix/ThreadingPOSIX.cpp b/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
+index 934550c5..b29fe0d4 100644
+--- a/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
++++ b/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
+@@ -609,7 +609,10 @@ auto Thread::suspend(const ThreadSuspendLocker&) -> Expected<void, PlatformSuspe
+             return makeUnexpected(ERROR_ACCESS_DENIED);
+ 
+         if (!m_savedPlatformRegisters)
+-            m_savedPlatformRegisters = makeUnique<PlatformRegisters>();
++            /* PlatformRegisters is the external WinAPI CONTEXT on Windows; it
++               cannot carry WTF's TZoneMalloc marker required by WTF::makeUnique,
++               so allocate it through the general allocator. */
++            m_savedPlatformRegisters = std::make_unique<PlatformRegisters>();
+         CONTEXT threadContext { };
+         threadContext.ContextFlags = CONTEXT_FULL;
+         if (!GetThreadContext(threadHandle, &threadContext)) {
+-- 
+2.47.3
+
