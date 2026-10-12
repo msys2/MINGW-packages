@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Taozuhong <taozuhong@hotmail.com>
-Date: Mon, 12 Oct 2026 03:28:42 +0000
+Date: Mon, 12 Oct 2026 04:37:36 +0000
 Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
 
 - winpthreads threading model, SuspendThread suspension,
@@ -52,7 +52,26 @@ Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
   GetProcessMemoryInfo resolves to K32GetProcessMemoryInfo in
   kernel32.dll on mingw-w64 (link probe: no psapi import library
   needed). generic/MemoryFootprintGeneric.cpp then compiles unchanged.
+
+- Update 16 (two clang/MinGW failures in the JSC assembler area):
+  MacroAssemblerX86_64.cpp expands ASM_PREVIOUS_SECTION to ".previous"
+  for every compiler except MSVC, but LLVM's integrated assembler does
+  not implement .previous for PE/COFF targets, so both
+  DEFINE_PROBE_TRAMPOLINE blocks (ctiMasmProbeTrampoline and
+  ctiMasmProbeTrampolineAVX) die with "unknown directive" at
+  <inline asm>:128/:256 on the mingw clang builds. Every block already
+  begins with an explicit ".text" directive, so the trailing section
+  restore is unnecessary there: the macro now also expands to nothing
+  for OS(WINDOWS), and ".previous" is kept for ELF targets.
+  PerfLog.cpp wraps _open/_fdopen as global open/fdopen shims for the
+  MSVC CRT under OS(WINDOWS); the MinGW-w64 CRT already declares plain
+  fdopen in <stdio.h> (and open in <io.h>), so the wrappers conflict:
+  "static declaration of 'fdopen' follows non-static declaration" at
+  PerfLog.cpp:60. The wrappers are unused in the rest of the file and
+  only needed when COMPILER(MSVC); the block is now guarded accordingly.
 ---
+ .../assembler/MacroAssemblerX86_64.cpp        |   9 +-
+ Source/JavaScriptCore/assembler/PerfLog.cpp   |   6 +-
  .../mingw-compat/include/sys/mman.h           | 178 ++++++++++++++++++
  Source/WTF/wtf/AvailableMemory.cpp            |  13 +-
  Source/WTF/wtf/AvailableMemory.h              |   2 +-
@@ -72,10 +91,47 @@ Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
  Source/WTF/wtf/unix/UniStdExtrasUnix.cpp      |  57 ++++++
  Source/WTF/wtf/unix/UnixFileDescriptor.h      |  22 +++
  Source/WTF/wtf/win/Win32Handle.h              |  96 ++++++++++
- 19 files changed, 567 insertions(+), 52 deletions(-)
+ 21 files changed, 580 insertions(+), 54 deletions(-)
  create mode 100644 Source/ThirdParty/mingw-compat/include/sys/mman.h
  create mode 100644 Source/WTF/wtf/win/Win32Handle.h
 
+diff --git a/Source/JavaScriptCore/assembler/MacroAssemblerX86_64.cpp b/Source/JavaScriptCore/assembler/MacroAssemblerX86_64.cpp
+index 8f66ef8..27f4e91 100644
+--- a/Source/JavaScriptCore/assembler/MacroAssemblerX86_64.cpp
++++ b/Source/JavaScriptCore/assembler/MacroAssemblerX86_64.cpp
+@@ -231,7 +231,14 @@ static_assert(sizeof(Probe::State) == PROBE_SIZE, "Probe::State::size's matches
+     "movaps " STRINGIZE_VALUE_OF(PROBE_CPU_XMM15_VECTOR_OFFSET) "(%rbp), %xmm15" "\n"
+ #endif // !OS(DARWIN)
+ 
+-#if COMPILER(MSVC)
++/*
++ * Each trampoline block below starts with an explicit ".text" directive,
++ * so the section does not need to be restored afterwards. Moreover,
++ * .previous is not available everywhere: MSVC's inline assembler does not
++ * support assembler directives at all, and LLVM's integrated assembler
++ * rejects .previous for PE/COFF targets (MinGW clang builds).
++ */
++#if COMPILER(MSVC) || OS(WINDOWS)
+ #define ASM_PREVIOUS_SECTION
+ #else
+ #define ASM_PREVIOUS_SECTION ".previous" "\n"
+diff --git a/Source/JavaScriptCore/assembler/PerfLog.cpp b/Source/JavaScriptCore/assembler/PerfLog.cpp
+index 20668b6..ddff14c 100644
+--- a/Source/JavaScriptCore/assembler/PerfLog.cpp
++++ b/Source/JavaScriptCore/assembler/PerfLog.cpp
+@@ -49,7 +49,11 @@
+ #include <unistd.h>
+ #endif
+ 
+-#if OS(WINDOWS)
++/* These wrappers exist for the MSVC CRT, which only provides the
++ * underscore-prefixed _open/_fdopen. The MinGW-w64 CRT already declares
++ * plain open/fdopen, so redefining them here would conflict with the
++ * declarations in <io.h>/<stdio.h>. */
++#if OS(WINDOWS) && COMPILER(MSVC)
+ #include <io.h>
+ 
+ inline static int open(const char* filename, int oflag, int pmode)
 diff --git a/Source/ThirdParty/mingw-compat/include/sys/mman.h b/Source/ThirdParty/mingw-compat/include/sys/mman.h
 new file mode 100644
 index 0000000..2e379cb

@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Taozuhong <taozuhong@hotmail.com>
-Date: Mon, 12 Oct 2026 03:28:45 +0000
+Date: Mon, 12 Oct 2026 04:37:39 +0000
 Subject: [PATCH 6/6] MinGW: libpas/bmalloc and compatibility shims
 
 Compatibility shims:
@@ -27,7 +27,6 @@ libpas/bmalloc:
   (WaitOnAddress/WakeByAddress* live in libsynchronization.a);
   bmalloc is static so the requirement propagates to the final
   JavaScriptCore link.
-
 - Update 15 (xdgmime fails to compile on MinGW, [6131]/8552 on ucrt64):
   the mingw-w64 CRT ships neither <fnmatch.h> nor <netinet/in.h>. New
   shims: fnmatch.h implements the classic glob subset (*, ?, [...],
@@ -40,10 +39,20 @@ libpas/bmalloc:
   dllimport and would drag the ws2_32 import library into every final
   link of the static xdgmime archive. All eight xdgmime sources compile
   and link with the shims (cross-gcc, zero extra libraries).
+
+- Update 16 (ucrt64 [6103]/8552, xdgmimecache.c compiled as C): the
+  sys/mman.h shim was written in C++ (reinterpret_cast, static_cast,
+  nullptr) and is now pulled into the C translation unit
+  xdgmimecache.c because HAVE_MMAP is force-enabled under MinGW since
+  update 12. The shim is rewritten with C-style casts, NULL and a
+  <stdint.h> include so the identical header serves C and C++
+  consumers; verified against all eight xdgmime C sources with the
+  cross compiler and against the WTF C++ mmap consumers.
 ---
  Source/ThirdParty/mingw-compat/include/err.h  | 164 ++++++++++++++++++
  .../ThirdParty/mingw-compat/include/fnmatch.h | 157 +++++++++++++++++
  .../mingw-compat/include/netinet/in.h         |  54 ++++++
+ .../mingw-compat/include/sys/mman.h           |  11 +-
  Source/ThirdParty/unifdef/unifdef.c           |  36 ++--
  Source/ThirdParty/unifdef/unifdef.h           |   7 +
  Source/bmalloc/CMakeLists.txt                 |   8 +
@@ -60,7 +69,7 @@ libpas/bmalloc:
  .../src/libpas/pas_thread_local_cache.h       |   6 +-
  Source/bmalloc/libpas/src/libpas/pas_utils.h  |  13 ++
  .../libpas/src/libpas/pas_utils_prefix.h      |   8 +-
- 19 files changed, 496 insertions(+), 26 deletions(-)
+ 20 files changed, 502 insertions(+), 31 deletions(-)
  create mode 100644 Source/ThirdParty/mingw-compat/include/err.h
  create mode 100644 Source/ThirdParty/mingw-compat/include/fnmatch.h
  create mode 100644 Source/ThirdParty/mingw-compat/include/netinet/in.h
@@ -458,6 +467,57 @@ index 0000000..3762db2
 +#ifdef __cplusplus
 +}
 +#endif
+diff --git a/Source/ThirdParty/mingw-compat/include/sys/mman.h b/Source/ThirdParty/mingw-compat/include/sys/mman.h
+index 2e379cb..2fccb9f 100644
+--- a/Source/ThirdParty/mingw-compat/include/sys/mman.h
++++ b/Source/ThirdParty/mingw-compat/include/sys/mman.h
+@@ -25,6 +25,7 @@
+ #include <io.h>
+ #include <fcntl.h>
+ #include <errno.h>
++#include <stdint.h>
+ 
+ #define PROT_NONE  0x0
+ #define PROT_READ  0x1
+@@ -88,11 +89,11 @@ inline static void* mmanMapPageFile(void* address, size_t length, int prot, int
+     if (fd == -1)
+         return MAP_FAILED;
+ 
+-    HANDLE osHandle = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
++    HANDLE osHandle = (HANDLE)_get_osfhandle(fd);
+     if (osHandle == INVALID_HANDLE_VALUE)
+         return MAP_FAILED;
+ 
+-    HANDLE mapping = CreateFileMappingW(osHandle, nullptr, PAGE_READWRITE, 0, 0, nullptr);
++    HANDLE mapping = CreateFileMappingW(osHandle, NULL, PAGE_READWRITE, 0, 0, NULL);
+     if (!mapping)
+         return MAP_FAILED;
+ 
+@@ -123,7 +124,7 @@ inline static void* mmap(void* address, size_t length, int prot, int flags, int
+     if (!(flags & MAP_ANON))
+         return mmanMapPageFile(address, length, prot, flags, fd, offset);
+ 
+-    SIZE_T reservedBytes = static_cast<SIZE_T>(length);
++    SIZE_T reservedBytes = (SIZE_T)length;
+     DWORD allocationType = MEM_RESERVE;
+     if (prot != PROT_NONE)
+         allocationType |= MEM_COMMIT;
+@@ -150,13 +151,13 @@ inline static int mprotect(void* address, size_t length, int prot)
+     SYSTEM_INFO systemInfo;
+     GetSystemInfo(&systemInfo);
+ 
+-    uintptr_t base = reinterpret_cast<uintptr_t>(address);
++    uintptr_t base = (uintptr_t)address;
+     uintptr_t pageMask = systemInfo.dwPageSize ? (systemInfo.dwPageSize - 1) : 0xFFF;
+     uintptr_t alignedBase = base & ~pageMask;
+     size_t alignedLength = length + (base - alignedBase);
+ 
+     DWORD oldProtection;
+-    if (!VirtualProtect(reinterpret_cast<void*>(alignedBase), alignedLength, mmanProtectionFromProt(prot), &oldProtection)) {
++    if (!VirtualProtect((void *)alignedBase, alignedLength, mmanProtectionFromProt(prot), &oldProtection)) {
+         errno = ENOMEM;
+         return -1;
+     }
 diff --git a/Source/ThirdParty/unifdef/unifdef.c b/Source/ThirdParty/unifdef/unifdef.c
 index dc145a2..5a6374b 100644
 --- a/Source/ThirdParty/unifdef/unifdef.c
