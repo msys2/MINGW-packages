@@ -1,0 +1,265 @@
+diff --git a/cmake/init_target.cmake b/cmake/init_target.cmake
+index 3b8f7d14..687b27c9 100644
+--- a/cmake/init_target.cmake
++++ b/cmake/init_target.cmake
+@@ -25,10 +25,16 @@ function(init_target target_name) # init_target(my_target folder_name)
+             NOMINMAX
+             HAVE_WINSOCK2_H
+             HAVE_WINDOWS_H
+-            HAVE_X86
+-            HAVE_SSE2
+         )
+ 
++        if (is_x86 OR is_x64)
++            target_compile_definitions(${target_name}
++            PRIVATE
++                HAVE_X86
++                HAVE_SSE2
++            )
++        endif()
++
+         if (MSVC) # implies not MINGW
+             target_compile_options(${target_name}
+             PRIVATE
+diff --git a/cmake/libwebrtcbuild.cmake b/cmake/libwebrtcbuild.cmake
+index 50725479..fcf5e42d 100644
+--- a/cmake/libwebrtcbuild.cmake
++++ b/cmake/libwebrtcbuild.cmake
+@@ -114,3 +114,11 @@ INTERFACE
+     $<BUILD_INTERFACE:${webrtc_loc}>
+     $<INSTALL_INTERFACE:${webrtc_includedir}>
+ )
++
++if (MINGW)
++    target_include_directories(libwebrtcbuild
++    INTERFACE
++        $<BUILD_INTERFACE:${webrtc_loc}/third_party/wrl/include>
++        $<INSTALL_INTERFACE:${webrtc_includedir}/third_party/wrl/include>
++    )
++endif()
+diff --git a/src/api/network_state_predictor.h b/src/api/network_state_predictor.h
+index 9cf5ab6f..2d165baa 100644
+--- a/src/api/network_state_predictor.h
++++ b/src/api/network_state_predictor.h
+@@ -11,6 +11,7 @@
+ #ifndef API_NETWORK_STATE_PREDICTOR_H_
+ #define API_NETWORK_STATE_PREDICTOR_H_
+ 
++#include <cstdint>
+ #include <memory>
+ #include <vector>
+ 
+diff --git a/src/modules/audio_coding/codecs/isac/main/source/os_specific_inline.h b/src/modules/audio_coding/codecs/isac/main/source/os_specific_inline.h
+index fe9afa4b..24fe7873 100644
+--- a/src/modules/audio_coding/codecs/isac/main/source/os_specific_inline.h
++++ b/src/modules/audio_coding/codecs/isac/main/source/os_specific_inline.h
+@@ -15,7 +15,7 @@
+ 
+ #include "rtc_base/system/arch.h"
+ 
+-#if defined(WEBRTC_POSIX)
++#if defined(WEBRTC_POSIX) || defined(__MINGW32__)
+ #define WebRtcIsac_lrint lrint
+ #elif (defined(WEBRTC_ARCH_X86) && defined(WIN32))
+ static __inline long int WebRtcIsac_lrint(double x_dbl) {
+diff --git a/src/modules/audio_coding/neteq/reorder_optimizer.cc b/src/modules/audio_coding/neteq/reorder_optimizer.cc
+index f6e073fc..172f6035 100644
+--- a/src/modules/audio_coding/neteq/reorder_optimizer.cc
++++ b/src/modules/audio_coding/neteq/reorder_optimizer.cc
+@@ -11,6 +11,7 @@
+ #include "modules/audio_coding/neteq/reorder_optimizer.h"
+ 
+ #include <algorithm>
++#include <cstdint>
+ #include <limits>
+ #include <vector>
+ 
+diff --git a/src/modules/audio_processing/aec3/multi_channel_content_detector.h b/src/modules/audio_processing/aec3/multi_channel_content_detector.h
+index be8717f3..12b5f562 100644
+--- a/src/modules/audio_processing/aec3/multi_channel_content_detector.h
++++ b/src/modules/audio_processing/aec3/multi_channel_content_detector.h
+@@ -13,6 +13,7 @@
+ 
+ #include <stddef.h>
+ 
++#include <cstdint>
+ #include <memory>
+ #include <vector>
+ 
+diff --git a/src/modules/desktop_capture/win/desktop_capture_utils.cc b/src/modules/desktop_capture/win/desktop_capture_utils.cc
+index 476ddc4a..56854ebb 100644
+--- a/src/modules/desktop_capture/win/desktop_capture_utils.cc
++++ b/src/modules/desktop_capture/win/desktop_capture_utils.cc
+@@ -10,7 +10,11 @@
+ 
+ #include "modules/desktop_capture/win/desktop_capture_utils.h"
+ 
++#if defined(__MINGW32__)
++#include <cstdio>
++#else
+ #include "rtc_base/strings/string_builder.h"
++#endif
+ 
+ namespace webrtc {
+ namespace desktop_capture {
+@@ -19,12 +23,32 @@ namespace utils {
+ // Generates a human-readable string from a COM error.
+ std::string ComErrorToString(const _com_error& error) {
+   char buffer[1024];
++#if defined(__MINGW32__)
++  // Avoid _bstr_t's MSVC COM support library and always bound the output.
++#if defined(_UNICODE)
++  const int written = std::snprintf(
++      buffer, sizeof(buffer), "HRESULT: 0x%08lX, Message: %ls",
++      static_cast<unsigned long>(error.Error()), error.ErrorMessage());
++#else
++  const int written = std::snprintf(
++      buffer, sizeof(buffer), "HRESULT: 0x%08lX, Message: %s",
++      static_cast<unsigned long>(error.Error()), error.ErrorMessage());
++#endif
++  if (written < 0) {
++    // A message not representable in the C locale must not hide the HRESULT.
++    std::snprintf(buffer, sizeof(buffer), "HRESULT: 0x%08lX",
++                  static_cast<unsigned long>(error.Error()));
++  }
++  buffer[sizeof(buffer) - 1] = '\0';
++  return buffer;
++#else
+   rtc::SimpleStringBuilder string_builder(buffer);
+   // Use _bstr_t to simplify the wchar to char conversion for ErrorMessage().
+   _bstr_t error_message(error.ErrorMessage());
+   string_builder.AppendFormat("HRESULT: 0x%08X, Message: %s", error.Error(),
+                               static_cast<const char*>(error_message));
+   return string_builder.str();
++#endif
+ }
+ 
+ }  // namespace utils
+diff --git a/src/modules/desktop_capture/win/wgc_capture_session.cc b/src/modules/desktop_capture/win/wgc_capture_session.cc
+index 8c74c2bf..41fcaf61 100644
+--- a/src/modules/desktop_capture/win/wgc_capture_session.cc
++++ b/src/modules/desktop_capture/win/wgc_capture_session.cc
+@@ -10,9 +10,9 @@
+ 
+ #include "modules/desktop_capture/win/wgc_capture_session.h"
+ 
+-#include <DispatcherQueue.h>
++#include <dispatcherqueue.h>
+ #include <windows.graphics.capture.interop.h>
+-#include <windows.graphics.directX.direct3d11.interop.h>
++#include <windows.graphics.directx.direct3d11.interop.h>
+ #include <windows.graphics.h>
+ #include <wrl/client.h>
+ #include <wrl/event.h>
+@@ -181,9 +181,7 @@ HRESULT WgcCaptureSession::StartCapture(const DesktopCaptureOptions& options) {
+ 
+   if (!options.prefer_cursor_embedded()) {
+     ComPtr<ABI::Windows::Graphics::Capture::IGraphicsCaptureSession2> session2;
+-    if (SUCCEEDED(session_->QueryInterface(
+-            ABI::Windows::Graphics::Capture::IID_IGraphicsCaptureSession2,
+-            &session2))) {
++    if (SUCCEEDED(session_->QueryInterface(IID_PPV_ARGS(&session2)))) {
+       session2->put_IsCursorCaptureEnabled(false);
+     }
+   }
+@@ -194,9 +192,7 @@ HRESULT WgcCaptureSession::StartCapture(const DesktopCaptureOptions& options) {
+   // experience more inline with the DXGI capture path.
+   // This requires 10.0.20348.0 or later, which practically means Windows 11.
+   ComPtr<ABI::Windows::Graphics::Capture::IGraphicsCaptureSession3> session3;
+-  if (SUCCEEDED(session_->QueryInterface(
+-          ABI::Windows::Graphics::Capture::IID_IGraphicsCaptureSession3,
+-          &session3))) {
++  if (SUCCEEDED(session_->QueryInterface(IID_PPV_ARGS(&session3)))) {
+     session3->put_IsBorderRequired(false);
+   }
+ 
+diff --git a/src/modules/desktop_capture/win/wgc_capturer_win.cc b/src/modules/desktop_capture/win/wgc_capturer_win.cc
+index 9c545597..c7866df5 100644
+--- a/src/modules/desktop_capture/win/wgc_capturer_win.cc
++++ b/src/modules/desktop_capture/win/wgc_capturer_win.cc
+@@ -10,7 +10,7 @@
+ 
+ #include "modules/desktop_capture/win/wgc_capturer_win.h"
+ 
+-#include <DispatcherQueue.h>
++#include <dispatcherqueue.h>
+ #include <windows.foundation.metadata.h>
+ #include <windows.graphics.capture.h>
+ 
+diff --git a/src/rtc_base/platform_thread_types.cc b/src/rtc_base/platform_thread_types.cc
+index 74e732f0..bc100c8d 100644
+--- a/src/rtc_base/platform_thread_types.cc
++++ b/src/rtc_base/platform_thread_types.cc
+@@ -99,6 +99,8 @@ void SetCurrentThreadName(const char* name) {
+     set_thread_description_func(::GetCurrentThread(), wide_thread_name);
+   }
+ 
++#if defined(_MSC_VER)
++  // The legacy debugger naming exception requires MSVC structured exceptions.
+   // For details see:
+   // https://docs.microsoft.com/en-us/visualstudio/debugger/how-to-set-a-thread-name-in-native-code
+ #pragma pack(push, 8)
+@@ -118,6 +120,7 @@ void SetCurrentThreadName(const char* name) {
+   } __except (EXCEPTION_EXECUTE_HANDLER) {  // NOLINT
+   }
+ #pragma warning(pop)
++#endif  // defined(_MSC_VER)
+ #elif defined(WEBRTC_LINUX) || defined(WEBRTC_ANDROID)
+   prctl(PR_SET_NAME, reinterpret_cast<unsigned long>(name));  // NOLINT
+ #elif defined(WEBRTC_FREEBSD)
+diff --git a/src/rtc_base/system/file_wrapper.cc b/src/rtc_base/system/file_wrapper.cc
+index af34d0e4..e6694176 100644
+--- a/src/rtc_base/system/file_wrapper.cc
++++ b/src/rtc_base/system/file_wrapper.cc
+@@ -21,7 +21,7 @@
+ #include "rtc_base/numerics/safe_conversions.h"
+ 
+ #ifdef _WIN32
+-#include <Windows.h>
++#include <windows.h>
+ #else
+ #endif
+ 
+diff --git a/src/rtc_base/system/rtc_export_template.h b/src/rtc_base/system/rtc_export_template.h
+index 4ac70438..dfbf09dd 100644
+--- a/src/rtc_base/system/rtc_export_template.h
++++ b/src/rtc_base/system/rtc_export_template.h
+@@ -185,8 +185,10 @@
+ 
+ RTC_EXPORT_TEMPLATE_TEST(DEFAULT, );  // NOLINT
+ RTC_EXPORT_TEMPLATE_TEST(DEFAULT, __attribute__((visibility("default"))));
++#if defined(_MSC_VER)
+ RTC_EXPORT_TEMPLATE_TEST(MSVC_HACK, __declspec(dllexport));
+ RTC_EXPORT_TEMPLATE_TEST(DEFAULT, __declspec(dllimport));
++#endif
+ 
+ #undef RTC_EXPORT_TEMPLATE_TEST
+ #undef RTC_EXPORT_TEMPLATE_TEST_DEFAULT_DEFAULT
+diff --git a/src/rtc_base/win/create_direct3d_device.h b/src/rtc_base/win/create_direct3d_device.h
+index 7c21f872..48de7c14 100644
+--- a/src/rtc_base/win/create_direct3d_device.h
++++ b/src/rtc_base/win/create_direct3d_device.h
+@@ -11,8 +11,8 @@
+ #ifndef RTC_BASE_WIN_CREATE_DIRECT3D_DEVICE_H_
+ #define RTC_BASE_WIN_CREATE_DIRECT3D_DEVICE_H_
+ 
+-#include <windows.graphics.directX.direct3d11.h>
+-#include <windows.graphics.directX.direct3d11.interop.h>
++#include <windows.graphics.directx.direct3d11.h>
++#include <windows.graphics.directx.direct3d11.interop.h>
+ #include <winerror.h>
+ #include <wrl/client.h>
+ 
+diff --git a/src/rtc_base/win/windows_version.cc b/src/rtc_base/win/windows_version.cc
+index 93af1377..3a91d03b 100644
+--- a/src/rtc_base/win/windows_version.cc
++++ b/src/rtc_base/win/windows_version.cc
+@@ -17,7 +17,7 @@
+ #include "rtc_base/checks.h"
+ #include "rtc_base/string_utils.h"
+ 
+-#if !defined(__clang__) && _MSC_FULL_VER < 191125507
++#if defined(_MSC_VER) && !defined(__clang__) && _MSC_FULL_VER < 191125507
+ #error VS 2017 Update 3.2 or higher is required
+ #endif
+ 
