@@ -18,21 +18,23 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-cmake"
              "${MINGW_PACKAGE_PREFIX}-ninja")
 source=("https://cdn.mysql.com/Downloads/MySQL-8.0/mysql-boost-${pkgver}.tar.gz"
-        "0001-mysql-${pkgver}-clang-gnu-frontend-flags.patch"
-        "0002-mysql-${pkgver}-openssl-applink-msvc-only.patch"
-        "0003-mysql-${pkgver}-zstd-x86-asm.patch"
-        "0004-mysql-${pkgver}-mingw-header-compat.patch"
-        "0005-mysql-${pkgver}-mingw-stdlib-includes.patch"
-        "0006-mysql-${pkgver}-mingw-msvc-only-apis.patch"
-        "0007-mysql-${pkgver}-libmysql-dll-name.patch")
+        "0001-clang-gnu-frontend-flags.patch"
+        "0002-openssl-msvc-only.patch"
+        "0003-zstd-x86-asm.patch"
+        "0004-mingw-header-compat.patch"
+        "0005-mingw-stdlib-includes.patch"
+        "0006-mingw-msvc-only-apis.patch"
+        "0007-libmysql-dll-name.patch"
+        "0008-client-only-install-fixes.patch")
 sha256sums=('dff4332ee7f8f37fc0516c66763600a22a81c8192c743c477b6484206e314f2f'
             '4c61a9cbf410fe4f264dca7fd4e1782464ab9c1b8bb580afa37aca9ad6e7bb8d'
-            '1e26a4c81ab9e7d0185c50c23e2a490e75729206822a55ea5878e1bfed73df24'
+            'c735054f85516f61e3af0436a7883e46f2c22cb48a836d8b08e9782a1a7b4201'
             '297d36b295cdd3b94b4371a0498dc3fa16a597453bb6277016468a63a8556e99'
             'fcd6c430a3e90417a98d6d934bbf2611c864670452fd3ec3e405aecacdeaff2e'
             '9bfa46d725e2e83357ddfa7e514ac6935679ae72ed2336443d901db030b86348'
             '087b12d0e129579444be0d76d61c3ae6bebbe7e76ff3a3507d96ca53e3fb992a'
-            '7af8b48f8bd9d274597138b5d3aeb9c5cc8bc8c2dfad70f7a8e3c8d456c73abc')
+            '7af8b48f8bd9d274597138b5d3aeb9c5cc8bc8c2dfad70f7a8e3c8d456c73abc'
+            'db1431ce0ce363d0ffaa90c942825ffbd0b8d8c670b46326e6bdaad0aef953f9')
 
 apply_patch_with_msg() {
   for _patch in "$@"
@@ -45,13 +47,14 @@ apply_patch_with_msg() {
 prepare() {
   cd "${srcdir}/mysql-${pkgver}"
   apply_patch_with_msg \
-    "0001-mysql-${pkgver}-clang-gnu-frontend-flags.patch" \
-    "0002-mysql-${pkgver}-openssl-applink-msvc-only.patch" \
-    "0003-mysql-${pkgver}-zstd-x86-asm.patch" \
-    "0004-mysql-${pkgver}-mingw-header-compat.patch" \
-    "0005-mysql-${pkgver}-mingw-stdlib-includes.patch" \
-    "0006-mysql-${pkgver}-mingw-msvc-only-apis.patch" \
-    "0007-mysql-${pkgver}-libmysql-dll-name.patch"
+    "0001-clang-gnu-frontend-flags.patch" \
+    "0002-openssl-msvc-only.patch" \
+    "0003-zstd-x86-asm.patch" \
+    "0004-mingw-header-compat.patch" \
+    "0005-mingw-stdlib-includes.patch" \
+    "0006-mingw-msvc-only-apis.patch" \
+    "0007-libmysql-dll-name.patch" \
+    "0008-client-only-install-fixes.patch"
 }
 
 build() {
@@ -81,48 +84,38 @@ build() {
   ${MINGW_PREFIX}/bin/cmake.exe --build . --target libmysql mysqlclient
 }
 
-# check() intentionally omitted: the unit test suite belongs to the server
-# build and is disabled (WITH_UNIT_TESTS=OFF).
 
 package() {
   cd "${srcdir}/build-${MSYSTEM}"
 
-  # Runtime DLL and import library (canonical MySQL Windows names)
-  install -Dm644 library_output_directory/libmysql.dll \
-    "${pkgdir}${MINGW_PREFIX}/bin/libmysql.dll"
-  install -Dm644 libmysql/libmysql.dll.a \
-    "${pkgdir}${MINGW_PREFIX}/lib/libmysql.dll.a"
+  # Install through CMake's own install rules, restricted to the two
+  # components that form a client library package. This skips the Test,
+  # Server and documentation components (comp_err, my_openssl.exe,
+  # errmsg.sys, README, INFO_BIN, ...) which either do not exist in a
+  # -DWITHOUT_SERVER=1 build or do not belong in this package.
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install . \
+    --component SharedLibraries
+  DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install . \
+    --component Development
+
+  # MSYS2 convention: runtime DLLs live in bin/ (upstream keeps them in
+  # lib/ on Windows); the import library stays in lib/.
+  [ ! -d "${pkgdir}${MINGW_PREFIX}/bin" ] && mkdir -p "${pkgdir}${MINGW_PREFIX}/bin"
+  mv "${pkgdir}${MINGW_PREFIX}/lib/libmysql.dll" \
+     "${pkgdir}${MINGW_PREFIX}/bin/libmysql.dll"
 
   # Client API compatibility alias: lets -lmysqlclient resolve the import
   # library (dynamic linking), matching libmysqlclient.so on Linux.
-  install -Dm644 libmysql/libmysql.dll.a \
+  install -Dm644 "${pkgdir}${MINGW_PREFIX}/lib/libmysql.dll.a" \
     "${pkgdir}${MINGW_PREFIX}/lib/libmysqlclient.dll.a"
 
-  # Static merged client library (force it with -Wl,-Bstatic -lmysqlclient)
-  install -Dm644 archive_output_directory/libmysqlclient.a \
-    "${pkgdir}${MINGW_PREFIX}/lib/libmysqlclient.a"
-
-  # Client API headers only - the exact set upstream ships in its
-  # Development component (include/CMakeLists.txt HEADERS /
-  # HEADERS_MYSQL_DIR), plus my_io.h and my_io_bits.h so that
-  # <mysql_com.h> also compiles standalone, and the generated
-  # mysql_version.h / mysqld_error.h.
-  _inc="${pkgdir}${MINGW_PREFIX}/include/mysql"
-  install -d -m755 "${_inc}/mysql/components/services/bits"
-  install -m644 "${srcdir}/mysql-${pkgver}"/include/{errmsg.h,field_types.h,my_command.h,my_compress.h,my_io.h,my_list.h,mysql.h,mysql_com.h,mysql_time.h} \
-    "${_inc}/"
-  install -m644 "${srcdir}/mysql-${pkgver}"/include/mysql/{client_plugin.h,plugin_auth_common.h,udf_registration_types.h} \
-    "${_inc}/mysql/"
-  install -m644 "${srcdir}/mysql-${pkgver}/include/mysql/components/services/bits/my_io_bits.h" \
-    "${_inc}/mysql/components/services/bits/my_io_bits.h"
-  # generated API headers
-  install -m644 include/mysql_version.h include/mysqld_error.h "${_inc}/"
-
-  # pkg-config metadata
+  # pkg-config metadata: upstream generates the .pc files only on
+  # non-Windows (scripts/CMakeLists.txt has them in the ELSE(WIN32)
+  # branch), so install our own with the correct Windows values.
   install -d -m755 "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig"
   cat > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/mysqlclient.pc" <<EOF
 prefix=${MINGW_PREFIX}
-includedir=\${prefix}/include/mysql
+includedir=\${prefix}/include
 libdir=\${prefix}/lib
 
 Name: mysqlclient
@@ -135,7 +128,7 @@ Libs.private: -lssl -lcrypto -lz -lzstd -lws2_32 -ldnsapi -lcrypt32 -lsecur32 -l
 EOF
   cat > "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/libmysql.pc" <<EOF
 prefix=${MINGW_PREFIX}
-includedir=\${prefix}/include/mysql
+includedir=\${prefix}/include
 libdir=\${prefix}/lib
 
 Name: libmysql
