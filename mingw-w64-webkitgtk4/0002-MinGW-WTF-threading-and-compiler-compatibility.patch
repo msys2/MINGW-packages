@@ -91,9 +91,55 @@ Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
   "expected ')'" at LLIntAssembly.h:91182. Following the upstream COFF
   convention of that branch (.align N = 2^N bytes), the missing
   entries are provided as .align 9 / .align 10.
+
+  Update 18 (fixing CLANG64 JSC link failures and a latent UCRT64 one):
+  interpreter/CallFrame.h expands _AddressOfReturnAddress() inside the
+  OS(WINDOWS) && CPU(X86_64) DECLARE_CALL_FRAME macro, but MinGW
+  <intrin.h> only declares that MSVC intrinsic (via __MACHINEI) without
+  ever providing a definition, so every JIT operation referencing it
+  died at the JavaScriptCore link with "undefined symbol:
+  _AddressOfReturnAddress" (~658 references from the DFG unified
+  sources alone). MinGW compilers now reach the saved caller frame
+  pointer without the intrinsic, and the rbp asm clobber is dropped
+  because both toolchains reject the original combination: GCC refuses
+  to clobber rbp in functions whose frame chain it relies on ("bp
+  cannot be used in 'asm' here", e.g. operationAtomicsNotify), and
+  clang no longer needs it because the builtin establishes the frame.
+  GCC uses __builtin_frame_address(1), which walks the frame chain
+  exactly like on other platforms (verified to emit
+  "push %rbp; mov %rsp,%rbp; mov 0x0(%rbp),%rax", i.e. the same slot
+  the intrinsic path reads). MinGW clang keeps the Windows-specific
+  __builtin_frame_address(1) == __builtin_frame_address(0) quirk the
+  upstream comment describes, so it instead dereferences
+  __builtin_frame_address(0), which forces a proper frame pointer and
+  reads the caller frame pointer saved by the prologue - the same
+  value the intrinsic path computes. JIT operations carry
+  __attribute__((sysv_abi)) on Windows, so GCC/clang cannot inline
+  them and the frame walk always stays at the operation's own frame.
+  threads/Signals.cpp is wrapped in #if OS(UNIX), yet WTFConfig.cpp
+  calls SignalHandlers::initialize()/finalize() unconditionally and
+  the Wasm fault-signaling path calls addSignalHandler() and
+  activateSignalHandlersFor(), so the CLANG64 JSC link failed on all
+  four symbols. A Windows backend is restored under #elif OS(WINDOWS),
+  mirroring the stripped wtf/win implementation: handlers are
+  registered in the g_wtfConfig.signalHandlers arrays and dispatched
+  from a first-chance vectored exception handler installed once in
+  SignalHandlers::finalize(); EXCEPTION_ACCESS_VIOLATION and
+  EXCEPTION_IN_PAGE_ERROR map to Signal::AccessFault with the
+  ExceptionInformation[1] faulting address, and a Handled result
+  resumes execution with the (possibly modified) CONTEXT, which is
+  what the Wasm fault-based bounds checking requires.
+  MemoryPressureHandler's constructor registers
+  windowsMeasurementTimerFired() for the Windows measurement timer,
+  but the stripped wtf/win/MemoryPressureHandlerWin.cpp was its only
+  upstream definition; a conservative implementation is restored in
+  MemoryPressureHandler.cpp (respond to memory pressure unless the
+  policy is still Unrestricted; the timer is only armed by explicit
+  callers).
 ---
  .../assembler/MacroAssemblerX86_64.cpp        |   9 +-
  Source/JavaScriptCore/assembler/PerfLog.cpp   |   6 +-
+ Source/JavaScriptCore/interpreter/CallFrame.h |  24 +++
  .../llint/LowLevelInterpreter.cpp             |   6 +
  .../runtime/ProfilerSupport.cpp               |   7 +-
  .../mingw-compat/include/sys/mman.h           | 178 ++++++++++++++++++
@@ -103,6 +149,7 @@ Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
  Source/WTF/wtf/FileHandle.h                   |  10 +-
  Source/WTF/wtf/FileSystem.h                   |   4 +-
  Source/WTF/wtf/FunctionTraits.h               |  13 +-
+ Source/WTF/wtf/MemoryPressureHandler.cpp      |  13 ++
  Source/WTF/wtf/PlatformUse.h                  |   4 +-
  Source/WTF/wtf/Threading.cpp                  |   4 +-
  Source/WTF/wtf/Threading.h                    |  39 ++--
@@ -112,10 +159,11 @@ Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
  Source/WTF/wtf/posix/FileSystemPOSIX.cpp      |  21 +++
  Source/WTF/wtf/posix/ThreadingPOSIX.cpp       |  59 +++++-
  .../unix/TextBreakIteratorInternalICUUnix.cpp |   5 +
+ Source/WTF/wtf/threads/Signals.cpp            | 133 ++++++++++++-
  Source/WTF/wtf/unix/UniStdExtrasUnix.cpp      |  57 ++++++
  Source/WTF/wtf/unix/UnixFileDescriptor.h      |  22 +++
  Source/WTF/wtf/win/Win32Handle.h              |  96 ++++++++++
- 23 files changed, 592 insertions(+), 55 deletions(-)
+ 26 files changed, 761 insertions(+), 56 deletions(-)
  create mode 100644 Source/ThirdParty/mingw-compat/include/sys/mman.h
  create mode 100644 Source/WTF/wtf/win/Win32Handle.h
 
@@ -156,6 +204,48 @@ index 20668b6..ddff14c 100644
  #include <io.h>
  
  inline static int open(const char* filename, int oflag, int pmode)
+diff --git a/Source/JavaScriptCore/interpreter/CallFrame.h b/Source/JavaScriptCore/interpreter/CallFrame.h
+index 8ad7388..773f2cd 100644
+--- a/Source/JavaScriptCore/interpreter/CallFrame.h
++++ b/Source/JavaScriptCore/interpreter/CallFrame.h
+@@ -383,6 +383,29 @@ JS_EXPORT_PRIVATE bool NODELETE isFromJSCode(void* returnAddress);
+ // function's local variables on the stack instead of before like other platforms.
+ // Instead we use _AddressOfReturnAddress(), and clobber rbp so it should be the first parameter
+ // saved by the currrent function.
++// MinGW compilers only declare _AddressOfReturnAddress() in <intrin.h> without ever
++// providing a definition, so they need their own way to reach the saved caller
++// frame pointer that sits right below the return-address slot:
++// - GCC: __builtin_frame_address(1) walks the frame chain exactly like on other
++//   platforms (verified to emit "mov 0x0(%rbp),%rax", i.e. the same slot the
++//   intrinsic path reads), so this matches the non-Windows branch.
++// - MinGW clang: __builtin_frame_address(1) is broken on Windows (it returns our
++//   own frame address), but __builtin_frame_address(0) forces a proper frame
++//   pointer, so dereferencing it reads the caller frame pointer saved by our
++//   prologue - the same value the MSVC intrinsic path computes.
++#if COMPILER(CLANG) && defined(__MINGW32__)
++#define DECLARE_CALL_FRAME(vm) \
++    ({ \
++        ASSERT(JSC::isFromJSCode(removeCodePtrTag<void*>(__builtin_return_address(0)))); \
++        std::bit_cast<JSC::CallFrame*>(*((uintptr_t**) __builtin_frame_address(0))); \
++    })
++#elif COMPILER(GCC)
++#define DECLARE_CALL_FRAME(vm) \
++    ({ \
++        ASSERT(JSC::isFromJSCode(removeCodePtrTag<void*>(__builtin_return_address(0)))); \
++        std::bit_cast<JSC::CallFrame*>(__builtin_frame_address(1)); \
++    })
++#else
+ #define DECLARE_CALL_FRAME(vm) \
+     ({ \
+         asm volatile( \
+@@ -394,6 +417,7 @@ JS_EXPORT_PRIVATE bool NODELETE isFromJSCode(void* returnAddress);
+         ASSERT(JSC::isFromJSCode(removeCodePtrTag<void*>(__builtin_return_address(0)))); \
+         std::bit_cast<JSC::CallFrame*>(*((uintptr_t**) _AddressOfReturnAddress() - 1)); \
+     })
++#endif // COMPILER(CLANG) && defined(__MINGW32__)
+ #else // !OS(WINDOWS) || !CPU(X86_64)
+ // FIXME (see rdar://72897291): Work around a Clang bug where __builtin_return_address()
+ // sometimes gives us a signed pointer, and sometimes does not.
 diff --git a/Source/JavaScriptCore/llint/LowLevelInterpreter.cpp b/Source/JavaScriptCore/llint/LowLevelInterpreter.cpp
 index dd0b44d..fc1dc33 100644
 --- a/Source/JavaScriptCore/llint/LowLevelInterpreter.cpp
@@ -517,6 +607,30 @@ index ac54804..ffda29a 100644
  };
  #endif
  
+diff --git a/Source/WTF/wtf/MemoryPressureHandler.cpp b/Source/WTF/wtf/MemoryPressureHandler.cpp
+index 7125641..0063e9f 100644
+--- a/Source/WTF/wtf/MemoryPressureHandler.cpp
++++ b/Source/WTF/wtf/MemoryPressureHandler.cpp
+@@ -369,6 +369,19 @@ void MemoryPressureHandler::ReliefLogger::logMemoryUsageChange()
+ 
+ #if !OS(WINDOWS)
+ void MemoryPressureHandler::platformInitialize() { }
++#else
++// Restored: the 2.54.1 release tarball strips wtf/win/MemoryPressureHandlerWin.cpp
++// together with the rest of wtf/win/, but the constructor unconditionally
++// registers this callback for the Windows measurement timer. The timer is
++// only armed by explicit callers, so keep the response conservative and
++// mirror the periodic measurement paths of the other platforms.
++void MemoryPressureHandler::windowsMeasurementTimerFired()
++{
++    if (currentMemoryUsagePolicy() == MemoryUsagePolicy::Unrestricted)
++        return;
++
++    respondToMemoryPressure(Critical::Yes, Synchronous::No);
++}
+ #endif
+ 
+ MemoryPressureHandlerConfiguration::MemoryPressureHandlerConfiguration()
 diff --git a/Source/WTF/wtf/PlatformUse.h b/Source/WTF/wtf/PlatformUse.h
 index 0c16afb..ce832f4 100644
 --- a/Source/WTF/wtf/PlatformUse.h
@@ -1021,6 +1135,147 @@ index a1df6d6..5958c8d 100644
  namespace WTF {
  
  const char* currentSearchLocaleID()
+diff --git a/Source/WTF/wtf/threads/Signals.cpp b/Source/WTF/wtf/threads/Signals.cpp
+index f863c4e..b5965bc 100644
+--- a/Source/WTF/wtf/threads/Signals.cpp
++++ b/Source/WTF/wtf/threads/Signals.cpp
+@@ -594,4 +594,135 @@ void SignalHandlers::finalize()
+ 
+ } // namespace WTF
+ 
+-#endif // OS(UNIX)
++#elif OS(WINDOWS)
++
++// Windows has no POSIX signals; WTF signal handlers are dispatched from a
++// vectored exception handler instead. This restores the backend stripped
++// from the 2.54.1 release tarball together with the rest of wtf/win/:
++// AccessFault maps to EXCEPTION_ACCESS_VIOLATION / EXCEPTION_IN_PAGE_ERROR,
++// and a handler may resume execution with a modified thread context, which
++// Wasm fault-based memory bounds checking relies on.
++
++#include <wtf/StdLibExtras.h>
++#include <wtf/WTFConfig.h>
++
++namespace WTF {
++
++void SignalHandlers::add(Signal signal, SignalHandler&& handler)
++{
++    Config::AssertNotFrozenScope assertScope;
++
++    ASSERT(signal < Signal::NumberOfSignals);
++    RELEASE_ASSERT(initState == SignalHandlers::InitState::Initializing);
++
++    size_t signalIndex = static_cast<size_t>(signal);
++    size_t nextFree = numberOfHandlers[signalIndex];
++    RELEASE_ASSERT(nextFree < maxNumberOfHandlers);
++    SignalHandlerMemory* memory = &handlers[signalIndex][nextFree];
++    new (memory) SignalHandler(WTF::move(handler));
++
++    numberOfHandlers[signalIndex]++;
++}
++
++template<typename Func>
++inline void SignalHandlers::forEachHandler(Signal signal, NOESCAPE const Func& func) const
++{
++    size_t signalIndex = static_cast<size_t>(signal);
++    size_t handlerIndex = numberOfHandlers[signalIndex];
++    while (handlerIndex--) {
++        auto* memory = const_cast<SignalHandlerMemory*>(&handlers[signalIndex][handlerIndex]);
++        const SignalHandler& handler = *std::bit_cast<SignalHandler*>(memory);
++        func(handler);
++    }
++}
++
++void addSignalHandler(Signal signal, SignalHandler&& handler)
++{
++    g_wtfConfig.signalHandlers.add(signal, WTF::move(handler));
++}
++
++void activateSignalHandlersFor(Signal signal)
++{
++    // Vectored exception handlers are active as soon as they are installed,
++    // so activation is a no-op on Windows (mirroring the non-Mach POSIX
++    // path, where handlers are installed once in SignalHandlers::finalize()).
++    const SignalHandlers& handlers = g_wtfConfig.signalHandlers;
++    RELEASE_ASSERT(handlers.initState >= SignalHandlers::InitState::Initializing);
++    ASSERT_UNUSED(signal, signal < Signal::Unknown);
++}
++
++static Signal NODELETE fromWindowsException(DWORD exceptionCode)
++{
++    switch (exceptionCode) {
++    case EXCEPTION_ACCESS_VIOLATION:
++    case EXCEPTION_IN_PAGE_ERROR:
++        return Signal::AccessFault;
++    case EXCEPTION_ILLEGAL_INSTRUCTION:
++    case EXCEPTION_PRIV_INSTRUCTION:
++        return Signal::IllegalInstruction;
++    case EXCEPTION_FLT_DENORMAL_OPERAND:
++    case EXCEPTION_FLT_DIVIDE_BY_ZERO:
++    case EXCEPTION_FLT_INEXACT_RESULT:
++    case EXCEPTION_FLT_INVALID_OPERATION:
++    case EXCEPTION_FLT_OVERFLOW:
++    case EXCEPTION_FLT_STACK_CHECK:
++    case EXCEPTION_FLT_UNDERFLOW:
++        return Signal::FloatingPoint;
++    default:
++        return Signal::Unknown;
++    }
++}
++
++static LONG CALLBACK wtfVectoredExceptionHandler(PEXCEPTION_POINTERS exceptionPointers)
++{
++    Signal signal = fromWindowsException(exceptionPointers->ExceptionRecord->ExceptionCode);
++    if (signal == Signal::Unknown)
++        return EXCEPTION_CONTINUE_SEARCH;
++
++    SignalHandlers& handlers = g_wtfConfig.signalHandlers;
++    if (!handlers.numberOfHandlers[static_cast<size_t>(signal)])
++        return EXCEPTION_CONTINUE_SEARCH;
++
++    SigInfo sigInfo;
++    if (signal == Signal::AccessFault && exceptionPointers->ExceptionRecord->NumberParameters >= 2)
++        sigInfo.faultingAddress = reinterpret_cast<void*>(exceptionPointers->ExceptionRecord->ExceptionInformation[1]);
++
++    PlatformRegisters& registers = *exceptionPointers->ContextRecord;
++
++    bool didHandle = false;
++    handlers.forEachHandler(signal, [&] (const SignalHandler& handler) {
++        SignalAction handlerResult = handler(signal, sigInfo, registers);
++        didHandle |= handlerResult == SignalAction::Handled;
++    });
++
++    return didHandle ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_CONTINUE_SEARCH;
++}
++
++void SignalHandlers::initialize()
++{
++    SignalHandlers& handlers = g_wtfConfig.signalHandlers;
++    RELEASE_ASSERT(handlers.initState == SignalHandlers::InitState::Uninitialized);
++    handlers.initState = SignalHandlers::InitState::Initializing;
++}
++
++void SignalHandlers::finalize()
++{
++    Config::AssertNotFrozenScope assertScope;
++    SignalHandlers& handlers = g_wtfConfig.signalHandlers;
++    RELEASE_ASSERT(handlers.initState == SignalHandlers::InitState::Initializing);
++    handlers.initState = SignalHandlers::InitState::Finalized;
++
++    bool hasHandlers = false;
++    for (unsigned i = 0; i < numberOfSignals; ++i)
++        hasHandlers |= handlers.numberOfHandlers[i] != 0;
++    if (!hasHandlers)
++        return;
++
++    // First-handler registration: WTF handlers run before the CRT and any
++    // C++ exception machinery sees the exception.
++    RELEASE_ASSERT(AddVectoredExceptionHandler(1 /* First */, wtfVectoredExceptionHandler));
++}
++
++} // namespace WTF
++
++#endif // OS(UNIX) || OS(WINDOWS)
 diff --git a/Source/WTF/wtf/unix/UniStdExtrasUnix.cpp b/Source/WTF/wtf/unix/UniStdExtrasUnix.cpp
 index c45c75d..684e89e 100644
 --- a/Source/WTF/wtf/unix/UniStdExtrasUnix.cpp

@@ -42,10 +42,27 @@ Build-system port for the GTK/MinGW target:
   branch was restricted to $^O ne 'MSWin32'; MSYS2 environments always
   provide POSIX cp(1) on PATH, so the MSWin32 guard is dropped and the
   loop serves every non-Darwin, non-dircopy build.
+
+  Update 18 (fixing CLANG64 JSC link failures):
+  The 2.54.1 release tarball also strips the wtf/win implementation
+  files, and StackTrace.h symbolizes frames through
+  wtf/win/DbgHelperWin.h under OS(WINDOWS) (HAVE(BACKTRACE_SYMBOLS)
+  is false on MinGW), whose single entry point
+  WTF::DbgHelper::SymFromAddress was declared but defined nowhere in
+  the tarball, so the JavaScriptCore link died with an undefined
+  symbol. The dbghelp-backed DbgHelperWin.cpp is restored (SymInitialize
+  once per process via a magic static, then SymFromAddr, accepting the
+  nullptr displacement StackTrace.h passes) and registered in
+  WTF_SOURCES. CurrentTime.cpp raises the timer resolution through
+  winmm's timeBeginPeriod()/timeEndPeriod(), and WTF is a static
+  library in this port, so winmm and dbghelp are appended to
+  WTF_LIBRARIES and propagate to the JavaScriptCore (and later
+  WebKit) links.
 ---
  Source/JavaScriptCore/CMakeLists.txt          |  30 +-
- Source/WTF/wtf/CMakeLists.txt                 |  15 +-
+ Source/WTF/wtf/CMakeLists.txt                 |  29 +-
  Source/WTF/wtf/text/win/WCharStringExtras.h   |  60 ++++
+ Source/WTF/wtf/win/DbgHelperWin.cpp           |  58 ++++
  Source/WTF/wtf/win/DbgHelperWin.h             |  41 +++
  Source/WTF/wtf/win/SoftLinking.h              | 313 ++++++++++++++++++
  Source/WTF/wtf/win/WTFCRTDebug.h              |  40 +++
@@ -54,8 +71,9 @@ Build-system port for the GTK/MinGW target:
  Source/cmake/FindGLib.cmake                   |   8 +-
  Source/cmake/OptionsCommon.cmake              |  18 +-
  Source/cmake/OptionsGTK.cmake                 |  28 ++
- 11 files changed, 552 insertions(+), 18 deletions(-)
+ 12 files changed, 624 insertions(+), 18 deletions(-)
  create mode 100644 Source/WTF/wtf/text/win/WCharStringExtras.h
+ create mode 100644 Source/WTF/wtf/win/DbgHelperWin.cpp
  create mode 100644 Source/WTF/wtf/win/DbgHelperWin.h
  create mode 100644 Source/WTF/wtf/win/SoftLinking.h
  create mode 100644 Source/WTF/wtf/win/WTFCRTDebug.h
@@ -102,10 +120,10 @@ index 0cd2c74..d4d0d40 100644
  
  # When building JavaScriptCore as an object library, we need to make sure the
 diff --git a/Source/WTF/wtf/CMakeLists.txt b/Source/WTF/wtf/CMakeLists.txt
-index fda0252..8abf494 100644
+index fda0252..7e6d771 100644
 --- a/Source/WTF/wtf/CMakeLists.txt
 +++ b/Source/WTF/wtf/CMakeLists.txt
-@@ -708,13 +708,19 @@ set(WTF_SOURCES
+@@ -708,15 +708,35 @@ set(WTF_SOURCES
  )
  
  if (WIN32)
@@ -126,8 +144,24 @@ index fda0252..8abf494 100644
 +        win/WTFCRTDebug.h
          win/Win32Handle.h
      )
++
++    # The tarball also strips wtf/win/ implementation files. StackTrace.h
++    # symbolizes frames through wtf/win/DbgHelperWin.h on Windows, whose
++    # single entry point is implemented in DbgHelperWin.cpp; CurrentTime.cpp
++    # raises the timer resolution through winmm's timeBeginPeriod(). WTF is
++    # a static library in this port, so the link requirements propagate to
++    # the JavaScriptCore (and later WebKit) links.
++    list(APPEND WTF_SOURCES
++        win/DbgHelperWin.cpp
++    )
++    list(APPEND WTF_LIBRARIES
++        dbghelp
++        winmm
++    )
  elseif (APPLE)
-@@ -833,6 +839,11 @@ if (COMPILER_IS_GCC_OR_CLANG)
+     list(APPEND WTF_SOURCES
+         darwin/OSLogPrintStream.mm
+@@ -833,6 +853,11 @@ if (COMPILER_IS_GCC_OR_CLANG)
      endif ()
  endif ()
  
@@ -205,6 +239,70 @@ index 0000000..3412ae2
 +
 +using WTF::ucharFrom;
 +using WTF::wcharFrom;
+diff --git a/Source/WTF/wtf/win/DbgHelperWin.cpp b/Source/WTF/wtf/win/DbgHelperWin.cpp
+new file mode 100644
+index 0000000..6810582
+--- /dev/null
++++ b/Source/WTF/wtf/win/DbgHelperWin.cpp
+@@ -0,0 +1,58 @@
++/*
++ * Copyright (C) 2018 Sony Interactive Entertainment Inc.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, and this list of conditions, in the original copyright
++ *    notice and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE AND ITS CONTRIBUTORS "AS IS" AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++ * DISCLAIMED. IN NO EVENT SHALL APPLE OR ITS CONTRIBUTORS BE LIABLE FOR ANY
++ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include <wtf/win/DbgHelperWin.h>
++
++#if OS(WINDOWS)
++
++// The 2.54.1 release tarball strips wtf/win/ implementation files, but
++// StackTrace.h calls this from its Windows symbolization path, so restore
++// the dbghelp-backed entry point declared in wtf/win/DbgHelperWin.h.
++
++namespace WTF {
++
++namespace DbgHelper {
++
++bool SymFromAddress(HANDLE hProc, DWORD64 address, DWORD64* displacement, SYMBOL_INFO* symbolInfo)
++{
++    // SymInitialize() must run once per process before the first query;
++    // magic statics make the lazy initialization thread-safe. Symbols are
++    // loaded synchronously since callers only symbolize during logging.
++    static bool symInitialized = !!SymInitialize(hProc, nullptr, TRUE);
++    if (!symInitialized)
++        return false;
++
++    DWORD64 localDisplacement = 0;
++    // StackTrace.h passes nullptr for the displacement out-parameter.
++    DWORD64* displacementOut = displacement ? displacement : &localDisplacement;
++    return !!SymFromAddr(hProc, address, displacementOut, symbolInfo);
++}
++
++} // namespace DbgHelper
++
++} // namespace WTF
++
++#endif // OS(WINDOWS)
 diff --git a/Source/WTF/wtf/win/DbgHelperWin.h b/Source/WTF/wtf/win/DbgHelperWin.h
 new file mode 100644
 index 0000000..d951a0b
