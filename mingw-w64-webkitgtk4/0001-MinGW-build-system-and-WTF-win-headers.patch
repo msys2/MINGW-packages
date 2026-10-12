@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Taozuhong <taozuhong@hotmail.com>
-Date: Mon, 12 Oct 2026 02:43:01 +0000
+Date: Mon, 12 Oct 2026 03:28:41 +0000
 Subject: [PATCH 1/6] MinGW: port build system and restore WTF Windows headers
 
 Build-system port for the GTK/MinGW target:
@@ -12,7 +12,6 @@ Build-system port for the GTK/MinGW target:
   WTF_PUBLIC_HEADERS WIN32 list; WTFCRTDebug.h provides an inline no-op
   disableCRTDebugAssertDialog() under MinGW (its .cpp is not in the
   tarball while jsc.cpp calls it).
-
 - Update 13 (WTF posix files in the MinGW GTK build): OptionsCommon.cmake
   exposes the mingw-compat include directory to every target - with
   HAVE(MMAP), <wtf/MmapSpan.h> pulls <sys/mman.h> into WebKit IPC
@@ -23,24 +22,40 @@ Build-system port for the GTK/MinGW target:
   OSAllocatorPOSIX.cpp); the compat shim provides the mmap/munmap/
   mprotect subset instead. WTF links ws2_32 under MinGW (UniStdExtrasUnix.cpp
   maps setNonBlock() onto ioctlsocket(FIONBIO)).
-
 - Update 14: JavaScriptCore/CMakeLists.txt routes the Windows-ARM64
   -fno-unwind-tables (LLVM bug #47432 workaround) through the clang-cl
   "/clang:" prefix, which the MSYS2 clangarm64 GNU-frontend driver
   (clang++) rejects as an input file name ("no such file or directory:
   '/clang:-fno-unwind-tables'"); pass the flag in plain GNU form under
   MINGW. x86_64 environments never enter this branch (WTF_CPU_ARM64).
+
+- Update 15 (two native-Win32-perl incompatibilities hit by the MSYS2
+  mingw-w64 perl, $^O = MSWin32):
+  WebCore/bindings/scripts/generate-bindings-all.pl spawns parallel
+  generator batches via fork(), which the native Win32 perl does not
+  implement ("The fork function is unimplemented", WebCoreBindings
+  stamp at [2539]/8562); when fork() is unavailable the batch now runs
+  serially in-process (fork semantics preserved everywhere else, the
+  waitpid(-1) reaping loop stays valid).
+  WebInspectorUI/Scripts/copy-user-interface-resources.pl died with
+  "Please install the PEP module File::Copy::Recursive": MSYS2 does not
+  ship that CPAN module for its mingw-w64 perl. The cp(1)-based fallback
+  branch was restricted to $^O ne 'MSWin32'; MSYS2 environments always
+  provide POSIX cp(1) on PATH, so the MSWin32 guard is dropped and the
+  loop serves every non-Darwin, non-dircopy build.
 ---
- Source/JavaScriptCore/CMakeLists.txt        |  30 +-
- Source/WTF/wtf/CMakeLists.txt               |  15 +-
- Source/WTF/wtf/text/win/WCharStringExtras.h |  60 ++++
- Source/WTF/wtf/win/DbgHelperWin.h           |  41 +++
- Source/WTF/wtf/win/SoftLinking.h            | 313 ++++++++++++++++++++
- Source/WTF/wtf/win/WTFCRTDebug.h            |  40 +++
- Source/cmake/FindGLib.cmake                 |   8 +-
- Source/cmake/OptionsCommon.cmake            |  18 +-
- Source/cmake/OptionsGTK.cmake               |  28 ++
- 9 files changed, 541 insertions(+), 12 deletions(-)
+ Source/JavaScriptCore/CMakeLists.txt          |  30 +-
+ Source/WTF/wtf/CMakeLists.txt                 |  15 +-
+ Source/WTF/wtf/text/win/WCharStringExtras.h   |  60 ++++
+ Source/WTF/wtf/win/DbgHelperWin.h             |  41 +++
+ Source/WTF/wtf/win/SoftLinking.h              | 313 ++++++++++++++++++
+ Source/WTF/wtf/win/WTFCRTDebug.h              |  40 +++
+ .../bindings/scripts/generate-bindings-all.pl |   9 +-
+ .../Scripts/copy-user-interface-resources.pl  |   8 +-
+ Source/cmake/FindGLib.cmake                   |   8 +-
+ Source/cmake/OptionsCommon.cmake              |  18 +-
+ Source/cmake/OptionsGTK.cmake                 |  28 ++
+ 11 files changed, 552 insertions(+), 18 deletions(-)
  create mode 100644 Source/WTF/wtf/text/win/WCharStringExtras.h
  create mode 100644 Source/WTF/wtf/win/DbgHelperWin.h
  create mode 100644 Source/WTF/wtf/win/SoftLinking.h
@@ -603,6 +618,60 @@ index 0000000..0d1d916
 +#endif
 +
 +}
+diff --git a/Source/WebCore/bindings/scripts/generate-bindings-all.pl b/Source/WebCore/bindings/scripts/generate-bindings-all.pl
+index e93f62a..3a0fcd4 100755
+--- a/Source/WebCore/bindings/scripts/generate-bindings-all.pl
++++ b/Source/WebCore/bindings/scripts/generate-bindings-all.pl
+@@ -233,8 +233,11 @@ sub spawnGenerateBindingsIfNeeded
+         my $basename = basename($_);
+         printProgress("[$currentCount/$totalCount] $basename");
+     }
+-    my $pid = fork();
+-    if ($pid == 0) {
++    # mingw-w64 perl (MSYS2) is a native Win32 build without fork(); fall
++    # back to generating the batch serially in this process.
++    my $canFork = $^O ne 'MSWin32';
++    my $pid = $canFork ? fork() : 0;
++    if (defined($pid) && $pid == 0) {
+         my $suppressVerboseOutput = 1;
+         my $writeDependencies = 1;
+         my $verbose = 0;
+@@ -244,7 +247,7 @@ sub spawnGenerateBindingsIfNeeded
+             my $codeGen = CodeGenerator->new($generator, $outputDirectory, $outputDirectory, $writeDependencies, $verbose, $targetIdlFile, $idlAttributes, \%supplementalDependencies, $idlFileNamesList, $ignoreStandaloneConstructorAttributes);
+             $codeGen->ProcessDocument($targetDocument, $defines);
+         }
+-        exit 0;
++        exit 0 if $canFork;
+     }
+     $abort = 1 unless defined $pid;
+ }
+diff --git a/Source/WebInspectorUI/Scripts/copy-user-interface-resources.pl b/Source/WebInspectorUI/Scripts/copy-user-interface-resources.pl
+index f324e40..398bbd2 100755
+--- a/Source/WebInspectorUI/Scripts/copy-user-interface-resources.pl
++++ b/Source/WebInspectorUI/Scripts/copy-user-interface-resources.pl
+@@ -58,8 +58,12 @@ sub ditto($$)
+         File::Copy::Recursive::dircopy($source, $destination) or die "Unable to copy directory $source to $destination: $!";
+     } elsif ($^O eq 'darwin') {
+         system('ditto', $source, $destination);
+-    } elsif ($^O ne 'MSWin32') {
++    } else {
+         # Ditto copies the *contents* of the source directory, not the directory itself.
++        # MSYS2's mingw-w64 perl (a native Win32 build, $^O eq 'MSWin32') has no
++        # File::Copy::Recursive, but the MSYS2 environment always provides the
++        # POSIX cp(1) on PATH, so fall through to the same loop as other
++        # non-Darwin systems.
+         opendir(my $dh, $source) or die "Can't open $source: $!";
+         make_path($destination);
+         while (readdir $dh) {
+@@ -68,8 +72,6 @@ sub ditto($$)
+             }
+         }
+         closedir $dh;
+-    } else {
+-        die "Please install the PEP module File::Copy::Recursive";
+     }
+ }
+ 
 diff --git a/Source/cmake/FindGLib.cmake b/Source/cmake/FindGLib.cmake
 index b6ff928..5e6e097 100644
 --- a/Source/cmake/FindGLib.cmake

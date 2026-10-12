@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Taozuhong <taozuhong@hotmail.com>
-Date: Mon, 12 Oct 2026 02:43:04 +0000
+Date: Mon, 12 Oct 2026 03:28:45 +0000
 Subject: [PATCH 6/6] MinGW: libpas/bmalloc and compatibility shims
 
 Compatibility shims:
@@ -8,7 +8,6 @@ Compatibility shims:
 - unifdef format fixes (eval%ld for LP64).
 - pas_utils.h/err.h format attributes mapped per mingw-w64 stdio.h
   (MinGW gcc -> __gnu_printf__, clang/host unchanged).
-
 libpas/bmalloc:
 - pas_thread.h: drop the MSVC pthread emulation in favour of the
   system <pthread.h> under MinGW; exclude the emulation .c; guard
@@ -28,8 +27,23 @@ libpas/bmalloc:
   (WaitOnAddress/WakeByAddress* live in libsynchronization.a);
   bmalloc is static so the requirement propagates to the final
   JavaScriptCore link.
+
+- Update 15 (xdgmime fails to compile on MinGW, [6131]/8552 on ucrt64):
+  the mingw-w64 CRT ships neither <fnmatch.h> nor <netinet/in.h>. New
+  shims: fnmatch.h implements the classic glob subset (*, ?, [...],
+  backslash escaping) inline - the WebKit consumers (xdgmime glob
+  matching, GStreamer pattern checks) always pass flags = 0, the
+  standard FNM_* constants are defined for completeness and the
+  matcher is function-tested against 25 POSIX-semantics cases;
+  netinet/in.h provides inline ntohl/ntohs/htonl/htons byte-order
+  conversions instead of reusing winsock2.h, whose declarations are
+  dllimport and would drag the ws2_32 import library into every final
+  link of the static xdgmime archive. All eight xdgmime sources compile
+  and link with the shims (cross-gcc, zero extra libraries).
 ---
  Source/ThirdParty/mingw-compat/include/err.h  | 164 ++++++++++++++++++
+ .../ThirdParty/mingw-compat/include/fnmatch.h | 157 +++++++++++++++++
+ .../mingw-compat/include/netinet/in.h         |  54 ++++++
  Source/ThirdParty/unifdef/unifdef.c           |  36 ++--
  Source/ThirdParty/unifdef/unifdef.h           |   7 +
  Source/bmalloc/CMakeLists.txt                 |   8 +
@@ -46,8 +60,10 @@ libpas/bmalloc:
  .../src/libpas/pas_thread_local_cache.h       |   6 +-
  Source/bmalloc/libpas/src/libpas/pas_utils.h  |  13 ++
  .../libpas/src/libpas/pas_utils_prefix.h      |   8 +-
- 17 files changed, 285 insertions(+), 26 deletions(-)
+ 19 files changed, 496 insertions(+), 26 deletions(-)
  create mode 100644 Source/ThirdParty/mingw-compat/include/err.h
+ create mode 100644 Source/ThirdParty/mingw-compat/include/fnmatch.h
+ create mode 100644 Source/ThirdParty/mingw-compat/include/netinet/in.h
 
 diff --git a/Source/ThirdParty/mingw-compat/include/err.h b/Source/ThirdParty/mingw-compat/include/err.h
 new file mode 100644
@@ -219,6 +235,229 @@ index 0000000..81b0c1e
 +#endif
 +
 +#endif /* MINGW_COMPAT_ERR_H */
+diff --git a/Source/ThirdParty/mingw-compat/include/fnmatch.h b/Source/ThirdParty/mingw-compat/include/fnmatch.h
+new file mode 100644
+index 0000000..847cf02
+--- /dev/null
++++ b/Source/ThirdParty/mingw-compat/include/fnmatch.h
+@@ -0,0 +1,157 @@
++/*
++ * Copyright (C) 2025 Tao Zuhong
++ *
++ * This library is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; either version 2.1 of the License, or (at
++ * your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License
++ * for more details.
++ *
++ * Minimal <fnmatch.h> emulation for MinGW: the mingw-w64 CRT does not provide
++ * the POSIX fnmatch(3). Implementations used inside WebKit (xdgmime glob
++ * matching, GStreamer pattern checks) always pass flags = 0, so the matcher
++ * below implements the classic glob subset (*, ?, [...], backslash escaping)
++ * and defines the standard flag constants for completeness.
++ */
++
++#pragma once
++
++#include <ctype.h>
++
++#define FNM_NOMATCH     1
++#define FNM_PATHNAME    2
++#define FNM_PERIOD      4
++#define FNM_NOESCAPE    8
++#define FNM_CASEFOLD    16
++#define FNM_LEADING_DIR 32
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++inline static int fnmatchInternal(const char *pattern, const char *string, int flags)
++{
++    int fold = flags & FNM_CASEFOLD;
++
++    while (*pattern) {
++        char c = *pattern++;
++
++        if (c == '*') {
++            while (*pattern == '*')
++                pattern++;
++            if (!*pattern)
++                return 0;
++            for (; *string; string++) {
++                if (fnmatchInternal(pattern, string, flags) == 0)
++                    return 0;
++            }
++            return FNM_NOMATCH;
++        }
++
++        if (!*string)
++            return FNM_NOMATCH;
++
++        if (c == '?') {
++            if ((flags & FNM_PATHNAME) && *string == '/')
++                return FNM_NOMATCH;
++            string++;
++            continue;
++        }
++
++        if (c == '\\') {
++            if (flags & FNM_NOESCAPE)
++                goto literal;
++            if (!*pattern)
++                return FNM_NOMATCH;
++            c = *pattern++;
++            if (fold) {
++                if (tolower((unsigned char)c) != tolower((unsigned char)*string))
++                    return FNM_NOMATCH;
++            } else if (c != *string) {
++                return FNM_NOMATCH;
++            }
++            string++;
++            continue;
++        }
++
++        if (c == '[') {
++            int negate = 0;
++            int matched = 0;
++            char sc = *string++;
++
++            if ((flags & FNM_PATHNAME) && sc == '/')
++                return FNM_NOMATCH;
++
++            if (*pattern == '!' || *pattern == '^') {
++                negate = 1;
++                pattern++;
++            }
++
++            char pc = *pattern++;
++            if (pc == ']') {
++                /* A ']' in leading position is a literal member. */
++                if (fold) {
++                    if (tolower((unsigned char)sc) == tolower((unsigned char)pc))
++                        matched = 1;
++                } else if (sc == pc)
++                    matched = 1;
++                pc = *pattern++;
++            }
++            while (pc && pc != ']') {
++                if (*pattern == '-' && pattern[1] && pattern[1] != ']') {
++                    char lo = pc;
++                    char hi = pattern[1];
++                    pattern += 2;
++                    if (lo > hi) {
++                        char tmp = lo;
++                        lo = hi;
++                        hi = tmp;
++                    }
++                    if (fold) {
++                        char fsc = tolower((unsigned char)sc);
++                        if (fsc >= tolower((unsigned char)lo) && fsc <= tolower((unsigned char)hi))
++                            matched = 1;
++                    } else if (sc >= lo && sc <= hi)
++                        matched = 1;
++                } else {
++                    if (fold) {
++                        if (tolower((unsigned char)sc) == tolower((unsigned char)pc))
++                            matched = 1;
++                    } else if (sc == pc)
++                        matched = 1;
++                }
++                pc = *pattern++;
++            }
++            /* Unterminated class is a literal-failure, not a crash. */
++            if (!pc)
++                return FNM_NOMATCH;
++            if (negate ? matched : !matched)
++                return FNM_NOMATCH;
++            continue;
++        }
++
++literal:
++        if (fold) {
++            if (tolower((unsigned char)c) != tolower((unsigned char)*string))
++                return FNM_NOMATCH;
++        } else if (c != *string) {
++            return FNM_NOMATCH;
++        }
++        string++;
++    }
++
++    return *string ? FNM_NOMATCH : 0;
++}
++
++inline static int fnmatch(const char *pattern, const char *string, int flags)
++{
++    return fnmatchInternal(pattern, string, flags);
++}
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/Source/ThirdParty/mingw-compat/include/netinet/in.h b/Source/ThirdParty/mingw-compat/include/netinet/in.h
+new file mode 100644
+index 0000000..3762db2
+--- /dev/null
++++ b/Source/ThirdParty/mingw-compat/include/netinet/in.h
+@@ -0,0 +1,54 @@
++/*
++ * Copyright (C) 2025 Tao Zuhong
++ *
++ * This library is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; either version 2.1 of the License, or (at
++ * your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License
++ * for more details.
++ *
++ * Minimal <netinet/in.h> emulation for MinGW: the mingw-w64 CRT does not
++ * provide the POSIX header. winsock2.h does declare ntohl/ntohs, but as
++ * dllimport symbols requiring the ws2_32 import library at link time; the
++ * inline implementations below keep the byte-order conversions
++ * dependency-free. Windows only runs on little-endian hosts.
++ */
++
++#pragma once
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++inline static uint32_t ntohl(uint32_t value)
++{
++    return ((value & 0x000000ffu) << 24)
++         | ((value & 0x0000ff00u) << 8)
++         | ((value & 0x00ff0000u) >> 8)
++         | ((value & 0xff000000u) >> 24);
++}
++
++inline static uint16_t ntohs(uint16_t value)
++{
++    return (uint16_t)((value >> 8) | (value << 8));
++}
++
++inline static uint32_t htonl(uint32_t value)
++{
++    return ntohl(value);
++}
++
++inline static uint16_t htons(uint16_t value)
++{
++    return ntohs(value);
++}
++
++#ifdef __cplusplus
++}
++#endif
 diff --git a/Source/ThirdParty/unifdef/unifdef.c b/Source/ThirdParty/unifdef/unifdef.c
 index dc145a2..5a6374b 100644
 --- a/Source/ThirdParty/unifdef/unifdef.c
