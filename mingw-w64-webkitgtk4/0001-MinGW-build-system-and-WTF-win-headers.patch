@@ -1,30 +1,36 @@
-From fb833e1fe7982c4c85a34f407f0a1427dabfdaf7 Mon Sep 17 00:00:00 2001
+From ba249850fc6d8225b063c76b90a7bf6f9d3592ff Mon Sep 17 00:00:00 2001
 From: Taozuhong <taozuhong@hotmail.com>
-Date: Sun, 11 Oct 2026 07:05:56 +0000
-Subject: [PATCH 7/8] WTF: restore win/ headers stripped from the 2.54.1
- release tarball
+Date: Mon, 12 Oct 2026 00:14:33 +0000
+Subject: [PATCH] MinGW: port build system and restore WTF Windows headers
 
-The tarball omits most wtf/win/ and wtf/text/win/ headers while
-WTFString.h, SoftLinking.h, StackTrace.h and jsc.cpp still include them
-under OS(WINDOWS); restore the four needed headers and register them in
-WTF_PUBLIC_HEADERS so WEBKIT_COPY_FILES ships them to the build dir.
+Build-system port for the GTK/MinGW target:
+- gio-unix-2.0 -> gio-2.0, WIN32 option defaults, mingw-compat include
+  dir wiring, WTF CMakeLists adjustments.
+- Restore 4 WTF Windows headers that are stripped from the release
+  tarball (text/win/WCharStringExtras.h, win/SoftLinking.h,
+  win/DbgHelperWin.h, win/WTFCRTDebug.h) and register them in the
+  WTF_PUBLIC_HEADERS WIN32 list; WTFCRTDebug.h provides an inline
+  no-op disableCRTDebugAssertDialog() under MinGW (its .cpp is not
+  in the tarball while jsc.cpp calls it).
 ---
- Source/WTF/wtf/CMakeLists.txt               |  12 +
+ Source/WTF/wtf/CMakeLists.txt               |  10 +-
  Source/WTF/wtf/text/win/WCharStringExtras.h |  60 ++++
  Source/WTF/wtf/win/DbgHelperWin.h           |  41 +++
  Source/WTF/wtf/win/SoftLinking.h            | 313 ++++++++++++++++++++
  Source/WTF/wtf/win/WTFCRTDebug.h            |  40 +++
- 5 files changed, 466 insertions(+)
+ Source/cmake/FindGLib.cmake                 |   8 +-
+ Source/cmake/OptionsGTK.cmake               |  28 ++
+ 7 files changed, 497 insertions(+), 3 deletions(-)
  create mode 100644 Source/WTF/wtf/text/win/WCharStringExtras.h
  create mode 100644 Source/WTF/wtf/win/DbgHelperWin.h
  create mode 100644 Source/WTF/wtf/win/SoftLinking.h
  create mode 100644 Source/WTF/wtf/win/WTFCRTDebug.h
 
 diff --git a/Source/WTF/wtf/CMakeLists.txt b/Source/WTF/wtf/CMakeLists.txt
-index e45b18eb..ea4640a8 100644
+index fda02527..ea4640a8 100644
 --- a/Source/WTF/wtf/CMakeLists.txt
 +++ b/Source/WTF/wtf/CMakeLists.txt
-@@ -708,7 +708,19 @@ set(WTF_SOURCES
+@@ -708,13 +708,19 @@ set(WTF_SOURCES
  )
  
  if (WIN32)
@@ -36,10 +42,12 @@ index e45b18eb..ea4640a8 100644
 +    # MinGW port patches and are registered here so they are copied into
 +    # ${WTF_HEADERS_DIR} together with the rest of the public headers.
      list(APPEND WTF_PUBLIC_HEADERS
-+        text/win/WCharStringExtras.h
-+
-+        win/DbgHelperWin.h
-+        win/SoftLinking.h
+         text/win/WCharStringExtras.h
+ 
+         win/DbgHelperWin.h
+-        win/GDIObject.h
+-        win/PathWalker.h
+         win/SoftLinking.h
 +        win/WTFCRTDebug.h
          win/Win32Handle.h
      )
@@ -522,6 +530,71 @@ index 00000000..0d1d916f
 +#endif
 +
 +}
+diff --git a/Source/cmake/FindGLib.cmake b/Source/cmake/FindGLib.cmake
+index b6ff9283..5e6e097d 100644
+--- a/Source/cmake/FindGLib.cmake
++++ b/Source/cmake/FindGLib.cmake
+@@ -206,7 +206,13 @@ GLib_DeclareComponent(Module  gmodule-2.0  gmodule-2.0)
+ GLib_DeclareComponent(Object  gobject-2.0  gobject-2.0)
+ GLib_DeclareComponent(Thread  gthread-2.0  gthread-2.0)
+ GLib_DeclareComponent(Gio     gio-2.0      gio-2.0 Object)
+-GLib_DeclareComponent(GioUnix gio-unix-2.0 gio-2.0 Gio)
++# MinGW: there is no gio-unix-2.0 module; use the gio-2.0 library directly so
++# that code asking for the GioUnix component still links on Windows.
++if (WIN32)
++    GLib_DeclareComponent(GioUnix gio-2.0 gio-2.0 Gio)
++else ()
++    GLib_DeclareComponent(GioUnix gio-unix-2.0 gio-2.0 Gio)
++endif ()
+ 
+ foreach (component IN LISTS GLib_FIND_COMPONENTS)
+     GLib_HandleComponent(${component})
+diff --git a/Source/cmake/OptionsGTK.cmake b/Source/cmake/OptionsGTK.cmake
+index 99c1c6f0..b554a421 100644
+--- a/Source/cmake/OptionsGTK.cmake
++++ b/Source/cmake/OptionsGTK.cmake
+@@ -97,6 +97,27 @@ else ()
+     WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_RESOURCE_USAGE PRIVATE OFF)
+ endif ()
+ 
++if (WIN32)
++    # Features without Windows counterparts (or whose dependencies are not
++    # available in MSYS2/mingw-w64 yet) are disabled by default so that a plain
++    # configure works out of the box. They can still be re-enabled explicitly.
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_JOURNALD_LOG PUBLIC OFF)
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_QUARTZ_TARGET PUBLIC OFF)
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_X11_TARGET PUBLIC OFF)
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WAYLAND_TARGET PUBLIC OFF)
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GAMEPAD PUBLIC OFF)
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_SPELLCHECK PUBLIC OFF)
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_SPEECH_SYNTHESIS PUBLIC OFF)
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_REMOTE_INSPECTOR PRIVATE OFF)
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBGL PUBLIC OFF)
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_GBM PUBLIC OFF)
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_LIBDRM PUBLIC OFF)
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_LIBBACKTRACE PUBLIC OFF)
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_LIBHYPHEN PUBLIC OFF)
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_LIBSECRET PUBLIC OFF)
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_VULKAN PUBLIC OFF)
++endif ()
++
+ # Public options shared with other WebKit ports. Do not add any options here
+ # without approval from a GTK reviewer. There must be strong reason to support
+ # changing the value of the option.
+@@ -236,6 +257,13 @@ SET_AND_EXPOSE_TO_BUILD(WTF_PLATFORM_WAYLAND ${ENABLE_WAYLAND_TARGET})
+ add_definitions(-DBUILDING_GTK__=1)
+ add_definitions(-DGETTEXT_PACKAGE="WebKitGTK-${WEBKITGTK_API_VERSION}")
+ add_definitions(-DJSC_GLIB_API_ENABLED)
++
++if (WIN32)
++    # MinGW does not ship <sys/mman.h>; the mingw-compat directory provides the
++    # small mmap/munmap/mprotect subset of the API WebKit relies on, plus a
++    # sysconf() declaration. Search it before the default include directories.
++    include_directories(BEFORE "${CMAKE_SOURCE_DIR}/Source/ThirdParty/mingw-compat/include")
++endif ()
+ # We do not yet have a systematic way of representing the equivalent of WTF PLATFORM_ macros
+ # within Swift. This task is represented within Apple as rdar://168139870.
+ # For now, our only immediate need is to determine if we're being built
 -- 
 2.47.3
 

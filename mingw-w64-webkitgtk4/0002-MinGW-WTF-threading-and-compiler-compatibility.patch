@@ -1,3 +1,45 @@
+From 9aa39938fc3511058cee88984ab46a669b3a076a Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Mon, 12 Oct 2026 00:14:33 +0000
+Subject: [PATCH] MinGW: WTF threading, compiler compatibility and portable
+ time literal
+
+- winpthreads threading model, SuspendThread suspension,
+  GetProcessTimes CPU time, sys/mman.h compat shim (mmap family),
+  Win32Handle, UnixFileDescriptor close semantics.
+- Threading.h s_key declaration guard relaxed to
+  !HAVE(FAST_TLS) && (!OS(WINDOWS) || USE(PTHREADS)) (the GLib port
+  uses winpthreads on Windows, see PlatformUse.h); align
+  signalHandlerSuspendResume declaration (&& !OS(WINDOWS), mingw-w64
+  has no siginfo_t); Threading.cpp storage guard likewise;
+  ThreadingPOSIX.cpp uses std::make_unique for PlatformRegisters
+  (the WinAPI CONTEXT has no TZoneMalloc tagging).
+- FunctionTraits.h: declare the sysv_abi specializations through the
+  SysVFunction type alias - GCC drops attributes written between the
+  return type and (*) inside template partial-specialization
+  arguments, causing a redefinition conflict; the alias keeps them
+  on both compilers.
+- CurrentTime.cpp: replace the MSVC-only integer literal suffix
+  0x100000000I64 with the portable 0x100000000LL (long long and
+  __int64 are the same 64-bit signed type on Windows; MSVC 2013+
+  accepts LL as well). Whole-tree scan confirms it is the only
+  MSVC-style literal suffix.
+---
+ .../mingw-compat/include/sys/mman.h           | 177 ++++++++++++++++++
+ Source/WTF/wtf/CurrentTime.cpp                |   2 +-
+ Source/WTF/wtf/FunctionTraits.h               |  13 +-
+ Source/WTF/wtf/PlatformUse.h                  |   4 +-
+ Source/WTF/wtf/Threading.cpp                  |   4 +-
+ Source/WTF/wtf/Threading.h                    |  39 ++--
+ Source/WTF/wtf/ThreadingPrimitives.h          |   3 +
+ Source/WTF/wtf/posix/CPUTimePOSIX.cpp         |  54 +++---
+ Source/WTF/wtf/posix/ThreadingPOSIX.cpp       |  59 +++++-
+ Source/WTF/wtf/unix/UnixFileDescriptor.h      |  22 +++
+ Source/WTF/wtf/win/Win32Handle.h              |  96 ++++++++++
+ 11 files changed, 427 insertions(+), 46 deletions(-)
+ create mode 100644 Source/ThirdParty/mingw-compat/include/sys/mman.h
+ create mode 100644 Source/WTF/wtf/win/Win32Handle.h
+
 diff --git a/Source/ThirdParty/mingw-compat/include/sys/mman.h b/Source/ThirdParty/mingw-compat/include/sys/mman.h
 new file mode 100644
 index 00000000..377866a3
@@ -181,6 +223,51 @@ index 00000000..377866a3
 +#ifdef __cplusplus
 +}
 +#endif
+diff --git a/Source/WTF/wtf/CurrentTime.cpp b/Source/WTF/wtf/CurrentTime.cpp
+index f4b97e56..b1c51391 100644
+--- a/Source/WTF/wtf/CurrentTime.cpp
++++ b/Source/WTF/wtf/CurrentTime.cpp
+@@ -118,7 +118,7 @@ static double highResUpTime()
+         if (tickCount >= tickCountLast)
+             tickCountElapsed = (tickCount - tickCountLast);
+         else {
+-            __int64 tickCountLarge = tickCount + 0x100000000I64;
++            __int64 tickCountLarge = tickCount + 0x100000000LL;
+             tickCountElapsed = tickCountLarge - tickCountLast;
+         }
+ 
+diff --git a/Source/WTF/wtf/FunctionTraits.h b/Source/WTF/wtf/FunctionTraits.h
+index ac54804e..ffda29a5 100644
+--- a/Source/WTF/wtf/FunctionTraits.h
++++ b/Source/WTF/wtf/FunctionTraits.h
+@@ -81,8 +81,17 @@ struct FunctionTraits<Result(Args...)> {
+ };
+ 
+ #if OS(WINDOWS) && CPU(X86_64)
++/* Alias so the sysv_abi attribute lives in a position where every
++   compiler that supports it keeps it: GCC drops attributes written
++   between the return type and (*) when parsing template partial
++   specializations, which made the pointer specialization below
++   collapse into FunctionTraits<Result (*)(Args...)> and fail with a
++   redefinition error. */
+ template<typename Result, typename... Args>
+-struct FunctionTraits<Result SYSV_ABI(Args...)> : public FunctionTraits<Result(Args...)> {
++using SysVFunction = Result SYSV_ABI(Args...);
++
++template<typename Result, typename... Args>
++struct FunctionTraits<SysVFunction<Result, Args...>> : public FunctionTraits<Result(Args...)> {
+ };
+ #endif
+ 
+@@ -92,7 +101,7 @@ struct FunctionTraits<Result(*)(Args...)> : public FunctionTraits<Result(Args...
+ 
+ #if OS(WINDOWS) && CPU(X86_64)
+ template<typename Result, typename... Args>
+-struct FunctionTraits<Result SYSV_ABI (*)(Args...)> : public FunctionTraits<Result(Args...)> {
++struct FunctionTraits<SysVFunction<Result, Args...>*> : public FunctionTraits<Result(Args...)> {
+ };
+ #endif
+ 
 diff --git a/Source/WTF/wtf/PlatformUse.h b/Source/WTF/wtf/PlatformUse.h
 index 0c16afbd..ce832f42 100644
 --- a/Source/WTF/wtf/PlatformUse.h
@@ -197,7 +284,7 @@ index 0c16afbd..ce832f42 100644
  #endif
  
 diff --git a/Source/WTF/wtf/Threading.cpp b/Source/WTF/wtf/Threading.cpp
-index 830f8b7f..d4da2f0a 100644
+index 830f8b7f..188fa34e 100644
 --- a/Source/WTF/wtf/Threading.cpp
 +++ b/Source/WTF/wtf/Threading.cpp
 @@ -224,7 +224,7 @@ void Thread::initializeInThread()
@@ -209,8 +296,17 @@ index 830f8b7f..d4da2f0a 100644
      m_id = currentID();
  #endif
  }
+@@ -462,7 +462,7 @@ void Thread::dump(PrintStream& out) const
+     out.print("Thread:", RawPointer(this));
+ }
+ 
+-#if !HAVE(FAST_TLS) && !OS(WINDOWS)
++#if !HAVE(FAST_TLS) && (!OS(WINDOWS) || USE(PTHREADS))
+ ThreadSpecificKey Thread::s_key = InvalidThreadSpecificKey;
+ #endif
+ 
 diff --git a/Source/WTF/wtf/Threading.h b/Source/WTF/wtf/Threading.h
-index a376be92..293da637 100644
+index a376be92..93e1c949 100644
 --- a/Source/WTF/wtf/Threading.h
 +++ b/Source/WTF/wtf/Threading.h
 @@ -145,7 +145,7 @@ public:
@@ -247,7 +343,30 @@ index a376be92..293da637 100644
      WTF_EXPORT_PRIVATE static Thread* currentMayBeNull();
  #else
      static Thread* currentMayBeNull();
-@@ -397,20 +406,21 @@ protected:
+@@ -326,7 +335,9 @@ protected:
+     void establishPlatformSpecificHandle(PlatformThreadHandle, ThreadIdentifier);
+ #endif
+ 
+-#if USE(PTHREADS) && !OS(DARWIN)
++#if USE(PTHREADS) && !OS(DARWIN) && !OS(WINDOWS)
++    /* No signal-based suspend/resume on Windows (the GLib port uses
++       winpthreads, but the handler machinery only exists on POSIX). */
+     static void signalHandlerSuspendResume(int, siginfo_t*, void* ucontext);
+ #endif
+ 
+@@ -362,7 +373,10 @@ protected:
+     // For pthread, the Thread instance is ref'ed and held in thread-specific storage. It will be deref'ed by destructTLS at thread destruction time.
+     // It employs pthreads-specific 2-pass destruction to reliably remove Thread.
+ 
+-#if !HAVE(FAST_TLS) && !OS(WINDOWS)
++#if !HAVE(FAST_TLS) && (!OS(WINDOWS) || USE(PTHREADS))
++    /* Windows normally uses the native TLS slot (no s_key), but the GLib
++       port builds WTF threading on winpthreads (USE(PTHREADS) = 1, see
++       PlatformUse.h) and goes through the pthread key below. */
+     static WTF_EXPORT_PRIVATE ThreadSpecificKey s_key;
+     // One time initialization for this class as a whole.
+     // This method must be called before initializeTLS() and it is not thread-safe.
+@@ -397,20 +411,21 @@ protected:
      ThreadSafeWeakHashSet<ThreadGroup> m_threadGroups;
      PlatformThreadHandle m_handle;
      const uint32_t m_uid;
@@ -275,7 +394,7 @@ index a376be92..293da637 100644
  #endif
  
      AtomStringTable* m_currentAtomStringTable { nullptr };
-@@ -426,7 +436,7 @@ public:
+@@ -426,7 +441,7 @@ public:
      RefPtr<ClientData> m_clientData { nullptr };
  };
  
@@ -284,7 +403,7 @@ index a376be92..293da637 100644
  inline Thread* Thread::currentMayBeNull()
  {
  #if !HAVE(FAST_TLS)
-@@ -446,7 +456,7 @@ inline Thread& Thread::currentSingleton()
+@@ -446,7 +461,7 @@ inline Thread& Thread::currentSingleton()
      // WRT JavaScriptCore:
      //    Thread::initializeTLSKey() is initially called from initialize(), ensuring
      //    this is initially called in a std::call_once locked context.
@@ -397,7 +516,7 @@ index 66384038..86e5a5eb 100644
  
  }
 diff --git a/Source/WTF/wtf/posix/ThreadingPOSIX.cpp b/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
-index a64641f8..934550c5 100644
+index a64641f8..b29fe0d4 100644
 --- a/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
 +++ b/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
 @@ -49,6 +49,10 @@
@@ -478,7 +597,7 @@ index a64641f8..934550c5 100644
  }
  
  auto Thread::suspend(const ThreadSuspendLocker&) -> Expected<void, PlatformSuspendError>
-@@ -580,6 +601,26 @@ auto Thread::suspend(const ThreadSuspendLocker&) -> Expected<void, PlatformSuspe
+@@ -580,6 +601,29 @@ auto Thread::suspend(const ThreadSuspendLocker&) -> Expected<void, PlatformSuspe
      if (result != KERN_SUCCESS)
          return makeUnexpected(result);
      return { };
@@ -490,7 +609,10 @@ index a64641f8..934550c5 100644
 +            return makeUnexpected(ERROR_ACCESS_DENIED);
 +
 +        if (!m_savedPlatformRegisters)
-+            m_savedPlatformRegisters = makeUnique<PlatformRegisters>();
++            /* PlatformRegisters is the external WinAPI CONTEXT on Windows; it
++               cannot carry WTF's TZoneMalloc marker required by WTF::makeUnique,
++               so allocate it through the general allocator. */
++            m_savedPlatformRegisters = std::make_unique<PlatformRegisters>();
 +        CONTEXT threadContext { };
 +        threadContext.ContextFlags = CONTEXT_FULL;
 +        if (!GetThreadContext(threadHandle, &threadContext)) {
@@ -505,7 +627,7 @@ index a64641f8..934550c5 100644
  #else
      if (!m_suspendCount) {
          targetThread.store(this);
-@@ -606,6 +647,15 @@ void Thread::resume(const ThreadSuspendLocker&)
+@@ -606,6 +650,15 @@ void Thread::resume(const ThreadSuspendLocker&)
  {
  #if OS(DARWIN)
      thread_resume(m_platformThread);
@@ -675,3 +797,6 @@ index 00000000..94f89728
 +} // namespace WTF
 +
 +using WTF::Win32Handle;
+-- 
+2.47.3
+
