@@ -1,15 +1,17 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Taozuhong <taozuhong@hotmail.com>
-Date: Mon, 12 Oct 2026 01:46:50 +0000
+Date: Mon, 12 Oct 2026 02:43:01 +0000
 Subject: [PATCH 1/6] MinGW: port build system and restore WTF Windows headers
- Build-system port for the GTK/MinGW target: - gio-unix-2.0 -> gio-2.0, WIN32
- option defaults, mingw-compat include   dir wiring, WTF CMakeLists
- adjustments. - Restore 4 WTF Windows headers that are stripped from the
- release   tarball (text/win/WCharStringExtras.h, win/SoftLinking.h,  
- win/DbgHelperWin.h, win/WTFCRTDebug.h) and register them in the  
- WTF_PUBLIC_HEADERS WIN32 list; WTFCRTDebug.h provides an inline   no-op
- disableCRTDebugAssertDialog() under MinGW (its .cpp is not   in the tarball
- while jsc.cpp calls it).
+
+Build-system port for the GTK/MinGW target:
+- gio-unix-2.0 -> gio-2.0, WIN32 option defaults, mingw-compat include
+  dir wiring, WTF CMakeLists adjustments.
+- Restore 4 WTF Windows headers that are stripped from the release
+  tarball (text/win/WCharStringExtras.h, win/SoftLinking.h,
+  win/DbgHelperWin.h, win/WTFCRTDebug.h) and register them in the
+  WTF_PUBLIC_HEADERS WIN32 list; WTFCRTDebug.h provides an inline no-op
+  disableCRTDebugAssertDialog() under MinGW (its .cpp is not in the
+  tarball while jsc.cpp calls it).
 
 - Update 13 (WTF posix files in the MinGW GTK build): OptionsCommon.cmake
   exposes the mingw-compat include directory to every target - with
@@ -21,7 +23,15 @@ Subject: [PATCH 1/6] MinGW: port build system and restore WTF Windows headers
   OSAllocatorPOSIX.cpp); the compat shim provides the mmap/munmap/
   mprotect subset instead. WTF links ws2_32 under MinGW (UniStdExtrasUnix.cpp
   maps setNonBlock() onto ioctlsocket(FIONBIO)).
+
+- Update 14: JavaScriptCore/CMakeLists.txt routes the Windows-ARM64
+  -fno-unwind-tables (LLVM bug #47432 workaround) through the clang-cl
+  "/clang:" prefix, which the MSYS2 clangarm64 GNU-frontend driver
+  (clang++) rejects as an input file name ("no such file or directory:
+  '/clang:-fno-unwind-tables'"); pass the flag in plain GNU form under
+  MINGW. x86_64 environments never enter this branch (WTF_CPU_ARM64).
 ---
+ Source/JavaScriptCore/CMakeLists.txt        |  30 +-
  Source/WTF/wtf/CMakeLists.txt               |  15 +-
  Source/WTF/wtf/text/win/WCharStringExtras.h |  60 ++++
  Source/WTF/wtf/win/DbgHelperWin.h           |  41 +++
@@ -30,12 +40,53 @@ Subject: [PATCH 1/6] MinGW: port build system and restore WTF Windows headers
  Source/cmake/FindGLib.cmake                 |   8 +-
  Source/cmake/OptionsCommon.cmake            |  18 +-
  Source/cmake/OptionsGTK.cmake               |  28 ++
- 8 files changed, 519 insertions(+), 4 deletions(-)
+ 9 files changed, 541 insertions(+), 12 deletions(-)
  create mode 100644 Source/WTF/wtf/text/win/WCharStringExtras.h
  create mode 100644 Source/WTF/wtf/win/DbgHelperWin.h
  create mode 100644 Source/WTF/wtf/win/SoftLinking.h
  create mode 100644 Source/WTF/wtf/win/WTFCRTDebug.h
 
+diff --git a/Source/JavaScriptCore/CMakeLists.txt b/Source/JavaScriptCore/CMakeLists.txt
+index 0cd2c74..d4d0d40 100644
+--- a/Source/JavaScriptCore/CMakeLists.txt
++++ b/Source/JavaScriptCore/CMakeLists.txt
+@@ -1832,14 +1832,28 @@ endif ()
+ # Windows ARM64: Disable unwind tables to work around LLVM bug #47432
+ # (alignment directives in inline asm break SEH unwind info calculation)
+ if (WIN32 AND WTF_CPU_ARM64)
+-    target_compile_options(LowLevelInterpreterLib PRIVATE /clang:-fno-unwind-tables)
+-
+-    # Also disable for other files with alignment directives in inline asm
+-    set_source_files_properties(
+-        assembler/MacroAssemblerARM64.cpp
+-        jit/ThunkGenerators.cpp
+-        PROPERTIES COMPILE_FLAGS "/clang:-fno-unwind-tables"
+-    )
++    if (MINGW)
++        # MSYS2 clangarm64 drives clang through the GNU frontend (clang++),
++        # which does not understand the clang-cl /clang: routing prefix and
++        # treats it as an input file name.
++        target_compile_options(LowLevelInterpreterLib PRIVATE -fno-unwind-tables)
++
++        # Also disable for other files with alignment directives in inline asm
++        set_source_files_properties(
++            assembler/MacroAssemblerARM64.cpp
++            jit/ThunkGenerators.cpp
++            PROPERTIES COMPILE_FLAGS "-fno-unwind-tables"
++        )
++    else ()
++        target_compile_options(LowLevelInterpreterLib PRIVATE /clang:-fno-unwind-tables)
++
++        # Also disable for other files with alignment directives in inline asm
++        set_source_files_properties(
++            assembler/MacroAssemblerARM64.cpp
++            jit/ThunkGenerators.cpp
++            PROPERTIES COMPILE_FLAGS "/clang:-fno-unwind-tables"
++        )
++    endif ()
+ endif ()
+ 
+ # When building JavaScriptCore as an object library, we need to make sure the
 diff --git a/Source/WTF/wtf/CMakeLists.txt b/Source/WTF/wtf/CMakeLists.txt
 index fda0252..8abf494 100644
 --- a/Source/WTF/wtf/CMakeLists.txt

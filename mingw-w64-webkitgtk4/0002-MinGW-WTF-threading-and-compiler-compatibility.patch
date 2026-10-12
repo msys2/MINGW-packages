@@ -1,24 +1,29 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Taozuhong <taozuhong@hotmail.com>
-Date: Mon, 12 Oct 2026 01:46:50 +0000
+Date: Mon, 12 Oct 2026 02:43:02 +0000
 Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
- - winpthreads threading model, SuspendThread suspension,   GetProcessTimes
- CPU time, sys/mman.h compat shim (mmap family),   Win32Handle,
- UnixFileDescriptor close semantics. - Threading.h s_key declaration guard
- relaxed to   !HAVE(FAST_TLS) && (!OS(WINDOWS) || USE(PTHREADS)) (the GLib
- port   uses winpthreads on Windows, see PlatformUse.h); align  
- signalHandlerSuspendResume declaration (&& !OS(WINDOWS), mingw-w64   has no
- siginfo_t); Threading.cpp storage guard likewise;   ThreadingPOSIX.cpp uses
- std::make_unique for PlatformRegisters   (the WinAPI CONTEXT has no
- TZoneMalloc tagging). - FunctionTraits.h: declare the sysv_abi
- specializations through the   SysVFunction type alias - GCC drops attributes
- written between the   return type and (*) inside template
- partial-specialization   arguments, causing a redefinition conflict; the
- alias keeps them   on both compilers. - CurrentTime.cpp: replace the
- MSVC-only integer literal suffix   0x100000000I64 with the portable
- 0x100000000LL (long long and   __int64 are the same 64-bit signed type on
- Windows; MSVC 2013+   accepts LL as well). Whole-tree scan confirms it is the
- only   MSVC-style literal suffix.
+ time literal
+
+- winpthreads threading model, SuspendThread suspension,
+  GetProcessTimes CPU time, sys/mman.h compat shim (mmap family),
+  Win32Handle, UnixFileDescriptor close semantics.
+- Threading.h s_key declaration guard relaxed to
+  !HAVE(FAST_TLS) && (!OS(WINDOWS) || USE(PTHREADS)) (the GLib port
+  uses winpthreads on Windows, see PlatformUse.h); align
+  signalHandlerSuspendResume declaration (&& !OS(WINDOWS), mingw-w64
+  has no siginfo_t); Threading.cpp storage guard likewise;
+  ThreadingPOSIX.cpp uses std::make_unique for PlatformRegisters
+  (the WinAPI CONTEXT has no TZoneMalloc tagging).
+- FunctionTraits.h: declare the sysv_abi specializations through the
+  SysVFunction type alias - GCC drops attributes written between the
+  return type and (*) inside template partial-specialization
+  arguments, causing a redefinition conflict; the alias keeps them
+  on both compilers.
+- CurrentTime.cpp: replace the MSVC-only integer literal suffix
+  0x100000000I64 with the portable 0x100000000LL (long long and
+  __int64 are the same 64-bit signed type on Windows; MSVC 2013+
+  accepts LL as well). Whole-tree scan confirms it is the only
+  MSVC-style literal suffix.
 
 - Update 13 (fixing the CLANG64/CLANGARM64 WTF build, [2386..2390]/8562;
   applies to ucrt64 alike since the gaps are CRT-level, not compiler-level):
@@ -37,12 +42,23 @@ Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
   maps the fcntl(2) CLOEXEC/O_NONBLOCK requests onto SetHandleInformation()
   and ioctlsocket(FIONBIO) (WTF gains ws2_32, see 0001). The sys/mman.h shim
   gains MAP_FILE (FileHandle::map() passes MAP_FILE | MAP_SHARED).
-  Verified in the Linux sandbox with the Debian mingw-w64 gcc-14 cross
-  toolchain + MSYS2 glib 2.86.1 / ICU 76 headers + cmakeconfig stub: the
-  four failing TUs first reproduce the reported errors, then compile clean,
-  and the full 24-file WTF posix/unix/glib/generic sweep passes.
+
+- Update 14 (fixing 'memoryStatus' was not declared in
+  generic/MemoryFootprintGeneric.cpp on all three environments):
+  PlatformGTK.cmake falls into the generic memory-footprint branch on
+  Windows, but the MemoryStatus API in AvailableMemory.h/.cpp is guarded
+  to PLATFORM(IOS_FAMILY) || OS(LINUX) || OS(FREEBSD). Extend both
+  guards with OS(WINDOWS) (the file already carries an OS(WINDOWS)
+  branch for availableMemory() upstream) and implement memoryStatus()
+  on top of GetProcessMemoryInfo(): the working set size is the
+  per-process analog of the Linux cgroup footprint / BSD RSS values;
+  GetProcessMemoryInfo resolves to K32GetProcessMemoryInfo in
+  kernel32.dll on mingw-w64 (link probe: no psapi import library
+  needed). generic/MemoryFootprintGeneric.cpp then compiles unchanged.
 ---
  .../mingw-compat/include/sys/mman.h           | 178 ++++++++++++++++++
+ Source/WTF/wtf/AvailableMemory.cpp            |  13 +-
+ Source/WTF/wtf/AvailableMemory.h              |   2 +-
  Source/WTF/wtf/CurrentTime.cpp                |   2 +-
  Source/WTF/wtf/FileHandle.h                   |  10 +-
  Source/WTF/wtf/FileSystem.h                   |   4 +-
@@ -59,7 +75,7 @@ Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
  Source/WTF/wtf/unix/UniStdExtrasUnix.cpp      |  57 ++++++
  Source/WTF/wtf/unix/UnixFileDescriptor.h      |  22 +++
  Source/WTF/wtf/win/Win32Handle.h              |  96 ++++++++++
- 17 files changed, 554 insertions(+), 50 deletions(-)
+ 19 files changed, 567 insertions(+), 52 deletions(-)
  create mode 100644 Source/ThirdParty/mingw-compat/include/sys/mman.h
  create mode 100644 Source/WTF/wtf/win/Win32Handle.h
 
@@ -247,6 +263,57 @@ index 0000000..2e379cb
 +#ifdef __cplusplus
 +}
 +#endif
+diff --git a/Source/WTF/wtf/AvailableMemory.cpp b/Source/WTF/wtf/AvailableMemory.cpp
+index dda9eac..73a5968 100644
+--- a/Source/WTF/wtf/AvailableMemory.cpp
++++ b/Source/WTF/wtf/AvailableMemory.cpp
+@@ -54,6 +54,7 @@
+ #include <unistd.h>
+ #elif OS(WINDOWS)
+ #include <windows.h>
++#include <psapi.h>
+ #endif
+ 
+ namespace WTF {
+@@ -182,7 +183,7 @@ size_t availableMemory()
+     return availableMemory;
+ }
+ 
+-#if PLATFORM(IOS_FAMILY) || OS(LINUX) || OS(FREEBSD)
++#if PLATFORM(IOS_FAMILY) || OS(LINUX) || OS(FREEBSD) || OS(WINDOWS)
+ MemoryStatus memoryStatus()
+ {
+ #if PLATFORM(IOS_FAMILY)
+@@ -204,6 +205,16 @@ MemoryStatus memoryStatus()
+     size_t memoryFootprint = 0;
+     if (!sysctl(mib.data(), mib.size(), &info, &infolen, nullptr, 0))
+         memoryFootprint = static_cast<size_t>(info.ki_rssize) * pageSize();
++#elif OS(WINDOWS)
++    // The per-process analog of the Linux cgroup footprint / BSD RSS values
++    // is the working set size; the shared tail below turns it into the
++    // MemoryStatus percentage against availableMemory().
++    size_t memoryFootprint = 0;
++
++    PROCESS_MEMORY_COUNTERS counters = { };
++    counters.cb = sizeof(counters);
++    if (GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters)))
++        memoryFootprint = static_cast<size_t>(counters.WorkingSetSize);
+ #endif
+ 
+     double percentInUse = static_cast<double>(memoryFootprint) / static_cast<double>(availableMemory());
+diff --git a/Source/WTF/wtf/AvailableMemory.h b/Source/WTF/wtf/AvailableMemory.h
+index 3a1b4ad..dfa4d09 100644
+--- a/Source/WTF/wtf/AvailableMemory.h
++++ b/Source/WTF/wtf/AvailableMemory.h
+@@ -32,7 +32,7 @@ namespace WTF {
+ 
+ WTF_EXPORT_PRIVATE size_t availableMemory();
+ 
+-#if PLATFORM(IOS_FAMILY) || OS(LINUX) || OS(FREEBSD)
++#if PLATFORM(IOS_FAMILY) || OS(LINUX) || OS(FREEBSD) || OS(WINDOWS)
+ struct MemoryStatus {
+     MemoryStatus(size_t memoryFootprint, double percentAvailableMemoryInUse)
+         : memoryFootprint(memoryFootprint)
 diff --git a/Source/WTF/wtf/CurrentTime.cpp b/Source/WTF/wtf/CurrentTime.cpp
 index f4b97e5..b1c5139 100644
 --- a/Source/WTF/wtf/CurrentTime.cpp
