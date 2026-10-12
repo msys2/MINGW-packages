@@ -136,6 +136,24 @@ Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
   MemoryPressureHandler.cpp (respond to memory pressure unless the
   policy is still Unrestricted; the timer is only armed by explicit
   callers).
+
+  Update 21 (fixing the round-21 CLANG64/CLANGARM64 WebCore failures):
+  Upstream MathExtras.h works around the UCRT atan2(inf, inf) = NaN
+  bug by defining a function-like macro
+  "#define atan2(x, y) wtf_atan2(x, y)" for all of OS(WINDOWS) and
+  never undefines it. The macro stays active when a translation unit
+  later includes standard headers that spell std::atan2 inside their
+  own templates - first seen with libc++'s <complex> pulled in through
+  platform/audio/Biquad.h by JSDOMWindow.cpp ([7467]/8563): the tokens
+  inside those templates became "std::wtf_atan2" and every
+  instantiation died with "error: no member named 'wtf_atan2' in
+  namespace 'std'". <cmath> is already included before the macro;
+  <complex> now joins it, so libc++ and libstdc++ parse their atan2
+  call sites before the macro exists and all later inclusions hit
+  their include guards. WebKit's own unqualified atan2() calls keep
+  working (verified in the preprocessor: "atan2(y, x)" still expands
+  to "wtf_atan2(y, x)"), so the infinity handling is preserved at
+  every other call site.
 ---
  .../assembler/MacroAssemblerX86_64.cpp        |   9 +-
  Source/JavaScriptCore/assembler/PerfLog.cpp   |   6 +-
@@ -149,6 +167,7 @@ Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
  Source/WTF/wtf/FileHandle.h                   |  10 +-
  Source/WTF/wtf/FileSystem.h                   |   4 +-
  Source/WTF/wtf/FunctionTraits.h               |  13 +-
+ Source/WTF/wtf/MathExtras.h                   |   7 +++++++
  Source/WTF/wtf/MemoryPressureHandler.cpp      |  13 ++
  Source/WTF/wtf/PlatformUse.h                  |   4 +-
  Source/WTF/wtf/Threading.cpp                  |   4 +-
@@ -163,7 +182,7 @@ Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
  Source/WTF/wtf/unix/UniStdExtrasUnix.cpp      |  57 ++++++
  Source/WTF/wtf/unix/UnixFileDescriptor.h      |  22 +++
  Source/WTF/wtf/win/Win32Handle.h              |  96 ++++++++++
- 26 files changed, 761 insertions(+), 56 deletions(-)
+ 27 files changed, 768 insertions(+), 56 deletions(-)
  create mode 100644 Source/ThirdParty/mingw-compat/include/sys/mman.h
  create mode 100644 Source/WTF/wtf/win/Win32Handle.h
 
@@ -1502,3 +1521,21 @@ index 0000000..94f8972
 +} // namespace WTF
 +
 +using WTF::Win32Handle;
+diff --git a/Source/WTF/wtf/MathExtras.h b/Source/WTF/wtf/MathExtras.h
+index 54d004b538f8..74f0a9edf1e3 100644
+--- a/Source/WTF/wtf/MathExtras.h
++++ b/Source/WTF/wtf/MathExtras.h
+@@ -58,6 +58,13 @@
+ 
+ #if OS(WINDOWS)
+ 
++// <cmath> above and <complex> here call std::atan2() inside their own
++// templates. Those headers must be parsed BEFORE the function-like macro
++// below is defined, or the macro rewrites the tokens inside them into
++// "std::wtf_atan2", which does not exist (libc++ on clang64/clangarm64:
++// "error: no member named 'wtf_atan2' in namespace 'std'").
++#include <complex>
++
+ // Work around a bug in Win, where atan2(+-infinity, +-infinity) yields NaN instead of specific values.
+ extern "C" inline double wtf_atan2(double x, double y)
+ {
