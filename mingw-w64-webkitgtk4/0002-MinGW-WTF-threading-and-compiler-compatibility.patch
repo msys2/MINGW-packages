@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Taozuhong <taozuhong@hotmail.com>
-Date: Mon, 12 Oct 2026 04:37:36 +0000
+Date: Mon, 12 Oct 2026 07:22:49 +0000
 Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
 
 - winpthreads threading model, SuspendThread suspension,
@@ -69,9 +69,33 @@ Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
   "static declaration of 'fdopen' follows non-static declaration" at
   PerfLog.cpp:60. The wrappers are unused in the rest of the file and
   only needed when COMPILER(MSVC); the block is now guarded accordingly.
+
+  Update 17 (fixing one CLANG64 and one CLANGARM64 JSC failure):
+  ProfilerSupport.cpp carries the same MSVC CRT wrapper block as
+  PerfLog.cpp (round 16): open/_open and fdopen/_fdopen shims under
+  OS(WINDOWS). The MinGW-w64 CRT already declares fdopen in <stdio.h>
+  (stdio.h:875 in the MSYS2 clang64 headers), so clang rejects the
+  redefinition with "static declaration of 'fdopen' follows non-static
+  declaration" at ProfilerSupport.cpp:54. The wrappers are unused in
+  the rest of the file and only exist for COMPILER(MSVC); the block is
+  guarded accordingly, mirroring the PerfLog.cpp fix.
+  LowLevelInterpreter.cpp defines OFFLINE_ASM_ALIGN_TRAP(align) by
+  token-pasting (OFFLINE_ASM_ALIGN_TRAP_##align) in the
+  CPU(ARM64) && OS(WINDOWS) branch, but only provided the 256 and 64
+  entries. The offlineasm emits alignment 512 for the Wasm ipint
+  atomic handlers (alignAtomicIPInt is 2 * alignIPInt, i.e. 512 with
+  the default alignIPInt of 256; 79 labels in the generated
+  LLIntAssembly.h, first hit at ipint_memory_atomic_notify_atomic_validate),
+  and 1024 when LLINT_TRACING is on. The undefined OFFLINE_ASM_ALIGN_TRAP_512
+  token survives inside the __asm__ string block and dies with
+  "expected ')'" at LLIntAssembly.h:91182. Following the upstream COFF
+  convention of that branch (.align N = 2^N bytes), the missing
+  entries are provided as .align 9 / .align 10.
 ---
  .../assembler/MacroAssemblerX86_64.cpp        |   9 +-
  Source/JavaScriptCore/assembler/PerfLog.cpp   |   6 +-
+ .../llint/LowLevelInterpreter.cpp             |   6 +
+ .../runtime/ProfilerSupport.cpp               |   7 +-
  .../mingw-compat/include/sys/mman.h           | 178 ++++++++++++++++++
  Source/WTF/wtf/AvailableMemory.cpp            |  13 +-
  Source/WTF/wtf/AvailableMemory.h              |   2 +-
@@ -91,7 +115,7 @@ Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
  Source/WTF/wtf/unix/UniStdExtrasUnix.cpp      |  57 ++++++
  Source/WTF/wtf/unix/UnixFileDescriptor.h      |  22 +++
  Source/WTF/wtf/win/Win32Handle.h              |  96 ++++++++++
- 21 files changed, 580 insertions(+), 54 deletions(-)
+ 23 files changed, 592 insertions(+), 55 deletions(-)
  create mode 100644 Source/ThirdParty/mingw-compat/include/sys/mman.h
  create mode 100644 Source/WTF/wtf/win/Win32Handle.h
 
@@ -128,6 +152,41 @@ index 20668b6..ddff14c 100644
 + * underscore-prefixed _open/_fdopen. The MinGW-w64 CRT already declares
 + * plain open/fdopen, so redefining them here would conflict with the
 + * declarations in <io.h>/<stdio.h>. */
++#if OS(WINDOWS) && COMPILER(MSVC)
+ #include <io.h>
+ 
+ inline static int open(const char* filename, int oflag, int pmode)
+diff --git a/Source/JavaScriptCore/llint/LowLevelInterpreter.cpp b/Source/JavaScriptCore/llint/LowLevelInterpreter.cpp
+index dd0b44d..fc1dc33 100644
+--- a/Source/JavaScriptCore/llint/LowLevelInterpreter.cpp
++++ b/Source/JavaScriptCore/llint/LowLevelInterpreter.cpp
+@@ -603,6 +603,12 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
+ // COFF uses power-of-two alignment: .align N means 2^N bytes
+ #define OFFLINE_ASM_ALIGN_TRAP_256 "\n .align 8\n"
+ #define OFFLINE_ASM_ALIGN_TRAP_64 "\n .align 6\n"
++/* The offlineasm also emits alignment 512 for the Wasm ipint atomic
++ * handlers (alignAtomicIPInt is 2 * alignIPInt), and 1024 when
++ * LLINT_TRACING is enabled. Without these the token-pasting below
++ * produces an undefined identifier inside the __asm__ string block. */
++#define OFFLINE_ASM_ALIGN_TRAP_512 "\n .align 9\n"
++#define OFFLINE_ASM_ALIGN_TRAP_1024 "\n .align 10\n"
+ #define OFFLINE_ASM_ALIGN_TRAP(align) OFFLINE_ASM_ALIGN_TRAP_##align
+ #elif CPU(ARM64) || CPU(ARM64E)
+ #define OFFLINE_ASM_ALIGN_TRAP(align) OFFLINE_ASM_BEGIN_SPACER "\n .balignl " #align ", 0xd4388e20\n" // pad with brk instructions
+diff --git a/Source/JavaScriptCore/runtime/ProfilerSupport.cpp b/Source/JavaScriptCore/runtime/ProfilerSupport.cpp
+index d138862..f00994a 100644
+--- a/Source/JavaScriptCore/runtime/ProfilerSupport.cpp
++++ b/Source/JavaScriptCore/runtime/ProfilerSupport.cpp
+@@ -43,7 +43,12 @@
+ #include <unistd.h>
+ #endif
+ 
+-#if OS(WINDOWS)
++/* These wrappers exist for the MSVC CRT, which only provides the
++ * underscore-prefixed _open/_fdopen. The MinGW-w64 CRT already declares
++ * plain open/fdopen in <io.h>/<stdio.h>, so redefining them here would
++ * conflict with those declarations. The wrappers are unused in the rest
++ * of the file and only needed when COMPILER(MSVC). */
 +#if OS(WINDOWS) && COMPILER(MSVC)
  #include <io.h>
  
