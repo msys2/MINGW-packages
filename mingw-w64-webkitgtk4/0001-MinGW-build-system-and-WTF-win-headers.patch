@@ -58,9 +58,27 @@ Build-system port for the GTK/MinGW target:
   library in this port, so winmm and dbghelp are appended to
   WTF_LIBRARIES and propagate to the JavaScriptCore (and later
   WebKit) links.
+
+  Update 19 (fixing the round-18 link-library plumbing):
+  The dbghelp/winmm entries appended to WTF_LIBRARIES inside the WIN32
+  source-registration block were silently discarded: the tarball's own
+  set(WTF_LIBRARIES ${CMAKE_DL_LIBS} ICU::data ICU::i18n ICU::uc)
+  further down the same file resets the variable after that block, and
+  only appends made after the reset survive into the
+  target_link_libraries(WTF PUBLIC ${WTF_LIBRARIES}) that
+  _WEBKIT_TARGET_SETUP(WTF) runs when WEBKIT_FRAMEWORK(WTF) finalizes
+  the target. The two libraries therefore never reached the
+  JavaScriptCore link line, and ld.lld kept reporting "undefined
+  symbol: __declspec(dllimport) timeBeginPeriod / timeEndPeriod /
+  SymFromAddr / SymInitialize" - the four remaining round-18 link
+  errors, all four import-library plumbing. The ws2_32 entry already
+  living after the reset is the proof the position works (its symbols
+  resolved on the same link line). The entries now move into the
+  existing `if (MINGW)` block right next to ws2_32; the round-18 WTF
+  sources registration (win/DbgHelperWin.cpp) is unaffected.
 ---
  Source/JavaScriptCore/CMakeLists.txt          |  30 +-
- Source/WTF/wtf/CMakeLists.txt                 |  29 +-
+ Source/WTF/wtf/CMakeLists.txt                 |  33 +-
  Source/WTF/wtf/text/win/WCharStringExtras.h   |  60 ++++
  Source/WTF/wtf/win/DbgHelperWin.cpp           |  58 ++++
  Source/WTF/wtf/win/DbgHelperWin.h             |  41 +++
@@ -71,7 +89,7 @@ Build-system port for the GTK/MinGW target:
  Source/cmake/FindGLib.cmake                   |   8 +-
  Source/cmake/OptionsCommon.cmake              |  18 +-
  Source/cmake/OptionsGTK.cmake                 |  28 ++
- 12 files changed, 624 insertions(+), 18 deletions(-)
+ 12 files changed, 628 insertions(+), 18 deletions(-)
  create mode 100644 Source/WTF/wtf/text/win/WCharStringExtras.h
  create mode 100644 Source/WTF/wtf/win/DbgHelperWin.cpp
  create mode 100644 Source/WTF/wtf/win/DbgHelperWin.h
@@ -120,10 +138,10 @@ index 0cd2c74..d4d0d40 100644
  
  # When building JavaScriptCore as an object library, we need to make sure the
 diff --git a/Source/WTF/wtf/CMakeLists.txt b/Source/WTF/wtf/CMakeLists.txt
-index fda0252..7e6d771 100644
+index fda0252..9352508 100644
 --- a/Source/WTF/wtf/CMakeLists.txt
 +++ b/Source/WTF/wtf/CMakeLists.txt
-@@ -708,15 +708,35 @@ set(WTF_SOURCES
+@@ -708,15 +708,31 @@ set(WTF_SOURCES
  )
  
  if (WIN32)
@@ -147,27 +165,31 @@ index fda0252..7e6d771 100644
 +
 +    # The tarball also strips wtf/win/ implementation files. StackTrace.h
 +    # symbolizes frames through wtf/win/DbgHelperWin.h on Windows, whose
-+    # single entry point is implemented in DbgHelperWin.cpp; CurrentTime.cpp
-+    # raises the timer resolution through winmm's timeBeginPeriod(). WTF is
-+    # a static library in this port, so the link requirements propagate to
-+    # the JavaScriptCore (and later WebKit) links.
++    # single entry point is implemented in DbgHelperWin.cpp; the winmm and
++    # dbghelp link requirements are registered in the `if (MINGW)` block
++    # further down, which must stay after the tarball's own
++    # set(WTF_LIBRARIES ...) reset further below.
 +    list(APPEND WTF_SOURCES
 +        win/DbgHelperWin.cpp
-+    )
-+    list(APPEND WTF_LIBRARIES
-+        dbghelp
-+        winmm
 +    )
  elseif (APPLE)
      list(APPEND WTF_SOURCES
          darwin/OSLogPrintStream.mm
-@@ -833,6 +853,11 @@ if (COMPILER_IS_GCC_OR_CLANG)
+@@ -833,6 +849,19 @@ if (COMPILER_IS_GCC_OR_CLANG)
      endif ()
  endif ()
  
 +if (MINGW)
 +    # UniStdExtrasUnix.cpp maps setNonBlock() onto ioctlsocket(FIONBIO).
++    # CurrentTime.cpp raises the timer resolution through winmm's
++    # timeBeginPeriod()/timeEndPeriod(), and StackTrace.h symbolizes frames
++    # through the dbghelp API. WTF is a static library in this port, so the
++    # link requirements propagate to the JavaScriptCore (and later WebKit)
++    # links. Keep these after the set(WTF_LIBRARIES ...) above, which would
++    # otherwise reset them before _WEBKIT_TARGET_SETUP consumes the
++    # variable.
 +    list(APPEND WTF_LIBRARIES ws2_32)
++    list(APPEND WTF_LIBRARIES dbghelp winmm)
 +endif ()
 +
  set(WTF_INTERFACE_LIBRARIES WTF)
