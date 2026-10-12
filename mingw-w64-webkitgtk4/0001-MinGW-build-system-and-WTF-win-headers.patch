@@ -1,33 +1,43 @@
-From ba249850fc6d8225b063c76b90a7bf6f9d3592ff Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Taozuhong <taozuhong@hotmail.com>
-Date: Mon, 12 Oct 2026 00:14:33 +0000
-Subject: [PATCH] MinGW: port build system and restore WTF Windows headers
+Date: Mon, 12 Oct 2026 01:46:50 +0000
+Subject: [PATCH 1/6] MinGW: port build system and restore WTF Windows headers
+ Build-system port for the GTK/MinGW target: - gio-unix-2.0 -> gio-2.0, WIN32
+ option defaults, mingw-compat include   dir wiring, WTF CMakeLists
+ adjustments. - Restore 4 WTF Windows headers that are stripped from the
+ release   tarball (text/win/WCharStringExtras.h, win/SoftLinking.h,  
+ win/DbgHelperWin.h, win/WTFCRTDebug.h) and register them in the  
+ WTF_PUBLIC_HEADERS WIN32 list; WTFCRTDebug.h provides an inline   no-op
+ disableCRTDebugAssertDialog() under MinGW (its .cpp is not   in the tarball
+ while jsc.cpp calls it).
 
-Build-system port for the GTK/MinGW target:
-- gio-unix-2.0 -> gio-2.0, WIN32 option defaults, mingw-compat include
-  dir wiring, WTF CMakeLists adjustments.
-- Restore 4 WTF Windows headers that are stripped from the release
-  tarball (text/win/WCharStringExtras.h, win/SoftLinking.h,
-  win/DbgHelperWin.h, win/WTFCRTDebug.h) and register them in the
-  WTF_PUBLIC_HEADERS WIN32 list; WTFCRTDebug.h provides an inline
-  no-op disableCRTDebugAssertDialog() under MinGW (its .cpp is not
-  in the tarball while jsc.cpp calls it).
+- Update 13 (WTF posix files in the MinGW GTK build): OptionsCommon.cmake
+  exposes the mingw-compat include directory to every target - with
+  HAVE(MMAP), <wtf/MmapSpan.h> pulls <sys/mman.h> into WebKit IPC
+  translation units as well, so the WTF-local include_directories() is
+  not enough - and forces HAVE_MMAP under MINGW: the CRT does not ship
+  sys/mman.h, the configure-time probe would always fail (cmakeconfig.h
+  had HAVE_MMAP 0, leaving MmapSpan.h empty and breaking
+  OSAllocatorPOSIX.cpp); the compat shim provides the mmap/munmap/
+  mprotect subset instead. WTF links ws2_32 under MinGW (UniStdExtrasUnix.cpp
+  maps setNonBlock() onto ioctlsocket(FIONBIO)).
 ---
- Source/WTF/wtf/CMakeLists.txt               |  10 +-
+ Source/WTF/wtf/CMakeLists.txt               |  15 +-
  Source/WTF/wtf/text/win/WCharStringExtras.h |  60 ++++
  Source/WTF/wtf/win/DbgHelperWin.h           |  41 +++
  Source/WTF/wtf/win/SoftLinking.h            | 313 ++++++++++++++++++++
  Source/WTF/wtf/win/WTFCRTDebug.h            |  40 +++
  Source/cmake/FindGLib.cmake                 |   8 +-
+ Source/cmake/OptionsCommon.cmake            |  18 +-
  Source/cmake/OptionsGTK.cmake               |  28 ++
- 7 files changed, 497 insertions(+), 3 deletions(-)
+ 8 files changed, 519 insertions(+), 4 deletions(-)
  create mode 100644 Source/WTF/wtf/text/win/WCharStringExtras.h
  create mode 100644 Source/WTF/wtf/win/DbgHelperWin.h
  create mode 100644 Source/WTF/wtf/win/SoftLinking.h
  create mode 100644 Source/WTF/wtf/win/WTFCRTDebug.h
 
 diff --git a/Source/WTF/wtf/CMakeLists.txt b/Source/WTF/wtf/CMakeLists.txt
-index fda02527..ea4640a8 100644
+index fda0252..8abf494 100644
 --- a/Source/WTF/wtf/CMakeLists.txt
 +++ b/Source/WTF/wtf/CMakeLists.txt
 @@ -708,13 +708,19 @@ set(WTF_SOURCES
@@ -52,9 +62,21 @@ index fda02527..ea4640a8 100644
          win/Win32Handle.h
      )
  elseif (APPLE)
+@@ -833,6 +839,11 @@ if (COMPILER_IS_GCC_OR_CLANG)
+     endif ()
+ endif ()
+ 
++if (MINGW)
++    # UniStdExtrasUnix.cpp maps setNonBlock() onto ioctlsocket(FIONBIO).
++    list(APPEND WTF_LIBRARIES ws2_32)
++endif ()
++
+ set(WTF_INTERFACE_LIBRARIES WTF)
+ set(WTF_INTERFACE_INCLUDE_DIRECTORIES ${WTF_FRAMEWORK_HEADERS_DIR})
+ set(WTF_INTERFACE_DEPENDENCIES WTF_CopyHeaders)
 diff --git a/Source/WTF/wtf/text/win/WCharStringExtras.h b/Source/WTF/wtf/text/win/WCharStringExtras.h
 new file mode 100644
-index 00000000..3412ae20
+index 0000000..3412ae2
 --- /dev/null
 +++ b/Source/WTF/wtf/text/win/WCharStringExtras.h
 @@ -0,0 +1,60 @@
@@ -120,7 +142,7 @@ index 00000000..3412ae20
 +using WTF::wcharFrom;
 diff --git a/Source/WTF/wtf/win/DbgHelperWin.h b/Source/WTF/wtf/win/DbgHelperWin.h
 new file mode 100644
-index 00000000..d951a0b0
+index 0000000..d951a0b
 --- /dev/null
 +++ b/Source/WTF/wtf/win/DbgHelperWin.h
 @@ -0,0 +1,41 @@
@@ -167,7 +189,7 @@ index 00000000..d951a0b0
 +} // namespace WTF
 diff --git a/Source/WTF/wtf/win/SoftLinking.h b/Source/WTF/wtf/win/SoftLinking.h
 new file mode 100644
-index 00000000..dd4a64ce
+index 0000000..dd4a64c
 --- /dev/null
 +++ b/Source/WTF/wtf/win/SoftLinking.h
 @@ -0,0 +1,313 @@
@@ -486,7 +508,7 @@ index 00000000..dd4a64ce
 +    }
 diff --git a/Source/WTF/wtf/win/WTFCRTDebug.h b/Source/WTF/wtf/win/WTFCRTDebug.h
 new file mode 100644
-index 00000000..0d1d916f
+index 0000000..0d1d916
 --- /dev/null
 +++ b/Source/WTF/wtf/win/WTFCRTDebug.h
 @@ -0,0 +1,40 @@
@@ -531,7 +553,7 @@ index 00000000..0d1d916f
 +
 +}
 diff --git a/Source/cmake/FindGLib.cmake b/Source/cmake/FindGLib.cmake
-index b6ff9283..5e6e097d 100644
+index b6ff928..5e6e097 100644
 --- a/Source/cmake/FindGLib.cmake
 +++ b/Source/cmake/FindGLib.cmake
 @@ -206,7 +206,13 @@ GLib_DeclareComponent(Module  gmodule-2.0  gmodule-2.0)
@@ -549,8 +571,44 @@ index b6ff9283..5e6e097d 100644
  
  foreach (component IN LISTS GLib_FIND_COMPONENTS)
      GLib_HandleComponent(${component})
+diff --git a/Source/cmake/OptionsCommon.cmake b/Source/cmake/OptionsCommon.cmake
+index 9893a69..24d920d 100644
+--- a/Source/cmake/OptionsCommon.cmake
++++ b/Source/cmake/OptionsCommon.cmake
+@@ -301,6 +301,14 @@ elseif (NOT ENABLE_ASSERTS)
+     WEBKIT_PREPEND_GLOBAL_COMPILER_FLAGS(-DASSERT_ENABLED=0)
+ endif ()
+ 
++if (WIN32)
++    # Same wiring as Source/WTF/wtf/CMakeLists.txt, but for every target: with
++    # HAVE_MMAP enabled, <wtf/MmapSpan.h> (pulled in by WTF and by WebKit IPC
++    # headers) includes <sys/mman.h>, which only exists in the mingw-compat
++    # directory. Search it before the default include directories everywhere.
++    include_directories(BEFORE "${CMAKE_SOURCE_DIR}/Source/ThirdParty/mingw-compat/include")
++endif ()
++
+ if (NOT APPLE)
+     # Check whether features.h header exists.
+     # Including glibc's one defines __GLIBC__, that is used in Platform.h
+@@ -309,7 +317,15 @@ if (NOT APPLE)
+     # Check for headers
+     WEBKIT_CHECK_HAVE_INCLUDE(HAVE_ERRNO_H errno.h)
+     WEBKIT_CHECK_HAVE_INCLUDE(HAVE_LANGINFO_H langinfo.h)
+-    WEBKIT_CHECK_HAVE_INCLUDE(HAVE_MMAP sys/mman.h)
++    if (MINGW)
++        # MinGW does not ship <sys/mman.h>; the Source/ThirdParty/mingw-compat
++        # mmap shim (wired into the global include path above) provides the
++        # mmap/munmap/mprotect subset WebKit relies on, so the header probe
++        # would always fail. Enable it unconditionally.
++        SET_AND_EXPOSE_TO_BUILD(HAVE_MMAP ON)
++    else ()
++        WEBKIT_CHECK_HAVE_INCLUDE(HAVE_MMAP sys/mman.h)
++    endif ()
+     WEBKIT_CHECK_HAVE_INCLUDE(HAVE_PTHREAD_NP_H pthread_np.h)
+     WEBKIT_CHECK_HAVE_INCLUDE(HAVE_SYS_PARAM_H sys/param.h)
+     WEBKIT_CHECK_HAVE_INCLUDE(HAVE_SYS_TIME_H sys/time.h)
 diff --git a/Source/cmake/OptionsGTK.cmake b/Source/cmake/OptionsGTK.cmake
-index 99c1c6f0..b554a421 100644
+index 99c1c6f..b554a42 100644
 --- a/Source/cmake/OptionsGTK.cmake
 +++ b/Source/cmake/OptionsGTK.cmake
 @@ -97,6 +97,27 @@ else ()
@@ -595,6 +653,3 @@ index 99c1c6f0..b554a421 100644
  # We do not yet have a systematic way of representing the equivalent of WTF PLATFORM_ macros
  # within Swift. This task is represented within Apple as rdar://168139870.
  # For now, our only immediate need is to determine if we're being built
--- 
-2.47.3
-

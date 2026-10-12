@@ -1,5 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Mon, 12 Oct 2026 01:46:51 +0000
+Subject: [PATCH 3/6] MinGW: IPC shared memory and process launch support
+
+IPC and process plumbing for the GTK/MinGW target:
+- WebCore SharedMemory: add the Win32 file-mapping implementation
+  (platform/win/SharedMemoryWin.cpp) and register it in WebCore
+  SourcesGTK.txt next to SharedMemoryUnix.cpp.
+- IPC: loopback UDP datagram transport emulating SOCK_SEQPACKET with a
+  credential handshake, HANDLE attachment passing via DuplicateHandle,
+  process-launch port bootstrap and .exe path resolution, FenceMonitor
+  guards (experimental design, see BUILD-NOTES).
+---
+ Source/WebCore/SourcesGTK.txt                 |   1 +
+ Source/WebCore/platform/SharedMemory.h        |   2 +
+ .../WebCore/platform/win/SharedMemoryWin.cpp  | 129 ++++++
+ Source/WebKit/Platform/IPC/ArgumentCoders.h   |   8 +
+ Source/WebKit/Platform/IPC/Attachment.h       |  46 ++-
+ Source/WebKit/Platform/IPC/Connection.h       |  12 +
+ Source/WebKit/Platform/IPC/Encoder.h          |   1 +
+ Source/WebKit/Platform/IPC/IPCUtilities.h     |   8 +-
+ .../Platform/IPC/glib/ConnectionGLib.cpp      | 370 ++++++++++++++++++
+ .../Platform/IPC/unix/IPCUtilitiesUnix.cpp    |  62 ++-
+ .../Shared/glib/ProcessExecutablePathGLib.cpp |   5 +
+ .../Shared/unix/AuxiliaryProcessMain.cpp      |  44 ++-
+ .../Launcher/glib/ProcessLauncherGLib.cpp     |  38 +-
+ Source/WebKit/UIProcess/glib/FenceMonitor.cpp |  11 +
+ 14 files changed, 729 insertions(+), 8 deletions(-)
+ create mode 100644 Source/WebCore/platform/win/SharedMemoryWin.cpp
+
+diff --git a/Source/WebCore/SourcesGTK.txt b/Source/WebCore/SourcesGTK.txt
+index 30fc9d0..83bcf93 100644
+--- a/Source/WebCore/SourcesGTK.txt
++++ b/Source/WebCore/SourcesGTK.txt
+@@ -108,5 +108,6 @@ platform/text/hyphen/HyphenationLibHyphen.cpp
+ 
+ platform/unix/LoggingUnix.cpp
+ platform/unix/SharedMemoryUnix.cpp
++platform/win/SharedMemoryWin.cpp
+ 
+ platform/xdg/MIMETypeRegistryXdg.cpp
 diff --git a/Source/WebCore/platform/SharedMemory.h b/Source/WebCore/platform/SharedMemory.h
-index 68f798ab..6061923a 100644
+index 68f798a..6061923 100644
 --- a/Source/WebCore/platform/SharedMemory.h
 +++ b/Source/WebCore/platform/SharedMemory.h
 @@ -101,6 +101,8 @@ public:
@@ -13,7 +55,7 @@ index 68f798ab..6061923a 100644
  private:
 diff --git a/Source/WebCore/platform/win/SharedMemoryWin.cpp b/Source/WebCore/platform/win/SharedMemoryWin.cpp
 new file mode 100644
-index 00000000..fbf900c2
+index 0000000..fbf900c
 --- /dev/null
 +++ b/Source/WebCore/platform/win/SharedMemoryWin.cpp
 @@ -0,0 +1,129 @@
@@ -146,19 +188,8 @@ index 00000000..fbf900c2
 +} // namespace WebCore
 +
 +#endif // OS(WINDOWS)
-diff --git a/Source/WebCore/SourcesGTK.txt b/Source/WebCore/SourcesGTK.txt
-index 30fc9d0..83bcf93 100644
---- a/Source/WebCore/SourcesGTK.txt
-+++ b/Source/WebCore/SourcesGTK.txt
-@@ -108,5 +108,6 @@ platform/text/hyphen/HyphenationLibHyphen.cpp
- 
- platform/unix/LoggingUnix.cpp
- platform/unix/SharedMemoryUnix.cpp
-+platform/win/SharedMemoryWin.cpp
- 
- platform/xdg/MIMETypeRegistryXdg.cpp
 diff --git a/Source/WebKit/Platform/IPC/ArgumentCoders.h b/Source/WebKit/Platform/IPC/ArgumentCoders.h
-index 0d92fe33..c9088df9 100644
+index 0d92fe3..c9088df 100644
 --- a/Source/WebKit/Platform/IPC/ArgumentCoders.h
 +++ b/Source/WebKit/Platform/IPC/ArgumentCoders.h
 @@ -879,4 +879,12 @@ template<typename T, typename Traits> struct ArgumentCoder<WTF::Markable<T, Trai
@@ -175,7 +206,7 @@ index 0d92fe33..c9088df9 100644
 +
  } // namespace IPC
 diff --git a/Source/WebKit/Platform/IPC/Attachment.h b/Source/WebKit/Platform/IPC/Attachment.h
-index 606d48b9..70aafba0 100644
+index 606d48b..70aafba 100644
 --- a/Source/WebKit/Platform/IPC/Attachment.h
 +++ b/Source/WebKit/Platform/IPC/Attachment.h
 @@ -26,6 +26,8 @@
@@ -246,7 +277,7 @@ index 606d48b9..70aafba0 100644
  using Attachment = Variant<UnixFileDescriptor, RefPtr<AHardwareBuffer>>;
  #elif USE(UNIX_DOMAIN_SOCKETS)
 diff --git a/Source/WebKit/Platform/IPC/Connection.h b/Source/WebKit/Platform/IPC/Connection.h
-index 915dc5e5..6380608c 100644
+index 915dc5e..6380608 100644
 --- a/Source/WebKit/Platform/IPC/Connection.h
 +++ b/Source/WebKit/Platform/IPC/Connection.h
 @@ -780,6 +780,18 @@ private:
@@ -269,7 +300,7 @@ index 915dc5e5..6380608c 100644
      bool sendOutgoingHardwareBuffers();
      bool receiveIncomingHardwareBuffers();
 diff --git a/Source/WebKit/Platform/IPC/Encoder.h b/Source/WebKit/Platform/IPC/Encoder.h
-index ea85b7c3..4b9a48de 100644
+index ea85b7c..4b9a48d 100644
 --- a/Source/WebKit/Platform/IPC/Encoder.h
 +++ b/Source/WebKit/Platform/IPC/Encoder.h
 @@ -95,6 +95,7 @@ public:
@@ -281,7 +312,7 @@ index ea85b7c3..4b9a48de 100644
      void reserve(size_t);
  
 diff --git a/Source/WebKit/Platform/IPC/IPCUtilities.h b/Source/WebKit/Platform/IPC/IPCUtilities.h
-index 9cf9d085..e5c75d36 100644
+index 9cf9d08..e5c75d3 100644
 --- a/Source/WebKit/Platform/IPC/IPCUtilities.h
 +++ b/Source/WebKit/Platform/IPC/IPCUtilities.h
 @@ -31,7 +31,7 @@
@@ -314,7 +345,7 @@ index 9cf9d085..e5c75d36 100644
  #endif
  
 diff --git a/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp b/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp
-index d5b3cce6..0c250c10 100644
+index d5b3cce..0c250c1 100644
 --- a/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp
 +++ b/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp
 @@ -31,9 +31,11 @@
@@ -820,7 +851,7 @@ index d5b3cce6..0c250c10 100644
  
  #endif // USE(GLIB)
 diff --git a/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp b/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp
-index 5ba3ea56..16a87042 100644
+index 5ba3ea5..16a8704 100644
 --- a/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp
 +++ b/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp
 @@ -1,5 +1,6 @@
@@ -902,7 +933,7 @@ index 5ba3ea56..16a87042 100644
 +
 +#endif // OS(WINDOWS)
 diff --git a/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp b/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp
-index 64bcde96..ee1c96b9 100644
+index 64bcde9..ee1c96b 100644
 --- a/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp
 +++ b/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp
 @@ -60,7 +60,12 @@ static String findWebKitProcess(const ASCIILiteral processName)
@@ -919,7 +950,7 @@ index 64bcde96..ee1c96b9 100644
  
  String executablePathOfWebProcess()
 diff --git a/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp b/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp
-index 7d054a56..b34c17f3 100644
+index 7d054a5..b34c17f 100644
 --- a/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp
 +++ b/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp
 @@ -28,7 +28,9 @@
@@ -1010,7 +1041,7 @@ index 7d054a56..b34c17f3 100644
      // data from auxiliary processes would make PGO collection impractical.
      if (__llvm_profile_dump) {
 diff --git a/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp b/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
-index b20208ab..cda05b26 100644
+index b20208a..cda05b2 100644
 --- a/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
 +++ b/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
 @@ -35,7 +35,9 @@
@@ -1107,7 +1138,7 @@ index b20208ab..cda05b26 100644
      m_processID = 0;
  }
 diff --git a/Source/WebKit/UIProcess/glib/FenceMonitor.cpp b/Source/WebKit/UIProcess/glib/FenceMonitor.cpp
-index a2ac1d7a..d3358871 100644
+index a2ac1d7..d335887 100644
 --- a/Source/WebKit/UIProcess/glib/FenceMonitor.cpp
 +++ b/Source/WebKit/UIProcess/glib/FenceMonitor.cpp
 @@ -27,7 +27,9 @@

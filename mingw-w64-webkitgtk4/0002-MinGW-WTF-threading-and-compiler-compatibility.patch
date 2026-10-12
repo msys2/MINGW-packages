@@ -1,51 +1,74 @@
-From 9aa39938fc3511058cee88984ab46a669b3a076a Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Taozuhong <taozuhong@hotmail.com>
-Date: Mon, 12 Oct 2026 00:14:33 +0000
-Subject: [PATCH] MinGW: WTF threading, compiler compatibility and portable
- time literal
+Date: Mon, 12 Oct 2026 01:46:50 +0000
+Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
+ - winpthreads threading model, SuspendThread suspension,   GetProcessTimes
+ CPU time, sys/mman.h compat shim (mmap family),   Win32Handle,
+ UnixFileDescriptor close semantics. - Threading.h s_key declaration guard
+ relaxed to   !HAVE(FAST_TLS) && (!OS(WINDOWS) || USE(PTHREADS)) (the GLib
+ port   uses winpthreads on Windows, see PlatformUse.h); align  
+ signalHandlerSuspendResume declaration (&& !OS(WINDOWS), mingw-w64   has no
+ siginfo_t); Threading.cpp storage guard likewise;   ThreadingPOSIX.cpp uses
+ std::make_unique for PlatformRegisters   (the WinAPI CONTEXT has no
+ TZoneMalloc tagging). - FunctionTraits.h: declare the sysv_abi
+ specializations through the   SysVFunction type alias - GCC drops attributes
+ written between the   return type and (*) inside template
+ partial-specialization   arguments, causing a redefinition conflict; the
+ alias keeps them   on both compilers. - CurrentTime.cpp: replace the
+ MSVC-only integer literal suffix   0x100000000I64 with the portable
+ 0x100000000LL (long long and   __int64 are the same 64-bit signed type on
+ Windows; MSVC 2013+   accepts LL as well). Whole-tree scan confirms it is the
+ only   MSVC-style literal suffix.
 
-- winpthreads threading model, SuspendThread suspension,
-  GetProcessTimes CPU time, sys/mman.h compat shim (mmap family),
-  Win32Handle, UnixFileDescriptor close semantics.
-- Threading.h s_key declaration guard relaxed to
-  !HAVE(FAST_TLS) && (!OS(WINDOWS) || USE(PTHREADS)) (the GLib port
-  uses winpthreads on Windows, see PlatformUse.h); align
-  signalHandlerSuspendResume declaration (&& !OS(WINDOWS), mingw-w64
-  has no siginfo_t); Threading.cpp storage guard likewise;
-  ThreadingPOSIX.cpp uses std::make_unique for PlatformRegisters
-  (the WinAPI CONTEXT has no TZoneMalloc tagging).
-- FunctionTraits.h: declare the sysv_abi specializations through the
-  SysVFunction type alias - GCC drops attributes written between the
-  return type and (*) inside template partial-specialization
-  arguments, causing a redefinition conflict; the alias keeps them
-  on both compilers.
-- CurrentTime.cpp: replace the MSVC-only integer literal suffix
-  0x100000000I64 with the portable 0x100000000LL (long long and
-  __int64 are the same 64-bit signed type on Windows; MSVC 2013+
-  accepts LL as well). Whole-tree scan confirms it is the only
-  MSVC-style literal suffix.
+- Update 13 (fixing the CLANG64/CLANGARM64 WTF build, [2386..2390]/8562;
+  applies to ucrt64 alike since the gaps are CRT-level, not compiler-level):
+  FileHandle.h/FileSystem.h keep the int CRT-descriptor flavour for the GLib
+  port even on Windows - PlatformGTK.cmake compiles the posix/* and glib/*
+  implementations, so the OS(WINDOWS) HANDLE/FILE_ID_128 flavour of
+  PlatformFileHandle/PlatformFileID cannot work there (fstat(void*) and 12
+  more errors in FileHandlePOSIX.cpp); the Win32 flavour stays reserved for
+  ports driving files through the Windows API. FileHandlePOSIX.cpp emulates
+  flock(2) via LockFileEx (LOCK_SH/EX/NB/UN match the FileLockMode encoding,
+  static_asserts intact) and maps fsync() onto _commit(). FileSystemPOSIX.cpp
+  replaces the missing sys/statvfs.h with GetDiskFreeSpaceA for
+  volumeFileBlockSize(), uses _O_NOINHERIT instead of the missing O_CLOEXEC
+  and mkstemp() instead of the missing mkostemp(). TextBreakIteratorInternalICUUnix.cpp
+  falls back to LC_CTYPE when the UCRT lacks LC_MESSAGES. UniStdExtrasUnix.cpp
+  maps the fcntl(2) CLOEXEC/O_NONBLOCK requests onto SetHandleInformation()
+  and ioctlsocket(FIONBIO) (WTF gains ws2_32, see 0001). The sys/mman.h shim
+  gains MAP_FILE (FileHandle::map() passes MAP_FILE | MAP_SHARED).
+  Verified in the Linux sandbox with the Debian mingw-w64 gcc-14 cross
+  toolchain + MSYS2 glib 2.86.1 / ICU 76 headers + cmakeconfig stub: the
+  four failing TUs first reproduce the reported errors, then compile clean,
+  and the full 24-file WTF posix/unix/glib/generic sweep passes.
 ---
- .../mingw-compat/include/sys/mman.h           | 177 ++++++++++++++++++
+ .../mingw-compat/include/sys/mman.h           | 178 ++++++++++++++++++
  Source/WTF/wtf/CurrentTime.cpp                |   2 +-
+ Source/WTF/wtf/FileHandle.h                   |  10 +-
+ Source/WTF/wtf/FileSystem.h                   |   4 +-
  Source/WTF/wtf/FunctionTraits.h               |  13 +-
  Source/WTF/wtf/PlatformUse.h                  |   4 +-
  Source/WTF/wtf/Threading.cpp                  |   4 +-
  Source/WTF/wtf/Threading.h                    |  39 ++--
  Source/WTF/wtf/ThreadingPrimitives.h          |   3 +
  Source/WTF/wtf/posix/CPUTimePOSIX.cpp         |  54 +++---
+ Source/WTF/wtf/posix/FileHandlePOSIX.cpp      |  33 ++++
+ Source/WTF/wtf/posix/FileSystemPOSIX.cpp      |  21 +++
  Source/WTF/wtf/posix/ThreadingPOSIX.cpp       |  59 +++++-
+ .../unix/TextBreakIteratorInternalICUUnix.cpp |   5 +
+ Source/WTF/wtf/unix/UniStdExtrasUnix.cpp      |  57 ++++++
  Source/WTF/wtf/unix/UnixFileDescriptor.h      |  22 +++
  Source/WTF/wtf/win/Win32Handle.h              |  96 ++++++++++
- 11 files changed, 427 insertions(+), 46 deletions(-)
+ 17 files changed, 554 insertions(+), 50 deletions(-)
  create mode 100644 Source/ThirdParty/mingw-compat/include/sys/mman.h
  create mode 100644 Source/WTF/wtf/win/Win32Handle.h
 
 diff --git a/Source/ThirdParty/mingw-compat/include/sys/mman.h b/Source/ThirdParty/mingw-compat/include/sys/mman.h
 new file mode 100644
-index 00000000..377866a3
+index 0000000..2e379cb
 --- /dev/null
 +++ b/Source/ThirdParty/mingw-compat/include/sys/mman.h
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,178 @@
 +/*
 + * Copyright (C) 2025 Tao Zuhong
 + *
@@ -81,6 +104,7 @@ index 00000000..377866a3
 +
 +#define MAP_SHARED   0x01
 +#define MAP_PRIVATE  0x02
++#define MAP_FILE     0x00
 +#define MAP_FIXED    0x10
 +#define MAP_ANON     0x20
 +#define MAP_ANONYMOUS MAP_ANON
@@ -224,7 +248,7 @@ index 00000000..377866a3
 +}
 +#endif
 diff --git a/Source/WTF/wtf/CurrentTime.cpp b/Source/WTF/wtf/CurrentTime.cpp
-index f4b97e56..b1c51391 100644
+index f4b97e5..b1c5139 100644
 --- a/Source/WTF/wtf/CurrentTime.cpp
 +++ b/Source/WTF/wtf/CurrentTime.cpp
 @@ -118,7 +118,7 @@ static double highResUpTime()
@@ -236,8 +260,54 @@ index f4b97e56..b1c51391 100644
              tickCountElapsed = tickCountLarge - tickCountLast;
          }
  
+diff --git a/Source/WTF/wtf/FileHandle.h b/Source/WTF/wtf/FileHandle.h
+index b367520..38040e0 100644
+--- a/Source/WTF/wtf/FileHandle.h
++++ b/Source/WTF/wtf/FileHandle.h
+@@ -31,9 +31,13 @@
+ #include <wtf/Markable.h>
+ #include <wtf/OptionSet.h>
+ 
+-#if OS(WINDOWS)
++// The GTK/GLib port builds its WTF platform layer against POSIX fd semantics
++// even on Windows (MinGW): PlatformGTK.cmake compiles the posix/* and glib/*
++// implementations, and the CRT descriptors are ints. Reserve the Win32 HANDLE
++// flavour for ports that actually drive files through the Windows API.
++#if OS(WINDOWS) && !USE(GLIB)
+ #include <wtf/win/Win32Handle.h>
+-#elif OS(UNIX)
++#else
+ #include <sys/types.h>
+ #endif
+ 
+@@ -46,7 +50,7 @@ class MappedFileData;
+ enum class FileOpenMode : uint8_t;
+ enum class MappedFileMode : bool;
+ 
+-#if OS(WINDOWS)
++#if OS(WINDOWS) && !USE(GLIB)
+ typedef HANDLE PlatformFileHandle;
+ const PlatformFileHandle invalidPlatformFileHandle = INVALID_HANDLE_VALUE;
+ typedef FILE_ID_128 PlatformFileID;
+diff --git a/Source/WTF/wtf/FileSystem.h b/Source/WTF/wtf/FileSystem.h
+index 6195096..f9922ca 100644
+--- a/Source/WTF/wtf/FileSystem.h
++++ b/Source/WTF/wtf/FileSystem.h
+@@ -66,9 +66,11 @@ class MappedFileData;
+ 
+ enum class MappedFileMode : bool;
+ 
+-#if OS(WINDOWS)
++// Match FileHandle.h: the GLib port uses int CRT descriptors even on MinGW.
++#if OS(WINDOWS) && !USE(GLIB)
+ typedef FILE_ID_128 PlatformFileID;
+ #else
++#include <sys/types.h>
+ typedef ino_t PlatformFileID;
+ #endif
+ 
 diff --git a/Source/WTF/wtf/FunctionTraits.h b/Source/WTF/wtf/FunctionTraits.h
-index ac54804e..ffda29a5 100644
+index ac54804..ffda29a 100644
 --- a/Source/WTF/wtf/FunctionTraits.h
 +++ b/Source/WTF/wtf/FunctionTraits.h
 @@ -81,8 +81,17 @@ struct FunctionTraits<Result(Args...)> {
@@ -269,7 +339,7 @@ index ac54804e..ffda29a5 100644
  #endif
  
 diff --git a/Source/WTF/wtf/PlatformUse.h b/Source/WTF/wtf/PlatformUse.h
-index 0c16afbd..ce832f42 100644
+index 0c16afb..ce832f4 100644
 --- a/Source/WTF/wtf/PlatformUse.h
 +++ b/Source/WTF/wtf/PlatformUse.h
 @@ -119,7 +119,9 @@
@@ -284,7 +354,7 @@ index 0c16afbd..ce832f42 100644
  #endif
  
 diff --git a/Source/WTF/wtf/Threading.cpp b/Source/WTF/wtf/Threading.cpp
-index 830f8b7f..188fa34e 100644
+index 830f8b7..188fa34 100644
 --- a/Source/WTF/wtf/Threading.cpp
 +++ b/Source/WTF/wtf/Threading.cpp
 @@ -224,7 +224,7 @@ void Thread::initializeInThread()
@@ -306,7 +376,7 @@ index 830f8b7f..188fa34e 100644
  #endif
  
 diff --git a/Source/WTF/wtf/Threading.h b/Source/WTF/wtf/Threading.h
-index a376be92..93e1c949 100644
+index a376be9..93e1c94 100644
 --- a/Source/WTF/wtf/Threading.h
 +++ b/Source/WTF/wtf/Threading.h
 @@ -145,7 +145,7 @@ public:
@@ -413,7 +483,7 @@ index a376be92..93e1c949 100644
          WTF::initialize();
  #endif
 diff --git a/Source/WTF/wtf/ThreadingPrimitives.h b/Source/WTF/wtf/ThreadingPrimitives.h
-index 5b4c0629..e924f73d 100644
+index 5b4c062..e924f73 100644
 --- a/Source/WTF/wtf/ThreadingPrimitives.h
 +++ b/Source/WTF/wtf/ThreadingPrimitives.h
 @@ -59,6 +59,9 @@ using PlatformCondition = pthread_cond_t;
@@ -427,7 +497,7 @@ index 5b4c0629..e924f73d 100644
  #elif OS(WINDOWS)
  using ThreadIdentifier = uint32_t;
 diff --git a/Source/WTF/wtf/posix/CPUTimePOSIX.cpp b/Source/WTF/wtf/posix/CPUTimePOSIX.cpp
-index 66384038..86e5a5eb 100644
+index 6638403..86e5a5e 100644
 --- a/Source/WTF/wtf/posix/CPUTimePOSIX.cpp
 +++ b/Source/WTF/wtf/posix/CPUTimePOSIX.cpp
 @@ -1,55 +1,59 @@
@@ -515,8 +585,121 @@ index 66384038..86e5a5eb 100644
  }
  
  }
+diff --git a/Source/WTF/wtf/posix/FileHandlePOSIX.cpp b/Source/WTF/wtf/posix/FileHandlePOSIX.cpp
+index ae947fe..4a95964 100644
+--- a/Source/WTF/wtf/posix/FileHandlePOSIX.cpp
++++ b/Source/WTF/wtf/posix/FileHandlePOSIX.cpp
+@@ -72,7 +72,11 @@ bool FileHandle::truncate(int64_t offset)
+ 
+ bool FileHandle::flush()
+ {
++#if OS(WINDOWS) // MinGW: the CRT spells fsync(2) as _commit(3)
++    return m_handle && !_commit(*m_handle);
++#else
+     return m_handle && !fsync(*m_handle);
++#endif
+ }
+ 
+ std::optional<uint64_t> FileHandle::seek(int64_t offset, FileSeekOrigin origin)
+@@ -132,6 +136,35 @@ std::optional<uint64_t> FileHandle::size()
+ }
+ 
+ #if USE(FILE_LOCK)
++
++#if OS(WINDOWS) // MinGW: no <sys/file.h>; emulate flock(2) with LockFileEx
++#include <windows.h>
++
++#define LOCK_SH 0x1
++#define LOCK_EX 0x2
++#define LOCK_NB 0x4
++#define LOCK_UN 0x8
++
++static int flock(int fileDescriptor, int operation)
++{
++    HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(fileDescriptor));
++    if (handle == INVALID_HANDLE_VALUE)
++        return -1;
++
++    if (operation & LOCK_UN)
++        return UnlockFile(handle, 0, 0, MAXDWORD, MAXDWORD) ? 0 : -1;
++
++    DWORD flags = 0;
++    if (operation & LOCK_EX)
++        flags |= LOCKFILE_EXCLUSIVE_LOCK;
++    if (operation & LOCK_NB)
++        flags |= LOCKFILE_FAIL_IMMEDIATELY;
++
++    OVERLAPPED overlapped = { };
++    return LockFileEx(handle, flags, 0, MAXDWORD, MAXDWORD, &overlapped) ? 0 : -1;
++}
++#endif // OS(WINDOWS)
++
+ bool FileHandle::lock(OptionSet<FileLockMode> lockMode)
+ {
+     if (!m_handle)
+diff --git a/Source/WTF/wtf/posix/FileSystemPOSIX.cpp b/Source/WTF/wtf/posix/FileSystemPOSIX.cpp
+index eef66be..3e4afe9 100644
+--- a/Source/WTF/wtf/posix/FileSystemPOSIX.cpp
++++ b/Source/WTF/wtf/posix/FileSystemPOSIX.cpp
+@@ -33,7 +33,11 @@
+ #include <fcntl.h>
+ #include <stdio.h>
+ #include <sys/stat.h>
++#if OS(WINDOWS) // MinGW: no <sys/statvfs.h>; see volumeFileBlockSize below
++#include <windows.h>
++#else
+ #include <sys/statvfs.h>
++#endif
+ #include <unistd.h>
+ #include <wtf/FileHandle.h>
+ #include <wtf/SafeStrerror.h>
+@@ -62,7 +66,11 @@ FileHandle openFile(const String& path, FileOpenMode mode, FileAccessPermission
+     if (fsRep.isNull())
+         return { };
+ 
++#if OS(WINDOWS) // MinGW: O_CLOEXEC is not provided; _O_NOINHERIT is the CRT equivalent
++    int platformFlag = _O_NOINHERIT;
++#else
+     int platformFlag = O_CLOEXEC;
++#endif
+     switch (mode) {
+     case FileOpenMode::Read:
+         platformFlag |= O_RDONLY;
+@@ -127,11 +135,20 @@ bool fileIDsAreEqual(std::optional<PlatformFileID> a, std::optional<PlatformFile
+ 
+ std::optional<uint32_t> volumeFileBlockSize(const String& path)
+ {
++#if OS(WINDOWS) // MinGW: GetDiskFreeSpaceA reports the volume allocation granularity
++    CString fsRep = fileSystemRepresentation(path);
++    DWORD sectorsPerCluster = 0, bytesPerSector = 0, freeClusters = 0, totalClusters = 0;
++    if (fsRep.data() && GetDiskFreeSpaceA(fsRep.data(), &sectorsPerCluster, &bytesPerSector, &freeClusters, &totalClusters))
++        return static_cast<uint32_t>(sectorsPerCluster * bytesPerSector);
++
++    return std::nullopt;
++#else
+     struct statvfs fileStat;
+     if (!statvfs(fileSystemRepresentation(path).data(), &fileStat))
+         return fileStat.f_frsize;
+ 
+     return std::nullopt;
++#endif
+ }
+ 
+ #if !USE(CF)
+@@ -188,7 +205,11 @@ std::pair<String, FileHandle> openTemporaryFile(StringView prefix, StringView su
+     snprintf(buffer.mutableSpan().data(), length, "%s/%s-XXXXXX", directory, prefixUTF8.data());
+     IGNORE_CLANG_WARNINGS_END
+ 
++#if OS(WINDOWS) // MinGW: mkostemp(3) is not provided; mkstemp(3) is
++    auto handle = FileHandle::adopt(mkstemp(buffer.mutableSpan().data()));
++#else
+     auto handle = FileHandle::adopt(mkostemp(buffer.mutableSpan().data(), O_CLOEXEC));
++#endif
+     if (!handle)
+         return { String(), FileHandle() };
+ 
 diff --git a/Source/WTF/wtf/posix/ThreadingPOSIX.cpp b/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
-index a64641f8..b29fe0d4 100644
+index a64641f..b29fe0d 100644
 --- a/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
 +++ b/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
 @@ -49,6 +49,10 @@
@@ -643,8 +826,96 @@ index a64641f8..b29fe0d4 100644
  #else
      if (m_suspendCount == 1) {
          // When allowing sigThreadSuspendResume interrupt in the signal handler by sigsuspend and SigThreadSuspendResume is actually issued,
+diff --git a/Source/WTF/wtf/text/unix/TextBreakIteratorInternalICUUnix.cpp b/Source/WTF/wtf/text/unix/TextBreakIteratorInternalICUUnix.cpp
+index a1df6d6..5958c8d 100644
+--- a/Source/WTF/wtf/text/unix/TextBreakIteratorInternalICUUnix.cpp
++++ b/Source/WTF/wtf/text/unix/TextBreakIteratorInternalICUUnix.cpp
+@@ -22,6 +22,11 @@
+ 
+ #include <locale.h>
+ 
++#if OS(WINDOWS) // MinGW: the UCRT has no LC_MESSAGES category; LC_CTYPE is the
++                // closest setlocale() query that exists on Windows
++#define LC_MESSAGES LC_CTYPE
++#endif
++
+ namespace WTF {
+ 
+ const char* currentSearchLocaleID()
+diff --git a/Source/WTF/wtf/unix/UniStdExtrasUnix.cpp b/Source/WTF/wtf/unix/UniStdExtrasUnix.cpp
+index c45c75d..684e89e 100644
+--- a/Source/WTF/wtf/unix/UniStdExtrasUnix.cpp
++++ b/Source/WTF/wtf/unix/UniStdExtrasUnix.cpp
+@@ -28,6 +28,61 @@
+ 
+ #include <fcntl.h>
+ 
++#if OS(WINDOWS) // MinGW: fcntl(2) is not provided; map the CLOEXEC and
++                // O_NONBLOCK requests onto their Win32 equivalents
++#include <winsock2.h>
++#include <windows.h>
++#include <io.h>
++
++namespace WTF {
++
++bool setCloseOnExec(int fileDescriptor)
++{
++    HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(fileDescriptor));
++    if (handle == INVALID_HANDLE_VALUE)
++        return false;
++
++    return SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
++}
++
++bool unsetCloseOnExec(int fileDescriptor)
++{
++    HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(fileDescriptor));
++    if (handle == INVALID_HANDLE_VALUE)
++        return false;
++
++    return SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
++}
++
++int dupCloseOnExec(int fileDescriptor)
++{
++    int duplicatedFileDescriptor = -1;
++    while ((duplicatedFileDescriptor = _dup(fileDescriptor)) == -1 && errno == EINTR) { }
++    if (duplicatedFileDescriptor == -1)
++        return -1;
++
++    if (!setCloseOnExec(duplicatedFileDescriptor)) {
++        closeWithRetry(duplicatedFileDescriptor);
++        return -1;
++    }
++
++    return duplicatedFileDescriptor;
++}
++
++bool setNonBlock(int fileDescriptor)
++{
++    u_long nonblocking = 1;
++    SOCKET socketHandle = static_cast<SOCKET>(_get_osfhandle(fileDescriptor));
++    if (socketHandle == INVALID_SOCKET)
++        return false;
++
++    return ioctlsocket(socketHandle, FIONBIO, &nonblocking) != SOCKET_ERROR;
++}
++
++} // namespace WTF
++
++#else // not OS(WINDOWS)
++
+ namespace WTF {
+ 
+ bool setCloseOnExec(int fileDescriptor)
+@@ -87,3 +142,5 @@ bool setNonBlock(int fileDescriptor)
+ }
+ 
+ } // namespace WTF
++
++#endif // OS(WINDOWS)
 diff --git a/Source/WTF/wtf/unix/UnixFileDescriptor.h b/Source/WTF/wtf/unix/UnixFileDescriptor.h
-index 7c5e7c5a..528b6853 100644
+index 7c5e7c5..528b685 100644
 --- a/Source/WTF/wtf/unix/UnixFileDescriptor.h
 +++ b/Source/WTF/wtf/unix/UnixFileDescriptor.h
 @@ -29,7 +29,14 @@
@@ -697,7 +968,7 @@ index 7c5e7c5a..528b6853 100644
      explicit operator bool() const { return m_value >= 0; }
 diff --git a/Source/WTF/wtf/win/Win32Handle.h b/Source/WTF/wtf/win/Win32Handle.h
 new file mode 100644
-index 00000000..94f89728
+index 0000000..94f8972
 --- /dev/null
 +++ b/Source/WTF/wtf/win/Win32Handle.h
 @@ -0,0 +1,96 @@
@@ -797,6 +1068,3 @@ index 00000000..94f89728
 +} // namespace WTF
 +
 +using WTF::Win32Handle;
--- 
-2.47.3
-
