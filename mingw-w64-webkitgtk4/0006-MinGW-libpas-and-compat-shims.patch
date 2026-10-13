@@ -48,9 +48,43 @@ libpas/bmalloc:
   <stdint.h> include so the identical header serves C and C++
   consumers; verified against all eight xdgmime C sources with the
   cross compiler and against the WTF C++ mmap consumers.
+
+- Update 25 (fixing the round-25 CLANG64/CLANGARM64 WebCore
+  unified-source failures): mingw-compat gains a <libintl.h> wrapper.
+  gettext's libintl.h (MSYS2 gettext-runtime 1.0, lines 588-590)
+  unconditionally installs the object-like macro chain
+  "printf -> libintl_printf -> __printf__" whenever it is included -
+  glib's i18n machinery (gi18n-lib.h) drags it into many WebCore
+  unified sources after the PCH has already declared WTF::PrintStream.
+  The preprocessor knows nothing about member access, so a later header
+  calling the member compiles as "out.__printf__(...)" and dies with
+  "no member named '__printf__' in 'WTF::PrintStream'" - CI hit it at
+  JSC ValueProfile.h:115/118 (out.printf(": ")/out.printf(", "),
+  reached via UnlinkedMetadataTable.h) in UnifiedSource-html-9/10/12,
+  and the same hazard covers the out.vprintf(...) call sites in
+  ScopedPrintStream.h, DataLog.cpp, LinkBuffer.cpp and Integrity.cpp.
+  The wrapper #include_next'es the real header and then #undefs exactly
+  that *printf-family redirect set (printf, vprintf, fprintf, vfprintf,
+  sprintf, vsprintf, snprintf, vsnprintf, asprintf, vasprintf), which
+  is behavior-neutral on this build: with -D__USE_MINGW_ANSI_STDIO=1
+  (always set by the PKGBUILD) the CRT printf family is already
+  C99-conformant - the libintl macros ultimately wrap the very same
+  CRT symbols on MinGW, because libintl_printf is defined as the
+  __printf__ builtin alias - while the gettext/dgettext/... family,
+  setlocale/newlocale and libintl.h's "namespace std" using-declarations
+  stay untouched; WebKit routes translatable positional-format strings
+  (LocalizedStrings.cpp WEB_UI_FORMAT_STRING) through GLib's
+  g_strdup_vprintf, which never sees the macros. Verified in the sandbox
+  against the real MSYS2 clang64/clangarm64 gettext-runtime 1.0
+  libintl.h: a TU declaring PrintStream before libintl.h reproduces the
+  CI error set line-for-line (same notes pointing at libintl.h:588/590),
+  and the same TU with the wrapper searched first compiles clean -
+  including printf("%zu") and dgettext() use and object codegen - on
+  both targets.
 ---
  Source/ThirdParty/mingw-compat/include/err.h  | 164 ++++++++++++++++++
  .../ThirdParty/mingw-compat/include/fnmatch.h | 157 +++++++++++++++++
+ Source/ThirdParty/mingw-compat/include/libintl.h |  54 +++++++
  .../mingw-compat/include/netinet/in.h         |  54 ++++++
  .../mingw-compat/include/sys/mman.h           |  11 +-
  Source/ThirdParty/unifdef/unifdef.c           |  36 ++--
@@ -69,9 +103,10 @@ libpas/bmalloc:
  .../src/libpas/pas_thread_local_cache.h       |   6 +-
  Source/bmalloc/libpas/src/libpas/pas_utils.h  |  13 ++
  .../libpas/src/libpas/pas_utils_prefix.h      |   8 +-
- 20 files changed, 502 insertions(+), 31 deletions(-)
+ 21 files changed, 556 insertions(+), 31 deletions(-)
  create mode 100644 Source/ThirdParty/mingw-compat/include/err.h
  create mode 100644 Source/ThirdParty/mingw-compat/include/fnmatch.h
+ create mode 100644 Source/ThirdParty/mingw-compat/include/libintl.h
  create mode 100644 Source/ThirdParty/mingw-compat/include/netinet/in.h
 
 diff --git a/Source/ThirdParty/mingw-compat/include/err.h b/Source/ThirdParty/mingw-compat/include/err.h
@@ -964,3 +999,63 @@ index c42ee5f..fa450fe 100644
  #define __PAS_API __attribute__((visibility("hidden")))
  #else
  #define __PAS_API __attribute__((visibility("default")))
+diff --git a/Source/ThirdParty/mingw-compat/include/libintl.h b/Source/ThirdParty/mingw-compat/include/libintl.h
+new file mode 100644
+index 0000000..879042e1
+--- /dev/null
++++ b/Source/ThirdParty/mingw-compat/include/libintl.h
+@@ -0,0 +1,54 @@
++/*
++ * MinGW compat shim: <libintl.h> wrapper that defuses the *printf-family
++ * redirection macros.
++ *
++ * gettext's libintl.h (>= 0.22, as shipped in MSYS2) installs object-like
++ * macros whenever it is included:
++ *
++ *     #define printf    libintl_printf   (expands to __printf__ on MinGW)
++ *     #define vprintf   libintl_vprintf
++ *     #define fprintf   libintl_fprintf
++ *     ... (sprintf, vsprintf, snprintf, vsnprintf, asprintf, vasprintf)
++ *
++ * In C++ those macros are applied blindly by the preprocessor, which knows
++ * nothing about member access: any use of the identifier "printf" after
++ * "out." (or "String::") is rewritten, so WebKit's WTF::PrintStream::printf
++ * / vprintf member calls (JSC ValueProfile.h, ScopedPrintStream.h, DataLog,
++ * ...) explode with "no member named '__printf__' in 'WTF::PrintStream'".
++ * It also silently renames member *declarations* that appear after the
++ * include, and clobbers the "printf" archetype name of
++ * __attribute__((format(printf, M, N))).
++ *
++ * gettext only installs the redirects so that printf()-family calls pick up
++ * its positional-format-aware implementations from the intl runtime. On
++ * MinGW -D__USE_MINGW_ANSI_STDIO=1 (always set by this package) the CRT
++ * printf family is already C99-conformant (the __mingw_* implementations),
++ * so dropping the macros routes the plain functions to the same CRT
++ * implementations the macros were ultimately wrapping and changes no
++ * observable behavior for the GTK port, which funnels user-visible,
++ * translatable strings through GLib's own g_strdup_printf()/g_string_*()
++ * helpers (compiled inside glib, unaffected by this header). The
++ * gettext/dgettext/... family, setlocale/newlocale and the "namespace std"
++ * using-declarations installed by libintl.h are all left untouched.
++ *
++ * include_next reaches the real <libintl.h> because mingw-compat/include is
++ * searched before the toolchain's default header directories.
++ */
++
++#ifndef MINGW_COMPAT_LIBINTL_H
++#define MINGW_COMPAT_LIBINTL_H
++
++#include_next <libintl.h>
++
++#undef printf
++#undef vprintf
++#undef fprintf
++#undef vfprintf
++#undef sprintf
++#undef vsprintf
++#undef snprintf
++#undef vsnprintf
++#undef asprintf
++#undef vasprintf
++
++#endif /* MINGW_COMPAT_LIBINTL_H */

@@ -91,6 +91,24 @@ IPC and process plumbing for the GTK/MinGW target:
   PLATFORM(WAYLAND) (off); FontPlatformData.h's "interface IDWriteFont"
   forward declarations live under USE(DIRECTWRITE) (off) and expand to
   valid struct declarations regardless.
+
+  Update 25 (fixing the round-25 CLANGARM64 WebKit PCH failure):
+  IPC::Semaphore's OS(WINDOWS) section declares
+  "Win32Handle win32Handle() const { return Win32Handle { m_semaphoreHandle }; }"
+  but Win32Handle is move-only (its user-declared move constructor deletes
+  the implicit copy constructor), so brace-initializing from the lvalue
+  member selects the deleted copy constructor and every WebKit PCH that
+  includes IPCSemaphore.h dies with "call to implicitly-deleted copy
+  constructor of 'Win32Handle'" at IPCSemaphore.h:77 - CI hit it in all
+  four PCH targets (WebKit, WebKitUIProcess, WebKitWebProcess,
+  WebKitGPUProcess) because WebKitPrefix.h pulls the header in
+  unconditionally. The accessor has no in-tree callers (it is the Windows
+  counterpart of the Cocoa Semaphore::createSendRight() above, which mints
+  a new send right for cross-process duplication), so it now returns
+  m_semaphoreHandle.duplicate() - an owning DuplicateHandle copy matching
+  the name's implied semantics. Sandbox: the pristine TU reproduces the CI
+  error line-for-line on x86_64-w64-mingw32 and aarch64-w64-mingw32 with
+  real MSYS2 headers; the duplicate() form compiles clean on both.
 ---
 
  Source/WebCore/SourcesGTK.txt                      |   1 +
@@ -99,6 +117,7 @@ IPC and process plumbing for the GTK/MinGW target:
  .../atspi/AccessibilityObjectCollectionAtspi.cpp   |  46 +--
  Source/WebCore/platform/SharedMemory.h             |   8 +-
  .../mediastream/gstreamer/DesktopPortal.cpp        |  17 +
+ Source/WebKit/Platform/IPC/IPCSemaphore.h          |   7 +-
  .../network/soup/WebKitAutoconfigProxyResolver.cpp |   8 +-
  Source/WebCore/platform/unix/SharedMemoryUnix.cpp  |   4 +-
  Source/WebCore/platform/win/SharedMemoryWin.cpp    | 155 +++++++++
@@ -116,7 +135,7 @@ IPC and process plumbing for the GTK/MinGW target:
  .../UIProcess/API/gtk/WebKitPrintOperation.cpp     |  10 +
  .../Launcher/glib/ProcessLauncherGLib.cpp          |  38 ++-
  Source/WebKit/UIProcess/glib/FenceMonitor.cpp      |  11 +
- 23 files changed, 858 insertions(+), 49 deletions(-)
+ 24 files changed, 864 insertions(+), 50 deletions(-)
  create mode 100644 Source/WebCore/platform/win/SharedMemoryWin.cpp
 
 diff --git a/Source/WebCore/SourcesGTK.txt b/Source/WebCore/SourcesGTK.txt
@@ -1722,3 +1741,20 @@ index 752f5103..7d72847d 100644
 +    iface->lookup_async = webkitAutoconfigProxyResolverLookupAsync;
 +    iface->lookup_finish = webkitAutoconfigProxyResolverLookupFinish;
  }
+
+diff --git a/Source/WebKit/Platform/IPC/IPCSemaphore.h b/Source/WebKit/Platform/IPC/IPCSemaphore.h
+index 7f2e9a01..c3d45e6f 100644
+--- a/Source/WebKit/Platform/IPC/IPCSemaphore.h
++++ b/Source/WebKit/Platform/IPC/IPCSemaphore.h
+@@ -74,7 +74,10 @@
+     explicit operator bool() const { return m_sendRight || m_semaphore != SEMAPHORE_NULL; }
+ #elif OS(WINDOWS)
+     explicit Semaphore(Win32Handle&&);
+-    Win32Handle win32Handle() const { return Win32Handle { m_semaphoreHandle }; }
++    // Win32Handle is move-only (no copy constructor), so mint an owning
++    // duplicate of the underlying HANDLE, mirroring the Cocoa
++    // createSendRight() above which creates a new send right.
++    Win32Handle win32Handle() const { return m_semaphoreHandle.duplicate(); }
+ 
+ #elif USE(UNIX_DOMAIN_SOCKETS)
+     explicit Semaphore(UnixFileDescriptor&&);

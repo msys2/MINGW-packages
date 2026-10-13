@@ -92,6 +92,43 @@ Build-system port for the GTK/MinGW target:
   failures also left native Win32 perl.exe children running orphaned,
   which surfaced downstream as a "build hangs around perl" report -
   with the .gmo targets building, ninja no longer aborts mid-flight.
+
+  Update 25 (fixing the round-25 CLANGARM64 WebKit PCH failures and
+  pre-empting the Windows DLL link failure): two PlatformGTK.cmake
+  changes.
+
+  - Upstream defines DATADIR globally for every WebKit-directory target.
+    MinGW's ole2.h contains "typedef enum tagDATADIR { ... } DATADIR;"
+    and windows.h (dragging in ole2.h -> objbase.h -> objidl.h) is
+    reached through the WebKit prefix headers, so the macro rewrites the
+    enum typedef name into a string literal, "} \"/clangarm64/share\";",
+    i.e. "expected ';' after enum" + "expected unqualified-id" at
+    objidl.h:10669 - CI hit it in all four WebKit PCH targets (WebKit,
+    WebKitUIProcess, WebKitWebProcess, WebKitGPUProcess). The define is
+    now skipped under WIN32: the only in-tree consumer,
+    BubblewrapLauncher.cpp, is wholly wrapped in
+    ENABLE(BUBBLEWRAP_SANDBOX) (off in this build) and is never compiled
+    on Windows, and no mingw-w64 header references LOCALEDIR/LIBDIR/
+    PKGLIBDIR/PKGLIBEXECDIR (verified), which stay defined. Sandbox: the
+    pristine TU reproduces the CI errors line-for-line on the clang64
+    and clangarm64 header sets, and objidl.h parses clean with the
+    remaining defines on both.
+
+  - Nothing in upstream's CMake attaches the GTK include directories to
+    the WebKit target (only MiniBrowser/TestWebKitAPI link GTK::GTK);
+    on ELF that works because shared libraries may leave symbols
+    undefined and applications link GTK themselves. Both halves break on
+    Windows: the WebKit PCH includes UIProcess/ViewSnapshotStore.h (via
+    SessionState.h, reached from generated IPC message headers) whose
+    GTK4 branch has "#include <gtk/gtk.h>" -> "fatal error: 'gtk/gtk.h'
+    file not found" in the WebKitWebProcess PCH, and PE DLLs must
+    resolve every referenced symbol at link time (WebKitWebViewBase and
+    friends use GtkWidget/GdkTexture directly). WebKit_LIBRARIES now
+    gains GTK::GTK under WIN32, providing both the include directories
+    and the gtk-4/gdk-4 import libraries; the PCH subtargets inherit it
+    because WEBKIT_DEFINE_SUBTARGET copies the parent's LINK_LIBRARIES
+    property into every WebKit{UIProcess,WebProcess,GPUProcess,NetworkProcess}
+    prefix target.
 ---
  Source/JavaScriptCore/CMakeLists.txt          |  30 +-
  Source/WTF/wtf/CMakeLists.txt                 |  33 +-
@@ -106,7 +143,8 @@ Build-system port for the GTK/MinGW target:
  Source/cmake/FindGLib.cmake                   |   8 +-
  Source/cmake/OptionsCommon.cmake              |  18 +-
  Source/cmake/OptionsGTK.cmake                 |  28 ++
- 13 files changed, 638 insertions(+), 19 deletions(-)
+ Source/WebKit/PlatformGTK.cmake               |  31 ++++-
+ 14 files changed, 668 insertions(+), 20 deletions(-)
  create mode 100644 Source/WTF/wtf/text/win/WCharStringExtras.h
  create mode 100644 Source/WTF/wtf/win/DbgHelperWin.cpp
  create mode 100644 Source/WTF/wtf/win/DbgHelperWin.h
@@ -931,3 +969,47 @@ index 73fc22f31180..fb3ffb3386a6 100644
  
  set(domain WebKitGTK-${WEBKITGTK_API_VERSION})
  set(build_directory ${CMAKE_BINARY_DIR}/Source/WebCore/platform/gtk/po)
+
+diff --git a/Source/WebKit/PlatformGTK.cmake b/Source/WebKit/PlatformGTK.cmake
+index 4d5e6f70..a1b2c3d4 100644
+--- a/Source/WebKit/PlatformGTK.cmake
++++ b/Source/WebKit/PlatformGTK.cmake
+@@ -34,7 +34,15 @@
+ 
+ add_definitions(-DPKGLIBEXECDIR="${LIBEXEC_INSTALL_DIR}")
+ add_definitions(-DLOCALEDIR="${CMAKE_INSTALL_FULL_LOCALEDIR}")
+-add_definitions(-DDATADIR="${CMAKE_INSTALL_FULL_DATADIR}")
++if (NOT WIN32)
++    # MinGW's ole2.h declares "typedef enum tagDATADIR { ... } DATADIR;" and
++    # windows.h (which drags in ole2.h) is force-included through the WebKit
++    # prefix headers, so a global -DDATADIR would rewrite that typedef name and
++    # break every WebKit-directory TU. The only in-tree consumer of the macro
++    # (BubblewrapLauncher.cpp) is entirely wrapped in ENABLE(BUBBLEWRAP_SANDBOX)
++    # and is never built on Windows, so simply skip the define there.
++    add_definitions(-DDATADIR="${CMAKE_INSTALL_FULL_DATADIR}")
++endif ()
+ add_definitions(-DLIBDIR="${LIB_INSTALL_DIR}")
+ add_definitions(-DPKGLIBDIR="${LIB_INSTALL_DIR}/webkit${WEBKITGTK_API_INFIX}gtk-${WEBKITGTK_API_VERSION}")
+ 
+@@ -52,6 +60,21 @@
+     GLib::Module
+ )
+ 
++if (WIN32)
++    # Upstream relies on ELF's ability to leave symbols undefined in shared
++    # libraries (applications such as MiniBrowser link GTK::GTK themselves),
++    # and nothing in the CMake files ever attaches the GTK include directories
++    # to the WebKit target. Neither holds on Windows: PE DLLs must resolve
++    # every symbol at link time (WebKitWebViewBase and friends use GTK types
++    # directly), and the WebKit prefix headers pull in UIProcess headers such
++    # as ViewSnapshotStore.h whose GTK4 branch includes <gtk/gtk.h>. Link the
++    # GTK::GTK interface target (from FindGTK.cmake) so the WebKit target - and
++    # its PCH subtargets, which copy LINK_LIBRARIES via WEBKIT_DEFINE_SUBTARGET
++    # - pick up both the include directories and the gtk-4/gdk-4 import
++    # libraries.
++    list(APPEND WebKit_LIBRARIES GTK::GTK)
++endif ()
++
+ list(APPEND WebKit_MESSAGES_IN_FILES
+     UIProcess/ViewGestureController
+ 
