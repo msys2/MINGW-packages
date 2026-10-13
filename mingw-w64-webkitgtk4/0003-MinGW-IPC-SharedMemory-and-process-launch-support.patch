@@ -11,10 +11,38 @@ IPC and process plumbing for the GTK/MinGW target:
   credential handshake, HANDLE attachment passing via DuplicateHandle,
   process-launch port bootstrap and .exe path resolution, FenceMonitor
   guards (experimental design, see BUILD-NOTES).
+
+  Update 22 (fixing the round-22 CLANG64/CLANGARM64 WebCore failures):
+  SharedMemory.h kept the upstream split where the private storage picks
+  the USE(UNIX_DOMAIN_SOCKETS) branch first (UnixFileDescriptor on
+  MinGW) while the inline HANDLE handle() accessor keyed on plain
+  OS(WINDOWS) and referenced the Win32Handle member m_handle, which the
+  MinGW configuration never declares - "use of undeclared identifier
+  'm_handle'" at SharedMemory.h:142. The accessor now takes the same
+  branch order as the storage: under USE(UNIX_DOMAIN_SOCKETS) &&
+  OS(WINDOWS) it reconstructs the mapping handle from
+  m_fileDescriptor's int payload via WTF::handleFromIntValue(); the
+  plain-OS(WINDOWS) branch is kept for the non-USE configuration.
+  SharedMemoryWin.cpp was written against the non-USE storage layout
+  (Win32Handle m_handle members, Handle(Win32Handle{...}) ctor) that
+  the MinGW configuration never compiles, and it would also have
+  collided at link time with SharedMemoryUnix.cpp, whose
+  USE(UNIX_DOMAIN_SOCKETS) guard (without !OS(WINDOWS)) compiles on
+  MinGW and cannot build there at all (shm_open is not part of the
+  mingw-compat mman subset). SharedMemoryUnix.cpp is now excluded under
+  OS(WINDOWS), and SharedMemoryWin.cpp is rewritten to implement the
+  exact Unix-flavored API surface (SharedMemoryHandle copy ctor and
+  releaseHandle, SharedMemory::allocate/map/wrapMap/destructor/
+  createHandle) on CreateFileMappingW/MapViewOfFile, storing the
+  mapping handle in the UnixFileDescriptor int payload; the Unix
+  version's runtime behavior is mirrored (CopyOnWrite rejected,
+  m_isWrappingMap release semantics, DuplicateHandle-based
+  createHandle).
 ---
  Source/WebCore/SourcesGTK.txt                 |   1 +
- Source/WebCore/platform/SharedMemory.h        |   2 +
- .../WebCore/platform/win/SharedMemoryWin.cpp  | 129 ++++++
+ Source/WebCore/platform/SharedMemory.h        |   7 +-
+ .../WebCore/platform/unix/SharedMemoryUnix.cpp |   4 +-
+ .../WebCore/platform/win/SharedMemoryWin.cpp  | 155 ++++++++
  Source/WebKit/Platform/IPC/ArgumentCoders.h   |   8 +
  Source/WebKit/Platform/IPC/Attachment.h       |  46 ++-
  Source/WebKit/Platform/IPC/Connection.h       |  12 +
@@ -26,7 +54,7 @@ IPC and process plumbing for the GTK/MinGW target:
  .../Shared/unix/AuxiliaryProcessMain.cpp      |  44 ++-
  .../Launcher/glib/ProcessLauncherGLib.cpp     |  38 +-
  Source/WebKit/UIProcess/glib/FenceMonitor.cpp |  11 +
- 14 files changed, 729 insertions(+), 8 deletions(-)
+ 15 files changed, 892 insertions(+), 11 deletions(-)
  create mode 100644 Source/WebCore/platform/win/SharedMemoryWin.cpp
 
 diff --git a/Source/WebCore/SourcesGTK.txt b/Source/WebCore/SourcesGTK.txt
@@ -41,10 +69,10 @@ index 30fc9d0..83bcf93 100644
  
  platform/xdg/MIMETypeRegistryXdg.cpp
 diff --git a/Source/WebCore/platform/SharedMemory.h b/Source/WebCore/platform/SharedMemory.h
-index 68f798a..6061923 100644
+index 68f798ab3b4a..c534f8fe7e32 100644
 --- a/Source/WebCore/platform/SharedMemory.h
 +++ b/Source/WebCore/platform/SharedMemory.h
-@@ -101,6 +101,8 @@ public:
+@@ -101,6 +101,8 @@
      UnixFileDescriptor releaseHandle();
  #elif OS(DARWIN)
      MachSendRight releaseHandle() { return std::exchange(m_handle, MachSendRight { }); }
@@ -53,12 +81,25 @@ index 68f798a..6061923 100644
  #endif
  
  private:
+@@ -136,7 +138,11 @@
+     std::span<const uint8_t> span() const LIFETIME_BOUND { return unsafeMakeSpan(static_cast<const uint8_t*>(m_data), m_size); }
+     std::span<uint8_t> mutableSpan() const LIFETIME_BOUND { return unsafeMakeSpan(static_cast<uint8_t*>(m_data), m_size); }
+ 
+-#if OS(WINDOWS)
++#if USE(UNIX_DOMAIN_SOCKETS) && OS(WINDOWS)
++    // MinGW carries the mapping handle inside UnixFileDescriptor (the GLib
++    // IPC encoding); reinterpret its int payload for Win32 callers.
++    HANDLE handle() const { return WTF::handleFromIntValue(m_fileDescriptor.value()); }
++#elif OS(WINDOWS)
+     HANDLE handle() const { return m_handle.get(); }
+ #endif
+ 
 diff --git a/Source/WebCore/platform/win/SharedMemoryWin.cpp b/Source/WebCore/platform/win/SharedMemoryWin.cpp
 new file mode 100644
-index 0000000..fbf900c
+index 000000000000..a74d243675b3
 --- /dev/null
 +++ b/Source/WebCore/platform/win/SharedMemoryWin.cpp
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,155 @@
 +/*
 + * Copyright (C) 2025 Tao Zuhong
 + *
@@ -87,8 +128,11 @@ index 0000000..fbf900c
 +#include "config.h"
 +#include "SharedMemory.h"
 +
-+#if OS(WINDOWS)
++#if USE(UNIX_DOMAIN_SOCKETS) && OS(WINDOWS)
 +
++#include <wtf/Assertions.h>
++#include <wtf/RefCounted.h>
++#include <wtf/RefPtr.h>
 +#include <wtf/StdLibExtras.h>
 +#include <wtf/win/Win32Handle.h>
 +
@@ -99,9 +143,14 @@ index 0000000..fbf900c
 +
 +namespace WebCore {
 +
-+// Shared memory is implemented with page-file backed file mappings. Handles
-+// are transferred to other processes by IPC::Connection's Windows send path,
-+// which duplicates them into the destination process before sending.
++// MinGW builds force USE_UNIX_DOMAIN_SOCKETS (PlatformUse.h) because the GLib
++// IPC layer encodes SharedMemoryHandle through WTF::UnixFileDescriptor. The
++// int payload of that class carries Win32 handles (only the lower 32 bits are
++// significant per the Windows interop guarantee; see UnixFileDescriptor.h),
++// so this file backs the Unix-flavored SharedMemory API with page-file backed
++// file mappings and MapViewOfFile. The mapping handle itself travels inside
++// the UnixFileDescriptor of the handle; IPC::Connection's Windows send path
++// duplicates handles into the destination process before sending.
 +
 +static inline DWORD accessModeFromProtection(SharedMemory::Protection protection)
 +{
@@ -122,9 +171,9 @@ index 0000000..fbf900c
 +    m_size = handle.m_size;
 +}
 +
-+Win32Handle SharedMemoryHandle::releaseHandle()
++UnixFileDescriptor SharedMemoryHandle::releaseHandle()
 +{
-+    return std::exchange(m_handle, Win32Handle { });
++    return WTF::move(m_handle);
 +}
 +
 +RefPtr<SharedMemory> SharedMemory::allocate(size_t size)
@@ -146,18 +195,20 @@ index 0000000..fbf900c
 +    RefPtr<SharedMemory> instance = adoptRef(new SharedMemory());
 +    instance->m_data = data;
 +    instance->m_size = size;
-+    instance->m_handle = Win32Handle { mapping, Win32Handle::Adopt };
++    instance->m_fileDescriptor = UnixFileDescriptor { WTF::intFromHandleValue(mapping), UnixFileDescriptor::Adopt };
 +    return instance;
 +}
 +
 +RefPtr<SharedMemory> SharedMemory::map(Handle&& handle, Protection protection, CopyOnWrite copyOnWrite)
 +{
++    // Copy-on-write is not supported on this platform.
++    // FIXME: https://bugs.webkit.org/show_bug.cgi?id=305633
 +    ASSERT_UNUSED(copyOnWrite, copyOnWrite == CopyOnWrite::No);
 +
 +    if (!handle.m_handle)
 +        return nullptr;
 +
-+    void* data = MapViewOfFile(handle.m_handle.get(), accessModeFromProtection(protection), 0, 0, handle.size());
++    void* data = MapViewOfFile(WTF::handleFromIntValue(handle.m_handle.value()), accessModeFromProtection(protection), 0, 0, handle.size());
 +    if (!data)
 +        return nullptr;
 +
@@ -167,27 +218,43 @@ index 0000000..fbf900c
 +    return instance;
 +}
 +
-+SharedMemory::~SharedMemory()
++RefPtr<SharedMemory> SharedMemory::wrapMap(void* data, size_t size, int fileDescriptor)
 +{
-+    if (m_data)
-+        UnmapViewOfFile(m_data);
++    RefPtr<SharedMemory> instance = adoptRef(new SharedMemory());
++    instance->m_data = data;
++    instance->m_size = size;
++    instance->m_fileDescriptor = UnixFileDescriptor { fileDescriptor, UnixFileDescriptor::Adopt };
++    instance->m_isWrappingMap = true;
++    return instance;
 +}
 +
-+auto SharedMemory::createHandle(Protection protection) -> std::optional<Handle>
++SharedMemory::~SharedMemory()
 +{
-+    UNUSED_PARAM(protection);
++    if (m_isWrappingMap) {
++        auto wrapped = m_fileDescriptor.release();
++        UNUSED_VARIABLE(wrapped);
++        return;
++    }
 +
-+    HANDLE duplicate = nullptr;
-+    if (!m_handle || !DuplicateHandle(GetCurrentProcess(), m_handle.get(), GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
++    UnmapViewOfFile(m_data);
++}
++
++auto SharedMemory::createHandle(Protection) -> std::optional<Handle>
++{
++    // FIXME: Handle the case where the passed Protection is ReadOnly.
++    // See https://bugs.webkit.org/show_bug.cgi?id=131542.
++
++    UnixFileDescriptor duplicate { m_fileDescriptor.value(), UnixFileDescriptor::Duplicate };
++    if (!duplicate) {
 +        ASSERT_NOT_REACHED();
 +        return std::nullopt;
 +    }
-+    return { Handle(Win32Handle { duplicate, Win32Handle::Adopt }, m_size) };
++    return { Handle(WTF::move(duplicate), m_size) };
 +}
 +
 +} // namespace WebCore
 +
-+#endif // OS(WINDOWS)
++#endif // USE(UNIX_DOMAIN_SOCKETS) && OS(WINDOWS)
 diff --git a/Source/WebKit/Platform/IPC/ArgumentCoders.h b/Source/WebKit/Platform/IPC/ArgumentCoders.h
 index 0d92fe3..c9088df 100644
 --- a/Source/WebKit/Platform/IPC/ArgumentCoders.h
@@ -1198,3 +1265,23 @@ index a2ac1d7..d335887 100644
  }
  
  } // namespace WebKit
+
+diff --git a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
+index 40a0c8a60b70..9353cc4bcb19 100644
+--- a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
++++ b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
+@@ -28,7 +28,7 @@
+ #include "config.h"
+ #include "SharedMemory.h"
+ 
+-#if USE(UNIX_DOMAIN_SOCKETS) && !OS(ANDROID)
++#if USE(UNIX_DOMAIN_SOCKETS) && !OS(ANDROID) && !OS(WINDOWS)
+ 
+ #include <errno.h>
+ #include <fcntl.h>
+@@ -195,4 +195,4 @@
+ 
+ } // namespace WebCore
+ 
+-#endif // !OS(ANDROID) && USE(UNIX_DOMAIN_SOCKETS)
++#endif // !OS(ANDROID) && !OS(WINDOWS) && USE(UNIX_DOMAIN_SOCKETS)

@@ -154,6 +154,22 @@ Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
   working (verified in the preprocessor: "atan2(y, x)" still expands
   to "wtf_atan2(y, x)"), so the infinity handling is preserved at
   every other call site.
+
+  Update 22 (fixing the round-22 CLANG64/CLANGARM64 WebCore failures):
+  The Windows branches added in Update 16 carried Win32 handles through
+  UnixFileDescriptor's int payload with static_cast, and
+  static_cast<int>(static_cast<intptr_t>(duplicate)) at the Duplicate
+  constructor is ill-formed C++ (a pointer-to-integer conversion needs
+  reinterpret_cast), so both clang environments died inside
+  UnifiedSource-platform-4.cpp with "static_cast from 'HANDLE' (aka
+  'void *') to 'intptr_t' is not allowed" ([7539..7543]/8563). The
+  packing now lives in two small helpers, handleFromIntValue() and
+  intFromHandleValue(): they truncate a handle to its lower 32 bits
+  when packing and zero-extend (never sign-extend) on the way back out,
+  per the Windows 32/64-bit handle interop guarantee - the previous
+  sign-extending reconstruction would have corrupted handles with bit
+  31 set. The Duplicate constructor and the destructor both use the
+  helpers now.
 ---
  .../assembler/MacroAssemblerX86_64.cpp        |   9 +-
  Source/JavaScriptCore/assembler/PerfLog.cpp   |   6 +-
@@ -180,9 +196,9 @@ Subject: [PATCH 2/6] MinGW: WTF threading, compiler compatibility and portable
  .../unix/TextBreakIteratorInternalICUUnix.cpp |   5 +
  Source/WTF/wtf/threads/Signals.cpp            | 133 ++++++++++++-
  Source/WTF/wtf/unix/UniStdExtrasUnix.cpp      |  57 ++++++
- Source/WTF/wtf/unix/UnixFileDescriptor.h      |  22 +++
+ Source/WTF/wtf/unix/UnixFileDescriptor.h      |  38 ++++++++
  Source/WTF/wtf/win/Win32Handle.h              |  96 ++++++++++
- 27 files changed, 768 insertions(+), 56 deletions(-)
+ 27 files changed, 806 insertions(+), 56 deletions(-)
  create mode 100644 Source/ThirdParty/mingw-compat/include/sys/mman.h
  create mode 100644 Source/WTF/wtf/win/Win32Handle.h
 
@@ -1368,10 +1384,10 @@ index c45c75d..684e89e 100644
 +
 +#endif // OS(WINDOWS)
 diff --git a/Source/WTF/wtf/unix/UnixFileDescriptor.h b/Source/WTF/wtf/unix/UnixFileDescriptor.h
-index 7c5e7c5..528b685 100644
+index 7c5e7c5a6f9a..c83cb947ade8 100644
 --- a/Source/WTF/wtf/unix/UnixFileDescriptor.h
 +++ b/Source/WTF/wtf/unix/UnixFileDescriptor.h
-@@ -29,7 +29,14 @@
+@@ -29,10 +29,33 @@
  #include <wtf/Compiler.h>
  #include <wtf/Noncopyable.h>
  #include <wtf/StdLibExtras.h>
@@ -1386,15 +1402,34 @@ index 7c5e7c5..528b685 100644
  
  namespace WTF {
  
-@@ -55,8 +62,16 @@ public:
++#if OS(WINDOWS)
++// Windows interoperates 64- and 32-bit processes by making only the lower 32
++// bits of a handle significant, so a handle can ride in this class' int
++// payload. Keep the low 32 bits when packing and zero-extend (never
++// sign-extend) on the way back out.
++inline HANDLE handleFromIntValue(int value)
++{
++    return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(static_cast<uint32_t>(value)));
++}
++
++inline int intFromHandleValue(HANDLE handle)
++{
++    return static_cast<int>(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(handle)));
++}
++#endif
++
+ class UnixFileDescriptor {
+ public:
+     // This class is noncopyable because otherwise it's very hard to avoid accidental file
+@@ -55,8 +78,16 @@
      enum DuplicationTag { Duplicate };
      UnixFileDescriptor(int fd, DuplicationTag)
      {
 +#if OS(WINDOWS)
 +        if (fd > 0) {
 +            HANDLE duplicate = nullptr;
-+            if (DuplicateHandle(GetCurrentProcess(), reinterpret_cast<HANDLE>(static_cast<intptr_t>(fd)), GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS))
-+                m_value = static_cast<int>(static_cast<intptr_t>(duplicate));
++            if (DuplicateHandle(GetCurrentProcess(), handleFromIntValue(fd), GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS))
++                m_value = intFromHandleValue(duplicate);
 +        }
 +#else
          if (fd >= 0)
@@ -1403,7 +1438,7 @@ index 7c5e7c5..528b685 100644
      }
  
      UnixFileDescriptor(UnixFileDescriptor&& o)
-@@ -77,8 +92,15 @@ public:
+@@ -77,8 +108,15 @@
  
      ~UnixFileDescriptor()
      {
@@ -1411,7 +1446,7 @@ index 7c5e7c5..528b685 100644
 +        // MinGW: on the GLib port these values are raw OS handles (typically
 +        // winsock sockets), so they must be closed with CloseHandle().
 +        if (m_value > 0 && m_shouldClose)
-+            CloseHandle(reinterpret_cast<HANDLE>(static_cast<intptr_t>(m_value)));
++            CloseHandle(handleFromIntValue(m_value));
 +#else
          if (m_value >= 0 && m_shouldClose)
              closeWithRetry(std::exchange(m_value, -1));
@@ -1539,3 +1574,4 @@ index 54d004b538f8..74f0a9edf1e3 100644
  // Work around a bug in Win, where atan2(+-infinity, +-infinity) yields NaN instead of specific values.
  extern "C" inline double wtf_atan2(double x, double y)
  {
+
