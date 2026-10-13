@@ -126,6 +126,69 @@ IPC and process plumbing for the GTK/MinGW target:
   class - has no GTK-port consumer; including both would conflict, as
   both headers define toAPI<>/toImpl<> specializations for WKViewRef.
   Ports that do not define BUILDING_GTK__ keep upstream behavior.
+
+  Update 27 (fixing the round-27 CLANG64 WebKit IPC unified-source
+  failures, first hit at UnifiedSource-Platform-2/4.cpp [8192/8564]):
+  the previous rounds' Windows IPC plumbing was flavor-inconsistent -
+  Attachment.h kept the upstream OS(WINDOWS) HANDLE-based struct while
+  the GTK port's SourcesGTK.txt manifest compiles the unix-flavored
+  IPC sources (glib/ConnectionGLib.cpp, unix/ArgumentCodersUnix.cpp,
+  unix/IPCSemaphoreUnix.cpp, unix/IPCUtilitiesUnix.cpp) against
+  USE(UNIX_DOMAIN_SOCKETS)-selected flavors of Connection.h
+  Identifier, ConnectionHandle and SharedMemoryHandle (Type =
+  UnixFileDescriptor, whose MinGW payload carries packed Win32 handles
+  since Update 22). Every mixed-style expression failed to compile:
+  UnixMessage.h:160 Vector<Attachment>::append(UnixFileDescriptor),
+  ArgumentCodersUnix.cpp:37/42/48 Attachment conversions, Connection.h
+  Identifier{HANDLE}, ConnectionHandle{Win32Handle},
+  SharedMemory::Handle{Win32Handle}, ConnectionGLib.cpp:124
+  intptr_t(identifier.handle), :441 GUniquePtr::outPtr (2.54's
+  GUniquePtr is a plain std::unique_ptr alias; only GRefPtr has
+  outPtr()), :562 UniqueRef::releaseToUniquePtr (the method is named
+  moveToUniquePtr) and :769 Identifier/ConnectionHandle brace
+  initialization. The fix completes the unix-flavor unification for
+  the GLib port on Windows instead of maintaining two styles:
+  (a) Attachment.h, IPCSemaphore.h include/class/member sections and
+  the IPCSemaphore.serialization.in coder accessors now select the
+  Windows CA-port flavors only under OS(WINDOWS) &&
+  !USE(UNIX_DOMAIN_SOCKETS), so MinGW GTK falls through to the unix
+  flavors (Attachment = UnixFileDescriptor; Semaphore carries
+  UnixFileDescriptor m_fd) while pure-Win port builds keep upstream
+  behavior; the generated Semaphore coder then encodes via
+  duplicateDescriptor() -> ArgumentCoder<UnixFileDescriptor> ->
+  Attachment, which rides the Winsock/HANDLE value in its payload.
+  (b) unix/IPCSemaphoreUnix.cpp gains the OS(WINDOWS) branches for the
+  real semaphore behavior - CreateSemaphoreW in the constructor,
+  ReleaseSemaphore in signal(), WaitForSingleObject (INFINITE /
+  deadline-milliseconds clamped at 0) in wait()/waitFor() - because
+  with the class shape unified to m_fd the upstream Linux-only bodies
+  would otherwise compile to silent no-ops on Windows.
+  (c) glib/ConnectionGLib.cpp Windows sections are rewritten to the
+  unix-flavored types: platformInitialize drops the
+  static_cast<intptr_t>(identifier.handle) branch in favor of the
+  upstream identifier.handle.release() (the packed winsock SOCKET is
+  exactly what g_socket_new_from_fd() expects on Windows); the
+  createMessageDecoder/sendOutputMessage attachment plumbing packs and
+  unpacks Attachment::Adopt / UnixFileDescriptor::Adopt values via
+  WTF::intFromHandleValue / WTF::handleFromIntValue instead of
+  Win32Handle wrappers; createConnectionIdentifierPair returns
+  Identifier{UnixFileDescriptor{...}} / ConnectionHandle{...}; the
+  ArgumentCoder<Win32Handle> definitions now mint attachments from
+  WTF::intFromHandleValue(handle.release()) and decode through
+  attachment->release() so the UnixFileDescriptor destructor does not
+  close the handle the returned Win32Handle adopts (fixing a latent
+  double-close in the previous HANDLE-struct form); the deferred
+  output queue uses encoder.moveToUniquePtr(); the Windows
+  readyReadHandler keeps its peer-address capture on a GRefPtr
+  (outPtr()-capable) instead of the alias GUniquePtr.
+  Sandbox: a pristine round-26 baseline tree reproduced the CI error
+  set line-for-line (UnifiedSource-Platform-2/4 sites at
+  Vector.h:1537/1575, ArgumentCodersUnix.cpp:37/42/48,
+  IPCSemaphoreUnix.cpp:47/48/126/128/133 and the six
+  ConnectionGLib.cpp sites) with clang 19 targeting
+  x86_64-w64-mingw32; after the fix all four TUs compile with 0 errors
+  on x86_64-w64-mingw32 and aarch64-w64-mingw32, and the platform-
+  generic Encoder.cpp/IPCUtilities.cpp stay clean.
 ---
 
  Source/WebCore/SourcesGTK.txt                      |   1 +
@@ -134,26 +197,28 @@ IPC and process plumbing for the GTK/MinGW target:
  .../atspi/AccessibilityObjectCollectionAtspi.cpp   |  46 +--
  Source/WebCore/platform/SharedMemory.h             |   8 +-
  .../mediastream/gstreamer/DesktopPortal.cpp        |  17 +
- Source/WebKit/Platform/IPC/IPCSemaphore.h          |   7 +-
  .../network/soup/WebKitAutoconfigProxyResolver.cpp |   8 +-
  Source/WebCore/platform/unix/SharedMemoryUnix.cpp  |   4 +-
  Source/WebCore/platform/win/SharedMemoryWin.cpp    | 155 +++++++++
  Source/WebKit/Platform/IPC/ArgumentCoders.h        |   8 +
- Source/WebKit/Platform/IPC/Attachment.h            |  46 ++-
+ Source/WebKit/Platform/IPC/Attachment.h            |  48 ++-
  Source/WebKit/Platform/IPC/Connection.h            |  12 +
  Source/WebKit/Platform/IPC/Encoder.h               |   1 +
+ Source/WebKit/Platform/IPC/IPCSemaphore.h          |  11 +-
+ .../Platform/IPC/IPCSemaphore.serialization.in     |   2 +-
  Source/WebKit/Platform/IPC/IPCUtilities.h          |   8 +-
- Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp | 370 +++++++++++++++++++++
+ Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp | 372 +++++++++++++++++++++
+ .../WebKit/Platform/IPC/unix/IPCSemaphoreUnix.cpp  |  28 ++
  .../WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp  |  62 +++-
  .../WebKit/Shared/API/glib/WebKitUserMessage.cpp   |  14 +
  Source/WebKit/Shared/glib/ArgumentCodersGLib.cpp   |  17 +
  .../Shared/glib/ProcessExecutablePathGLib.cpp      |   5 +
  Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp |  44 ++-
- .../UIProcess/API/C/WKAPICast.h                    |   2 +-
+ Source/WebKit/UIProcess/API/C/WKAPICast.h          |   2 +-
  .../UIProcess/API/gtk/WebKitPrintOperation.cpp     |  10 +
  .../Launcher/glib/ProcessLauncherGLib.cpp          |  38 ++-
  Source/WebKit/UIProcess/glib/FenceMonitor.cpp      |  11 +
- 25 files changed, 865 insertions(+), 50 deletions(-)
+ 27 files changed, 898 insertions(+), 56 deletions(-)
  create mode 100644 Source/WebCore/platform/win/SharedMemoryWin.cpp
 
 diff --git a/Source/WebCore/SourcesGTK.txt b/Source/WebCore/SourcesGTK.txt
@@ -354,1016 +419,6 @@ index 00000000..a74d2436
 +} // namespace WebCore
 +
 +#endif // USE(UNIX_DOMAIN_SOCKETS) && OS(WINDOWS)
-diff --git a/Source/WebKit/Platform/IPC/ArgumentCoders.h b/Source/WebKit/Platform/IPC/ArgumentCoders.h
-index 0d92fe33..c9088df9 100644
---- a/Source/WebKit/Platform/IPC/ArgumentCoders.h
-+++ b/Source/WebKit/Platform/IPC/ArgumentCoders.h
-@@ -879,4 +879,12 @@ template<typename T, typename Traits> struct ArgumentCoder<WTF::Markable<T, Trai
-     }
- };
- 
-+#if OS(WINDOWS)
-+template<> struct ArgumentCoder<WTF::Win32Handle> {
-+    static void encode(Encoder&, const WTF::Win32Handle&);
-+    static void encode(Encoder&, WTF::Win32Handle&&);
-+    static std::optional<WTF::Win32Handle> decode(Decoder&);
-+};
-+#endif
-+
- } // namespace IPC
-diff --git a/Source/WebKit/Platform/IPC/Attachment.h b/Source/WebKit/Platform/IPC/Attachment.h
-index 606d48b9..70aafba0 100644
---- a/Source/WebKit/Platform/IPC/Attachment.h
-+++ b/Source/WebKit/Platform/IPC/Attachment.h
-@@ -26,6 +26,8 @@
- 
- #pragma once
- 
-+#include <utility>
-+
- #if OS(DARWIN)
- #include <wtf/MachSendRight.h>
- #endif
-@@ -39,6 +41,13 @@
- #include <wtf/unix/UnixFileDescriptor.h>
- #endif
- 
-+#if OS(WINDOWS)
-+#ifndef WIN32_LEAN_AND_MEAN
-+#define WIN32_LEAN_AND_MEAN
-+#endif
-+#include <windows.h>
-+#endif
-+
- namespace IPC {
- 
- // IPC::Attachment is a type representing objects that cannot be transferred as data,
-@@ -46,7 +55,42 @@ namespace IPC {
- #if OS(DARWIN)
- using Attachment = MachSendRight;
- #elif OS(WINDOWS)
--struct Attachment { }; // Windows does not need attachments at the moment.
-+// Windows attachments carry a raw HANDLE value that the connection's send path
-+// has already duplicated into the destination process. The attachment owns the
-+// handle and closes it on destruction.
-+struct Attachment {
-+    Attachment() = default;
-+    explicit Attachment(HANDLE value)
-+        : handle(value)
-+    {
-+    }
-+    Attachment(Attachment&& other)
-+        : handle(std::exchange(other.handle, nullptr))
-+    {
-+    }
-+    Attachment& operator=(Attachment&& other)
-+    {
-+        if (this != &other) {
-+            closeIfNeeded();
-+            handle = std::exchange(other.handle, nullptr);
-+        }
-+        return *this;
-+    }
-+    ~Attachment()
-+    {
-+        closeIfNeeded();
-+    }
-+    explicit operator bool() const { return handle && handle != INVALID_HANDLE_VALUE; }
-+    HANDLE handle { nullptr };
-+
-+private:
-+    void closeIfNeeded()
-+    {
-+        if (handle && handle != INVALID_HANDLE_VALUE)
-+            CloseHandle(handle);
-+        handle = nullptr;
-+    }
-+};
- #elif OS(ANDROID)
- using Attachment = Variant<UnixFileDescriptor, RefPtr<AHardwareBuffer>>;
- #elif USE(UNIX_DOMAIN_SOCKETS)
-diff --git a/Source/WebKit/Platform/IPC/Connection.h b/Source/WebKit/Platform/IPC/Connection.h
-index 915dc5e5..6380608c 100644
---- a/Source/WebKit/Platform/IPC/Connection.h
-+++ b/Source/WebKit/Platform/IPC/Connection.h
-@@ -780,6 +780,18 @@ private:
-     GSocketMonitor m_writeSocketMonitor;
-     Vector<UnixFileDescriptor> m_fileDescriptors;
-     bool m_hasPendingOutputMessage { false };
-+#if OS(WINDOWS)
-+    // MinGW: the peer's process id, exchanged through a credentials datagram
-+    // right after the connection is established. Needed to duplicate HANDLE
-+    // attachments into the destination process.
-+    DWORD m_remoteProcessID { 0 };
-+    bool m_credentialsSent { false };
-+    bool m_peerConnected { false };
-+    // Outgoing messages with HANDLE attachments are queued until the peer's
-+    // process id is known.
-+    Vector<std::unique_ptr<Encoder>> m_deferredOutputEncoders;
-+    void sendCredentialsIfNeeded();
-+#endif
- #if OS(ANDROID)
-     bool sendOutgoingHardwareBuffers();
-     bool receiveIncomingHardwareBuffers();
-diff --git a/Source/WebKit/Platform/IPC/Encoder.h b/Source/WebKit/Platform/IPC/Encoder.h
-index ea85b7c3..4b9a48de 100644
---- a/Source/WebKit/Platform/IPC/Encoder.h
-+++ b/Source/WebKit/Platform/IPC/Encoder.h
-@@ -95,6 +95,7 @@ public:
-     std::span<const uint8_t> span() const LIFETIME_BOUND { return capacityBuffer().first(m_bufferSize); }
- 
-     void addAttachment(Attachment&&);
-+    const Vector<Attachment>& attachments() const LIFETIME_BOUND { return m_attachments; }
-     Vector<Attachment> releaseAttachments();
-     void reserve(size_t);
- 
-diff --git a/Source/WebKit/Platform/IPC/IPCUtilities.h b/Source/WebKit/Platform/IPC/IPCUtilities.h
-index 9cf9d085..e5c75d36 100644
---- a/Source/WebKit/Platform/IPC/IPCUtilities.h
-+++ b/Source/WebKit/Platform/IPC/IPCUtilities.h
-@@ -31,7 +31,7 @@
- #include <windows.h>
- #endif
- 
--#if USE(UNIX_DOMAIN_SOCKETS)
-+#if USE(UNIX_DOMAIN_SOCKETS) || OS(WINDOWS)
- #include <wtf/unix/UnixFileDescriptor.h>
- #endif
- 
-@@ -51,7 +51,7 @@ inline bool isTestingIPC()
- }
- #endif
- 
--#if USE(UNIX_DOMAIN_SOCKETS)
-+#if USE(UNIX_DOMAIN_SOCKETS) || OS(WINDOWS)
- struct SocketPair {
-     UnixFileDescriptor client;
-     UnixFileDescriptor server;
-@@ -67,6 +67,10 @@ SocketPair createPlatformConnection(int socketType, unsigned options = SetCloexe
- #endif
- 
- #if OS(WINDOWS)
-+// MinGW: the GLib port runs over winsock loopback datagram sockets. The server
-+// descriptor is a bound UDP socket (a raw SOCKET value); the client descriptor
-+// is a UDP socket already connected to the server. Message boundaries are
-+// preserved because IPC messages fit in a single datagram.
- bool createServerAndClientIdentifiers(HANDLE& serverIdentifier, HANDLE& clientIdentifier);
- #endif
- 
-diff --git a/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp b/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp
-index d5b3cce6..0c250c10 100644
---- a/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp
-+++ b/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp
-@@ -31,9 +31,11 @@
- #include "Logging.h"
- #include "UnixMessage.h"
- #include <gio/gio.h>
-+#if !OS(WINDOWS)
- #include <gio/gunixconnection.h>
- #include <gio/gunixfdmessage.h>
- #include <sys/socket.h>
-+#endif
- #include <wtf/Borrow.h>
- #include <wtf/CheckedArithmetic.h>
- #include <wtf/StdLibExtras.h>
-@@ -41,6 +43,15 @@
- #include <wtf/glib/GRefPtr.h>
- #include <wtf/glib/GUniquePtr.h>
- 
-+#if OS(WINDOWS)
-+#ifndef WIN32_LEAN_AND_MEAN
-+#define WIN32_LEAN_AND_MEAN
-+#endif
-+#include <windows.h>
-+#include <winsock2.h>
-+#include <ws2tcpip.h>
-+#endif
-+
- #if OS(ANDROID)
- #include <android/hardware_buffer.h>
- #include <wtf/SafeStrerror.h>
-@@ -87,9 +98,19 @@ public:
- private:
-     // The AttachmentInfo will be copied using memcpy, so all members must be trivially copyable.
-     bool m_isNull;
-+#if OS(WINDOWS)
-+    // MinGW: HANDLE attachments travel inline; the value has already been
-+    // duplicated into the destination process by the sending connection.
-+    uint64_t m_handleValue { 0 };
-+#endif
- #if OS(ANDROID)
-     Type m_type;
- #endif
-+public:
-+#if OS(WINDOWS)
-+    uint64_t handleValue() const { return m_handleValue; }
-+    void setHandleValue(uint64_t value) { m_handleValue = value; }
-+#endif
- };
- 
- static_assert(sizeof(MessageInfo) + sizeof(AttachmentInfo) * s_attachmentMaxAmount <= s_messageMaxSize, "s_messageMaxSize is too small.");
-@@ -97,7 +118,13 @@ static_assert(sizeof(MessageInfo) + sizeof(AttachmentInfo) * s_attachmentMaxAmou
- void Connection::platformInitialize(Identifier&& identifier)
- {
-     GUniqueOutPtr<GError> error;
-+#if OS(WINDOWS)
-+    // MinGW: the identifier is a raw winsock SOCKET handle; GLib expects a
-+    // SOCKET value on Windows, not a C runtime descriptor.
-+    m_socket = adoptGRef(g_socket_new_from_fd(static_cast<int>(static_cast<intptr_t>(identifier.handle)), &error.outPtr()));
-+#else
-     m_socket = adoptGRef(g_socket_new_from_fd(identifier.handle.release(), &error.outPtr()));
-+#endif
-     if (!m_socket) {
-         // Note: g_socket_new_from_fd() takes ownership of the fd only on success, so if this error
-         // were not fatal, we would need to close it here.
-@@ -166,9 +193,41 @@ std::unique_ptr<Decoder> Connection::createMessageDecoder()
-         }
-     }
- 
-+#if OS(WINDOWS)
-     if (!attachmentCount)
-         return Decoder::create(messageData.first(messageInfo.bodySize()), { });
- 
-+    if (messageInfo.isBodyOutOfLine())
-+        attachmentCount--;
-+
-+    Vector<Attachment> attachments(attachmentCount);
-+    for (size_t i = 0; i < attachmentCount; ++i) {
-+        auto& attachmentInfo = consumeAndReinterpretCastTo<AttachmentInfo>(messageData);
-+        size_t attachmentIndex = attachmentCount - i - 1;
-+        if (!attachmentInfo.isNull())
-+            attachments[attachmentIndex] = Attachment { reinterpret_cast<HANDLE>(static_cast<uintptr_t>(attachmentInfo.handleValue())) };
-+    }
-+
-+    if (!messageInfo.isBodyOutOfLine())
-+        return Decoder::create(messageData.first(messageInfo.bodySize()), WTF::move(attachments));
-+
-+    ASSERT(messageInfo.bodySize());
-+    auto& attachmentInfo = reinterpretCastSpanStartTo<AttachmentInfo>(messageData);
-+    if (attachmentInfo.isNull()) {
-+        ASSERT_NOT_REACHED();
-+        return nullptr;
-+    }
-+
-+    auto handle = WebCore::SharedMemory::Handle { Win32Handle { reinterpret_cast<HANDLE>(static_cast<uintptr_t>(attachmentInfo.handleValue())), Win32Handle::Adopt }, messageInfo.bodySize() };
-+    auto messageBody = WebCore::SharedMemory::map(WTF::move(handle), WebCore::SharedMemory::Protection::ReadOnly);
-+    if (!messageBody) {
-+        ASSERT_NOT_REACHED();
-+        return nullptr;
-+    }
-+
-+    return Decoder::create(messageBody->mutableSpan().first(messageInfo.bodySize()), WTF::move(attachments));
-+#else
-+
-     if (messageInfo.isBodyOutOfLine())
-         attachmentCount--;
- 
-@@ -242,8 +301,10 @@ std::unique_ptr<Decoder> Connection::createMessageDecoder()
-     }
- 
-     return Decoder::create(messageBody->mutableSpan().first(messageInfo.bodySize()), WTF::move(attachments));
-+#endif // OS(WINDOWS)
- }
- 
-+#if !OS(WINDOWS)
- IGNORE_CLANG_WARNINGS_BEGIN("unsafe-buffer-usage")
- static ssize_t readBytesFromSocket(GSocket* socket, Vector<uint8_t>& buffer, Vector<UnixFileDescriptor>& fileDescriptors, GCancellable* cancellable, GError** error)
- {
-@@ -282,9 +343,35 @@ static ssize_t readBytesFromSocket(GSocket* socket, Vector<uint8_t>& buffer, Vec
-     return bytesRead;
- }
- IGNORE_CLANG_WARNINGS_END
-+#endif // !OS(WINDOWS)
-+
-+#if OS(WINDOWS)
-+struct CredentialsDatagram {
-+    uint32_t magic;
-+    uint32_t processID;
-+};
-+static_assert(sizeof(CredentialsDatagram) == 8);
-+static constexpr uint32_t s_credentialsMagic = 0x4B575043; // 'KWPC'
-+
-+static HANDLE duplicateHandleForProcess(HANDLE handle, DWORD processID)
-+{
-+    if (!handle || handle == INVALID_HANDLE_VALUE)
-+        return nullptr;
-+
-+    HANDLE remoteProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, processID);
-+    if (!remoteProcess)
-+        return nullptr;
-+
-+    HANDLE target = nullptr;
-+    BOOL result = DuplicateHandle(GetCurrentProcess(), handle, remoteProcess, &target, 0, FALSE, DUPLICATE_SAME_ACCESS);
-+    CloseHandle(remoteProcess);
-+    return result ? target : nullptr;
-+}
-+#endif // OS(WINDOWS)
- 
- void Connection::readyReadHandler()
- {
-+#if !OS(WINDOWS)
- #if OS(ANDROID)
-     if (m_pendingIncomingHardwareBufferCount) {
-         if (!receiveIncomingHardwareBuffers())
-@@ -341,6 +428,78 @@ void Connection::readyReadHandler()
-         else
-             connectionDidClose();
-     }
-+#endif // !OS(WINDOWS)
-+#if OS(WINDOWS)
-+    while (true) {
-+        m_readBuffer.grow(m_readBuffer.capacity());
-+
-+        // MinGW: messages travel as single loopback datagrams, so each receive
-+        // returns exactly one message and no control messages are used.
-+        GUniqueOutPtr<GError> error;
-+        GUniquePtr<GSocketAddress> sourceAddress;
-+        GInputVector inputVector = { m_readBuffer.mutableSpan().data(), m_readBuffer.size() };
-+        auto bytesRead = g_socket_receive_message(m_socket.get(), &sourceAddress.outPtr(), &inputVector, 1, nullptr, nullptr, nullptr, m_cancellable.get(), &error.outPtr());
-+        if (bytesRead < 0) {
-+            if (g_error_matches(error.get(), G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK))
-+                return;
-+
-+            if (g_error_matches(error.get(), G_IO_ERROR, G_IO_ERROR_CONNECTION_CLOSED) || g_error_matches(error.get(), G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
-+                connectionDidClose();
-+                return;
-+            }
-+
-+            if (m_isConnected) {
-+                RELEASE_LOG_ERROR(IPC, "Error receiving IPC message in process %lu: %s", static_cast<unsigned long>(GetCurrentProcessId()), error->message);
-+                connectionDidClose();
-+            }
-+            return;
-+        }
-+
-+        if (!bytesRead) {
-+            connectionDidClose();
-+            return;
-+        }
-+
-+        m_readBuffer.shrink(bytesRead);
-+
-+        // The server side binds without a fixed peer; adopt the peer's address
-+        // on the first datagram. The client side is already connected.
-+        if (!m_peerConnected && sourceAddress.get()) {
-+            GUniqueOutPtr<GError> connectError;
-+            if (!g_socket_connect(m_socket.get(), sourceAddress.get(), nullptr, &connectError.outPtr())) {
-+                if (m_isConnected) {
-+                    RELEASE_LOG_ERROR(IPC, "Failed to connect IPC socket to peer: %s", connectError->message);
-+                    connectionDidClose();
-+                }
-+                return;
-+            }
-+            m_peerConnected = true;
-+        }
-+
-+        // The credentials datagram is exchanged right after the connection is
-+        // established so that HANDLE attachments can be duplicated into the
-+        // destination process.
-+        if (bytesRead >= static_cast<gssize>(sizeof(CredentialsDatagram))) {
-+            auto& credentials = reinterpretCastSpanStartTo<CredentialsDatagram>(m_readBuffer.span());
-+            if (credentials.magic == s_credentialsMagic) {
-+                m_remoteProcessID = credentials.processID;
-+                sendCredentialsIfNeeded();
-+
-+                while (!m_deferredOutputEncoders.isEmpty()) {
-+                    auto encoder = WTF::move(m_deferredOutputEncoders.first());
-+                    m_deferredOutputEncoders.removeAt(0);
-+                    sendOutgoingMessage(makeUniqueRefFromNonNullUniquePtr(WTF::move(encoder)));
-+                }
-+                continue;
-+            }
-+        }
-+
-+        if (auto decoder = createMessageDecoder())
-+            processIncomingMessage(makeUniqueRefFromNonNullUniquePtr(WTF::move(decoder)));
-+        else
-+            connectionDidClose();
-+    }
-+#endif // OS(WINDOWS)
- }
- 
- bool Connection::platformPrepareForOpen()
-@@ -372,6 +531,13 @@ void Connection::platformOpen()
-     m_connectionQueue->dispatch([protectedThis] {
-         protectedThis->readyReadHandler();
-     });
-+
-+#if OS(WINDOWS)
-+    // MinGW: announce ourselves to the peer as soon as the socket is live.
-+    m_connectionQueue->dispatch([protectedThis] {
-+        protectedThis->sendCredentialsIfNeeded();
-+    });
-+#endif
- }
- 
- bool Connection::platformCanSendOutgoingMessages() const
-@@ -387,6 +553,19 @@ bool Connection::sendOutgoingMessage(UniqueRef<Encoder>&& encoder)
- {
-     static_assert(sizeof(MessageInfo) + s_attachmentMaxAmount * sizeof(size_t) <= s_messageMaxSize, "Attachments fit to message inline");
- 
-+#if OS(WINDOWS)
-+    if (!m_remoteProcessID) {
-+        for (auto& attachment : encoder.get().attachments()) {
-+            if (attachment) {
-+                // HANDLE attachments need the peer's process id; queue the
-+                // message until the credentials datagram arrives.
-+                m_deferredOutputEncoders.append(encoder.releaseToUniquePtr());
-+                return true;
-+            }
-+        }
-+    }
-+#endif
-+
-     UnixMessage outputMessage(encoder.get());
-     if (outputMessage.attachments().size() > (s_attachmentMaxAmount - 1)) {
-         ASSERT_NOT_REACHED();
-@@ -413,6 +592,74 @@ bool Connection::sendOutputMessage(UnixMessage&& outputMessage)
- 
-     auto& messageInfo = outputMessage.messageInfo();
-     const auto& attachments = outputMessage.attachments();
-+#if OS(WINDOWS)
-+    // MinGW: the whole message (info + attachment infos + optional inline
-+    // body) is written as a single datagram. HANDLE attachments are
-+    // duplicated into the destination process and their values travel inline.
-+    ASSERT(m_remoteProcessID || attachments.isEmpty());
-+
-+    GOutputVector outputVector[3];
-+    int outputVectorLength = 0;
-+
-+    outputVector[outputVectorLength++] = { reinterpret_cast<void*>(&messageInfo), sizeof(messageInfo) };
-+    Vector<AttachmentInfo> attachmentInfo;
-+    if (!attachments.isEmpty()) {
-+        attachmentInfo.resize(attachments.size());
-+        for (size_t i = 0; i < attachments.size(); ++i) {
-+            if (!attachments[i]) {
-+                attachmentInfo[i].setNull();
-+                continue;
-+            }
-+
-+            HANDLE duplicated = duplicateHandleForProcess(attachments[i].handle, m_remoteProcessID);
-+            if (!duplicated) {
-+                RELEASE_LOG_ERROR(IPC, "Failed to duplicate IPC attachment handle into process %lu", static_cast<unsigned long>(m_remoteProcessID));
-+                return false;
-+            }
-+            attachmentInfo[i].setHandleValue(reinterpret_cast<uintptr_t>(duplicated));
-+        }
-+
-+        outputVector[outputVectorLength++] = { attachmentInfo.mutableSpan().data(), sizeof(AttachmentInfo) * attachments.size() };
-+    }
-+
-+    if (!messageInfo.isBodyOutOfLine() && outputMessage.bodySize())
-+        outputVector[outputVectorLength++] = { reinterpret_cast<void*>(outputMessage.body().data()), outputMessage.bodySize() };
-+
-+    GUniqueOutPtr<GError> error;
-+    auto bytesWritten = g_socket_send_message(m_socket.get(), nullptr, outputVector, outputVectorLength,
-+        nullptr, 0, 0, m_cancellable.get(), &error.outPtr());
-+    if (bytesWritten >= 0)
-+        return true;
-+
-+    if (g_error_matches(error.get(), G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK)) {
-+        m_hasPendingOutputMessage = true;
-+        m_writeSocketMonitor.start(m_socket.get(), G_IO_OUT, m_connectionQueue->runLoop(), m_cancellable.get(), [this, protectedThis = protect(*this), message = WTF::move(outputMessage)] (GIOCondition condition) mutable -> gboolean {
-+            if (condition & G_IO_OUT) {
-+                ASSERT(m_hasPendingOutputMessage);
-+                // We can't stop the monitor from this lambda, because stop destroys the lambda.
-+                m_connectionQueue->dispatch([this, protectedThis = protect(*this), message = WTF::move(message)]() mutable {
-+                    m_writeSocketMonitor.stop();
-+                    m_hasPendingOutputMessage = false;
-+                    if (m_isConnected) {
-+                        sendOutputMessage(WTF::move(message));
-+                        sendOutgoingMessages();
-+                    }
-+                });
-+            }
-+            return G_SOURCE_REMOVE;
-+        });
-+        return false;
-+    }
-+
-+    if (g_error_matches(error.get(), G_IO_ERROR, G_IO_ERROR_CONNECTION_CLOSED) || g_error_matches(error.get(), G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
-+        connectionDidClose();
-+        return false;
-+    }
-+
-+    if (m_isConnected)
-+        RELEASE_LOG_ERROR(IPC, "Error sending IPC message in process %lu: %s", static_cast<unsigned long>(GetCurrentProcessId()), error->message);
-+    return false;
-+#else
-     GOutputVector outputVector[3];
-     int outputVectorLength = 0;
- 
-@@ -508,15 +755,25 @@ bool Connection::sendOutputMessage(UnixMessage&& outputMessage)
-     if (m_isConnected)
-         RELEASE_LOG_ERROR(IPC, "Error sending IPC message on socket %d in process %d: %s", g_socket_get_fd(m_socket.get()), getpid(), error->message);
-     return false;
-+#endif // OS(WINDOWS)
- }
- IGNORE_CLANG_WARNINGS_END
- 
- std::optional<Connection::ConnectionIdentifierPair> Connection::createConnectionIdentifierPair()
- {
-+#if OS(WINDOWS)
-+    HANDLE serverHandle = nullptr;
-+    HANDLE clientHandle = nullptr;
-+    if (!IPC::createServerAndClientIdentifiers(serverHandle, clientHandle))
-+        return std::nullopt;
-+    return { { Identifier { serverHandle }, ConnectionHandle { Win32Handle { clientHandle, Win32Handle::Adopt } } } };
-+#else
-     SocketPair socketPair = createPlatformConnection(SOCK_SEQPACKET);
-     return { { Identifier { WTF::move(socketPair.server) }, ConnectionHandle { WTF::move(socketPair.client) } } };
-+#endif
- }
- 
-+#if !OS(WINDOWS)
- void Connection::sendCredentials() const
- {
-     ASSERT(m_socket);
-@@ -531,9 +788,35 @@ void Connection::sendCredentials() const
-     }
-     g_socket_set_blocking(m_socket.get(), FALSE);
- }
-+#endif // !OS(WINDOWS)
-+
-+#if OS(WINDOWS)
-+void Connection::sendCredentials() const
-+{
-+    // MinGW: credentials are exchanged through sendCredentialsIfNeeded().
-+}
-+
-+void Connection::sendCredentialsIfNeeded()
-+{
-+    if (m_credentialsSent || !m_socket)
-+        return;
-+
-+    CredentialsDatagram credentials { s_credentialsMagic, GetCurrentProcessId() };
-+    GUniqueOutPtr<GError> error;
-+    gssize sent = g_socket_send(m_socket.get(), reinterpret_cast<const char*>(&credentials), sizeof(credentials), m_cancellable.get(), &error.outPtr());
-+    if (sent == static_cast<gssize>(sizeof(credentials)))
-+        m_credentialsSent = true;
-+    // Failures (e.g. the server side has not connected to the peer yet) are
-+    // retried when the peer's credentials datagram arrives.
-+}
-+#endif // OS(WINDOWS)
- 
- pid_t Connection::remoteProcessID(GSocket* socket)
- {
-+#if OS(WINDOWS)
-+    UNUSED_PARAM(socket);
-+    g_error("Connection::remoteProcessID() is not supported on MinGW");
-+#else
-     GRefPtr<GUnixConnection> connection = adoptGRef(G_UNIX_CONNECTION(g_object_new(G_TYPE_UNIX_CONNECTION, "socket", socket, nullptr)));
-     GUniqueOutPtr<GError> error;
-     GRefPtr<GCredentials> credentials = adoptGRef(g_unix_connection_receive_credentials(connection.get(), nullptr, &error.outPtr()));
-@@ -545,6 +828,7 @@ pid_t Connection::remoteProcessID(GSocket* socket)
-         g_error("Connection: failed to get pid from credentials: %s", error->message);
- 
-     return processID;
-+#endif // OS(WINDOWS)
- }
- 
- #if OS(ANDROID)
-@@ -626,6 +910,92 @@ bool Connection::receiveIncomingHardwareBuffers()
- }
- #endif // OS(ANDROID)
- 
-+#if OS(WINDOWS)
-+void ArgumentCoder<Win32Handle>::encode(Encoder& encoder, const Win32Handle& handle)
-+{
-+    if (!handle) {
-+        encoder.addAttachment(Attachment { });
-+        return;
-+    }
-+
-+    HANDLE duplicate = nullptr;
-+    if (!DuplicateHandle(GetCurrentProcess(), handle.get(), GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
-+        ASSERT_NOT_REACHED();
-+        encoder.addAttachment(Attachment { });
-+        return;
-+    }
-+    encoder.addAttachment(Attachment { duplicate });
-+}
-+
-+void ArgumentCoder<Win32Handle>::encode(Encoder& encoder, Win32Handle&& handle)
-+{
-+    if (!handle) {
-+        encoder.addAttachment(Attachment { });
-+        return;
-+    }
-+
-+    // The handle is adopted by the attachment, which closes it on destruction.
-+    encoder.addAttachment(Attachment { handle.release() });
-+}
-+
-+std::optional<Win32Handle> ArgumentCoder<Win32Handle>::decode(Decoder& decoder)
-+{
-+    auto attachment = decoder.takeLastAttachment();
-+    if (!attachment)
-+        return std::nullopt;
-+
-+    return Win32Handle { attachment->handle, Win32Handle::Adopt };
-+}
-+#endif // OS(WINDOWS)
-+
-+} // namespace IPC
-+
-+#if OS(WINDOWS)
-+namespace IPC {
-+
-+bool createServerAndClientIdentifiers(HANDLE& serverIdentifier, HANDLE& clientIdentifier)
-+{
-+    serverIdentifier = nullptr;
-+    clientIdentifier = nullptr;
-+
-+    SOCKET server = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-+    if (server == INVALID_SOCKET)
-+        return false;
-+
-+    sockaddr_in address = { };
-+    address.sin_family = AF_INET;
-+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-+    address.sin_port = 0;
-+    if (::bind(server, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
-+        closesocket(server);
-+        return false;
-+    }
-+
-+    sockaddr_in boundAddress = { };
-+    int boundAddressLength = sizeof(boundAddress);
-+    if (::getsockname(server, reinterpret_cast<sockaddr*>(&boundAddress), &boundAddressLength) == SOCKET_ERROR) {
-+        closesocket(server);
-+        return false;
-+    }
-+
-+    SOCKET client = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-+    if (client == INVALID_SOCKET) {
-+        closesocket(server);
-+        return false;
-+    }
-+
-+    if (::connect(client, reinterpret_cast<sockaddr*>(&boundAddress), sizeof(boundAddress)) == SOCKET_ERROR) {
-+        closesocket(client);
-+        closesocket(server);
-+        return false;
-+    }
-+
-+    serverIdentifier = reinterpret_cast<HANDLE>(server);
-+    clientIdentifier = reinterpret_cast<HANDLE>(client);
-+    return true;
-+}
-+
- } // namespace IPC
-+#endif // OS(WINDOWS)
- 
- #endif // USE(GLIB)
-diff --git a/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp b/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp
-index 5ba3ea56..16a87042 100644
---- a/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp
-+++ b/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp
-@@ -1,5 +1,6 @@
- /*
-- * Copyright (C) 2011, 2025 Igalia S.L.
-+ * Copyright (C) 2019 Apple Inc. All rights reserved.
-+ * Copyright (C) 2025 Tao Zuhong (MinGW support)
-  *
-  * Redistribution and use in source and binary forms, with or without
-  * modification, are permitted provided that the following conditions
-@@ -26,6 +27,63 @@
- #include "config.h"
- #include "IPCUtilities.h"
- 
-+#if OS(WINDOWS)
-+
-+#include <winsock2.h>
-+#include <ws2tcpip.h>
-+
-+namespace IPC {
-+
-+// MinGW: emulate a socket pair over two connected UDP sockets on the loopback
-+// interface. IPC messages are capped at IPC::s_messageMaxSize bytes, which
-+// comfortably fits into a single datagram, so message boundaries are preserved
-+// just like with SOCK_SEQPACKET.
-+//
-+// The "server" descriptor is the bound socket itself (a raw SOCKET value kept
-+// in a UnixFileDescriptor). The "client" descriptor carries the UDP port
-+// number of the server socket; the process launcher passes it to the child
-+// process, which creates its own socket, connects back to the server and
-+// exchanges a credentials datagram so both sides know their peer's port.
-+
-+SocketPair createPlatformConnection(int socketType, unsigned options)
-+{
-+    UNUSED_PARAM(socketType);
-+    UNUSED_PARAM(options);
-+
-+    SOCKET server = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-+    if (server == INVALID_SOCKET)
-+        return { };
-+
-+    sockaddr_in address = { };
-+    address.sin_family = AF_INET;
-+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-+    address.sin_port = 0;
-+    if (::bind(server, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
-+        closesocket(server);
-+        return { };
-+    }
-+
-+    sockaddr_in boundAddress = { };
-+    int boundAddressLength = sizeof(boundAddress);
-+    if (::getsockname(server, reinterpret_cast<sockaddr*>(&boundAddress), &boundAddressLength) == SOCKET_ERROR) {
-+        closesocket(server);
-+        return { };
-+    }
-+
-+    int serverPort = ntohs(boundAddress.sin_port);
-+
-+    // Sockets are OS handles; store the raw value. GLib's g_socket_new_from_fd()
-+    // treats the value as a SOCKET on Windows.
-+    return {
-+        { static_cast<int>(server), UnixFileDescriptor::Adopt },
-+        { serverPort, UnixFileDescriptor::Adopt },
-+    };
-+}
-+
-+} // namespace IPC
-+
-+#else
-+
- #include <sys/socket.h>
- #include <wtf/UniStdExtras.h>
- 
-@@ -59,3 +117,5 @@ SocketPair createPlatformConnection(int socketType, unsigned options)
- }
- 
- } // namespace IPC
-+
-+#endif // OS(WINDOWS)
-diff --git a/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp b/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp
-index 64bcde96..ee1c96b9 100644
---- a/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp
-+++ b/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp
-@@ -60,7 +60,12 @@ static String findWebKitProcess(const ASCIILiteral processName)
-     }
- #endif
- 
-+#if OS(WINDOWS)
-+    // MinGW installs the helper processes as <name>.exe.
-+    return FileSystem::pathByAppendingComponent(FileSystem::stringFromFileSystemRepresentation(PKGLIBEXECDIR), makeString(processName, ".exe"_s));
-+#else
-     return FileSystem::pathByAppendingComponent(FileSystem::stringFromFileSystemRepresentation(PKGLIBEXECDIR), processName);
-+#endif
- }
- 
- String executablePathOfWebProcess()
-diff --git a/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp b/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp
-index 7d054a56..b34c17f3 100644
---- a/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp
-+++ b/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp
-@@ -28,7 +28,9 @@
- 
- #include <JavaScriptCore/Options.h>
- #include <WebCore/ProcessIdentifier.h>
-+#if !OS(WINDOWS)
- #include <signal.h>
-+#endif
- #include <stdlib.h>
- #include <string.h>
- #include <wtf/StdLibExtras.h>
-@@ -41,10 +43,19 @@
- #include "unix/BreakpadExceptionHandler.h"
- #endif
- 
--#if USE(GLIB)
-+#if USE(GLIB) && !OS(WINDOWS)
- #include <glib-unix.h>
- #endif
- 
-+#if OS(WINDOWS)
-+#ifndef WIN32_LEAN_AND_MEAN
-+#define WIN32_LEAN_AND_MEAN
-+#endif
-+#include <winsock2.h>
-+#include <ws2tcpip.h>
-+#include <windows.h>
-+#endif
-+
- #if ENABLE(LLVM_PROFILE_GENERATION)
- __attribute__((weak)) extern "C" int __llvm_profile_dump(void);
- #endif
-@@ -75,6 +86,29 @@ bool AuxiliaryProcessMainCommon::parseCommandLine(int argc, char** argv)
-     } else
-         return false;
- 
-+#if OS(WINDOWS)
-+    // MinGW: the launcher passes the UDP port of the UI process IPC socket.
-+    // Create a connected loopback datagram socket and adopt it as the
-+    // connection identifier.
-+    auto ipcPort = parseInteger<uint16_t>(StringView::fromLatin1(argvSpan[argIndex++]));
-+    if (!ipcPort)
-+        return false;
-+
-+    SOCKET ipcSocket = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-+    if (ipcSocket == INVALID_SOCKET)
-+        return false;
-+
-+    sockaddr_in ipcAddress = { };
-+    ipcAddress.sin_family = AF_INET;
-+    ipcAddress.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-+    ipcAddress.sin_port = htons(*ipcPort);
-+    if (::connect(ipcSocket, reinterpret_cast<sockaddr*>(&ipcAddress), sizeof(ipcAddress)) == SOCKET_ERROR) {
-+        closesocket(ipcSocket);
-+        return false;
-+    }
-+
-+    m_parameters.connectionIdentifier = IPC::Connection::Identifier { reinterpret_cast<HANDLE>(ipcSocket) };
-+#else
-     if (auto connectionIdentifier = parseInteger<int>(StringView::fromLatin1(argvSpan[argIndex++])))
-         m_parameters.connectionIdentifier = IPC::Connection::Identifier { { *connectionIdentifier, UnixFileDescriptor::Adopt } };
-     else
-@@ -82,6 +116,10 @@ bool AuxiliaryProcessMainCommon::parseCommandLine(int argc, char** argv)
- 
-     if (!m_parameters.processIdentifier->toRawValue() || m_parameters.connectionIdentifier.handle.value() <= 0)
-         return false;
-+#endif
-+
-+    if (!m_parameters.processIdentifier->toRawValue())
-+        return false;
- 
- #if ENABLE(DEVELOPER_MODE)
-     // Check last remaining options for JSC testing
-@@ -96,11 +134,13 @@ bool AuxiliaryProcessMainCommon::parseCommandLine(int argc, char** argv)
- 
- void AuxiliaryProcess::platformInitialize(const AuxiliaryProcessInitializationParameters&)
- {
-+#if !OS(WINDOWS)
-     struct sigaction signalAction { };
-     RELEASE_ASSERT(!sigemptyset(&signalAction.sa_mask));
-     signalAction.sa_handler = SIG_IGN;
-     RELEASE_ASSERT(!sigaction(SIGPIPE, &signalAction, nullptr));
--#if ENABLE(LLVM_PROFILE_GENERATION) && USE(GLIB)
-+#endif // !OS(WINDOWS)
-+#if ENABLE(LLVM_PROFILE_GENERATION) && USE(GLIB) && !OS(WINDOWS)
-     // __llvm_profile_dump() is not async-signal-safe but losing profile
-     // data from auxiliary processes would make PGO collection impractical.
-     if (__llvm_profile_dump) {
-diff --git a/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp b/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
-index b20208ab..cda05b26 100644
---- a/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
-+++ b/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
-@@ -35,7 +35,9 @@
- #include <errno.h>
- #include <fcntl.h>
- #include <glib.h>
-+#if !OS(WINDOWS)
- #include <sys/socket.h>
-+#endif
- #include <wtf/FileSystem.h>
- #include <wtf/RunLoop.h>
- #include <wtf/UniStdExtras.h>
-@@ -58,6 +60,13 @@
- #include <wtf/unix/UnixFileDescriptor.h>
- #endif
- 
-+#if OS(WINDOWS)
-+#ifndef WIN32_LEAN_AND_MEAN
-+#define WIN32_LEAN_AND_MEAN
-+#endif
-+#include <windows.h>
-+#endif
-+
- namespace WebKit {
- 
- #if OS(LINUX)
-@@ -109,7 +118,13 @@ void ProcessLauncher::launchProcess()
- 
-     GUniquePtr<gchar> processIdentifier(g_strdup_printf("%" PRIu64, m_launchOptions.processIdentifier.toUInt64()));
- 
--    IPC::SocketPair webkitSocketPair = IPC::createPlatformConnection(SOCK_SEQPACKET, connectionOptions());
-+    IPC::SocketPair webkitSocketPair = IPC::createPlatformConnection(
-+#if OS(WINDOWS)
-+        0, // MinGW: socketType is ignored; loopback datagrams are used.
-+#else
-+        SOCK_SEQPACKET,
-+#endif
-+        connectionOptions());
-     GUniquePtr<gchar> webkitSocket(g_strdup_printf("%d", webkitSocketPair.client.value()));
- 
- #if OS(ANDROID)
-@@ -233,9 +248,14 @@ void ProcessLauncher::launchProcess()
-     // Please keep this comment in sync with the duplicate comment in XDGDBusProxy::launch.
-     GRefPtr<GSubprocessLauncher> launcher = adoptGRef(g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_INHERIT_FDS));
-     int webkitClientSocketValue = webkitSocketPair.client.release();
-+#if !OS(WINDOWS)
-+    // MinGW: g_subprocess_launcher_take_fd() does not exist on Windows. The
-+    // child creates its own socket and connects back to the port passed in
-+    // argv instead.
-     g_subprocess_launcher_take_fd(launcher.get(), webkitClientSocketValue, webkitClientSocketValue);
-+#endif
- 
--#if USE(SYSPROF_CAPTURE)
-+#if USE(SYSPROF_CAPTURE) && !OS(WINDOWS)
-     UnixFileDescriptor sysprofFd;
- 
-     if (const char* sysprofFdStr = getenv("SYSPROF_CONTROL_FD"))
-@@ -305,9 +325,15 @@ void ProcessLauncher::launchProcess()
-     m_processID = g_ascii_strtoll(processIdStr, nullptr, 0);
-     RELEASE_ASSERT(m_processID);
- 
-+#if OS(WINDOWS)
-+    RunLoop::mainSingleton().dispatch([protectedThis = protect(*this), this, serverSocketValue = webkitSocketPair.server.release()] mutable {
-+        didFinishLaunchingProcess(m_processID, IPC::Connection::Identifier { reinterpret_cast<HANDLE>(static_cast<intptr_t>(serverSocketValue)) });
-+    });
-+#else
-     RunLoop::mainSingleton().dispatch([protectedThis = protect(*this), this, serverSocket = WTF::move(webkitSocketPair.server)] mutable {
-         didFinishLaunchingProcess(m_processID, IPC::Connection::Identifier { WTF::move(serverSocket) });
-     });
-+#endif
- }
- 
- void ProcessLauncher::terminateProcess()
-@@ -320,6 +346,13 @@ void ProcessLauncher::terminateProcess()
-     if (!m_processID)
-         return;
- 
-+#if OS(WINDOWS)
-+    // MinGW: there is no kill(); terminate the process with the native API.
-+    if (HANDLE processHandle = OpenProcess(PROCESS_TERMINATE, FALSE, static_cast<DWORD>(m_processID))) {
-+        TerminateProcess(processHandle, 1);
-+        CloseHandle(processHandle);
-+    }
-+#else
- #if OS(ANDROID)
-     if (auto* processManager = wpe_process_manager_get_default()) {
-         wpe_process_manager_terminate(processManager, m_processID);
-@@ -347,6 +380,7 @@ void ProcessLauncher::terminateProcess()
- #endif
- 
- #endif
-+#endif // OS(WINDOWS)
- 
-     m_processID = 0;
- }
-diff --git a/Source/WebKit/UIProcess/glib/FenceMonitor.cpp b/Source/WebKit/UIProcess/glib/FenceMonitor.cpp
-index a2ac1d7a..d3358871 100644
---- a/Source/WebKit/UIProcess/glib/FenceMonitor.cpp
-+++ b/Source/WebKit/UIProcess/glib/FenceMonitor.cpp
-@@ -27,7 +27,9 @@
- #include "FenceMonitor.h"
- 
- #if PLATFORM(GTK) || (PLATFORM(WPE) && ENABLE(WPE_PLATFORM))
-+#if !OS(WINDOWS)
- #include <glib-unix.h>
-+#endif
- 
- #if PLATFORM(GTK)
- #include <gtk/gtk.h>
-@@ -46,6 +48,7 @@ FenceMonitor::~FenceMonitor()
-         g_source_destroy(m_source.get());
- }
- 
-+#if !OS(WINDOWS)
- struct FenceSource {
-     static GSourceFuncs sourceFuncs;
- 
-@@ -70,9 +73,11 @@ GSourceFuncs FenceSource::sourceFuncs = {
-     nullptr, // closure_callback
-     nullptr, // closure_marshall
- };
-+#endif // !OS(WINDOWS)
- 
- void FenceMonitor::ensureSource()
- {
-+#if !OS(WINDOWS)
-     if (m_source) [[likely]]
-         return;
- 
-@@ -88,6 +93,7 @@ void FenceMonitor::ensureSource()
-         return G_SOURCE_CONTINUE;
-     }, this, nullptr);
-     g_source_attach(m_source.get(), g_main_context_get_thread_default());
-+#endif // !OS(WINDOWS)
- }
- 
- static bool isFileDescriptorReadable(int fd)
-@@ -101,6 +107,10 @@ static bool isFileDescriptorReadable(int fd)
- 
- void FenceMonitor::addFileDescriptor(UnixFileDescriptor&& fd)
- {
-+#if OS(WINDOWS)
-+    // DMA-BUF fences are a Linux concept; without GBM nothing ever calls this.
-+    UNUSED_PARAM(fd);
-+#else
-     RELEASE_ASSERT(!m_fd);
- 
-     if (!fd || isFileDescriptorReadable(fd.value())) {
-@@ -115,6 +125,7 @@ void FenceMonitor::addFileDescriptor(UnixFileDescriptor&& fd)
-     if (source.tag)
-         g_source_remove_unix_fd(&source.base, source.tag);
-     source.tag = g_source_add_unix_fd(&source.base, m_fd.value(), G_IO_IN);
-+#endif // !OS(WINDOWS)
- }
- 
- } // namespace WebKit
 diff --git a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
 index c534f8fe..40a0c8a6 100644
 --- a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
@@ -1440,133 +495,6 @@ index 0ef20c19..239aa760 100644
  }
  
  } // namespace WebCore
-diff --git a/Source/WebKit/Shared/API/glib/WebKitUserMessage.cpp b/Source/WebKit/Shared/API/glib/WebKitUserMessage.cpp
-index 49da659d..668eb589 100644
---- a/Source/WebKit/Shared/API/glib/WebKitUserMessage.cpp
-+++ b/Source/WebKit/Shared/API/glib/WebKitUserMessage.cpp
-@@ -21,7 +21,10 @@
- #include "WebKitUserMessage.h"
- 
- #include "WebKitUserMessagePrivate.h"
-+#if !OS(WINDOWS)
-+// gio only implements the unix fd-list API for G_OS_UNIX builds.
- #include <gio/gunixfdlist.h>
-+#endif
- #include <glib/gi18n-lib.h>
- #include <wtf/CompletionHandler.h>
- #include <wtf/glib/WTFGType.h>
-@@ -172,7 +175,14 @@ static void webkit_user_message_class_init(WebKitUserMessageClass* klass)
-         g_param_spec_object(
-             "fd-list",
-             nullptr, nullptr,
-+#if OS(WINDOWS)
-+            // gio has no unix fd-list implementation on Windows, so no
-+            // GUnixFDList can exist there; accept any GObject so the public
-+            // API entry points keep working with a NULL fd-list.
-+            G_TYPE_OBJECT,
-+#else
-             G_TYPE_UNIX_FD_LIST,
-+#endif
-             static_cast<GParamFlags>(WEBKIT_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY)));
- }
- 
-@@ -227,7 +237,11 @@ WebKitUserMessage* webkit_user_message_new(const char* name, GVariant* parameter
- WebKitUserMessage* webkit_user_message_new_with_fd_list(const char* name, GVariant* parameters, GUnixFDList* fdList)
- {
-     g_return_val_if_fail(name, nullptr);
-+#if OS(WINDOWS)
-+    g_return_val_if_fail(!fdList || G_IS_OBJECT(fdList), nullptr);
-+#else
-     g_return_val_if_fail(!fdList || G_IS_UNIX_FD_LIST(fdList), nullptr);
-+#endif
- 
-     return WEBKIT_USER_MESSAGE(g_object_new(WEBKIT_TYPE_USER_MESSAGE, "name", name, "parameters", parameters, "fd-list", fdList, nullptr));
- }
-diff --git a/Source/WebKit/Shared/glib/ArgumentCodersGLib.cpp b/Source/WebKit/Shared/glib/ArgumentCodersGLib.cpp
-index 6637fc55..a2d5e91b 100644
---- a/Source/WebKit/Shared/glib/ArgumentCodersGLib.cpp
-+++ b/Source/WebKit/Shared/glib/ArgumentCodersGLib.cpp
-@@ -27,7 +27,10 @@
- #include "ArgumentCodersGLib.h"
- 
- #include <gio/gio.h>
-+#if !OS(WINDOWS)
-+// gio only implements the unix fd-list API for G_OS_UNIX builds.
- #include <gio/gunixfdlist.h>
-+#endif
- #include <wtf/Vector.h>
- #include <wtf/glib/GSpanExtras.h>
- #include <wtf/glib/GUniquePtr.h>
-@@ -184,6 +187,13 @@ std::optional<GTlsCertificateFlags> ArgumentCoder<GTlsCertificateFlags>::decode(
- 
- void ArgumentCoder<GRefPtr<GUnixFDList>>::encode(Encoder& encoder, const GRefPtr<GUnixFDList>& fdList)
- {
-+#if OS(WINDOWS)
-+    // gio has no unix fd-list implementation on Windows, so no GUnixFDList
-+    // can exist there; encode the empty case to keep the wire format
-+    // identical to the non-Windows encoder.
-+    UNUSED_PARAM(fdList);
-+    encoder << false;
-+#else
-     if (!fdList) {
-         encoder << false;
-         return;
-@@ -197,6 +207,7 @@ void ArgumentCoder<GRefPtr<GUnixFDList>>::encode(Encoder& encoder, const GRefPtr
-         });
-     }
-     encoder << true << WTF::move(attachments);
-+#endif // OS(WINDOWS)
- }
- 
- std::optional<GRefPtr<GUnixFDList>> ArgumentCoder<GRefPtr<GUnixFDList>>::decode(Decoder& decoder)
-@@ -211,6 +222,11 @@ std::optional<GRefPtr<GUnixFDList>> ArgumentCoder<GRefPtr<GUnixFDList>>::decode(
-     if (!attachments) [[unlikely]]
-         return std::nullopt;
- 
-+#if OS(WINDOWS)
-+    // No GUnixFDList can exist on Windows (see encode()); keep the stream in
-+    // sync by consuming the attachments, then decode to an empty fd list.
-+    return GRefPtr<GUnixFDList> { };
-+#else
-     GRefPtr<GUnixFDList> fdList = adoptGRef(g_unix_fd_list_new());
-     for (auto& attachment : *attachments) {
-         int ret = g_unix_fd_list_append(fdList.get(), attachment.value(), nullptr);
-@@ -218,6 +234,7 @@ std::optional<GRefPtr<GUnixFDList>> ArgumentCoder<GRefPtr<GUnixFDList>>::decode(
-             return std::nullopt;
-     }
-     return fdList;
-+#endif // OS(WINDOWS)
- }
- 
- } // namespace IPC
-diff --git a/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp b/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
-index 578321a9..cd1ff52e 100644
---- a/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
-+++ b/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
-@@ -448,6 +448,15 @@ WEBKIT_DEFINE_ASYNC_DATA_STRUCT(PrintPortalJobData)
- 
- static void webkitPrintOperationSendPagesToPrintPortal(WebKitPrintOperation* printOperation, WebFrameProxy* webFrame, GtkPrintSettings* printSettings, GtkPageSetup* pageSetup)
- {
-+#if OS(WINDOWS)
-+    // The freedesktop.org print portal and gio's unix fd-list API are not
-+    // available on Windows; portal-based printing is unsupported there.
-+    UNUSED_PARAM(webFrame);
-+    UNUSED_PARAM(printSettings);
-+    UNUSED_PARAM(pageSetup);
-+    webkitPrintOperationFailed(printOperation, GUniquePtr<GError> { g_error_new(WEBKIT_PRINT_ERROR, WEBKIT_PRINT_ERROR_GENERAL, _("Printing through the desktop portal is not supported on this platform")) });
-+    return;
-+#else
-     auto* priv = printOperation->priv;
-     auto preparePrintResponse = std::exchange(priv->preparePrintResponse, std::nullopt);
- 
-@@ -567,6 +576,7 @@ static void webkitPrintOperationSendPagesToPrintPortal(WebKitPrintOperation* pri
-                 }, printOperation.leakRef());
-         }, callbackData, nullptr);
-     });
-+#endif // OS(WINDOWS)
- }
- 
- static void webkitPrintOperationPreparePrint(WebKitPrintOperation* printOperation)
 diff --git a/Source/WebCore/accessibility/atspi/AccessibilityAtspi.h b/Source/WebCore/accessibility/atspi/AccessibilityAtspi.h
 index d8b4414f..45ecba9a 100644
 --- a/Source/WebCore/accessibility/atspi/AccessibilityAtspi.h
@@ -1759,14 +687,182 @@ index 752f5103..7d72847d 100644
 +    iface->lookup_async = webkitAutoconfigProxyResolverLookupAsync;
 +    iface->lookup_finish = webkitAutoconfigProxyResolverLookupFinish;
  }
-
+diff --git a/Source/WebKit/Platform/IPC/ArgumentCoders.h b/Source/WebKit/Platform/IPC/ArgumentCoders.h
+index 0d92fe33..c9088df9 100644
+--- a/Source/WebKit/Platform/IPC/ArgumentCoders.h
++++ b/Source/WebKit/Platform/IPC/ArgumentCoders.h
+@@ -879,4 +879,12 @@ template<typename T, typename Traits> struct ArgumentCoder<WTF::Markable<T, Trai
+     }
+ };
+ 
++#if OS(WINDOWS)
++template<> struct ArgumentCoder<WTF::Win32Handle> {
++    static void encode(Encoder&, const WTF::Win32Handle&);
++    static void encode(Encoder&, WTF::Win32Handle&&);
++    static std::optional<WTF::Win32Handle> decode(Decoder&);
++};
++#endif
++
+ } // namespace IPC
+diff --git a/Source/WebKit/Platform/IPC/Attachment.h b/Source/WebKit/Platform/IPC/Attachment.h
+index 606d48b9..7685915e 100644
+--- a/Source/WebKit/Platform/IPC/Attachment.h
++++ b/Source/WebKit/Platform/IPC/Attachment.h
+@@ -26,6 +26,8 @@
+ 
+ #pragma once
+ 
++#include <utility>
++
+ #if OS(DARWIN)
+ #include <wtf/MachSendRight.h>
+ #endif
+@@ -39,14 +41,56 @@
+ #include <wtf/unix/UnixFileDescriptor.h>
+ #endif
+ 
++#if OS(WINDOWS)
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#endif
++
+ namespace IPC {
+ 
+ // IPC::Attachment is a type representing objects that cannot be transferred as data,
+ // rather they are transferred via operating system cross-process communication primitives.
+ #if OS(DARWIN)
+ using Attachment = MachSendRight;
+-#elif OS(WINDOWS)
+-struct Attachment { }; // Windows does not need attachments at the moment.
++#elif OS(WINDOWS) && !USE(UNIX_DOMAIN_SOCKETS)
++// Windows attachments carry a raw HANDLE value that the connection's send path
++// has already duplicated into the destination process. The attachment owns the
++// handle and closes it on destruction.
++struct Attachment {
++    Attachment() = default;
++    explicit Attachment(HANDLE value)
++        : handle(value)
++    {
++    }
++    Attachment(Attachment&& other)
++        : handle(std::exchange(other.handle, nullptr))
++    {
++    }
++    Attachment& operator=(Attachment&& other)
++    {
++        if (this != &other) {
++            closeIfNeeded();
++            handle = std::exchange(other.handle, nullptr);
++        }
++        return *this;
++    }
++    ~Attachment()
++    {
++        closeIfNeeded();
++    }
++    explicit operator bool() const { return handle && handle != INVALID_HANDLE_VALUE; }
++    HANDLE handle { nullptr };
++
++private:
++    void closeIfNeeded()
++    {
++        if (handle && handle != INVALID_HANDLE_VALUE)
++            CloseHandle(handle);
++        handle = nullptr;
++    }
++};
+ #elif OS(ANDROID)
+ using Attachment = Variant<UnixFileDescriptor, RefPtr<AHardwareBuffer>>;
+ #elif USE(UNIX_DOMAIN_SOCKETS)
+diff --git a/Source/WebKit/Platform/IPC/Connection.h b/Source/WebKit/Platform/IPC/Connection.h
+index 915dc5e5..6380608c 100644
+--- a/Source/WebKit/Platform/IPC/Connection.h
++++ b/Source/WebKit/Platform/IPC/Connection.h
+@@ -780,6 +780,18 @@ private:
+     GSocketMonitor m_writeSocketMonitor;
+     Vector<UnixFileDescriptor> m_fileDescriptors;
+     bool m_hasPendingOutputMessage { false };
++#if OS(WINDOWS)
++    // MinGW: the peer's process id, exchanged through a credentials datagram
++    // right after the connection is established. Needed to duplicate HANDLE
++    // attachments into the destination process.
++    DWORD m_remoteProcessID { 0 };
++    bool m_credentialsSent { false };
++    bool m_peerConnected { false };
++    // Outgoing messages with HANDLE attachments are queued until the peer's
++    // process id is known.
++    Vector<std::unique_ptr<Encoder>> m_deferredOutputEncoders;
++    void sendCredentialsIfNeeded();
++#endif
+ #if OS(ANDROID)
+     bool sendOutgoingHardwareBuffers();
+     bool receiveIncomingHardwareBuffers();
+diff --git a/Source/WebKit/Platform/IPC/Encoder.h b/Source/WebKit/Platform/IPC/Encoder.h
+index ea85b7c3..4b9a48de 100644
+--- a/Source/WebKit/Platform/IPC/Encoder.h
++++ b/Source/WebKit/Platform/IPC/Encoder.h
+@@ -95,6 +95,7 @@ public:
+     std::span<const uint8_t> span() const LIFETIME_BOUND { return capacityBuffer().first(m_bufferSize); }
+ 
+     void addAttachment(Attachment&&);
++    const Vector<Attachment>& attachments() const LIFETIME_BOUND { return m_attachments; }
+     Vector<Attachment> releaseAttachments();
+     void reserve(size_t);
+ 
+diff --git a/Source/WebKit/Platform/IPC/IPCUtilities.h b/Source/WebKit/Platform/IPC/IPCUtilities.h
+index 9cf9d085..e5c75d36 100644
+--- a/Source/WebKit/Platform/IPC/IPCUtilities.h
++++ b/Source/WebKit/Platform/IPC/IPCUtilities.h
+@@ -31,7 +31,7 @@
+ #include <windows.h>
+ #endif
+ 
+-#if USE(UNIX_DOMAIN_SOCKETS)
++#if USE(UNIX_DOMAIN_SOCKETS) || OS(WINDOWS)
+ #include <wtf/unix/UnixFileDescriptor.h>
+ #endif
+ 
+@@ -51,7 +51,7 @@ inline bool isTestingIPC()
+ }
+ #endif
+ 
+-#if USE(UNIX_DOMAIN_SOCKETS)
++#if USE(UNIX_DOMAIN_SOCKETS) || OS(WINDOWS)
+ struct SocketPair {
+     UnixFileDescriptor client;
+     UnixFileDescriptor server;
+@@ -67,6 +67,10 @@ SocketPair createPlatformConnection(int socketType, unsigned options = SetCloexe
+ #endif
+ 
+ #if OS(WINDOWS)
++// MinGW: the GLib port runs over winsock loopback datagram sockets. The server
++// descriptor is a bound UDP socket (a raw SOCKET value); the client descriptor
++// is a UDP socket already connected to the server. Message boundaries are
++// preserved because IPC messages fit in a single datagram.
+ bool createServerAndClientIdentifiers(HANDLE& serverIdentifier, HANDLE& clientIdentifier);
+ #endif
+ 
 diff --git a/Source/WebKit/Platform/IPC/IPCSemaphore.h b/Source/WebKit/Platform/IPC/IPCSemaphore.h
-index 7f2e9a01..c3d45e6f 100644
+index 6d19a337..46774eb4 100644
 --- a/Source/WebKit/Platform/IPC/IPCSemaphore.h
 +++ b/Source/WebKit/Platform/IPC/IPCSemaphore.h
-@@ -74,7 +74,10 @@
+@@ -34,7 +34,7 @@
+ #if PLATFORM(COCOA)
+ #include <mach/semaphore.h>
+ #include <wtf/MachSendRight.h>
+-#elif OS(WINDOWS)
++#elif OS(WINDOWS) && !USE(UNIX_DOMAIN_SOCKETS)
+ #include <wtf/win/Win32Handle.h>
+ #elif USE(UNIX_DOMAIN_SOCKETS)
+ #include <wtf/unix/UnixFileDescriptor.h>
+@@ -72,9 +72,12 @@ public:
+ 
+     MachSendRight createSendRight() const;
      explicit operator bool() const { return m_sendRight || m_semaphore != SEMAPHORE_NULL; }
- #elif OS(WINDOWS)
+-#elif OS(WINDOWS)
++#elif OS(WINDOWS) && !USE(UNIX_DOMAIN_SOCKETS)
      explicit Semaphore(Win32Handle&&);
 -    Win32Handle win32Handle() const { return Win32Handle { m_semaphoreHandle }; }
 +    // Win32Handle is move-only (no copy constructor), so mint an owning
@@ -1776,7 +872,1077 @@ index 7f2e9a01..c3d45e6f 100644
  
  #elif USE(UNIX_DOMAIN_SOCKETS)
      explicit Semaphore(UnixFileDescriptor&&);
-
+@@ -90,7 +93,7 @@ private:
+ #if PLATFORM(COCOA)
+     MachSendRight m_sendRight;
+     semaphore_t m_semaphore { SEMAPHORE_NULL };
+-#elif OS(WINDOWS)
++#elif OS(WINDOWS) && !USE(UNIX_DOMAIN_SOCKETS)
+     Win32Handle m_semaphoreHandle;
+ #elif USE(UNIX_DOMAIN_SOCKETS)
+     UnixFileDescriptor m_fd;
+diff --git a/Source/WebKit/Platform/IPC/IPCSemaphore.serialization.in b/Source/WebKit/Platform/IPC/IPCSemaphore.serialization.in
+index f3463374..8ee93641 100644
+--- a/Source/WebKit/Platform/IPC/IPCSemaphore.serialization.in
++++ b/Source/WebKit/Platform/IPC/IPCSemaphore.serialization.in
+@@ -26,7 +26,7 @@ webkit_platform_header: "IPCSemaphore.h"
+ #if PLATFORM(COCOA)
+     MachSendRight createSendRight();
+ #endif
+-#if OS(WINDOWS)
++#if OS(WINDOWS) && !USE(UNIX_DOMAIN_SOCKETS)
+     Win32Handle win32Handle();
+ #endif
+ #if USE(UNIX_DOMAIN_SOCKETS)
+diff --git a/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp b/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp
+index d5b3cce6..f94e43ad 100644
+--- a/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp
++++ b/Source/WebKit/Platform/IPC/glib/ConnectionGLib.cpp
+@@ -31,9 +31,11 @@
+ #include "Logging.h"
+ #include "UnixMessage.h"
+ #include <gio/gio.h>
++#if !OS(WINDOWS)
+ #include <gio/gunixconnection.h>
+ #include <gio/gunixfdmessage.h>
+ #include <sys/socket.h>
++#endif
+ #include <wtf/Borrow.h>
+ #include <wtf/CheckedArithmetic.h>
+ #include <wtf/StdLibExtras.h>
+@@ -41,6 +43,15 @@
+ #include <wtf/glib/GRefPtr.h>
+ #include <wtf/glib/GUniquePtr.h>
+ 
++#if OS(WINDOWS)
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#include <winsock2.h>
++#include <ws2tcpip.h>
++#endif
++
+ #if OS(ANDROID)
+ #include <android/hardware_buffer.h>
+ #include <wtf/SafeStrerror.h>
+@@ -87,9 +98,19 @@ public:
+ private:
+     // The AttachmentInfo will be copied using memcpy, so all members must be trivially copyable.
+     bool m_isNull;
++#if OS(WINDOWS)
++    // MinGW: HANDLE attachments travel inline; the value has already been
++    // duplicated into the destination process by the sending connection.
++    uint64_t m_handleValue { 0 };
++#endif
+ #if OS(ANDROID)
+     Type m_type;
+ #endif
++public:
++#if OS(WINDOWS)
++    uint64_t handleValue() const { return m_handleValue; }
++    void setHandleValue(uint64_t value) { m_handleValue = value; }
++#endif
+ };
+ 
+ static_assert(sizeof(MessageInfo) + sizeof(AttachmentInfo) * s_attachmentMaxAmount <= s_messageMaxSize, "s_messageMaxSize is too small.");
+@@ -97,6 +118,9 @@ static_assert(sizeof(MessageInfo) + sizeof(AttachmentInfo) * s_attachmentMaxAmou
+ void Connection::platformInitialize(Identifier&& identifier)
+ {
+     GUniqueOutPtr<GError> error;
++    // MinGW: the identifier rides in a UnixFileDescriptor payload whose packed
++    // value is a winsock SOCKET, which is exactly what g_socket_new_from_fd()
++    // expects on Windows.
+     m_socket = adoptGRef(g_socket_new_from_fd(identifier.handle.release(), &error.outPtr()));
+     if (!m_socket) {
+         // Note: g_socket_new_from_fd() takes ownership of the fd only on success, so if this error
+@@ -166,9 +190,41 @@ std::unique_ptr<Decoder> Connection::createMessageDecoder()
+         }
+     }
+ 
++#if OS(WINDOWS)
+     if (!attachmentCount)
+         return Decoder::create(messageData.first(messageInfo.bodySize()), { });
+ 
++    if (messageInfo.isBodyOutOfLine())
++        attachmentCount--;
++
++    Vector<Attachment> attachments(attachmentCount);
++    for (size_t i = 0; i < attachmentCount; ++i) {
++        auto& attachmentInfo = consumeAndReinterpretCastTo<AttachmentInfo>(messageData);
++        size_t attachmentIndex = attachmentCount - i - 1;
++        if (!attachmentInfo.isNull())
++            attachments[attachmentIndex] = Attachment { static_cast<int>(static_cast<uint32_t>(attachmentInfo.handleValue())), Attachment::Adopt };
++    }
++
++    if (!messageInfo.isBodyOutOfLine())
++        return Decoder::create(messageData.first(messageInfo.bodySize()), WTF::move(attachments));
++
++    ASSERT(messageInfo.bodySize());
++    auto& attachmentInfo = reinterpretCastSpanStartTo<AttachmentInfo>(messageData);
++    if (attachmentInfo.isNull()) {
++        ASSERT_NOT_REACHED();
++        return nullptr;
++    }
++
++    auto handle = WebCore::SharedMemory::Handle { UnixFileDescriptor { static_cast<int>(static_cast<uint32_t>(attachmentInfo.handleValue())), UnixFileDescriptor::Adopt }, messageInfo.bodySize() };
++    auto messageBody = WebCore::SharedMemory::map(WTF::move(handle), WebCore::SharedMemory::Protection::ReadOnly);
++    if (!messageBody) {
++        ASSERT_NOT_REACHED();
++        return nullptr;
++    }
++
++    return Decoder::create(messageBody->mutableSpan().first(messageInfo.bodySize()), WTF::move(attachments));
++#else
++
+     if (messageInfo.isBodyOutOfLine())
+         attachmentCount--;
+ 
+@@ -242,8 +298,10 @@ std::unique_ptr<Decoder> Connection::createMessageDecoder()
+     }
+ 
+     return Decoder::create(messageBody->mutableSpan().first(messageInfo.bodySize()), WTF::move(attachments));
++#endif // OS(WINDOWS)
+ }
+ 
++#if !OS(WINDOWS)
+ IGNORE_CLANG_WARNINGS_BEGIN("unsafe-buffer-usage")
+ static ssize_t readBytesFromSocket(GSocket* socket, Vector<uint8_t>& buffer, Vector<UnixFileDescriptor>& fileDescriptors, GCancellable* cancellable, GError** error)
+ {
+@@ -282,9 +340,35 @@ static ssize_t readBytesFromSocket(GSocket* socket, Vector<uint8_t>& buffer, Vec
+     return bytesRead;
+ }
+ IGNORE_CLANG_WARNINGS_END
++#endif // !OS(WINDOWS)
++
++#if OS(WINDOWS)
++struct CredentialsDatagram {
++    uint32_t magic;
++    uint32_t processID;
++};
++static_assert(sizeof(CredentialsDatagram) == 8);
++static constexpr uint32_t s_credentialsMagic = 0x4B575043; // 'KWPC'
++
++static HANDLE duplicateHandleForProcess(HANDLE handle, DWORD processID)
++{
++    if (!handle || handle == INVALID_HANDLE_VALUE)
++        return nullptr;
++
++    HANDLE remoteProcess = OpenProcess(PROCESS_DUP_HANDLE, FALSE, processID);
++    if (!remoteProcess)
++        return nullptr;
++
++    HANDLE target = nullptr;
++    BOOL result = DuplicateHandle(GetCurrentProcess(), handle, remoteProcess, &target, 0, FALSE, DUPLICATE_SAME_ACCESS);
++    CloseHandle(remoteProcess);
++    return result ? target : nullptr;
++}
++#endif // OS(WINDOWS)
+ 
+ void Connection::readyReadHandler()
+ {
++#if !OS(WINDOWS)
+ #if OS(ANDROID)
+     if (m_pendingIncomingHardwareBufferCount) {
+         if (!receiveIncomingHardwareBuffers())
+@@ -341,6 +425,78 @@ void Connection::readyReadHandler()
+         else
+             connectionDidClose();
+     }
++#endif // !OS(WINDOWS)
++#if OS(WINDOWS)
++    while (true) {
++        m_readBuffer.grow(m_readBuffer.capacity());
++
++        // MinGW: messages travel as single loopback datagrams, so each receive
++        // returns exactly one message and no control messages are used.
++        GUniqueOutPtr<GError> error;
++        GRefPtr<GSocketAddress> sourceAddress;
++        GInputVector inputVector = { m_readBuffer.mutableSpan().data(), m_readBuffer.size() };
++        auto bytesRead = g_socket_receive_message(m_socket.get(), &sourceAddress.outPtr(), &inputVector, 1, nullptr, nullptr, nullptr, m_cancellable.get(), &error.outPtr());
++        if (bytesRead < 0) {
++            if (g_error_matches(error.get(), G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK))
++                return;
++
++            if (g_error_matches(error.get(), G_IO_ERROR, G_IO_ERROR_CONNECTION_CLOSED) || g_error_matches(error.get(), G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
++                connectionDidClose();
++                return;
++            }
++
++            if (m_isConnected) {
++                RELEASE_LOG_ERROR(IPC, "Error receiving IPC message in process %lu: %s", static_cast<unsigned long>(GetCurrentProcessId()), error->message);
++                connectionDidClose();
++            }
++            return;
++        }
++
++        if (!bytesRead) {
++            connectionDidClose();
++            return;
++        }
++
++        m_readBuffer.shrink(bytesRead);
++
++        // The server side binds without a fixed peer; adopt the peer's address
++        // on the first datagram. The client side is already connected.
++        if (!m_peerConnected && sourceAddress.get()) {
++            GUniqueOutPtr<GError> connectError;
++            if (!g_socket_connect(m_socket.get(), sourceAddress.get(), nullptr, &connectError.outPtr())) {
++                if (m_isConnected) {
++                    RELEASE_LOG_ERROR(IPC, "Failed to connect IPC socket to peer: %s", connectError->message);
++                    connectionDidClose();
++                }
++                return;
++            }
++            m_peerConnected = true;
++        }
++
++        // The credentials datagram is exchanged right after the connection is
++        // established so that HANDLE attachments can be duplicated into the
++        // destination process.
++        if (bytesRead >= static_cast<gssize>(sizeof(CredentialsDatagram))) {
++            auto& credentials = reinterpretCastSpanStartTo<CredentialsDatagram>(m_readBuffer.span());
++            if (credentials.magic == s_credentialsMagic) {
++                m_remoteProcessID = credentials.processID;
++                sendCredentialsIfNeeded();
++
++                while (!m_deferredOutputEncoders.isEmpty()) {
++                    auto encoder = WTF::move(m_deferredOutputEncoders.first());
++                    m_deferredOutputEncoders.removeAt(0);
++                    sendOutgoingMessage(makeUniqueRefFromNonNullUniquePtr(WTF::move(encoder)));
++                }
++                continue;
++            }
++        }
++
++        if (auto decoder = createMessageDecoder())
++            processIncomingMessage(makeUniqueRefFromNonNullUniquePtr(WTF::move(decoder)));
++        else
++            connectionDidClose();
++    }
++#endif // OS(WINDOWS)
+ }
+ 
+ bool Connection::platformPrepareForOpen()
+@@ -372,6 +528,13 @@ void Connection::platformOpen()
+     m_connectionQueue->dispatch([protectedThis] {
+         protectedThis->readyReadHandler();
+     });
++
++#if OS(WINDOWS)
++    // MinGW: announce ourselves to the peer as soon as the socket is live.
++    m_connectionQueue->dispatch([protectedThis] {
++        protectedThis->sendCredentialsIfNeeded();
++    });
++#endif
+ }
+ 
+ bool Connection::platformCanSendOutgoingMessages() const
+@@ -387,6 +550,19 @@ bool Connection::sendOutgoingMessage(UniqueRef<Encoder>&& encoder)
+ {
+     static_assert(sizeof(MessageInfo) + s_attachmentMaxAmount * sizeof(size_t) <= s_messageMaxSize, "Attachments fit to message inline");
+ 
++#if OS(WINDOWS)
++    if (!m_remoteProcessID) {
++        for (auto& attachment : encoder.get().attachments()) {
++            if (attachment) {
++                // HANDLE attachments need the peer's process id; queue the
++                // message until the credentials datagram arrives.
++                m_deferredOutputEncoders.append(encoder.moveToUniquePtr());
++                return true;
++            }
++        }
++    }
++#endif
++
+     UnixMessage outputMessage(encoder.get());
+     if (outputMessage.attachments().size() > (s_attachmentMaxAmount - 1)) {
+         ASSERT_NOT_REACHED();
+@@ -413,6 +589,74 @@ bool Connection::sendOutputMessage(UnixMessage&& outputMessage)
+ 
+     auto& messageInfo = outputMessage.messageInfo();
+     const auto& attachments = outputMessage.attachments();
++#if OS(WINDOWS)
++    // MinGW: the whole message (info + attachment infos + optional inline
++    // body) is written as a single datagram. HANDLE attachments are
++    // duplicated into the destination process and their values travel inline.
++    ASSERT(m_remoteProcessID || attachments.isEmpty());
++
++    GOutputVector outputVector[3];
++    int outputVectorLength = 0;
++
++    outputVector[outputVectorLength++] = { reinterpret_cast<void*>(&messageInfo), sizeof(messageInfo) };
++    Vector<AttachmentInfo> attachmentInfo;
++    if (!attachments.isEmpty()) {
++        attachmentInfo.resize(attachments.size());
++        for (size_t i = 0; i < attachments.size(); ++i) {
++            if (!attachments[i]) {
++                attachmentInfo[i].setNull();
++                continue;
++            }
++
++            HANDLE duplicated = duplicateHandleForProcess(WTF::handleFromIntValue(attachments[i].value()), m_remoteProcessID);
++            if (!duplicated) {
++                RELEASE_LOG_ERROR(IPC, "Failed to duplicate IPC attachment handle into process %lu", static_cast<unsigned long>(m_remoteProcessID));
++                return false;
++            }
++            attachmentInfo[i].setHandleValue(reinterpret_cast<uintptr_t>(duplicated));
++        }
++
++        outputVector[outputVectorLength++] = { attachmentInfo.mutableSpan().data(), sizeof(AttachmentInfo) * attachments.size() };
++    }
++
++    if (!messageInfo.isBodyOutOfLine() && outputMessage.bodySize())
++        outputVector[outputVectorLength++] = { reinterpret_cast<void*>(outputMessage.body().data()), outputMessage.bodySize() };
++
++    GUniqueOutPtr<GError> error;
++    auto bytesWritten = g_socket_send_message(m_socket.get(), nullptr, outputVector, outputVectorLength,
++        nullptr, 0, 0, m_cancellable.get(), &error.outPtr());
++    if (bytesWritten >= 0)
++        return true;
++
++    if (g_error_matches(error.get(), G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK)) {
++        m_hasPendingOutputMessage = true;
++        m_writeSocketMonitor.start(m_socket.get(), G_IO_OUT, m_connectionQueue->runLoop(), m_cancellable.get(), [this, protectedThis = protect(*this), message = WTF::move(outputMessage)] (GIOCondition condition) mutable -> gboolean {
++            if (condition & G_IO_OUT) {
++                ASSERT(m_hasPendingOutputMessage);
++                // We can't stop the monitor from this lambda, because stop destroys the lambda.
++                m_connectionQueue->dispatch([this, protectedThis = protect(*this), message = WTF::move(message)]() mutable {
++                    m_writeSocketMonitor.stop();
++                    m_hasPendingOutputMessage = false;
++                    if (m_isConnected) {
++                        sendOutputMessage(WTF::move(message));
++                        sendOutgoingMessages();
++                    }
++                });
++            }
++            return G_SOURCE_REMOVE;
++        });
++        return false;
++    }
++
++    if (g_error_matches(error.get(), G_IO_ERROR, G_IO_ERROR_CONNECTION_CLOSED) || g_error_matches(error.get(), G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
++        connectionDidClose();
++        return false;
++    }
++
++    if (m_isConnected)
++        RELEASE_LOG_ERROR(IPC, "Error sending IPC message in process %lu: %s", static_cast<unsigned long>(GetCurrentProcessId()), error->message);
++    return false;
++#else
+     GOutputVector outputVector[3];
+     int outputVectorLength = 0;
+ 
+@@ -508,15 +752,28 @@ bool Connection::sendOutputMessage(UnixMessage&& outputMessage)
+     if (m_isConnected)
+         RELEASE_LOG_ERROR(IPC, "Error sending IPC message on socket %d in process %d: %s", g_socket_get_fd(m_socket.get()), getpid(), error->message);
+     return false;
++#endif // OS(WINDOWS)
+ }
+ IGNORE_CLANG_WARNINGS_END
+ 
+ std::optional<Connection::ConnectionIdentifierPair> Connection::createConnectionIdentifierPair()
+ {
++#if OS(WINDOWS)
++    HANDLE serverHandle = nullptr;
++    HANDLE clientHandle = nullptr;
++    if (!IPC::createServerAndClientIdentifiers(serverHandle, clientHandle))
++        return std::nullopt;
++    // MinGW: the IPC plumbing is unix-flavored (USE_UNIX_DOMAIN_SOCKETS is
++    // forced for the GLib port), so the winsock SOCKET values are packed into
++    // UnixFileDescriptor payloads instead of the CA-port Win32 types.
++    return { { Identifier { UnixFileDescriptor { WTF::intFromHandleValue(serverHandle), UnixFileDescriptor::Adopt } }, ConnectionHandle { UnixFileDescriptor { WTF::intFromHandleValue(clientHandle), UnixFileDescriptor::Adopt } } } };
++#else
+     SocketPair socketPair = createPlatformConnection(SOCK_SEQPACKET);
+     return { { Identifier { WTF::move(socketPair.server) }, ConnectionHandle { WTF::move(socketPair.client) } } };
++#endif
+ }
+ 
++#if !OS(WINDOWS)
+ void Connection::sendCredentials() const
+ {
+     ASSERT(m_socket);
+@@ -531,9 +788,35 @@ void Connection::sendCredentials() const
+     }
+     g_socket_set_blocking(m_socket.get(), FALSE);
+ }
++#endif // !OS(WINDOWS)
++
++#if OS(WINDOWS)
++void Connection::sendCredentials() const
++{
++    // MinGW: credentials are exchanged through sendCredentialsIfNeeded().
++}
++
++void Connection::sendCredentialsIfNeeded()
++{
++    if (m_credentialsSent || !m_socket)
++        return;
++
++    CredentialsDatagram credentials { s_credentialsMagic, GetCurrentProcessId() };
++    GUniqueOutPtr<GError> error;
++    gssize sent = g_socket_send(m_socket.get(), reinterpret_cast<const char*>(&credentials), sizeof(credentials), m_cancellable.get(), &error.outPtr());
++    if (sent == static_cast<gssize>(sizeof(credentials)))
++        m_credentialsSent = true;
++    // Failures (e.g. the server side has not connected to the peer yet) are
++    // retried when the peer's credentials datagram arrives.
++}
++#endif // OS(WINDOWS)
+ 
+ pid_t Connection::remoteProcessID(GSocket* socket)
+ {
++#if OS(WINDOWS)
++    UNUSED_PARAM(socket);
++    g_error("Connection::remoteProcessID() is not supported on MinGW");
++#else
+     GRefPtr<GUnixConnection> connection = adoptGRef(G_UNIX_CONNECTION(g_object_new(G_TYPE_UNIX_CONNECTION, "socket", socket, nullptr)));
+     GUniqueOutPtr<GError> error;
+     GRefPtr<GCredentials> credentials = adoptGRef(g_unix_connection_receive_credentials(connection.get(), nullptr, &error.outPtr()));
+@@ -545,6 +828,7 @@ pid_t Connection::remoteProcessID(GSocket* socket)
+         g_error("Connection: failed to get pid from credentials: %s", error->message);
+ 
+     return processID;
++#endif // OS(WINDOWS)
+ }
+ 
+ #if OS(ANDROID)
+@@ -626,6 +910,94 @@ bool Connection::receiveIncomingHardwareBuffers()
+ }
+ #endif // OS(ANDROID)
+ 
++#if OS(WINDOWS)
++void ArgumentCoder<Win32Handle>::encode(Encoder& encoder, const Win32Handle& handle)
++{
++    if (!handle) {
++        encoder.addAttachment(Attachment { });
++        return;
++    }
++
++    HANDLE duplicate = nullptr;
++    if (!DuplicateHandle(GetCurrentProcess(), handle.get(), GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
++        ASSERT_NOT_REACHED();
++        encoder.addAttachment(Attachment { });
++        return;
++    }
++    encoder.addAttachment(Attachment { WTF::intFromHandleValue(duplicate), Attachment::Adopt });
++}
++
++void ArgumentCoder<Win32Handle>::encode(Encoder& encoder, Win32Handle&& handle)
++{
++    if (!handle) {
++        encoder.addAttachment(Attachment { });
++        return;
++    }
++
++    // The handle is adopted by the attachment, which closes it on destruction.
++    encoder.addAttachment(Attachment { WTF::intFromHandleValue(handle.release()), Attachment::Adopt });
++}
++
++std::optional<Win32Handle> ArgumentCoder<Win32Handle>::decode(Decoder& decoder)
++{
++    auto attachment = decoder.takeLastAttachment();
++    if (!attachment)
++        return std::nullopt;
++
++    // release() disowns the packed value so the attachment's destructor does
++    // not close the handle that the returned Win32Handle now owns.
++    return Win32Handle { WTF::handleFromIntValue(attachment->release()), Win32Handle::Adopt };
++}
++#endif // OS(WINDOWS)
++
++} // namespace IPC
++
++#if OS(WINDOWS)
++namespace IPC {
++
++bool createServerAndClientIdentifiers(HANDLE& serverIdentifier, HANDLE& clientIdentifier)
++{
++    serverIdentifier = nullptr;
++    clientIdentifier = nullptr;
++
++    SOCKET server = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
++    if (server == INVALID_SOCKET)
++        return false;
++
++    sockaddr_in address = { };
++    address.sin_family = AF_INET;
++    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++    address.sin_port = 0;
++    if (::bind(server, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
++        closesocket(server);
++        return false;
++    }
++
++    sockaddr_in boundAddress = { };
++    int boundAddressLength = sizeof(boundAddress);
++    if (::getsockname(server, reinterpret_cast<sockaddr*>(&boundAddress), &boundAddressLength) == SOCKET_ERROR) {
++        closesocket(server);
++        return false;
++    }
++
++    SOCKET client = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
++    if (client == INVALID_SOCKET) {
++        closesocket(server);
++        return false;
++    }
++
++    if (::connect(client, reinterpret_cast<sockaddr*>(&boundAddress), sizeof(boundAddress)) == SOCKET_ERROR) {
++        closesocket(client);
++        closesocket(server);
++        return false;
++    }
++
++    serverIdentifier = reinterpret_cast<HANDLE>(server);
++    clientIdentifier = reinterpret_cast<HANDLE>(client);
++    return true;
++}
++
+ } // namespace IPC
++#endif // OS(WINDOWS)
+ 
+ #endif // USE(GLIB)
+diff --git a/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp b/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp
+index 5ba3ea56..16a87042 100644
+--- a/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp
++++ b/Source/WebKit/Platform/IPC/unix/IPCUtilitiesUnix.cpp
+@@ -1,5 +1,6 @@
+ /*
+- * Copyright (C) 2011, 2025 Igalia S.L.
++ * Copyright (C) 2019 Apple Inc. All rights reserved.
++ * Copyright (C) 2025 Tao Zuhong (MinGW support)
+  *
+  * Redistribution and use in source and binary forms, with or without
+  * modification, are permitted provided that the following conditions
+@@ -26,6 +27,63 @@
+ #include "config.h"
+ #include "IPCUtilities.h"
+ 
++#if OS(WINDOWS)
++
++#include <winsock2.h>
++#include <ws2tcpip.h>
++
++namespace IPC {
++
++// MinGW: emulate a socket pair over two connected UDP sockets on the loopback
++// interface. IPC messages are capped at IPC::s_messageMaxSize bytes, which
++// comfortably fits into a single datagram, so message boundaries are preserved
++// just like with SOCK_SEQPACKET.
++//
++// The "server" descriptor is the bound socket itself (a raw SOCKET value kept
++// in a UnixFileDescriptor). The "client" descriptor carries the UDP port
++// number of the server socket; the process launcher passes it to the child
++// process, which creates its own socket, connects back to the server and
++// exchanges a credentials datagram so both sides know their peer's port.
++
++SocketPair createPlatformConnection(int socketType, unsigned options)
++{
++    UNUSED_PARAM(socketType);
++    UNUSED_PARAM(options);
++
++    SOCKET server = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
++    if (server == INVALID_SOCKET)
++        return { };
++
++    sockaddr_in address = { };
++    address.sin_family = AF_INET;
++    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++    address.sin_port = 0;
++    if (::bind(server, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
++        closesocket(server);
++        return { };
++    }
++
++    sockaddr_in boundAddress = { };
++    int boundAddressLength = sizeof(boundAddress);
++    if (::getsockname(server, reinterpret_cast<sockaddr*>(&boundAddress), &boundAddressLength) == SOCKET_ERROR) {
++        closesocket(server);
++        return { };
++    }
++
++    int serverPort = ntohs(boundAddress.sin_port);
++
++    // Sockets are OS handles; store the raw value. GLib's g_socket_new_from_fd()
++    // treats the value as a SOCKET on Windows.
++    return {
++        { static_cast<int>(server), UnixFileDescriptor::Adopt },
++        { serverPort, UnixFileDescriptor::Adopt },
++    };
++}
++
++} // namespace IPC
++
++#else
++
+ #include <sys/socket.h>
+ #include <wtf/UniStdExtras.h>
+ 
+@@ -59,3 +117,5 @@ SocketPair createPlatformConnection(int socketType, unsigned options)
+ }
+ 
+ } // namespace IPC
++
++#endif // OS(WINDOWS)
+diff --git a/Source/WebKit/Platform/IPC/unix/IPCSemaphoreUnix.cpp b/Source/WebKit/Platform/IPC/unix/IPCSemaphoreUnix.cpp
+index 8ebf6a63..c2b67da5 100644
+--- a/Source/WebKit/Platform/IPC/unix/IPCSemaphoreUnix.cpp
++++ b/Source/WebKit/Platform/IPC/unix/IPCSemaphoreUnix.cpp
+@@ -30,6 +30,13 @@
+ #include "Encoder.h"
+ #include <wtf/UniStdExtras.h>
+ 
++#if OS(WINDOWS)
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#endif
++
+ #if OS(LINUX)
+ #include <poll.h>
+ #include <sys/eventfd.h>
+@@ -41,6 +48,13 @@ Semaphore::Semaphore()
+ {
+ #if OS(LINUX)
+     m_fd = { eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK | EFD_SEMAPHORE), UnixFileDescriptor::Adopt };
++#elif OS(WINDOWS)
++    // MinGW: the semaphore rides in the UnixFileDescriptor payload as a packed
++    // Win32 handle (see UnixFileDescriptor.h), matching the unix-flavored class
++    // shape selected for the GLib port on Windows.
++    HANDLE handle = CreateSemaphoreW(nullptr, 0, 0x7FFFFFFF, nullptr);
++    if (handle && handle != INVALID_HANDLE_VALUE)
++        m_fd = { WTF::intFromHandleValue(handle), UnixFileDescriptor::Adopt };
+ #endif
+ }
+ 
+@@ -68,6 +82,9 @@ void Semaphore::signal()
+         if (ret != -1 || errno != EINTR) [[likely]]
+             break;
+     }
++#elif OS(WINDOWS)
++    ASSERT_WITH_MESSAGE(!!m_fd, "Signalling on an invalid semaphore object");
++    ReleaseSemaphore(WTF::handleFromIntValue(m_fd.value()), 1, nullptr);
+ #endif
+ }
+ 
+@@ -104,6 +121,10 @@ bool Semaphore::wait()
+     ASSERT_WITH_MESSAGE(m_fd.value() >= 0, "Waiting on an invalid semaphore object");
+ 
+     return waitImpl(m_fd.value(), -1);
++#elif OS(WINDOWS)
++    ASSERT_WITH_MESSAGE(!!m_fd, "Waiting on an invalid semaphore object");
++
++    return WaitForSingleObject(WTF::handleFromIntValue(m_fd.value()), INFINITE) == WAIT_OBJECT_0;
+ #else
+     return false;
+ #endif
+@@ -118,6 +139,13 @@ bool Semaphore::waitFor(Timeout timeout)
+     if (!timeout.isInfinity())
+         timeoutValue = int(timeout.secondsUntilDeadline().milliseconds());
+     return waitImpl(m_fd.value(), timeoutValue);
++#elif OS(WINDOWS)
++    ASSERT_WITH_MESSAGE(!!m_fd, "Waiting on an invalid semaphore object");
++
++    DWORD timeoutValue = INFINITE;
++    if (!timeout.isInfinity())
++        timeoutValue = static_cast<DWORD>(std::max<int64_t>(0, timeout.secondsUntilDeadline().milliseconds()));
++    return WaitForSingleObject(WTF::handleFromIntValue(m_fd.value()), timeoutValue) == WAIT_OBJECT_0;
+ #else
+     return false;
+ #endif
+diff --git a/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp b/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp
+index 64bcde96..ee1c96b9 100644
+--- a/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp
++++ b/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp
+@@ -60,7 +60,12 @@ static String findWebKitProcess(const ASCIILiteral processName)
+     }
+ #endif
+ 
++#if OS(WINDOWS)
++    // MinGW installs the helper processes as <name>.exe.
++    return FileSystem::pathByAppendingComponent(FileSystem::stringFromFileSystemRepresentation(PKGLIBEXECDIR), makeString(processName, ".exe"_s));
++#else
+     return FileSystem::pathByAppendingComponent(FileSystem::stringFromFileSystemRepresentation(PKGLIBEXECDIR), processName);
++#endif
+ }
+ 
+ String executablePathOfWebProcess()
+diff --git a/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp b/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp
+index 7d054a56..b34c17f3 100644
+--- a/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp
++++ b/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp
+@@ -28,7 +28,9 @@
+ 
+ #include <JavaScriptCore/Options.h>
+ #include <WebCore/ProcessIdentifier.h>
++#if !OS(WINDOWS)
+ #include <signal.h>
++#endif
+ #include <stdlib.h>
+ #include <string.h>
+ #include <wtf/StdLibExtras.h>
+@@ -41,10 +43,19 @@
+ #include "unix/BreakpadExceptionHandler.h"
+ #endif
+ 
+-#if USE(GLIB)
++#if USE(GLIB) && !OS(WINDOWS)
+ #include <glib-unix.h>
+ #endif
+ 
++#if OS(WINDOWS)
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <winsock2.h>
++#include <ws2tcpip.h>
++#include <windows.h>
++#endif
++
+ #if ENABLE(LLVM_PROFILE_GENERATION)
+ __attribute__((weak)) extern "C" int __llvm_profile_dump(void);
+ #endif
+@@ -75,6 +86,29 @@ bool AuxiliaryProcessMainCommon::parseCommandLine(int argc, char** argv)
+     } else
+         return false;
+ 
++#if OS(WINDOWS)
++    // MinGW: the launcher passes the UDP port of the UI process IPC socket.
++    // Create a connected loopback datagram socket and adopt it as the
++    // connection identifier.
++    auto ipcPort = parseInteger<uint16_t>(StringView::fromLatin1(argvSpan[argIndex++]));
++    if (!ipcPort)
++        return false;
++
++    SOCKET ipcSocket = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
++    if (ipcSocket == INVALID_SOCKET)
++        return false;
++
++    sockaddr_in ipcAddress = { };
++    ipcAddress.sin_family = AF_INET;
++    ipcAddress.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++    ipcAddress.sin_port = htons(*ipcPort);
++    if (::connect(ipcSocket, reinterpret_cast<sockaddr*>(&ipcAddress), sizeof(ipcAddress)) == SOCKET_ERROR) {
++        closesocket(ipcSocket);
++        return false;
++    }
++
++    m_parameters.connectionIdentifier = IPC::Connection::Identifier { reinterpret_cast<HANDLE>(ipcSocket) };
++#else
+     if (auto connectionIdentifier = parseInteger<int>(StringView::fromLatin1(argvSpan[argIndex++])))
+         m_parameters.connectionIdentifier = IPC::Connection::Identifier { { *connectionIdentifier, UnixFileDescriptor::Adopt } };
+     else
+@@ -82,6 +116,10 @@ bool AuxiliaryProcessMainCommon::parseCommandLine(int argc, char** argv)
+ 
+     if (!m_parameters.processIdentifier->toRawValue() || m_parameters.connectionIdentifier.handle.value() <= 0)
+         return false;
++#endif
++
++    if (!m_parameters.processIdentifier->toRawValue())
++        return false;
+ 
+ #if ENABLE(DEVELOPER_MODE)
+     // Check last remaining options for JSC testing
+@@ -96,11 +134,13 @@ bool AuxiliaryProcessMainCommon::parseCommandLine(int argc, char** argv)
+ 
+ void AuxiliaryProcess::platformInitialize(const AuxiliaryProcessInitializationParameters&)
+ {
++#if !OS(WINDOWS)
+     struct sigaction signalAction { };
+     RELEASE_ASSERT(!sigemptyset(&signalAction.sa_mask));
+     signalAction.sa_handler = SIG_IGN;
+     RELEASE_ASSERT(!sigaction(SIGPIPE, &signalAction, nullptr));
+-#if ENABLE(LLVM_PROFILE_GENERATION) && USE(GLIB)
++#endif // !OS(WINDOWS)
++#if ENABLE(LLVM_PROFILE_GENERATION) && USE(GLIB) && !OS(WINDOWS)
+     // __llvm_profile_dump() is not async-signal-safe but losing profile
+     // data from auxiliary processes would make PGO collection impractical.
+     if (__llvm_profile_dump) {
+diff --git a/Source/WebKit/Shared/API/glib/WebKitUserMessage.cpp b/Source/WebKit/Shared/API/glib/WebKitUserMessage.cpp
+index 49da659d..668eb589 100644
+--- a/Source/WebKit/Shared/API/glib/WebKitUserMessage.cpp
++++ b/Source/WebKit/Shared/API/glib/WebKitUserMessage.cpp
+@@ -21,7 +21,10 @@
+ #include "WebKitUserMessage.h"
+ 
+ #include "WebKitUserMessagePrivate.h"
++#if !OS(WINDOWS)
++// gio only implements the unix fd-list API for G_OS_UNIX builds.
+ #include <gio/gunixfdlist.h>
++#endif
+ #include <glib/gi18n-lib.h>
+ #include <wtf/CompletionHandler.h>
+ #include <wtf/glib/WTFGType.h>
+@@ -172,7 +175,14 @@ static void webkit_user_message_class_init(WebKitUserMessageClass* klass)
+         g_param_spec_object(
+             "fd-list",
+             nullptr, nullptr,
++#if OS(WINDOWS)
++            // gio has no unix fd-list implementation on Windows, so no
++            // GUnixFDList can exist there; accept any GObject so the public
++            // API entry points keep working with a NULL fd-list.
++            G_TYPE_OBJECT,
++#else
+             G_TYPE_UNIX_FD_LIST,
++#endif
+             static_cast<GParamFlags>(WEBKIT_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY)));
+ }
+ 
+@@ -227,7 +237,11 @@ WebKitUserMessage* webkit_user_message_new(const char* name, GVariant* parameter
+ WebKitUserMessage* webkit_user_message_new_with_fd_list(const char* name, GVariant* parameters, GUnixFDList* fdList)
+ {
+     g_return_val_if_fail(name, nullptr);
++#if OS(WINDOWS)
++    g_return_val_if_fail(!fdList || G_IS_OBJECT(fdList), nullptr);
++#else
+     g_return_val_if_fail(!fdList || G_IS_UNIX_FD_LIST(fdList), nullptr);
++#endif
+ 
+     return WEBKIT_USER_MESSAGE(g_object_new(WEBKIT_TYPE_USER_MESSAGE, "name", name, "parameters", parameters, "fd-list", fdList, nullptr));
+ }
+diff --git a/Source/WebKit/Shared/glib/ArgumentCodersGLib.cpp b/Source/WebKit/Shared/glib/ArgumentCodersGLib.cpp
+index 6637fc55..a2d5e91b 100644
+--- a/Source/WebKit/Shared/glib/ArgumentCodersGLib.cpp
++++ b/Source/WebKit/Shared/glib/ArgumentCodersGLib.cpp
+@@ -27,7 +27,10 @@
+ #include "ArgumentCodersGLib.h"
+ 
+ #include <gio/gio.h>
++#if !OS(WINDOWS)
++// gio only implements the unix fd-list API for G_OS_UNIX builds.
+ #include <gio/gunixfdlist.h>
++#endif
+ #include <wtf/Vector.h>
+ #include <wtf/glib/GSpanExtras.h>
+ #include <wtf/glib/GUniquePtr.h>
+@@ -184,6 +187,13 @@ std::optional<GTlsCertificateFlags> ArgumentCoder<GTlsCertificateFlags>::decode(
+ 
+ void ArgumentCoder<GRefPtr<GUnixFDList>>::encode(Encoder& encoder, const GRefPtr<GUnixFDList>& fdList)
+ {
++#if OS(WINDOWS)
++    // gio has no unix fd-list implementation on Windows, so no GUnixFDList
++    // can exist there; encode the empty case to keep the wire format
++    // identical to the non-Windows encoder.
++    UNUSED_PARAM(fdList);
++    encoder << false;
++#else
+     if (!fdList) {
+         encoder << false;
+         return;
+@@ -197,6 +207,7 @@ void ArgumentCoder<GRefPtr<GUnixFDList>>::encode(Encoder& encoder, const GRefPtr
+         });
+     }
+     encoder << true << WTF::move(attachments);
++#endif // OS(WINDOWS)
+ }
+ 
+ std::optional<GRefPtr<GUnixFDList>> ArgumentCoder<GRefPtr<GUnixFDList>>::decode(Decoder& decoder)
+@@ -211,6 +222,11 @@ std::optional<GRefPtr<GUnixFDList>> ArgumentCoder<GRefPtr<GUnixFDList>>::decode(
+     if (!attachments) [[unlikely]]
+         return std::nullopt;
+ 
++#if OS(WINDOWS)
++    // No GUnixFDList can exist on Windows (see encode()); keep the stream in
++    // sync by consuming the attachments, then decode to an empty fd list.
++    return GRefPtr<GUnixFDList> { };
++#else
+     GRefPtr<GUnixFDList> fdList = adoptGRef(g_unix_fd_list_new());
+     for (auto& attachment : *attachments) {
+         int ret = g_unix_fd_list_append(fdList.get(), attachment.value(), nullptr);
+@@ -218,6 +234,7 @@ std::optional<GRefPtr<GUnixFDList>> ArgumentCoder<GRefPtr<GUnixFDList>>::decode(
+             return std::nullopt;
+     }
+     return fdList;
++#endif // OS(WINDOWS)
+ }
+ 
+ } // namespace IPC
+diff --git a/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp b/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
+index b20208ab..cda05b26 100644
+--- a/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
++++ b/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
+@@ -35,7 +35,9 @@
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <glib.h>
++#if !OS(WINDOWS)
+ #include <sys/socket.h>
++#endif
+ #include <wtf/FileSystem.h>
+ #include <wtf/RunLoop.h>
+ #include <wtf/UniStdExtras.h>
+@@ -58,6 +60,13 @@
+ #include <wtf/unix/UnixFileDescriptor.h>
+ #endif
+ 
++#if OS(WINDOWS)
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#endif
++
+ namespace WebKit {
+ 
+ #if OS(LINUX)
+@@ -109,7 +118,13 @@ void ProcessLauncher::launchProcess()
+ 
+     GUniquePtr<gchar> processIdentifier(g_strdup_printf("%" PRIu64, m_launchOptions.processIdentifier.toUInt64()));
+ 
+-    IPC::SocketPair webkitSocketPair = IPC::createPlatformConnection(SOCK_SEQPACKET, connectionOptions());
++    IPC::SocketPair webkitSocketPair = IPC::createPlatformConnection(
++#if OS(WINDOWS)
++        0, // MinGW: socketType is ignored; loopback datagrams are used.
++#else
++        SOCK_SEQPACKET,
++#endif
++        connectionOptions());
+     GUniquePtr<gchar> webkitSocket(g_strdup_printf("%d", webkitSocketPair.client.value()));
+ 
+ #if OS(ANDROID)
+@@ -233,9 +248,14 @@ void ProcessLauncher::launchProcess()
+     // Please keep this comment in sync with the duplicate comment in XDGDBusProxy::launch.
+     GRefPtr<GSubprocessLauncher> launcher = adoptGRef(g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_INHERIT_FDS));
+     int webkitClientSocketValue = webkitSocketPair.client.release();
++#if !OS(WINDOWS)
++    // MinGW: g_subprocess_launcher_take_fd() does not exist on Windows. The
++    // child creates its own socket and connects back to the port passed in
++    // argv instead.
+     g_subprocess_launcher_take_fd(launcher.get(), webkitClientSocketValue, webkitClientSocketValue);
++#endif
+ 
+-#if USE(SYSPROF_CAPTURE)
++#if USE(SYSPROF_CAPTURE) && !OS(WINDOWS)
+     UnixFileDescriptor sysprofFd;
+ 
+     if (const char* sysprofFdStr = getenv("SYSPROF_CONTROL_FD"))
+@@ -305,9 +325,15 @@ void ProcessLauncher::launchProcess()
+     m_processID = g_ascii_strtoll(processIdStr, nullptr, 0);
+     RELEASE_ASSERT(m_processID);
+ 
++#if OS(WINDOWS)
++    RunLoop::mainSingleton().dispatch([protectedThis = protect(*this), this, serverSocketValue = webkitSocketPair.server.release()] mutable {
++        didFinishLaunchingProcess(m_processID, IPC::Connection::Identifier { reinterpret_cast<HANDLE>(static_cast<intptr_t>(serverSocketValue)) });
++    });
++#else
+     RunLoop::mainSingleton().dispatch([protectedThis = protect(*this), this, serverSocket = WTF::move(webkitSocketPair.server)] mutable {
+         didFinishLaunchingProcess(m_processID, IPC::Connection::Identifier { WTF::move(serverSocket) });
+     });
++#endif
+ }
+ 
+ void ProcessLauncher::terminateProcess()
+@@ -320,6 +346,13 @@ void ProcessLauncher::terminateProcess()
+     if (!m_processID)
+         return;
+ 
++#if OS(WINDOWS)
++    // MinGW: there is no kill(); terminate the process with the native API.
++    if (HANDLE processHandle = OpenProcess(PROCESS_TERMINATE, FALSE, static_cast<DWORD>(m_processID))) {
++        TerminateProcess(processHandle, 1);
++        CloseHandle(processHandle);
++    }
++#else
+ #if OS(ANDROID)
+     if (auto* processManager = wpe_process_manager_get_default()) {
+         wpe_process_manager_terminate(processManager, m_processID);
+@@ -347,6 +380,7 @@ void ProcessLauncher::terminateProcess()
+ #endif
+ 
+ #endif
++#endif // OS(WINDOWS)
+ 
+     m_processID = 0;
+ }
+diff --git a/Source/WebKit/UIProcess/glib/FenceMonitor.cpp b/Source/WebKit/UIProcess/glib/FenceMonitor.cpp
+index a2ac1d7a..d3358871 100644
+--- a/Source/WebKit/UIProcess/glib/FenceMonitor.cpp
++++ b/Source/WebKit/UIProcess/glib/FenceMonitor.cpp
+@@ -27,7 +27,9 @@
+ #include "FenceMonitor.h"
+ 
+ #if PLATFORM(GTK) || (PLATFORM(WPE) && ENABLE(WPE_PLATFORM))
++#if !OS(WINDOWS)
+ #include <glib-unix.h>
++#endif
+ 
+ #if PLATFORM(GTK)
+ #include <gtk/gtk.h>
+@@ -46,6 +48,7 @@ FenceMonitor::~FenceMonitor()
+         g_source_destroy(m_source.get());
+ }
+ 
++#if !OS(WINDOWS)
+ struct FenceSource {
+     static GSourceFuncs sourceFuncs;
+ 
+@@ -70,9 +73,11 @@ GSourceFuncs FenceSource::sourceFuncs = {
+     nullptr, // closure_callback
+     nullptr, // closure_marshall
+ };
++#endif // !OS(WINDOWS)
+ 
+ void FenceMonitor::ensureSource()
+ {
++#if !OS(WINDOWS)
+     if (m_source) [[likely]]
+         return;
+ 
+@@ -88,6 +93,7 @@ void FenceMonitor::ensureSource()
+         return G_SOURCE_CONTINUE;
+     }, this, nullptr);
+     g_source_attach(m_source.get(), g_main_context_get_thread_default());
++#endif // !OS(WINDOWS)
+ }
+ 
+ static bool isFileDescriptorReadable(int fd)
+@@ -101,6 +107,10 @@ static bool isFileDescriptorReadable(int fd)
+ 
+ void FenceMonitor::addFileDescriptor(UnixFileDescriptor&& fd)
+ {
++#if OS(WINDOWS)
++    // DMA-BUF fences are a Linux concept; without GBM nothing ever calls this.
++    UNUSED_PARAM(fd);
++#else
+     RELEASE_ASSERT(!m_fd);
+ 
+     if (!fd || isFileDescriptorReadable(fd.value())) {
+@@ -115,6 +125,7 @@ void FenceMonitor::addFileDescriptor(UnixFileDescriptor&& fd)
+     if (source.tag)
+         g_source_remove_unix_fd(&source.base, source.tag);
+     source.tag = g_source_add_unix_fd(&source.base, m_fd.value(), G_IO_IN);
++#endif // !OS(WINDOWS)
+ }
+ 
+ } // namespace WebKit
+diff --git a/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp b/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
+index 578321a9..cd1ff52e 100644
+--- a/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
++++ b/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
+@@ -448,6 +448,15 @@ WEBKIT_DEFINE_ASYNC_DATA_STRUCT(PrintPortalJobData)
+ 
+ static void webkitPrintOperationSendPagesToPrintPortal(WebKitPrintOperation* printOperation, WebFrameProxy* webFrame, GtkPrintSettings* printSettings, GtkPageSetup* pageSetup)
+ {
++#if OS(WINDOWS)
++    // The freedesktop.org print portal and gio's unix fd-list API are not
++    // available on Windows; portal-based printing is unsupported there.
++    UNUSED_PARAM(webFrame);
++    UNUSED_PARAM(printSettings);
++    UNUSED_PARAM(pageSetup);
++    webkitPrintOperationFailed(printOperation, GUniquePtr<GError> { g_error_new(WEBKIT_PRINT_ERROR, WEBKIT_PRINT_ERROR_GENERAL, _("Printing through the desktop portal is not supported on this platform")) });
++    return;
++#else
+     auto* priv = printOperation->priv;
+     auto preparePrintResponse = std::exchange(priv->preparePrintResponse, std::nullopt);
+ 
+@@ -567,6 +576,7 @@ static void webkitPrintOperationSendPagesToPrintPortal(WebKitPrintOperation* pri
+                 }, printOperation.leakRef());
+         }, callbackData, nullptr);
+     });
++#endif // OS(WINDOWS)
+ }
+ 
+ static void webkitPrintOperationPreparePrint(WebKitPrintOperation* printOperation)
 diff --git a/Source/WebKit/UIProcess/API/C/WKAPICast.h b/Source/WebKit/UIProcess/API/C/WKAPICast.h
 index f49fc985..87a954ed 100644
 --- a/Source/WebKit/UIProcess/API/C/WKAPICast.h
