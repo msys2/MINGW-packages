@@ -129,10 +129,33 @@ Build-system port for the GTK/MinGW target:
     because WEBKIT_DEFINE_SUBTARGET copies the parent's LINK_LIBRARIES
     property into every WebKit{UIProcess,WebProcess,GPUProcess,NetworkProcess}
     prefix target.
+
+  Update 26 (fixing the round-26 CLANG64 jsc link failure): WTFString.h
+  declares String::wideCharacters() under OS(WINDOWS) with
+  WTF_EXPORT_PRIVATE, and two in-tree Windows call sites consume it:
+  jsc.cpp's fetchModuleFromLocalFileSystem() (\\?\ long-path _wstat/
+  _wfopen module loading) and WebCore's LocalizedStrings.cpp, whose
+  "#elif PLATFORM(WIN)" image-title branch fires before USE(GLIB) on
+  Windows GTK builds. The definition lives in
+  Source/WTF/wtf/text/win/StringWin.cpp, an upstream file the GTK
+  release tarball strips together with the whole wtf/text/win/
+  directory (same stripping class as the four WTF Windows headers
+  restored above; PlatformJSCOnly.cmake, which owns upstream's WIN32
+  WTF source list, is not included by GTK builds). Restore the file
+  verbatim from the webkitgtk-2.54.1 tag and register it in
+  Source/WTF/wtf/PlatformGTK.cmake under if (WIN32) so the WTF static
+  library carries the exported symbol for every final PE link: CI died
+  with "undefined symbol: __declspec(dllimport)
+  WTF::String::wideCharacters() const" while linking bin/jsc.exe at
+  [8117]/8563 on CLANG64 (WebCore's copy would have hit the same
+  missing import for WebKit.dll via LocalizedStrings.cpp).
+
 ---
  Source/JavaScriptCore/CMakeLists.txt          |  30 +-
  Source/WTF/wtf/CMakeLists.txt                 |  33 +-
+ Source/WTF/wtf/PlatformGTK.cmake              |  14 ++
  Source/WTF/wtf/text/win/WCharStringExtras.h   |  60 ++++
+ Source/WTF/wtf/text/win/StringWin.cpp         |  48 +++++
  Source/WTF/wtf/win/DbgHelperWin.cpp           |  58 ++++
  Source/WTF/wtf/win/DbgHelperWin.h             |  41 +++
  Source/WTF/wtf/win/SoftLinking.h              | 313 ++++++++++++++++++
@@ -144,7 +167,8 @@ Build-system port for the GTK/MinGW target:
  Source/cmake/OptionsCommon.cmake              |  18 +-
  Source/cmake/OptionsGTK.cmake                 |  28 ++
  Source/WebKit/PlatformGTK.cmake               |  31 ++++-
- 14 files changed, 668 insertions(+), 20 deletions(-)
+ 16 files changed, 730 insertions(+), 20 deletions(-)
+ create mode 100644 Source/WTF/wtf/text/win/StringWin.cpp
  create mode 100644 Source/WTF/wtf/text/win/WCharStringExtras.h
  create mode 100644 Source/WTF/wtf/win/DbgHelperWin.cpp
  create mode 100644 Source/WTF/wtf/win/DbgHelperWin.h
@@ -250,6 +274,31 @@ index fda0252..9352508 100644
  set(WTF_INTERFACE_LIBRARIES WTF)
  set(WTF_INTERFACE_INCLUDE_DIRECTORIES ${WTF_FRAMEWORK_HEADERS_DIR})
  set(WTF_INTERFACE_DEPENDENCIES WTF_CopyHeaders)
+diff --git a/Source/WTF/wtf/PlatformGTK.cmake b/Source/WTF/wtf/PlatformGTK.cmake
+index c45ffd1d..b993948d 100644
+--- a/Source/WTF/wtf/PlatformGTK.cmake
++++ b/Source/WTF/wtf/PlatformGTK.cmake
+@@ -32,6 +32,20 @@ list(APPEND WTF_SOURCES
+     unix/UniStdExtrasUnix.cpp
+ )
+ 
++if (WIN32)
++    # The GTK port's WTF sources otherwise carry no Windows implementation
++    # files (PlatformJSCOnly.cmake owns the upstream WIN32 list), but
++    # String::wideCharacters() - declared in WTFString.h under OS(WINDOWS)
++    # with WTF_EXPORT_PRIVATE - is referenced by jsc.cpp module loading and
++    # WebCore's LocalizedStrings.cpp PLATFORM(WIN) branch. The release
++    # tarball strips Source/WTF/wtf/text/win/, so restore StringWin.cpp and
++    # build it into the WTF library on Windows to keep the exported symbol
++    # defined for every final PE link (jsc.exe, WebKit.dll).
++    list(APPEND WTF_SOURCES
++        text/win/StringWin.cpp
++    )
++endif ()
++
+ list(APPEND WTF_PUBLIC_HEADERS
+     PlatformEnableGlib.h
+ 
 diff --git a/Source/WTF/wtf/text/win/WCharStringExtras.h b/Source/WTF/wtf/text/win/WCharStringExtras.h
 new file mode 100644
 index 0000000..3412ae2
@@ -316,6 +365,60 @@ index 0000000..3412ae2
 +
 +using WTF::ucharFrom;
 +using WTF::wcharFrom;
+diff --git a/Source/WTF/wtf/text/win/StringWin.cpp b/Source/WTF/wtf/text/win/StringWin.cpp
+new file mode 100644
+index 00000000..cb967fce
+--- /dev/null
++++ b/Source/WTF/wtf/text/win/StringWin.cpp
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (C) 2019 Sony Interactive Entertainment Inc.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include <wtf/text/WTFString.h>
++
++namespace WTF {
++
++Vector<wchar_t> String::wideCharacters() const
++{
++    Vector<wchar_t> result;
++    if (!m_impl)
++        return result;
++
++    result.reserveInitialCapacity(length() + 1);
++
++    if (is8Bit())
++        result.append(span8());
++    else
++        result.append(span16());
++
++    result.append(0);
++    return result;
++}
++
++} // namespace WTF
 diff --git a/Source/WTF/wtf/win/DbgHelperWin.cpp b/Source/WTF/wtf/win/DbgHelperWin.cpp
 new file mode 100644
 index 0000000..6810582

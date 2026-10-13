@@ -10,6 +10,24 @@ Subject: [PATCH 5/6] MinGW: Skia FreeType backend and GTK font manager
 - FontCacheSkia.cpp: the GTK platform uses SkFontMgr_New_FontConfig
   (same shape as Linux GTK) instead of DirectWrite.
 
+  Update 26 (fixing the round-26 UCRT64 Skia -Wformat warnings, first
+  hit at SkAssert.h:141 via SkLog.h:35 while compiling SkSVGText.cpp):
+  SK_PRINTF_LIKE expands to format(printf, ...) and MinGW gcc checks
+  the plain printf archetype against the MSVCRT (ms_printf), which does
+  not know C99 length modifiers, so every SkLog/SK_ABORT call site
+  taking size_t warned "unknown conversion type character 'z' in
+  format" plus "too many arguments for format" (9 warnings per TU on
+  every Skia TU including SkAssert.h). The runtime side is fine on all
+  three environments: __USE_MINGW_ANSI_STDIO=1 (PKGBUILD CFLAGS) routes
+  printf-family calls through the C99-conformant __mingw_*
+  implementations and the UCRT printf handles %zu natively. The
+  attribute now maps to __gnu_printf__ for MinGW gcc on _UCRT or
+  __USE_MINGW_ANSI_STDIO targets, mirroring mingw-w64's own
+  __MINGW_PRINTF_FORMAT mapping and the PAS_FORMAT_PRINTF mapping
+  already established in 0006; clang (which checks the plain archetype
+  as C99 and produced no CI warnings) and non-MinGW hosts keep the
+  default. The SkAssert.h TU goes from 9 warnings to 0.
+
   Update 18 (fixing one UCRT64 and one CLANG64 Skia failure):
   include/private/SkAttributes.h maps SK_ALWAYS_INLINE to
   __forceinline whenever SK_BUILD_FOR_WIN is set, and both MinGW
@@ -107,7 +125,7 @@ index 49b9262..6d826bf 100644
  else ()
      target_compile_definitions(Skia PRIVATE SK_TYPEFACE_FACTORY_FREETYPE)
 diff --git a/Source/ThirdParty/skia/include/private/SkAttributes.h b/Source/ThirdParty/skia/include/private/SkAttributes.h
-index 6c189ee..febfe5f 100644
+index 8499525..1aa3d41 100644
 --- a/Source/ThirdParty/skia/include/private/SkAttributes.h
 +++ b/Source/ThirdParty/skia/include/private/SkAttributes.h
 @@ -24,7 +24,11 @@
@@ -123,6 +141,29 @@ index 6c189ee..febfe5f 100644
  #    define SK_ALWAYS_INLINE __forceinline
  #  else
  #    define SK_ALWAYS_INLINE SK_ATTRIBUTE(always_inline) inline
+@@ -49,7 +53,21 @@
+  * `B` is the (1 based) index of the first argument used by the format string.
+  */
+ #if !defined(SK_PRINTF_LIKE)
+-#  define SK_PRINTF_LIKE(A, B) SK_ATTRIBUTE(format(printf, (A), (B)))
++#  if defined(__MINGW32__) && defined(__GNUC__) && !defined(__clang__) \
++      && (defined(_UCRT) || __USE_MINGW_ANSI_STDIO)
++   /* MinGW gcc checks the plain printf archetype against the MSVCRT
++      (ms_printf), which does not know C99 length modifiers such as %zu,
++      while the C runtime's printf family itself is declared with the
++      gnu_printf archetype (C99-conformant __mingw_printf is used at
++      runtime thanks to __USE_MINGW_ANSI_STDIO, and the UCRT supports
++      %zu natively). Mirror mingw-w64's own stdio.h mapping for
++      __MINGW_PRINTF_FORMAT so these attributes match the implementations
++      actually called; clang already checks the plain printf archetype as
++      C99, and MSVC/non-MinGW hosts keep the default. */
++#    define SK_PRINTF_LIKE(A, B) SK_ATTRIBUTE(format(__gnu_printf__, (A), (B)))
++#  else
++#    define SK_PRINTF_LIKE(A, B) SK_ATTRIBUTE(format(printf, (A), (B)))
++#  endif
+ #endif
+ 
+ /**
 diff --git a/Source/ThirdParty/skia/src/core/SkRasterPipeline.h b/Source/ThirdParty/skia/src/core/SkRasterPipeline.h
 index feb9cc0..f5d9a70 100644
 --- a/Source/ThirdParty/skia/src/core/SkRasterPipeline.h
