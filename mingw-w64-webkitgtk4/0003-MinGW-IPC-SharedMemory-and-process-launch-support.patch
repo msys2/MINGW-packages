@@ -38,6 +38,30 @@ IPC and process plumbing for the GTK/MinGW target:
   version's runtime behavior is mirrored (CopyOnWrite rejected,
   m_isWrappingMap release semantics, DuplicateHandle-based
   createHandle).
+
+  Update 23 (fixing the round-23 CLANG64/CLANGARM64 WebCore failure and
+  pre-empting the same class of failure in the WebKit layer): gio declares
+  and implements the unix fd-list API (GUnixFDList,
+  g_dbus_proxy_call_with_unix_fd_list*) only for G_OS_UNIX builds - on
+  Windows gdbusproxy.h keeps the declarations inside #ifdef G_OS_UNIX
+  (hence "use of undeclared identifier
+  'g_dbus_proxy_call_with_unix_fd_list_sync'" at DesktopPortal.cpp:180/280)
+  while gunixfdlist.h still ships declarations without any implementation
+  in the Windows gio DLL, so other users would only fail at link time.
+  DesktopPortal.cpp now stubs the two openPipewireRemote bodies on
+  Windows (the freedesktop portals and PipeWire fd passing do not exist
+  there; all callers already handle the empty result as
+  PermissionDenied), keeping the unified-source grouping untouched.
+  The same gio-unix pattern is pre-empted in three WebKit-layer files
+  that compile after WebCore: ArgumentCodersGLib encodes the empty
+  fd-list case on Windows (wire format unchanged; no GUnixFDList can
+  exist there) and decodes while keeping the stream in sync; the
+  WebKitUserMessage fd-list property falls back to G_TYPE_OBJECT /
+  G_IS_OBJECT checks so the public API entry points keep working with a
+  NULL fd-list; the WebKit print-portal path fails gracefully instead
+  of referencing g_unix_fd_list_* symbols. HAVE(GDESKTOPAPPINFO) in
+  NotificationService.cpp and the glib-unix.h include in
+  AuxiliaryProcessMain.cpp were audited and are already safe.
 ---
  Source/WebCore/SourcesGTK.txt                 |   1 +
  Source/WebCore/platform/SharedMemory.h        |   7 +-
@@ -1285,3 +1309,188 @@ index 40a0c8a60b70..9353cc4bcb19 100644
  
 -#endif // !OS(ANDROID) && USE(UNIX_DOMAIN_SOCKETS)
 +#endif // !OS(ANDROID) && !OS(WINDOWS) && USE(UNIX_DOMAIN_SOCKETS)
+
+diff --git a/Source/WebCore/platform/mediastream/gstreamer/DesktopPortal.cpp b/Source/WebCore/platform/mediastream/gstreamer/DesktopPortal.cpp
+index 0ef20c19..239aa760 100644
+--- a/Source/WebCore/platform/mediastream/gstreamer/DesktopPortal.cpp
++++ b/Source/WebCore/platform/mediastream/gstreamer/DesktopPortal.cpp
+@@ -23,7 +23,11 @@
+ #if ENABLE(MEDIA_STREAM) && USE(GSTREAMER)
+ 
+ #include "GRefPtrGStreamer.h"
++#if !OS(WINDOWS)
++// gio only implements the unix fd-list API (and installs this header's
++// declarations) for G_OS_UNIX builds; on Windows there is no fd passing.
+ #include <gio/gunixfdlist.h>
++#endif
+ #include <gst/video/video-format.h>
+ #include <optional>
+ #include <unistd.h>
+@@ -172,6 +176,12 @@ void DesktopPortalCamera::accessCamera(Function<void(std::optional<int>)>&& call
+ 
+ std::optional<int> DesktopPortalCamera::openCameraPipewireRemote()
+ {
++#if OS(WINDOWS)
++    // The freedesktop.org portal service and PipeWire fd passing do not exist
++    // on Windows, and gio's unix fd-list API is compiled out there. Camera
++    // access via the portal is unavailable; callers handle the empty result.
++    return std::nullopt;
++#else
+     GRefPtr<GUnixFDList> fdList;
+     int fd = -1;
+     GVariantBuilder options;
+@@ -192,6 +202,7 @@ std::optional<int> DesktopPortalCamera::openCameraPipewireRemote()
+         return { };
+     }
+     return fd;
++#endif // OS(WINDOWS)
+ }
+ 
+ std::optional<DesktopPortalScreenCast::ScreencastSession> DesktopPortalScreenCast::createScreencastSession()
+@@ -273,6 +284,11 @@ GRefPtr<GVariant> DesktopPortalScreenCast::ScreencastSession::start()
+ 
+ std::optional<PipeWireNodeData> DesktopPortalScreenCast::ScreencastSession::openPipewireRemote()
+ {
++#if OS(WINDOWS)
++    // See DesktopPortalCamera::openCameraPipewireRemote(): screencast fd
++    // passing via the portal is not available on Windows.
++    return std::nullopt;
++#else
+     GRefPtr<GUnixFDList> fdList;
+     GVariantBuilder options;
+     g_variant_builder_init(&options, G_VARIANT_TYPE_VARDICT);
+@@ -304,6 +320,7 @@ std::optional<PipeWireNodeData> DesktopPortalScreenCast::ScreencastSession::open
+     gst_caps_set_simple(nodeData.caps.get(), "format", G_TYPE_STRING, "DMA_DRM", "drm-format", G_TYPE_STRING, drmFormat.utf8(), nullptr);
+ #endif
+     return nodeData;
++#endif // OS(WINDOWS)
+ }
+ 
+ } // namespace WebCore
+diff --git a/Source/WebKit/Shared/API/glib/WebKitUserMessage.cpp b/Source/WebKit/Shared/API/glib/WebKitUserMessage.cpp
+index 49da659d..668eb589 100644
+--- a/Source/WebKit/Shared/API/glib/WebKitUserMessage.cpp
++++ b/Source/WebKit/Shared/API/glib/WebKitUserMessage.cpp
+@@ -21,7 +21,10 @@
+ #include "WebKitUserMessage.h"
+ 
+ #include "WebKitUserMessagePrivate.h"
++#if !OS(WINDOWS)
++// gio only implements the unix fd-list API for G_OS_UNIX builds.
+ #include <gio/gunixfdlist.h>
++#endif
+ #include <glib/gi18n-lib.h>
+ #include <wtf/CompletionHandler.h>
+ #include <wtf/glib/WTFGType.h>
+@@ -172,7 +175,14 @@ static void webkit_user_message_class_init(WebKitUserMessageClass* klass)
+         g_param_spec_object(
+             "fd-list",
+             nullptr, nullptr,
++#if OS(WINDOWS)
++            // gio has no unix fd-list implementation on Windows, so no
++            // GUnixFDList can exist there; accept any GObject so the public
++            // API entry points keep working with a NULL fd-list.
++            G_TYPE_OBJECT,
++#else
+             G_TYPE_UNIX_FD_LIST,
++#endif
+             static_cast<GParamFlags>(WEBKIT_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY)));
+ }
+ 
+@@ -227,7 +237,11 @@ WebKitUserMessage* webkit_user_message_new(const char* name, GVariant* parameter
+ WebKitUserMessage* webkit_user_message_new_with_fd_list(const char* name, GVariant* parameters, GUnixFDList* fdList)
+ {
+     g_return_val_if_fail(name, nullptr);
++#if OS(WINDOWS)
++    g_return_val_if_fail(!fdList || G_IS_OBJECT(fdList), nullptr);
++#else
+     g_return_val_if_fail(!fdList || G_IS_UNIX_FD_LIST(fdList), nullptr);
++#endif
+ 
+     return WEBKIT_USER_MESSAGE(g_object_new(WEBKIT_TYPE_USER_MESSAGE, "name", name, "parameters", parameters, "fd-list", fdList, nullptr));
+ }
+diff --git a/Source/WebKit/Shared/glib/ArgumentCodersGLib.cpp b/Source/WebKit/Shared/glib/ArgumentCodersGLib.cpp
+index 6637fc55..a2d5e91b 100644
+--- a/Source/WebKit/Shared/glib/ArgumentCodersGLib.cpp
++++ b/Source/WebKit/Shared/glib/ArgumentCodersGLib.cpp
+@@ -27,7 +27,10 @@
+ #include "ArgumentCodersGLib.h"
+ 
+ #include <gio/gio.h>
++#if !OS(WINDOWS)
++// gio only implements the unix fd-list API for G_OS_UNIX builds.
+ #include <gio/gunixfdlist.h>
++#endif
+ #include <wtf/Vector.h>
+ #include <wtf/glib/GSpanExtras.h>
+ #include <wtf/glib/GUniquePtr.h>
+@@ -184,6 +187,13 @@ std::optional<GTlsCertificateFlags> ArgumentCoder<GTlsCertificateFlags>::decode(
+ 
+ void ArgumentCoder<GRefPtr<GUnixFDList>>::encode(Encoder& encoder, const GRefPtr<GUnixFDList>& fdList)
+ {
++#if OS(WINDOWS)
++    // gio has no unix fd-list implementation on Windows, so no GUnixFDList
++    // can exist there; encode the empty case to keep the wire format
++    // identical to the non-Windows encoder.
++    UNUSED_PARAM(fdList);
++    encoder << false;
++#else
+     if (!fdList) {
+         encoder << false;
+         return;
+@@ -197,6 +207,7 @@ void ArgumentCoder<GRefPtr<GUnixFDList>>::encode(Encoder& encoder, const GRefPtr
+         });
+     }
+     encoder << true << WTF::move(attachments);
++#endif // OS(WINDOWS)
+ }
+ 
+ std::optional<GRefPtr<GUnixFDList>> ArgumentCoder<GRefPtr<GUnixFDList>>::decode(Decoder& decoder)
+@@ -211,6 +222,11 @@ std::optional<GRefPtr<GUnixFDList>> ArgumentCoder<GRefPtr<GUnixFDList>>::decode(
+     if (!attachments) [[unlikely]]
+         return std::nullopt;
+ 
++#if OS(WINDOWS)
++    // No GUnixFDList can exist on Windows (see encode()); keep the stream in
++    // sync by consuming the attachments, then decode to an empty fd list.
++    return GRefPtr<GUnixFDList> { };
++#else
+     GRefPtr<GUnixFDList> fdList = adoptGRef(g_unix_fd_list_new());
+     for (auto& attachment : *attachments) {
+         int ret = g_unix_fd_list_append(fdList.get(), attachment.value(), nullptr);
+@@ -218,6 +234,7 @@ std::optional<GRefPtr<GUnixFDList>> ArgumentCoder<GRefPtr<GUnixFDList>>::decode(
+             return std::nullopt;
+     }
+     return fdList;
++#endif // OS(WINDOWS)
+ }
+ 
+ } // namespace IPC
+diff --git a/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp b/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
+index 578321a9..cd1ff52e 100644
+--- a/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
++++ b/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
+@@ -448,6 +448,15 @@ WEBKIT_DEFINE_ASYNC_DATA_STRUCT(PrintPortalJobData)
+ 
+ static void webkitPrintOperationSendPagesToPrintPortal(WebKitPrintOperation* printOperation, WebFrameProxy* webFrame, GtkPrintSettings* printSettings, GtkPageSetup* pageSetup)
+ {
++#if OS(WINDOWS)
++    // The freedesktop.org print portal and gio's unix fd-list API are not
++    // available on Windows; portal-based printing is unsupported there.
++    UNUSED_PARAM(webFrame);
++    UNUSED_PARAM(printSettings);
++    UNUSED_PARAM(pageSetup);
++    webkitPrintOperationFailed(printOperation, GUniquePtr<GError> { g_error_new(WEBKIT_PRINT_ERROR, WEBKIT_PRINT_ERROR_GENERAL, _("Printing through the desktop portal is not supported on this platform")) });
++    return;
++#else
+     auto* priv = printOperation->priv;
+     auto preparePrintResponse = std::exchange(priv->preparePrintResponse, std::nullopt);
+ 
+@@ -567,6 +576,7 @@ static void webkitPrintOperationSendPagesToPrintPortal(WebKitPrintOperation* pri
+                 }, printOperation.leakRef());
+         }, callbackData, nullptr);
+     });
++#endif // OS(WINDOWS)
+ }
+ 
+ static void webkitPrintOperationPreparePrint(WebKitPrintOperation* printOperation)
