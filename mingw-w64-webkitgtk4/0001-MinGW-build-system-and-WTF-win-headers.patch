@@ -150,30 +150,43 @@ Build-system port for the GTK/MinGW target:
   [8117]/8563 on CLANG64 (WebCore's copy would have hit the same
   missing import for WebKit.dll via LocalizedStrings.cpp).
 
+
+  Update 28 (defusing the round-28 UCRT64 CI hang): after the Skia static
+  archive link starts, the only schedulable edges left in the ninja graph
+  are the WebKit-forwarding-headers custom target (everything downstream
+  consumes the ForwardingHeaders output) and that link itself, and the CI
+  log stops at the perl command for 5h40m until the 6h job timeout cancels
+  the run - no other edge ever gets scheduled. generate-forwarding-
+  headers.pl itself is bounded (fixed directory walk over Source/WebKit,
+  no stdin, no fork), so the stall is process-level in the native Win32
+  perl (MINGW_PACKAGE_PREFIX-perl, $^O=MSWin32) under the CI environment;
+  the identical step completes on the CLANG64 runner. The custom target
+  now takes its interpreter from the new WEBKIT_FORWARDING_HEADERS_PERL
+  cache variable (defaults to PERL_EXECUTABLE, so non-MinGW behavior is
+  unchanged), letting the packager point this single step at the MSYS2
+  POSIX perl (PKGBUILD passes
+  -DWEBKIT_FORWARDING_HEADERS_PERL=$(cygpath -w /usr/bin/perl.exe)) while
+  every other perl-based generator keeps the native interpreter that the
+  first ~7000 build steps already ran successfully.
 ---
- Source/JavaScriptCore/CMakeLists.txt          |  30 +-
- Source/WTF/wtf/CMakeLists.txt                 |  33 +-
- Source/WTF/wtf/PlatformGTK.cmake              |  14 ++
- Source/WTF/wtf/text/win/WCharStringExtras.h   |  60 ++++
- Source/WTF/wtf/text/win/StringWin.cpp         |  48 +++++
- Source/WTF/wtf/win/DbgHelperWin.cpp           |  58 ++++
- Source/WTF/wtf/win/DbgHelperWin.h             |  41 +++
- Source/WTF/wtf/win/SoftLinking.h              | 313 ++++++++++++++++++
- Source/WTF/wtf/win/WTFCRTDebug.h              |  40 +++
- .../bindings/scripts/generate-bindings-all.pl |   9 +-
- .../Scripts/copy-user-interface-resources.pl  |   8 +-
- .../platform/gtk/po/CMakeLists.txt            |  11 ++-
- Source/cmake/FindGLib.cmake                   |   8 +-
- Source/cmake/OptionsCommon.cmake              |  18 +-
- Source/cmake/OptionsGTK.cmake                 |  28 ++
- Source/WebKit/PlatformGTK.cmake               |  31 ++++-
- 16 files changed, 730 insertions(+), 20 deletions(-)
- create mode 100644 Source/WTF/wtf/text/win/StringWin.cpp
- create mode 100644 Source/WTF/wtf/text/win/WCharStringExtras.h
- create mode 100644 Source/WTF/wtf/win/DbgHelperWin.cpp
- create mode 100644 Source/WTF/wtf/win/DbgHelperWin.h
- create mode 100644 Source/WTF/wtf/win/SoftLinking.h
- create mode 100644 Source/WTF/wtf/win/WTFCRTDebug.h
+
+ Source/JavaScriptCore/CMakeLists.txt               |  30 +-
+ Source/WTF/wtf/CMakeLists.txt                      |  33 ++-
+ Source/WTF/wtf/PlatformGTK.cmake                   |  14 +
+ Source/WTF/wtf/text/win/StringWin.cpp              |  48 ++++
+ Source/WTF/wtf/text/win/WCharStringExtras.h        |  60 ++++
+ Source/WTF/wtf/win/DbgHelperWin.cpp                |  58 ++++
+ Source/WTF/wtf/win/DbgHelperWin.h                  |  41 +++
+ Source/WTF/wtf/win/SoftLinking.h                   | 313 +++++++++++++++++++++
+ Source/WTF/wtf/win/WTFCRTDebug.h                   |  40 +++
+ .../bindings/scripts/generate-bindings-all.pl      |   9 +-
+ Source/WebCore/platform/gtk/po/CMakeLists.txt      |  11 +-
+ .../Scripts/copy-user-interface-resources.pl       |   8 +-
+ Source/WebKit/PlatformGTK.cmake                    |  34 ++-
+ Source/cmake/FindGLib.cmake                        |   8 +-
+ Source/cmake/OptionsCommon.cmake                   |  18 +-
+ Source/cmake/OptionsGTK.cmake                      |  28 ++
+ 16 files changed, 732 insertions(+), 21 deletions(-)
 
 diff --git a/Source/JavaScriptCore/CMakeLists.txt b/Source/JavaScriptCore/CMakeLists.txt
 index 0cd2c74..d4d0d40 100644
@@ -275,7 +288,7 @@ index fda0252..9352508 100644
  set(WTF_INTERFACE_INCLUDE_DIRECTORIES ${WTF_FRAMEWORK_HEADERS_DIR})
  set(WTF_INTERFACE_DEPENDENCIES WTF_CopyHeaders)
 diff --git a/Source/WTF/wtf/PlatformGTK.cmake b/Source/WTF/wtf/PlatformGTK.cmake
-index c45ffd1d..b993948d 100644
+index c45ffd1..b993948 100644
 --- a/Source/WTF/wtf/PlatformGTK.cmake
 +++ b/Source/WTF/wtf/PlatformGTK.cmake
 @@ -32,6 +32,20 @@ list(APPEND WTF_SOURCES
@@ -299,6 +312,60 @@ index c45ffd1d..b993948d 100644
  list(APPEND WTF_PUBLIC_HEADERS
      PlatformEnableGlib.h
  
+diff --git a/Source/WTF/wtf/text/win/StringWin.cpp b/Source/WTF/wtf/text/win/StringWin.cpp
+new file mode 100644
+index 0000000..cb967fc
+--- /dev/null
++++ b/Source/WTF/wtf/text/win/StringWin.cpp
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (C) 2019 Sony Interactive Entertainment Inc.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include <wtf/text/WTFString.h>
++
++namespace WTF {
++
++Vector<wchar_t> String::wideCharacters() const
++{
++    Vector<wchar_t> result;
++    if (!m_impl)
++        return result;
++
++    result.reserveInitialCapacity(length() + 1);
++
++    if (is8Bit())
++        result.append(span8());
++    else
++        result.append(span16());
++
++    result.append(0);
++    return result;
++}
++
++} // namespace WTF
 diff --git a/Source/WTF/wtf/text/win/WCharStringExtras.h b/Source/WTF/wtf/text/win/WCharStringExtras.h
 new file mode 100644
 index 0000000..3412ae2
@@ -365,60 +432,6 @@ index 0000000..3412ae2
 +
 +using WTF::ucharFrom;
 +using WTF::wcharFrom;
-diff --git a/Source/WTF/wtf/text/win/StringWin.cpp b/Source/WTF/wtf/text/win/StringWin.cpp
-new file mode 100644
-index 00000000..cb967fce
---- /dev/null
-+++ b/Source/WTF/wtf/text/win/StringWin.cpp
-@@ -0,0 +1,48 @@
-+/*
-+ * Copyright (C) 2019 Sony Interactive Entertainment Inc.
-+ *
-+ * Redistribution and use in source and binary forms, with or without
-+ * modification, are permitted provided that the following conditions
-+ * are met:
-+ * 1. Redistributions of source code must retain the above copyright
-+ *    notice, this list of conditions and the following disclaimer.
-+ * 2. Redistributions in binary form must reproduce the above copyright
-+ *    notice, this list of conditions and the following disclaimer in the
-+ *    documentation and/or other materials provided with the distribution.
-+ *
-+ * THIS SOFTWARE IS PROVIDED BY APPLE INC. AND ITS CONTRIBUTORS ``AS IS''
-+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
-+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
-+ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL APPLE INC. OR ITS CONTRIBUTORS
-+ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
-+ * THE POSSIBILITY OF SUCH DAMAGE.
-+ */
-+
-+#include "config.h"
-+#include <wtf/text/WTFString.h>
-+
-+namespace WTF {
-+
-+Vector<wchar_t> String::wideCharacters() const
-+{
-+    Vector<wchar_t> result;
-+    if (!m_impl)
-+        return result;
-+
-+    result.reserveInitialCapacity(length() + 1);
-+
-+    if (is8Bit())
-+        result.append(span8());
-+    else
-+        result.append(span16());
-+
-+    result.append(0);
-+    return result;
-+}
-+
-+} // namespace WTF
 diff --git a/Source/WTF/wtf/win/DbgHelperWin.cpp b/Source/WTF/wtf/win/DbgHelperWin.cpp
 new file mode 100644
 index 0000000..6810582
@@ -922,6 +935,28 @@ index e93f62a..3a0fcd4 100755
      }
      $abort = 1 unless defined $pid;
  }
+diff --git a/Source/WebCore/platform/gtk/po/CMakeLists.txt b/Source/WebCore/platform/gtk/po/CMakeLists.txt
+index 73fc22f..fb3ffb3 100644
+--- a/Source/WebCore/platform/gtk/po/CMakeLists.txt
++++ b/Source/WebCore/platform/gtk/po/CMakeLists.txt
+@@ -13,7 +13,16 @@ set(linguas
+ # GETTEXT_CREATE_TRANSLATIONS automatically runs msgmerge, which is something we
+ # didn't do in the old autotools build. This overwrites all the po files in the
+ # Source directory. Perhaps we want this, but for now disable it to maintain compatibility.
+-set(GETTEXT_MSGMERGE_EXECUTABLE :)
++if (WIN32)
++    # ":" (the POSIX no-op substituted for msgmerge) is not a command on
++    # Windows, where CMake drives custom commands through "cmd.exe /C": every
++    # .gmo target died with "':' is not recognized as an internal or external
++    # command". "cmake -E true" ignores its extra arguments and exits 0
++    # everywhere, which keeps the no-msgmerge semantics of this substitution.
++    set(GETTEXT_MSGMERGE_EXECUTABLE ${CMAKE_COMMAND} -E true)
++else ()
++    set(GETTEXT_MSGMERGE_EXECUTABLE :)
++endif ()
+ 
+ set(domain WebKitGTK-${WEBKITGTK_API_VERSION})
+ set(build_directory ${CMAKE_BINARY_DIR}/Source/WebCore/platform/gtk/po)
 diff --git a/Source/WebInspectorUI/Scripts/copy-user-interface-resources.pl b/Source/WebInspectorUI/Scripts/copy-user-interface-resources.pl
 index f324e40..398bbd2 100755
 --- a/Source/WebInspectorUI/Scripts/copy-user-interface-resources.pl
@@ -949,6 +984,66 @@ index f324e40..398bbd2 100755
      }
  }
  
+diff --git a/Source/WebKit/PlatformGTK.cmake b/Source/WebKit/PlatformGTK.cmake
+index 8bb1e4b..f533208 100644
+--- a/Source/WebKit/PlatformGTK.cmake
++++ b/Source/WebKit/PlatformGTK.cmake
+@@ -34,7 +34,15 @@ endif ()
+ 
+ add_definitions(-DPKGLIBEXECDIR="${LIBEXEC_INSTALL_DIR}")
+ add_definitions(-DLOCALEDIR="${CMAKE_INSTALL_FULL_LOCALEDIR}")
+-add_definitions(-DDATADIR="${CMAKE_INSTALL_FULL_DATADIR}")
++if (NOT WIN32)
++    # MinGW's ole2.h declares "typedef enum tagDATADIR { ... } DATADIR;" and
++    # windows.h (which drags in ole2.h) is force-included through the WebKit
++    # prefix headers, so a global -DDATADIR would rewrite that typedef name and
++    # break every WebKit-directory TU. The only in-tree consumer of the macro
++    # (BubblewrapLauncher.cpp) is entirely wrapped in ENABLE(BUBBLEWRAP_SANDBOX)
++    # and is never built on Windows, so simply skip the define there.
++    add_definitions(-DDATADIR="${CMAKE_INSTALL_FULL_DATADIR}")
++endif ()
+ add_definitions(-DLIBDIR="${LIB_INSTALL_DIR}")
+ add_definitions(-DPKGLIBDIR="${LIB_INSTALL_DIR}/webkit${WEBKITGTK_API_INFIX}gtk-${WEBKITGTK_API_VERSION}")
+ 
+@@ -52,6 +60,21 @@ list(APPEND WebKit_LIBRARIES
+     GLib::Module
+ )
+ 
++if (WIN32)
++    # Upstream relies on ELF's ability to leave symbols undefined in shared
++    # libraries (applications such as MiniBrowser link GTK::GTK themselves),
++    # and nothing in the CMake files ever attaches the GTK include directories
++    # to the WebKit target. Neither holds on Windows: PE DLLs must resolve
++    # every symbol at link time (WebKitWebViewBase and friends use GTK types
++    # directly), and the WebKit prefix headers pull in UIProcess headers such
++    # as ViewSnapshotStore.h whose GTK4 branch includes <gtk/gtk.h>. Link the
++    # GTK::GTK interface target (from FindGTK.cmake) so the WebKit target - and
++    # its PCH subtargets, which copy LINK_LIBRARIES via WEBKIT_DEFINE_SUBTARGET
++    # - pick up both the include directories and the gtk-4/gdk-4 import
++    # libraries.
++    list(APPEND WebKit_LIBRARIES GTK::GTK)
++endif ()
++
+ list(APPEND WebKit_MESSAGES_IN_FILES
+     UIProcess/ViewGestureController
+ 
+@@ -553,8 +576,15 @@ install(FILES ${WebKitGTK_INSTALLED_HEADERS}
+         DESTINATION "${WEBKITGTK_HEADER_INSTALL_DIR}/webkit"
+ )
+ 
++# MinGW: the native Win32 perl has been observed to stall indefinitely inside
++# this step on CI (the log stops at the perl command and every remaining build
++# edge depends on this target, deadlocking the whole graph). Let the packager
++# point this single step at the MSYS2 POSIX perl instead of PERL_EXECUTABLE.
++set(WEBKIT_FORWARDING_HEADERS_PERL "${PERL_EXECUTABLE}" CACHE STRING
++    "Perl interpreter used to generate WebKit forwarding headers")
++
+ add_custom_target(WebKit-forwarding-headers
+-    COMMAND ${PERL_EXECUTABLE} ${WEBKIT_DIR}/Scripts/generate-forwarding-headers.pl --include-path ${WEBKIT_DIR} --output ${FORWARDING_HEADERS_DIR} --platform gtk --platform soup
++    COMMAND ${WEBKIT_FORWARDING_HEADERS_PERL} ${WEBKIT_DIR}/Scripts/generate-forwarding-headers.pl --include-path ${WEBKIT_DIR} --output ${FORWARDING_HEADERS_DIR} --platform gtk --platform soup
+ )
+ 
+ # These symbolic link allows includes like #include <webkit/WebkitWebView.h>, which simulates installed headers.
 diff --git a/Source/cmake/FindGLib.cmake b/Source/cmake/FindGLib.cmake
 index b6ff928..5e6e097 100644
 --- a/Source/cmake/FindGLib.cmake
@@ -1050,69 +1145,3 @@ index 99c1c6f..b554a42 100644
  # We do not yet have a systematic way of representing the equivalent of WTF PLATFORM_ macros
  # within Swift. This task is represented within Apple as rdar://168139870.
  # For now, our only immediate need is to determine if we're being built
-diff --git a/Source/WebCore/platform/gtk/po/CMakeLists.txt b/Source/WebCore/platform/gtk/po/CMakeLists.txt
-index 73fc22f31180..fb3ffb3386a6 100644
---- a/Source/WebCore/platform/gtk/po/CMakeLists.txt
-+++ b/Source/WebCore/platform/gtk/po/CMakeLists.txt
-@@ -13,7 +13,16 @@
- # GETTEXT_CREATE_TRANSLATIONS automatically runs msgmerge, which is something we
- # didn't do in the old autotools build. This overwrites all the po files in the
- # Source directory. Perhaps we want this, but for now disable it to maintain compatibility.
--set(GETTEXT_MSGMERGE_EXECUTABLE :)
-+if (WIN32)
-+    # ":" (the POSIX no-op substituted for msgmerge) is not a command on
-+    # Windows, where CMake drives custom commands through "cmd.exe /C": every
-+    # .gmo target died with "':' is not recognized as an internal or external
-+    # command". "cmake -E true" ignores its extra arguments and exits 0
-+    # everywhere, which keeps the no-msgmerge semantics of this substitution.
-+    set(GETTEXT_MSGMERGE_EXECUTABLE ${CMAKE_COMMAND} -E true)
-+else ()
-+    set(GETTEXT_MSGMERGE_EXECUTABLE :)
-+endif ()
- 
- set(domain WebKitGTK-${WEBKITGTK_API_VERSION})
- set(build_directory ${CMAKE_BINARY_DIR}/Source/WebCore/platform/gtk/po)
-
-diff --git a/Source/WebKit/PlatformGTK.cmake b/Source/WebKit/PlatformGTK.cmake
-index 4d5e6f70..a1b2c3d4 100644
---- a/Source/WebKit/PlatformGTK.cmake
-+++ b/Source/WebKit/PlatformGTK.cmake
-@@ -34,7 +34,15 @@
- 
- add_definitions(-DPKGLIBEXECDIR="${LIBEXEC_INSTALL_DIR}")
- add_definitions(-DLOCALEDIR="${CMAKE_INSTALL_FULL_LOCALEDIR}")
--add_definitions(-DDATADIR="${CMAKE_INSTALL_FULL_DATADIR}")
-+if (NOT WIN32)
-+    # MinGW's ole2.h declares "typedef enum tagDATADIR { ... } DATADIR;" and
-+    # windows.h (which drags in ole2.h) is force-included through the WebKit
-+    # prefix headers, so a global -DDATADIR would rewrite that typedef name and
-+    # break every WebKit-directory TU. The only in-tree consumer of the macro
-+    # (BubblewrapLauncher.cpp) is entirely wrapped in ENABLE(BUBBLEWRAP_SANDBOX)
-+    # and is never built on Windows, so simply skip the define there.
-+    add_definitions(-DDATADIR="${CMAKE_INSTALL_FULL_DATADIR}")
-+endif ()
- add_definitions(-DLIBDIR="${LIB_INSTALL_DIR}")
- add_definitions(-DPKGLIBDIR="${LIB_INSTALL_DIR}/webkit${WEBKITGTK_API_INFIX}gtk-${WEBKITGTK_API_VERSION}")
- 
-@@ -52,6 +60,21 @@
-     GLib::Module
- )
- 
-+if (WIN32)
-+    # Upstream relies on ELF's ability to leave symbols undefined in shared
-+    # libraries (applications such as MiniBrowser link GTK::GTK themselves),
-+    # and nothing in the CMake files ever attaches the GTK include directories
-+    # to the WebKit target. Neither holds on Windows: PE DLLs must resolve
-+    # every symbol at link time (WebKitWebViewBase and friends use GTK types
-+    # directly), and the WebKit prefix headers pull in UIProcess headers such
-+    # as ViewSnapshotStore.h whose GTK4 branch includes <gtk/gtk.h>. Link the
-+    # GTK::GTK interface target (from FindGTK.cmake) so the WebKit target - and
-+    # its PCH subtargets, which copy LINK_LIBRARIES via WEBKIT_DEFINE_SUBTARGET
-+    # - pick up both the include directories and the gtk-4/gdk-4 import
-+    # libraries.
-+    list(APPEND WebKit_LIBRARIES GTK::GTK)
-+endif ()
-+
- list(APPEND WebKit_MESSAGES_IN_FILES
-     UIProcess/ViewGestureController
- 
