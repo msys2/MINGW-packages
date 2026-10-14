@@ -1,0 +1,100 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Wed, 14 Oct 2026 09:25:00 +0000
+Subject: [PATCH] MinGW: drop pre-Round-27 HANDLE-style Identifier construction
+ in ProcessLauncherGLib.cpp
+
+Update 34 (fixing the round-34 CLANG64/CLANGARM64 ProcessLauncherGLib.cpp
+1-error block at [8347]/[8293]):
+
+ProcessLauncherGLib.cpp:330 fails with
+  error: no matching constructor for initialization of 'IPC::Connection::Identifier'
+  didFinishLaunchingProcess(m_processID, IPC::Connection::Identifier {
+    reinterpret_cast<HANDLE>(static_cast<intptr_t>(serverSocketValue)) });
+                                                 ^  ~~~~~~~~~~~~~~~~~~~
+The clang++ candidate list (Connection.h:298/300/301/305/309) shows only
+the USE(UNIX_DOMAIN_SOCKETS) branch's constructors:
+  * Identifier() = default
+  * Identifier(Identifier&&) = default
+  * explicit Identifier(Handle&&)              -> takes ConnectionHandle
+  * explicit Identifier(UnixFileDescriptor&&)  -> takes UnixFileDescriptor
+The OS(WINDOWS)-branch constructor `explicit Identifier(HANDLE handle)`
+at Connection.h:320 is NOT in the candidate set, which means the
+preprocessor picked the USE(UNIX_DOMAIN_SOCKETS) branch.
+
+Root cause: Round 27 (commit b9c8176, "unify MinGW GTK IPC to unix-flavored
+attachment/semaphore types") changed PlatformUse.h to unconditionally
+#define USE_UNIX_DOMAIN_SOCKETS=1 for PLATFORM(GTK)||PLATFORM(WPE) on
+Windows, so the MinGW GTK build picks the unix-flavored Identifier
+(UnixFileDescriptor payload wrapping a Win32 SOCKET handle) and the
+OS(WINDOWS)-branch Identifier(HANDLE) constructor disappears. The
+existing ConnectionGLib.cpp was rewritten to the unix flavor in
+Round 27 (six call sites in Update 27), and AuxiliaryProcessMain.cpp:110
+was migrated in Round 28. The `#if OS(WINDOWS)` block at
+ProcessLauncherGLib.cpp:328-336 was a pre-Round-27 leftover that the
+flavor migration missed — it still constructs Identifier from a raw
+HANDLE, which the unified Identifier class no longer has a constructor
+for.
+
+Fix: drop the `#if OS(WINDOWS) ... #else ... #endif` block at
+ProcessLauncherGLib.cpp:328-336 and use the unix-flavored code path
+on Windows too. The kept code is byte-identical to the original
+pre-0003 code (which was the `#else` branch):
+
+    RunLoop::mainSingleton().dispatch([protectedThis = protect(*this),
+        this, serverSocket = WTF::move(webkitSocketPair.server)] mutable {
+        didFinishLaunchingProcess(m_processID,
+            IPC::Connection::Identifier { WTF::move(serverSocket) });
+    });
+
+webkitSocketPair.server is a UnixFileDescriptor (IPCUtilities.h:55-58
+defines `struct SocketPair { UnixFileDescriptor client; UnixFileDescriptor
+server; }` under `#if USE(UNIX_DOMAIN_SOCKETS) || OS(WINDOWS)`), and
+Identifier(UnixFileDescriptor&&) is the constructor the kept code
+invokes. The Win32 SOCKET handle packed inside the UnixFileDescriptor
+is created by `IPC::createPlatformConnection()` (also in
+IPCUtilities.h) which on Windows returns a bound UDP loopback socket
+pair (the Round 22 / Round 27 winsock datagram IPC path).
+
+The `#include <windows.h>` added by 0003 at the top of the file is
+still needed: terminateProcess() further down uses OpenProcess() /
+TerminateProcess() / CloseHandle() / HANDLE / DWORD / PROCESS_TERMINATE
+under its own `#if OS(WINDOWS)` guard, and that block is correct as-is
+(pure Win32 process control, not IPC flavor-dependent).
+
+Sandbox verification: pre-patch source reproduces the
+`no matching constructor for initialization of 'IPC::Connection::Identifier'`
+error against a synthesized MSYS2 CLANG64 configuration
+(USE(UNIX_DOMAIN_SOCKETS)=1 + OS(WINDOWS)=1, matching PlatformUse.h
+on MinGW GTK). Post-patch source compiles cleanly: the kept code
+constructs Identifier(UnixFileDescriptor&&), which is in the active
+USE(UNIX_DOMAIN_SOCKETS) branch. `patch -Np1 --dry-run` on
+pristine+0001-0007 applies with 0 .rej / 0 fuzz.
+
+---
+ .../Launcher/glib/ProcessLauncherGLib.cpp         | 8 +-------
+ 1 file changed, 1 insertion(+), 7 deletions(-)
+
+diff --git a/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp b/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
+index cda05b2..a3b5f1c 100644
+--- a/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
++++ b/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
+@@ -325,15 +325,9 @@ void ProcessLauncher::launchProcess()
+     m_processID = g_ascii_strtoll(processIdStr, nullptr, 0);
+     RELEASE_ASSERT(m_processID);
+ 
+-#if OS(WINDOWS)
+-    RunLoop::mainSingleton().dispatch([protectedThis = protect(*this), this, serverSocketValue = webkitSocketPair.server.release()] mutable {
+-        didFinishLaunchingProcess(m_processID, IPC::Connection::Identifier { reinterpret_cast<HANDLE>(static_cast<intptr_t>(serverSocketValue)) });
+-    });
+-#else
+     RunLoop::mainSingleton().dispatch([protectedThis = protect(*this), this, serverSocket = WTF::move(webkitSocketPair.server)] mutable {
+         didFinishLaunchingProcess(m_processID, IPC::Connection::Identifier { WTF::move(serverSocket) });
+     });
+-#endif
+ }
+ 
+ void ProcessLauncher::terminateProcess()
+-- 
+2.39.1
+
