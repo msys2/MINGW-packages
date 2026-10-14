@@ -1,0 +1,122 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Wed, 14 Oct 2026 10:45:00 +0000
+Subject: [PATCH] MinGW: declare GLFence unix-only methods portably + add Windows stubs
+
+Update 35a (fixing the round-35 CLANG64 AcceleratedSurface.cpp 3-error
+block at [8333/8564]):
+
+AcceleratedSurface.cpp:233/248/257 fails with
+  error: no member named 'importFD' in 'WebCore::GLFence'
+  error: no member named 'createExportable' in 'WebCore::GLFence'
+  error: no member named 'exportFD' in 'WebCore::GLFence'
+
+GLFence.h declares these three methods only under #if OS(UNIX):
+  * static std::unique_ptr<GLFence> createExportable(const GLDisplay&);
+  * static std::unique_ptr<GLFence> importFD(const GLDisplay&, WTF::UnixFileDescriptor&&);
+  * virtual WTF::UnixFileDescriptor exportFD() { return { }; }
+
+On MinGW GTK (OS(WINDOWS)=1), the OS(UNIX) guard skips all three
+declarations, so any consumer that names them (AcceleratedSurface.cpp
+at lines 233/248/257, plus CoordinatedPlatformLayerBufferDMABuf.cpp
+and OpenXRGraphicsBindingOpenGLES.cpp on the Linux DMABuf / OpenXR
+paths) fails to compile.
+
+Fix: drop the OS(UNIX) guards in GLFence.h. UnixFileDescriptor is
+portable to MinGW since Round 22 (Win32 SOCKET packed in the
+descriptor payload), so the include and the signatures are safe on
+every port. In GLFence.cpp, keep the Unix implementation paths
+under OS(UNIX) (they call GLFenceEGL::createExportable /
+GLFenceEGL::importFD which depend on ANDROID_native_fence_sync, a
+Linux DMA-Buf/EGL extension that MSYS2 GTK does not ship), and add
+a Windows #else branch with stubs that return nullptr. Consumers
+link without having to repeat the OS(UNIX) guard at every call
+site; at runtime the stubs short-circuit to the no-fence path.
+
+Sandbox verification: pre-patch source reproduces the three
+'no member named' errors against a synthesized MSYS2 CLANG64
+configuration (OS(WINDOWS)=1, OS(UNIX)=0). Post-patch source
+compiles cleanly.
+
+---
+diff --git a/Source/WebCore/platform/graphics/egl/GLFence.h b/Source/WebCore/platform/graphics/egl/GLFence.h
+index 9a1a2b3..c5d4e6f 100644
+--- a/Source/WebCore/platform/graphics/egl/GLFence.h	2026-07-24 08:02:55.246843800 +0000
++++ b/Source/WebCore/platform/graphics/egl/GLFence.h	2026-10-14 10:41:29.003006316 +0000
+@@ -22,9 +22,11 @@
+ #include <wtf/Noncopyable.h>
+ #include <wtf/TZoneMalloc.h>
+ 
+-#if OS(UNIX)
++// UnixFileDescriptor is portable to MinGW since Round 22 (Win32 SOCKET packed
++// in the descriptor payload); include it unconditionally so GLFence's
++// exportFD() / importFD() / createExportable() signatures are visible on
++// every port without each consumer having to repeat the OS(UNIX) guard.
+ #include <wtf/unix/UnixFileDescriptor.h>
+-#endif
+ 
+ namespace WebCore {
+ class GLDisplay;
+@@ -35,17 +37,13 @@
+ public:
+     static bool isSupported(const GLDisplay&);
+     WEBCORE_EXPORT static std::unique_ptr<GLFence> create(const GLDisplay&);
+-#if OS(UNIX)
+     WEBCORE_EXPORT static std::unique_ptr<GLFence> createExportable(const GLDisplay&);
+     WEBCORE_EXPORT static std::unique_ptr<GLFence> importFD(const GLDisplay&, WTF::UnixFileDescriptor&&);
+-#endif
+     virtual ~GLFence() = default;
+ 
+     virtual void clientWait() = 0;
+     virtual void serverWait() = 0;
+-#if OS(UNIX)
+     virtual WTF::UnixFileDescriptor exportFD() { return { }; }
+-#endif
+ 
+ protected:
+     GLFence() = default;
+
+diff --git a/Source/WebCore/platform/graphics/egl/GLFence.cpp b/Source/WebCore/platform/graphics/egl/GLFence.cpp
+index 4b5c6d7..e7f8a9b 100644
+--- a/Source/WebCore/platform/graphics/egl/GLFence.cpp	2026-07-24 08:02:55.246843800 +0000
++++ b/Source/WebCore/platform/graphics/egl/GLFence.cpp	2026-10-14 10:41:40.223082213 +0000
+@@ -96,6 +96,8 @@
+ 
+     if (display.extensions().ANDROID_native_fence_sync)
+         return GLFenceEGL::createExportable(display);
++#else
++    UNUSED_PARAM(display);
+ #endif
+     return nullptr;
+ }
+@@ -109,10 +111,30 @@
+     if (display.extensions().ANDROID_native_fence_sync)
+         return GLFenceEGL::importFD(display, WTF::move(fd));
+ #else
++    UNUSED_PARAM(display);
+     UNUSED_PARAM(fd);
+ #endif
+     return nullptr;
+ }
++#else
++// MinGW: GLFence::createExportable / importFD are declared in the header
++// unconditionally (see GLFence.h), but the EGL implementation paths are
++// Unix-specific (ANDROID_native_fence_sync is a Linux DMA-Buf/EGL extension).
++// Provide Windows stubs that return nullptr so consumers (AcceleratedSurface.cpp,
++// CoordinatedPlatformLayerBufferDMABuf.cpp, OpenXRGraphicsBindingOpenGLES.cpp)
++// link without having to repeat the OS(UNIX) guard at every call site.
++std::unique_ptr<GLFence> GLFence::createExportable(const GLDisplay& display)
++{
++    UNUSED_PARAM(display);
++    return nullptr;
++}
++
++std::unique_ptr<GLFence> GLFence::importFD(const GLDisplay& display, UnixFileDescriptor&& fd)
++{
++    UNUSED_PARAM(display);
++    UNUSED_PARAM(fd);
++    return nullptr;
++}
+ #endif
+ 
+ } // namespace WebCore
