@@ -268,6 +268,18 @@ IPC and process plumbing for the GTK/MinGW target:
   macro leakage, tolerates a pre-included windows.h, and the kernel32
   import library exposes GetFullPathNameW/MultiByteToWideChar/
   WideCharToMultiByte.
+
+  Update 31 (the round-31 CLANG64/CLANGARM64 compile errors in the same
+  shim): WebKit 2.54 moved WTF::Vector::data() into the private section
+  (Vector.h:985; the public buffer accessors are span() and
+  mutableSpan()), so the six Win32 calls inside mingwRealpathForSandbox()
+  - two MultiByteToWideChar output buffers, two GetFullPathNameW
+  arguments, two WideCharToMultiByte arguments - fail with "'data' is a
+  private member of 'WTF::Vector<wchar_t>'" (6 errors on CLANG64,
+  mirrored on CLANGARM64). All six call sites now go through
+  mutableSpan().data(), whose std::span::data() is public and hands the
+  exact same pointer to the same arguments; no length or ownership
+  changes.
 ---
 
  Source/WebCore/SourcesGTK.txt                      |   1 +
@@ -295,14 +307,14 @@ IPC and process plumbing for the GTK/MinGW target:
  Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp |  44 ++-
  Source/WebKit/UIProcess/API/C/WKAPICast.h          |   2 +-
  .../UIProcess/API/glib/WebKitProtocolHandler.cpp   |   5 +-
- .../WebKit/UIProcess/API/glib/WebKitWebContext.cpp |  91 +++++
+ .../WebKit/UIProcess/API/glib/WebKitWebContext.cpp |  94 ++++++
  .../UIProcess/API/gtk/WebKitPrintOperation.cpp     |  10 +
  .../Launcher/glib/ProcessLauncherGLib.cpp          |  38 ++-
  Source/WebKit/UIProcess/glib/FenceMonitor.cpp      |  11 +
  Source/WebKit/UIProcess/gtk/Display.cpp            |   7 +
  Source/WebKit/UIProcess/gtk/GtkVersioning.h        |  19 ++
  Source/WebKit/WebKitPrefix.h                       |   8 +
- 32 files changed, 1027 insertions(+), 57 deletions(-)
+ 32 files changed, 1030 insertions(+), 57 deletions(-)
 
 diff --git a/Source/WebCore/SourcesGTK.txt b/Source/WebCore/SourcesGTK.txt
 index 30fc9d0..83bcf93 100644
@@ -1870,10 +1882,10 @@ index 8752d80..8e84768 100644
  #endif
      }
 diff --git a/Source/WebKit/UIProcess/API/glib/WebKitWebContext.cpp b/Source/WebKit/UIProcess/API/glib/WebKitWebContext.cpp
-index 549ee89..048a7e1 100644
+index 549ee89..732ebf9 100644
 --- a/Source/WebKit/UIProcess/API/glib/WebKitWebContext.cpp
 +++ b/Source/WebKit/UIProcess/API/glib/WebKitWebContext.cpp
-@@ -1422,8 +1422,98 @@ void webkit_web_context_set_sandbox_enabled(WebKitWebContext* context, gboolean
+@@ -1422,8 +1422,101 @@ void webkit_web_context_set_sandbox_enabled(WebKitWebContext* context, gboolean
  #endif
  
  IGNORE_CLANG_WARNINGS_BEGIN("unsafe-buffer-usage-in-libc-call")
@@ -1905,20 +1917,23 @@ index 549ee89..048a7e1 100644
 +        return nullptr;
 +    }
 +    Vector<wchar_t> widePath(wideLength);
-+    MultiByteToWideChar(CP_UTF8, 0, rawPath, -1, widePath.data(), wideLength);
++    /* WTF::Vector::data() is a private member in WebKit 2.54 (its public
++     * buffer accessors are span()/mutableSpan()); std::span::data() hands
++     * the same pointer over to the Win32 API. */
++    MultiByteToWideChar(CP_UTF8, 0, rawPath, -1, widePath.mutableSpan().data(), wideLength);
 +
-+    DWORD length = GetFullPathNameW(widePath.data(), 0, nullptr, nullptr);
++    DWORD length = GetFullPathNameW(widePath.mutableSpan().data(), 0, nullptr, nullptr);
 +    if (!length) {
 +        errno = ENOENT;
 +        return nullptr;
 +    }
 +    Vector<wchar_t> buffer(length);
-+    if (GetFullPathNameW(widePath.data(), length, buffer.data(), nullptr) >= length) {
++    if (GetFullPathNameW(widePath.mutableSpan().data(), length, buffer.mutableSpan().data(), nullptr) >= length) {
 +        errno = ENOENT;
 +        return nullptr;
 +    }
 +
-+    int utf8Length = WideCharToMultiByte(CP_UTF8, 0, buffer.data(), -1, nullptr, 0, nullptr, nullptr);
++    int utf8Length = WideCharToMultiByte(CP_UTF8, 0, buffer.mutableSpan().data(), -1, nullptr, 0, nullptr, nullptr);
 +    if (utf8Length <= 1) {
 +        errno = ENOENT;
 +        return nullptr;
@@ -1928,7 +1943,7 @@ index 549ee89..048a7e1 100644
 +        errno = ENOMEM;
 +        return nullptr;
 +    }
-+    if (WideCharToMultiByte(CP_UTF8, 0, buffer.data(), -1, resolved, utf8Length, nullptr, nullptr) != utf8Length) {
++    if (WideCharToMultiByte(CP_UTF8, 0, buffer.mutableSpan().data(), -1, resolved, utf8Length, nullptr, nullptr) != utf8Length) {
 +        free(resolved);
 +        errno = ENOENT;
 +        return nullptr;
@@ -1972,7 +1987,7 @@ index 549ee89..048a7e1 100644
      std::unique_ptr<char, decltype(free)*> resolvedPath(realpath(path, nullptr), free);
      if (!resolvedPath) {
          if (errno == ENOENT)
-@@ -1443,6 +1533,7 @@ static bool pathExistsAndIsNotHomeDirectory(const char* path)
+@@ -1443,6 +1536,7 @@ static bool pathExistsAndIsNotHomeDirectory(const char* path)
      }
  
      return strcmp(resolvedPath.get(), resolvedHomeDirectory.get());

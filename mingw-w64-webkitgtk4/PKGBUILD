@@ -16,6 +16,7 @@ msys2_references=(
 license=('spdx:LGPL-2.1-only' 'spdx:BSD-2-Clause')
 depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
          "${MINGW_PACKAGE_PREFIX}-cairo"
+         "${MINGW_PACKAGE_PREFIX}-dlfcn"
          "${MINGW_PACKAGE_PREFIX}-fontconfig"
          "${MINGW_PACKAGE_PREFIX}-freetype"
          "${MINGW_PACKAGE_PREFIX}-gdk-pixbuf2"
@@ -51,9 +52,11 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-perl"
              # Unprefixed "perl" is the MSYS2 POSIX perl (/usr/bin/perl.exe);
              # makepkg -s installs it explicitly because the CI images cannot
-             # be relied on to ship it, and the forwarding-headers
-             # pre-generation below depends on it. The native Win32 perl
-             # keeps driving every other generator inside the build.
+             # be relied on to ship it. It is a hard requirement: the
+             # forwarding-header pre-generation in build() runs through it
+             # (the native Win32 perl stalls on that step), and the build
+             # aborts right away when it is missing instead of silently
+             # falling back to the stalling path.
              perl
              "${MINGW_PACKAGE_PREFIX}-pkgconf"
              "${MINGW_PACKAGE_PREFIX}-python"
@@ -66,9 +69,9 @@ source=("https://webkitgtk.org/releases/webkitgtk-${pkgver}.tar.xz"
         "0005-MinGW-Skia-FreeType-backend-and-GTK-font-manager.patch"
         "0006-MinGW-libpas-and-compat-shims.patch")
 sha256sums=('ea0bbb02dbdbc596874a4e7ad35b66645b3e0a232bd0e4081de5ed92eb0a397d'
-            '392a2cbe24bd9fea15fc4543929f2610ade469a709c9d7cd0734ca7bbfbd2760'
+            'b5f8de25f3d5ae5d88fbcbb0c8ce1d5792383e0b5d0f259a79c4ec7cd329f1ed'
             '93ebc9fd165f935f601b3fe1fd655dfb319d2b1db4489cc09fc1298354b3fb78'
-            'dd1e39a488441ea721b2821d9c8a47e82985a7ce5931154804bc67cc017ea6bf'
+            'e2ef67f0eefcd250afafadac7d8cb65355e95e2e936ac16234409d2643c02114'
             '48bdd9a09ea25def38d270dbb004c6ca9e1e283db45e2259863b4f2551091889'
             '6448eca77ca587b664eb69a5781dd01bdd130a3f1a3f017576ecb97c32cd74fa'
             '03c4adc57769152d45019c2c53efdc003ebb381e171f3c793b722556840349a4')
@@ -140,40 +143,44 @@ build() {
   # perl, straight from bash, and neutralize the ninja-side step with
   # -DWEBKIT_FORWARDING_HEADERS_SKIP=ON. The native Win32 perl
   # (${MINGW_PACKAGE_PREFIX}-perl) has hung indefinitely inside that step on
-  # the CI runners in two consecutive rounds (the log stops at the perl
-  # command and every remaining build edge depends on it), and the round-28
-  # attempt to re-point the ninja-side command at /usr/bin/perl.exe never
-  # took effect on the runner. Running the script directly removes
-  # cmd.exe/ninja and the native perl from the loop; the script is
-  # deterministic and its output layout
-  # (<build>/DerivedSources/ForwardingHeaders/WebKit/<basename>) does not
-  # depend on the interpreter's path syntax, so the ninja graph consumes
-  # byte-identical files either way.
-  local _skip_forwarding=OFF
-  if [[ -x /usr/bin/perl.exe ]]; then
-    local _fwd_output="${srcdir}/build-${MSYSTEM}/DerivedSources/ForwardingHeaders"
-    mkdir -p "${_fwd_output}"
-    (
-      cd "${srcdir}/webkitgtk-${pkgver}" && /usr/bin/perl.exe \
-        Source/WebKit/Scripts/generate-forwarding-headers.pl \
-        --include-path "${srcdir}/webkitgtk-${pkgver}/Source/WebKit" \
-        --output "${_fwd_output}" \
-        --platform gtk --platform soup
-    )
-    # WKBase.h is included via <WebKit/WKBase.h> from several in-tree
-    # headers, so its forwarding header must exist once generation ran.
-    test -f "${_fwd_output}/WebKit/WKBase.h" || {
-      echo "forwarding-header pre-generation did not produce WebKit/WKBase.h" >&2
-      return 1
-    }
-    _skip_forwarding=ON
-  else
-    echo "WARNING: /usr/bin/perl.exe not found; the forwarding-headers step will run inside the build with the native perl" >&2
+  # the CI runners in three consecutive rounds (the log stops at the perl
+  # command and every remaining build edge depends on it), and both earlier
+  # attempts to fix it inside the ninja graph (re-pointing the command at
+  # another interpreter; skipping it via a -D flag) failed on the runner: a
+  # missing /usr/bin/perl.exe used to silently fall back to the stalling
+  # path. The pre-generation is therefore unconditional: /usr/bin/perl.exe
+  # is a hard requirement (see makedepends), its absence aborts the build
+  # immediately, and the CMake-side default for WEBKIT_FORWARDING_HEADERS_SKIP
+  # is ON on Windows anyway (Update 31), so the graph never depends on the
+  # stalling interpreter even if this -D flag were lost.
+  local _fwd_output="${srcdir}/build-${MSYSTEM}/DerivedSources/ForwardingHeaders"
+  if [[ ! -x /usr/bin/perl.exe ]]; then
+    echo "ERROR: /usr/bin/perl.exe not found." >&2
+    echo "The MSYS2 POSIX perl (the unprefixed 'perl' in makedepends) is required to pre-generate the WebKit forwarding headers." >&2
+    echo "The native Win32 perl stalls indefinitely on that step (see the round-28..30 CI logs)." >&2
+    return 1
   fi
-  extra_config+=("-DWEBKIT_FORWARDING_HEADERS_SKIP=${_skip_forwarding}")
+  mkdir -p "${_fwd_output}"
+  (
+    cd "${srcdir}/webkitgtk-${pkgver}" && /usr/bin/perl.exe \
+      Source/WebKit/Scripts/generate-forwarding-headers.pl \
+      --include-path "${srcdir}/webkitgtk-${pkgver}/Source/WebKit" \
+      --output "${_fwd_output}" \
+      --platform gtk --platform soup
+  )
+  # WKBase.h is included via <WebKit/WKBase.h> from several in-tree
+  # headers, so its forwarding header must exist once generation ran.
+  test -f "${_fwd_output}/WebKit/WKBase.h" || {
+    echo "forwarding-header pre-generation did not produce WebKit/WKBase.h" >&2
+    return 1
+  }
+  extra_config+=("-DWEBKIT_FORWARDING_HEADERS_SKIP=ON")
 
   mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
 
+  # GObject introspection stays disabled on MinGW: the g-ir-scanner run
+  # against the WebKit DLL is a new, untested surface on MSYS2 and this
+  # package currently has no consumer for the .gir/.typelib/.vapi files.
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake.exe \
     -GNinja \

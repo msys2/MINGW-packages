@@ -185,11 +185,90 @@ Build-system port for the GTK/MinGW target:
   interpreter's path syntax, so the ninja graph consumes byte-identical
   files. WEBKIT_FORWARDING_HEADERS_PERL stays as the fallback for manual
   builds that skip the pre-generation.
+  Update 30 (pre-flight hardening for the post-compile link and install
+  stages, which no CI round has reached yet on this package): two defects
+  that would fire after every compile edge passes, both reproduced in the
+  sandbox with the same toolchain families and both documented behavior,
+  fixed before they can burn a full CI cycle.
+  (a) PlatformGTK.cmake added "-Wl,--version-script,webkitglib-symbols.map"
+  to the WebKit link flags unconditionally for !DEVELOPER_MODE, but that is
+  ELF-only machinery. MSYS2's LLVM environments link exclusively with LLD
+  ("Only uses LLVM tools, LLD as a linker", msys2.org environments doc), and
+  lld's MinGW driver rejects the option outright: "lld: error: unknown
+  argument: --version-script" (reproduced with lld 19 via the clang MinGW
+  driver), which would have killed the libwebkitgtk-6.0.dll link on
+  CLANG64/CLANGARM64. GNU ld (UCRT64) accepts and silently ignores it on PE
+  and PE has no version sections anyway: the DLL's export surface on Windows
+  comes from WEBKIT_API and WK_EXPORT expanding to __declspec(dllexport)
+  under BUILDING_WebKit (WebKitDefines.h.in, WKDeclarationSpecifiers.h),
+  which the sandbox confirmed by inspecting the produced export table. The
+  version script (and its LINK_DEPENDS entry) now sits behind NOT WIN32, so
+  ELF builds are byte-for-byte unchanged and the flag vanishes from every
+  PE link line. The WEBKIT_API/WK_EXPORT dllexport path also covers the
+  WebProcessMain/NetworkProcessMain/GPUProcessMain entry points the
+  symbols.map lists for ELF, so nothing else is needed for PE.
+  (b) The install rules are ELF-shaped. install(TARGETS WebKit WebProcess
+  NetworkProcess RUNTIME DESTINATION libexec) names only a RUNTIME
+  destination: on DLL platforms that sends libwebkitgtk-6.0.dll to libexec
+  and - per the CMake install() docs ("If either a RUNTIME or ARCHIVE
+  destination is specified ... the other component is not installed",
+  verified in a sandbox CMAKE_SYSTEM_NAME=Windows configure+install) -
+  silently drops the import library, leaving -lwebkitgtk-6.0 from
+  webkitgtk-6.0.pc dangling and the DLL outside every DLL search path.
+  WIN32 branches now split the group: the WebKit DLL goes to bin (MSYS2
+  requires runtime DLLs on PATH; the libexec-resident process executables
+  import it from there) with its import library in lib beside the .pc
+  files, and the WebProcess/NetworkProcess executables keep libexec as
+  their RUNTIME destination (GPUProcess's separate rule is unaffected - an
+  executable has only a RUNTIME artifact). The same single-DESTINATION
+  form for the SHARED JavaScriptCore target lands
+  libjavascriptcoregtk-6.0.dll in lib, where no DLL search ever looks, so
+  it gets the same WIN32 split (DLL -> bin, import library -> lib).
+  The injected-bundle MODULE (no import library) and the process
+  executables need no changes; ELF destinations are preserved verbatim in
+  the else() branches.
+
+  Update 31 (three fixes for the round-31 CI cycle):
+  (a) PlatformGTK.cmake: WEBKIT_FORWARDING_HEADERS_SKIP now defaults to ON
+  on Windows. The round-29 pre-generation bypass ships both halves of the
+  workaround (out-of-band perl run + a -DWEBKIT_FORWARDING_HEADERS_SKIP=ON
+  flag), but the round-30 CI run shows the runner still executing the
+  in-build step with the native ucrt64 perl: the PKGBUILD used to pass
+  SKIP=ON only after a successful pre-generation, and whenever its
+  /usr/bin/perl.exe probe failed it silently fell back to the stalling
+  path. A lost flag must never re-arm a known-deadlocking edge, so the
+  default flips on WIN32 (non-Windows hosts keep the in-build step); the
+  explicit -D from the packager still wins, and the PKGBUILD now aborts
+  immediately with a clear diagnostic when the POSIX perl is missing
+  instead of silently re-enabling the step that hung the UCRT64 runner for
+  6 hours in three consecutive rounds.
+  (b) Source/WTF/wtf/glib/GSpanExtras.h: the CLANG64 cycle reached
+  WebKitWebContext.cpp with 7 warnings + 6 errors; the warnings are all
+  -Winconsistent-dllimport on g_malloc()/g_malloc0()/g_realloc()/
+  g_try_malloc()/g_try_malloc0()/g_try_realloc()/g_strfreev(). The header
+  re-declared them inside a hand-rolled extern "C" block without the
+  GLIB_AVAILABLE_IN_ALL (dllimport on Windows) attribute, while
+  GUniquePtr.h - included a few lines above - already pulls the full
+  <glib.h> prototypes through <gio/gio.h>. A redeclaration without the
+  attribute makes clang drop the previous dllimport ("previous 'dllimport'
+  ignored"), which downgrades every one of those calls to a non-import
+  call shape. The GLib headers own these prototypes; the block is removed.
+  (c) Source/WTF/wtf/glib/GRefPtr.h: same disease one include up. The
+  extern "C" block redeclaring g_object_unref()/g_object_ref_sink()/
+  g_dbus_node_info_ref()/g_dbus_node_info_unref() (plus the opaque
+  GDBus typedefs) collides with <glib-object.h>/<gio/gio.h> in both
+  include orders: first-dllimport-then-bare trips
+  -Winconsistent-dllimport, first-bare-then-dllimport trips
+  -Wdll-attribute-on-redeclaration (reproduced both ways in the sandbox
+  against the real MSYS2 glib 2.90 headers). Both headers are included
+  above the removed block, which owns the types and all four prototypes.
 ---
 
- Source/JavaScriptCore/CMakeLists.txt               |  30 +-
+ Source/JavaScriptCore/CMakeLists.txt               |  45 ++-
  Source/WTF/wtf/CMakeLists.txt                      |  33 ++-
  Source/WTF/wtf/PlatformGTK.cmake                   |  14 +
+ Source/WTF/wtf/glib/GRefPtr.h                      |  26 +-
+ Source/WTF/wtf/glib/GSpanExtras.h                  |  16 +-
  Source/WTF/wtf/text/win/StringWin.cpp              |  48 ++++
  Source/WTF/wtf/text/win/WCharStringExtras.h        |  60 ++++
  Source/WTF/wtf/win/DbgHelperWin.cpp                |  58 ++++
@@ -199,14 +278,15 @@ Build-system port for the GTK/MinGW target:
  .../bindings/scripts/generate-bindings-all.pl      |   9 +-
  Source/WebCore/platform/gtk/po/CMakeLists.txt      |  11 +-
  .../Scripts/copy-user-interface-resources.pl       |   8 +-
- Source/WebKit/PlatformGTK.cmake                    |  48 +++-
+ Source/WebKit/CMakeLists.txt                       |  36 ++-
+ Source/WebKit/PlatformGTK.cmake                    |  74 ++++-
  Source/cmake/FindGLib.cmake                        |   8 +-
  Source/cmake/OptionsCommon.cmake                   |  18 +-
  Source/cmake/OptionsGTK.cmake                      |  28 ++
- 16 files changed, 744 insertions(+), 23 deletions(-)
+ 19 files changed, 828 insertions(+), 58 deletions(-)
 
 diff --git a/Source/JavaScriptCore/CMakeLists.txt b/Source/JavaScriptCore/CMakeLists.txt
-index 0cd2c74..d4d0d40 100644
+index 0cd2c74..6a684b1 100644
 --- a/Source/JavaScriptCore/CMakeLists.txt
 +++ b/Source/JavaScriptCore/CMakeLists.txt
 @@ -1832,14 +1832,28 @@ endif ()
@@ -246,6 +326,28 @@ index 0cd2c74..d4d0d40 100644
  endif ()
  
  # When building JavaScriptCore as an object library, we need to make sure the
+@@ -1869,7 +1883,20 @@ if (NOT "${PORT}" STREQUAL "Mac")
+     if (${JavaScriptCore_LIBRARY_TYPE} STREQUAL "SHARED")
+         WEBKIT_POPULATE_LIBRARY_VERSION(JAVASCRIPTCORE)
+         set_target_properties(JavaScriptCore PROPERTIES VERSION ${JAVASCRIPTCORE_VERSION} SOVERSION ${JAVASCRIPTCORE_VERSION_MAJOR})
+-        install(TARGETS JavaScriptCore DESTINATION "${LIB_INSTALL_DIR}")
++        if (WIN32)
++            # PE layout (MinGW): the single-DESTINATION form would land the
++            # libjavascriptcoregtk-6.0.dll RUNTIME artifact in lib, where
++            # nothing on Windows ever searches for it (DLLs are resolved
++            # via the importing executable's directory and PATH, and MSYS2
++            # packaging requires runtime DLLs in bin); the import library
++            # stays in lib next to javascriptcoregtk-6.0.pc.
++            install(TARGETS JavaScriptCore
++                RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
++                ARCHIVE DESTINATION "${LIB_INSTALL_DIR}"
++            )
++        else ()
++            install(TARGETS JavaScriptCore DESTINATION "${LIB_INSTALL_DIR}")
++        endif ()
+     endif ()
+ endif ()
+ 
 diff --git a/Source/WTF/wtf/CMakeLists.txt b/Source/WTF/wtf/CMakeLists.txt
 index fda0252..9352508 100644
 --- a/Source/WTF/wtf/CMakeLists.txt
@@ -328,6 +430,72 @@ index c45ffd1..b993948 100644
 +
  list(APPEND WTF_PUBLIC_HEADERS
      PlatformEnableGlib.h
+ 
+diff --git a/Source/WTF/wtf/glib/GRefPtr.h b/Source/WTF/wtf/glib/GRefPtr.h
+index 56612d0..36b2cf9 100644
+--- a/Source/WTF/wtf/glib/GRefPtr.h
++++ b/Source/WTF/wtf/glib/GRefPtr.h
+@@ -27,25 +27,17 @@
+ 
+ #include <algorithm>
+ #include <glib-object.h>
++#include <gio/gio.h>
+ #include <wtf/HashTraits.h>
+ 
+-extern "C" {
+-    typedef struct _GDBusConnection GDBusConnection;
+-    typedef struct _GDBusNodeInfo GDBusNodeInfo;
+-
+-    GDBusNodeInfo* g_dbus_node_info_ref(GDBusNodeInfo*);
+-    void g_dbus_node_info_unref(GDBusNodeInfo*);
+-
+-    // Since GLib 2.56 a g_object_ref_sink() macro may be defined which propagates
+-    // the type of the parameter to the returned value, but it conflicts with the
+-    // declaration below, causing an error when glib-object.h is included before
+-    // this file. Thus, add the forward declarations only when the macro is not
+-    // present.
+-#ifndef g_object_ref_sink
+-    void g_object_unref(gpointer);
+-    gpointer g_object_ref_sink(gpointer);
+-#endif
+-};
++/* MinGW: no hand-rolled extern "C" block here. It used to redeclare
++ * g_dbus_node_info_ref()/g_object_unref() and friends without the
++ * GIO/GLIB_AVAILABLE_IN_ALL (dllimport on Windows) attribute, which tripped
++ * -Winconsistent-dllimport whenever the GLib headers had already been seen
++ * (the previous dllimport declaration was ignored) and, in the other include
++ * order, made the later dllimport redeclaration in <gio/gdbusintrospection.h>
++ * itself a warning. <gio/gio.h> owns the types (GDBusNodeInfo,
++ * GDBusConnection) and all of these prototypes. */
+ 
+ namespace WTF {
+ 
+diff --git a/Source/WTF/wtf/glib/GSpanExtras.h b/Source/WTF/wtf/glib/GSpanExtras.h
+index 5c9af01..618815e 100644
+--- a/Source/WTF/wtf/glib/GSpanExtras.h
++++ b/Source/WTF/wtf/glib/GSpanExtras.h
+@@ -25,15 +25,13 @@
+ #include <wtf/glib/GRefPtr.h>
+ #include <wtf/glib/GUniquePtr.h>
+ 
+-extern "C" {
+-void* g_malloc(size_t);
+-void* g_malloc0(size_t);
+-void* g_realloc(void*, size_t);
+-void* g_try_malloc(size_t);
+-void* g_try_malloc0(size_t);
+-void* g_try_realloc(void*, size_t);
+-void g_strfreev(char**);
+-}
++/* MinGW: no hand-rolled extern "C" block here. The removed block redeclared
++ * g_malloc() and friends without the GLIB_AVAILABLE_IN_ALL (dllimport on
++ * Windows) attribute; since GUniquePtr.h above already pulls in the full
++ * <glib.h> prototypes through <gio/gio.h>, every consumer that had seen
++ * those first tripped -Winconsistent-dllimport (the previous dllimport
++ * declaration was ignored, so the calls also lost their import semantics).
++ * The GLib headers own these declarations. */
+ 
+ namespace WTF {
  
 diff --git a/Source/WTF/wtf/text/win/StringWin.cpp b/Source/WTF/wtf/text/win/StringWin.cpp
 new file mode 100644
@@ -1001,11 +1169,58 @@ index f324e40..398bbd2 100755
      }
  }
  
+diff --git a/Source/WebKit/CMakeLists.txt b/Source/WebKit/CMakeLists.txt
+index 85b2d74..acc3b4f 100644
+--- a/Source/WebKit/CMakeLists.txt
++++ b/Source/WebKit/CMakeLists.txt
+@@ -1517,12 +1517,36 @@ else ()
+         set_target_properties(WebKit PROPERTIES VERSION ${WEBKIT_VERSION} SOVERSION ${WEBKIT_VERSION_MAJOR})
+     endif ()
+ 
+-    install(TARGETS WebKit WebProcess NetworkProcess
+-        LIBRARY DESTINATION "${LIB_INSTALL_DIR}"
+-        RUNTIME DESTINATION "${LIBEXEC_INSTALL_DIR}"
+-        FRAMEWORK DESTINATION "${LIB_INSTALL_DIR}"
+-        BUNDLE DESTINATION "${LIBEXEC_INSTALL_DIR}"
+-    )
++    if (WIN32)
++        # PE install layout (MinGW). libwebkitgtk-6.0.dll is the RUNTIME
++        # artifact of the WebKit target: it must ship in bin because MSYS2
++        # requires runtime DLLs on PATH (the process executables in libexec
++        # and consumer applications import it from there), while its import
++        # library is the ARCHIVE artifact and belongs in lib next to the
++        # pkg-config files. The upstream rule names only a RUNTIME
++        # destination, which sends the DLL to libexec and silently drops the
++        # import library (CMake installs an unmentioned artifact kind of a
++        # DLL-platform shared library nowhere, verified against the CMake
++        # install() docs and in the sandbox), leaving -lwebkitgtk-6.0 from
++        # webkitgtk-6.0.pc dangling. The WebProcess/NetworkProcess
++        # executables are their targets' RUNTIME artifacts and keep the
++        # libexec destination; the ELF LIBRARY rule below is meaningless for
++        # them.
++        install(TARGETS WebKit
++            RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
++            ARCHIVE DESTINATION "${LIB_INSTALL_DIR}"
++        )
++        install(TARGETS WebProcess NetworkProcess
++            RUNTIME DESTINATION "${LIBEXEC_INSTALL_DIR}"
++        )
++    else ()
++        install(TARGETS WebKit WebProcess NetworkProcess
++            LIBRARY DESTINATION "${LIB_INSTALL_DIR}"
++            RUNTIME DESTINATION "${LIBEXEC_INSTALL_DIR}"
++            FRAMEWORK DESTINATION "${LIB_INSTALL_DIR}"
++            BUNDLE DESTINATION "${LIBEXEC_INSTALL_DIR}"
++        )
++    endif ()
+     if (ENABLE_GPU_PROCESS)
+         install(TARGETS GPUProcess
+             LIBRARY DESTINATION "${LIB_INSTALL_DIR}"
 diff --git a/Source/WebKit/PlatformGTK.cmake b/Source/WebKit/PlatformGTK.cmake
-index 8bb1e4b..278f18f 100644
+index 8bb1e4b..f77c8f6 100644
 --- a/Source/WebKit/PlatformGTK.cmake
 +++ b/Source/WebKit/PlatformGTK.cmake
-@@ -34,7 +34,15 @@ endif ()
+@@ -34,13 +34,33 @@ endif ()
  
  add_definitions(-DPKGLIBEXECDIR="${LIBEXEC_INSTALL_DIR}")
  add_definitions(-DLOCALEDIR="${CMAKE_INSTALL_FULL_LOCALEDIR}")
@@ -1022,7 +1237,27 @@ index 8bb1e4b..278f18f 100644
  add_definitions(-DLIBDIR="${LIB_INSTALL_DIR}")
  add_definitions(-DPKGLIBDIR="${LIB_INSTALL_DIR}/webkit${WEBKITGTK_API_INFIX}gtk-${WEBKITGTK_API_VERSION}")
  
-@@ -52,6 +60,21 @@ list(APPEND WebKit_LIBRARIES
+ if (NOT DEVELOPER_MODE AND NOT CMAKE_SYSTEM_NAME MATCHES "Darwin")
+-    WEBKIT_ADD_TARGET_PROPERTIES(WebKit LINK_FLAGS "-Wl,--version-script,${CMAKE_CURRENT_SOURCE_DIR}/webkitglib-symbols.map")
+-    set_property(TARGET WebKit APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/webkitglib-symbols.map")
++    if (NOT WIN32)
++        # ELF-only machinery. MSYS2's LLVM environments (CLANG64/CLANGARM64)
++        # link exclusively with LLD ("Only uses LLVM tools, LLD as a linker",
++        # msys2.org docs), and lld's MinGW driver rejects the option outright
++        # ("lld: error: unknown argument: --version-script", reproduced with
++        # lld 19), which would kill the libwebkitgtk DLL link after every
++        # compile edge has passed. GNU ld silently ignores the option on PE
++        # and PE has no version sections anyway: the DLL's export surface on
++        # Windows comes from WEBKIT_API/WK_EXPORT expanding to
++        # __declspec(dllexport) under BUILDING_WebKit, so nothing else is
++        # needed here.
++        WEBKIT_ADD_TARGET_PROPERTIES(WebKit LINK_FLAGS "-Wl,--version-script,${CMAKE_CURRENT_SOURCE_DIR}/webkitglib-symbols.map")
++        set_property(TARGET WebKit APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/webkitglib-symbols.map")
++    endif ()
+ endif ()
+ 
+ list(APPEND WebKit_UNIFIED_SOURCE_LIST_FILES
+@@ -52,6 +72,21 @@ list(APPEND WebKit_LIBRARIES
      GLib::Module
  )
  
@@ -1044,7 +1279,7 @@ index 8bb1e4b..278f18f 100644
  list(APPEND WebKit_MESSAGES_IN_FILES
      UIProcess/ViewGestureController
  
-@@ -553,9 +576,26 @@ install(FILES ${WebKitGTK_INSTALLED_HEADERS}
+@@ -553,9 +588,36 @@ install(FILES ${WebKitGTK_INSTALLED_HEADERS}
          DESTINATION "${WEBKITGTK_HEADER_INSTALL_DIR}/webkit"
  )
  
@@ -1058,9 +1293,19 @@ index 8bb1e4b..278f18f 100644
 +# WEBKIT_FORWARDING_HEADERS_PERL, or pre-generate the headers out-of-band
 +# (the MSYS2 POSIX perl run directly from the packaging script) and neutralize
 +# this target entirely with WEBKIT_FORWARDING_HEADERS_SKIP=ON.
++#
++# The default for WEBKIT_FORWARDING_HEADERS_SKIP is ON on Windows: an
++# out-of-band pre-generation is the only known-good way to drive this step
++# there, and it must not depend on a -D flag surviving the trip through the
++# packaging script (a skipped -D silently re-enables the stalling step).
++# Non-Windows hosts keep the in-build step.
 +set(WEBKIT_FORWARDING_HEADERS_PERL "${PERL_EXECUTABLE}" CACHE STRING
 +    "Perl interpreter used to generate WebKit forwarding headers")
-+option(WEBKIT_FORWARDING_HEADERS_SKIP "Skip the WebKit forwarding-headers generation step" OFF)
++if (WIN32)
++    option(WEBKIT_FORWARDING_HEADERS_SKIP "Skip the WebKit forwarding-headers generation step" ON)
++else ()
++    option(WEBKIT_FORWARDING_HEADERS_SKIP "Skip the WebKit forwarding-headers generation step" OFF)
++endif ()
 +
 +if (WEBKIT_FORWARDING_HEADERS_SKIP)
 +    add_custom_target(WebKit-forwarding-headers
