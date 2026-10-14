@@ -50,13 +50,7 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-gperf"
              "${MINGW_PACKAGE_PREFIX}-ninja"
              "${MINGW_PACKAGE_PREFIX}-perl"
-             # Unprefixed "perl" is the MSYS2 POSIX perl (/usr/bin/perl.exe);
-             # makepkg -s installs it explicitly because the CI images cannot
-             # be relied on to ship it. It is a hard requirement: the
-             # forwarding-header pre-generation in build() runs through it
-             # (the native Win32 perl stalls on that step), and the build
-             # aborts right away when it is missing instead of silently
-             # falling back to the stalling path.
+             # POSIX perl (/usr/bin/perl.exe): hard requirement for forwarding-headers pre-generation; native Win32 perl stalls on that step.
              perl
              "${MINGW_PACKAGE_PREFIX}-pkgconf"
              "${MINGW_PACKAGE_PREFIX}-python"
@@ -67,37 +61,22 @@ source=("https://webkitgtk.org/releases/webkitgtk-${pkgver}.tar.xz"
         "0003-MinGW-IPC-SharedMemory-and-process-launch-support.patch"
         "0004-MinGW-cmake-discovery-and-harfbuzz-icu-shim.patch"
         "0005-MinGW-Skia-FreeType-backend-and-GTK-font-manager.patch"
-        "0006-MinGW-libpas-and-compat-shims.patch")
+        "0006-MinGW-libpas-and-compat-shims.patch"
+        "0007-MinGW-WebKitPrintOperation-GtkPrinter-guard.patch")
 sha256sums=('ea0bbb02dbdbc596874a4e7ad35b66645b3e0a232bd0e4081de5ed92eb0a397d'
             'b5f8de25f3d5ae5d88fbcbb0c8ce1d5792383e0b5d0f259a79c4ec7cd329f1ed'
             '93ebc9fd165f935f601b3fe1fd655dfb319d2b1db4489cc09fc1298354b3fb78'
             'e2ef67f0eefcd250afafadac7d8cb65355e95e2e936ac16234409d2643c02114'
             '48bdd9a09ea25def38d270dbb004c6ca9e1e283db45e2259863b4f2551091889'
             '6448eca77ca587b664eb69a5781dd01bdd130a3f1a3f017576ecb97c32cd74fa'
-            '03c4adc57769152d45019c2c53efdc003ebb381e171f3c793b722556840349a4')
+            '03c4adc57769152d45019c2c53efdc003ebb381e171f3c793b722556840349a4'
+            '957f4338304ec47317af881275d77b8efe7bb10b8ee43c1d91f69fa6719e88f1')
 
-# The release tarball ships exactly one symlink entry:
-#
-#   webkitgtk-2.54.1/Source/ThirdParty/skia/src/ports/fontations/Cargo.toml
-#     -> ../../../bazel/external/fontations/Cargo.toml
-#
-# The target file is NOT included in the tarball, and MSYS2 emulates
-# symlink(2) by deep-copying the link target, so bsdtar aborts the whole
-# extraction with ENOENT when it reaches that entry on Windows:
-#
-#   Can't create '.../skia/src/ports/fontations/Cargo.toml':
-#   No such file or directory
-#
-# Skip makepkg's automatic extraction for the tarball (checksums are still
-# verified) and unpack it in prepare() while dropping that dangling symlink;
-# the file belongs to Skia's Bazel/Rust build and is unused by the CMake
-# build of the GTK port.
+# Tarball ships one dangling symlink (skia/ports/fontations/Cargo.toml) whose target is absent; MSYS2 bsdtar aborts extraction on it, so we skip auto-extract and drop the entry in prepare().
 noextract=("webkitgtk-${pkgver}.tar.xz")
 
 prepare() {
-  # Locate the source tarball: makepkg leaves noextract'ed sources in
-  # $SRCDEST (or $startdir for local sources) instead of unpacking them
-  # into $srcdir.
+  # Locate the source tarball across SRCDEST / startdir / srcdir.
   local _tarball=""
   local _cand
   for _cand in "${SRCDEST}/webkitgtk-${pkgver}.tar.xz" \
@@ -129,6 +108,34 @@ prepare() {
   patch -Np1 -i "${startdir}/0004-MinGW-cmake-discovery-and-harfbuzz-icu-shim.patch"
   patch -Np1 -i "${startdir}/0005-MinGW-Skia-FreeType-backend-and-GTK-font-manager.patch"
   patch -Np1 -i "${startdir}/0006-MinGW-libpas-and-compat-shims.patch"
+  patch -Np1 -i "${startdir}/0007-MinGW-WebKitPrintOperation-GtkPrinter-guard.patch"
+
+  # Post-patch sentinels: assert each round's marker landed; abort before multi-hour recompile on regression.
+  local _sentinel_fail=0
+  # Round 31: GSpanExtras.h must no longer redeclare g_malloc (or -Winconsistent-dllimport fires).
+  if grep -q '^void\* g_malloc(size_t);$' Source/WTF/wtf/glib/GSpanExtras.h; then
+    echo "SENTINEL FAIL: GSpanExtras.h still has 'void* g_malloc(size_t);'; 0001 GSpanExtras hunk missing." >&2
+    _sentinel_fail=1
+  fi
+  # Round 31: WebKitWebContext.cpp must use mutableSpan() (or 6 'data' is private member errors fire).
+  if ! grep -q 'widePath\.mutableSpan()\.data()' Source/WebKit/UIProcess/API/glib/WebKitWebContext.cpp; then
+    echo "SENTINEL FAIL: WebKitWebContext.cpp missing 'widePath.mutableSpan().data()'; 0003 mingwRealpathForSandbox hunk missing." >&2
+    _sentinel_fail=1
+  fi
+  # Round 31: PlatformGTK.cmake must own the SKIP option (or UCRT64 forwarding-headers perl stall returns).
+  if ! grep -q 'option(WEBKIT_FORWARDING_HEADERS_SKIP' Source/WebKit/PlatformGTK.cmake; then
+    echo "SENTINEL FAIL: PlatformGTK.cmake missing WEBKIT_FORWARDING_HEADERS_SKIP option; 0001 PlatformGTK hunk missing." >&2
+    _sentinel_fail=1
+  fi
+  # Round 33: WebKitPrintOperation.cpp must forward-declare GtkPrinter when GTK_UNIX_PRINTING is unset (or 13 undeclared-identifier errors fire on CLANG64/CLANGARM64).
+  if ! grep -q 'typedef struct _GtkPrinter GtkPrinter;' Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp; then
+    echo "SENTINEL FAIL: WebKitPrintOperation.cpp missing 'typedef struct _GtkPrinter GtkPrinter;'; 0007 GtkPrinter guard hunk missing." >&2
+    _sentinel_fail=1
+  fi
+  if (( _sentinel_fail )); then
+    echo "One or more sentinels failed; aborting prepare(). Run 'rm -rf ${srcdir}/webkitgtk-${pkgver} && makepkg -f' to force a clean extraction+patch." >&2
+    return 1
+  fi
 }
 
 build() {
@@ -139,25 +146,10 @@ build() {
     extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
   fi
 
-  # MinGW: pre-generate the WebKit forwarding headers with the MSYS2 POSIX
-  # perl, straight from bash, and neutralize the ninja-side step with
-  # -DWEBKIT_FORWARDING_HEADERS_SKIP=ON. The native Win32 perl
-  # (${MINGW_PACKAGE_PREFIX}-perl) has hung indefinitely inside that step on
-  # the CI runners in three consecutive rounds (the log stops at the perl
-  # command and every remaining build edge depends on it), and both earlier
-  # attempts to fix it inside the ninja graph (re-pointing the command at
-  # another interpreter; skipping it via a -D flag) failed on the runner: a
-  # missing /usr/bin/perl.exe used to silently fall back to the stalling
-  # path. The pre-generation is therefore unconditional: /usr/bin/perl.exe
-  # is a hard requirement (see makedepends), its absence aborts the build
-  # immediately, and the CMake-side default for WEBKIT_FORWARDING_HEADERS_SKIP
-  # is ON on Windows anyway (Update 31), so the graph never depends on the
-  # stalling interpreter even if this -D flag were lost.
+  # Pre-generate forwarding headers with MSYS2 POSIX perl; native Win32 perl stalls on this step.
   local _fwd_output="${srcdir}/build-${MSYSTEM}/DerivedSources/ForwardingHeaders"
   if [[ ! -x /usr/bin/perl.exe ]]; then
-    echo "ERROR: /usr/bin/perl.exe not found." >&2
-    echo "The MSYS2 POSIX perl (the unprefixed 'perl' in makedepends) is required to pre-generate the WebKit forwarding headers." >&2
-    echo "The native Win32 perl stalls indefinitely on that step (see the round-28..30 CI logs)." >&2
+    echo "ERROR: /usr/bin/perl.exe not found; MSYS2 POSIX perl is required for forwarding-header pre-generation." >&2
     return 1
   fi
   mkdir -p "${_fwd_output}"
@@ -168,19 +160,23 @@ build() {
       --output "${_fwd_output}" \
       --platform gtk --platform soup
   )
-  # WKBase.h is included via <WebKit/WKBase.h> from several in-tree
-  # headers, so its forwarding header must exist once generation ran.
   test -f "${_fwd_output}/WebKit/WKBase.h" || {
     echo "forwarding-header pre-generation did not produce WebKit/WKBase.h" >&2
     return 1
   }
   extra_config+=("-DWEBKIT_FORWARDING_HEADERS_SKIP=ON")
 
-  mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
+  # Stale build dir detection: wipe if Round 31 SKIP entry is absent (Round 30 or earlier cache).
+  local _build_dir="${srcdir}/build-${MSYSTEM}"
+  if [[ -f "${_build_dir}/CMakeCache.txt" ]] \
+     && ! grep -q '^WEBKIT_FORWARDING_HEADERS_SKIP:BOOL=ON$' "${_build_dir}/CMakeCache.txt"; then
+    echo "Stale build directory at ${_build_dir} (no SKIP entry); wiping to force clean reconfigure." >&2
+    rm -rf "${_build_dir}"
+  fi
 
-  # GObject introspection stays disabled on MinGW: the g-ir-scanner run
-  # against the WebKit DLL is a new, untested surface on MSYS2 and this
-  # package currently has no consumer for the .gir/.typelib/.vapi files.
+  mkdir -p "${_build_dir}" && cd "${_build_dir}"
+
+  # ENABLE_INTROSPECTION stays OFF: g-ir-scanner against the WebKit DLL is untested on MSYS2 and the package has no .gir/.typelib/.vapi consumers.
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake.exe \
     -GNinja \
@@ -220,8 +216,7 @@ package() {
 
   DESTDIR="${pkgdir}" ${MINGW_PREFIX}/bin/cmake.exe --install .
 
-  # Ensure the pkg-config metadata is shipped; dependent projects (e.g.
-  # Kangaroo) discover the library through webkitgtk-6.0.pc.
+  # Assert pkg-config metadata ships; dependent projects (e.g. Kangaroo) discover the library through these .pc files.
   for _pc in webkitgtk-6.0 javascriptcoregtk-6.0 webkitgtk-web-process-extension-6.0; do
     test -f "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/${_pc}.pc" || {
       echo "pkg-config file ${_pc}.pc is missing from the package" >&2

@@ -1,0 +1,160 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Wed, 14 Oct 2026 08:30:00 +0000
+Subject: [PATCH] MinGW: guard GtkPrinter usages in WebKitPrintOperation.cpp
+ when GTK_UNIX_PRINTING is unset
+
+Update 33 (fixing the round-33 CLANG64/CLANGARM64 WebKitPrintOperation.cpp
+13-error block at [8285/8564]):
+
+WebKitPrintOperation.cpp uses GtkPrinter, gtk_enumerate_printers(),
+gtk_print_job_new(), gtk_print_job_set_source_fd(), gtk_print_job_send()
+and friends from <gtk/gtkunixprint.h>, which the file includes only
+under `#if HAVE(GTK_UNIX_PRINTING)`. The Round-23 OS(WINDOWS) stub for
+webkitPrintOperationSendPagesToPrintPortal() (the freedesktop.org
+portal path) bypassed the portal-specific surface, but several other
+code paths in the same TU still name GtkPrinter unconditionally:
+
+  * struct _WebKitPrintOperationPrivate::printer (line ~97): a member
+    typed GRefPtr<GtkPrinter>;
+  * webkitPrintOperationFinished(): `priv->printJob = nullptr;
+    priv->data = { };` (the two members themselves are guarded above
+    in the struct, but these two assignments were not);
+  * webkitPrintOperationPrintPagesForFrame(): the function signature
+    takes GtkPrinter* (the body was already guarded by
+    `#if HAVE(GTK_UNIX_PRINTING)` at line 376, but the signature was
+    not);
+  * findFilePrinter() / printerFromSettingsOrDefault(): two static
+    helpers returning GRefPtr<GtkPrinter> and calling
+    gtk_enumerate_printers() unconditionally;
+  * webkit_print_operation_print(): local `GRefPtr<GtkPrinter> printer
+    = printerFromSettingsOrDefault(...)` plus a call into
+    webkitPrintOperationPrintPagesForFrame(printer.get(), ...).
+
+The MSYS2 GTK4 build does not ship gtk4-unix-print (the Unix print
+backend is Linux-specific), so HAVE(GTK_UNIX_PRINTING) is unset on
+all three MSYS2 MinGW environments, and the include of
+<gtk/gtkunixprint.h> is skipped. The 13 undeclared-identifier errors
+on the CLANG64/CLANGARM64 runners (lines 97, 342, 343, 369, 422, 425,
+428, 847, 851, 854, 898) all reproduce against this shape.
+
+The fix adds a forward declaration `typedef struct _GtkPrinter
+GtkPrinter;` under `#else` of the existing `#if HAVE(GTK_UNIX_PRINTING)`
+include block, so the type is at least known (as an opaque GObject-
+derived pointer) when the GTK4 Unix print backend is absent. GRefPtr's
+default traits call g_object_ref_sink()/g_object_unref() (which take
+gpointer), so GRefPtr<GtkPrinter> compiles with just the forward
+declaration; the refcount semantics are correct because GtkPrinter is
+a GObject subtype on platforms where it is fully defined, and the
+type is never instantiated on platforms where it is not.
+
+The function bodies that actually call into gtk_enumerate_printers()
+or gtk_print_job_*() are then guarded:
+
+  * webkitPrintOperationFinished(): the two member-assignment lines
+    are wrapped in `#if HAVE(GTK_UNIX_PRINTING)` (the members
+    themselves are already guarded in the struct).
+  * findFilePrinter(): the full function moves under
+    `#if HAVE(GTK_UNIX_PRINTING)`, with a MinGW stub returning
+    nullptr in `#else`.
+  * printerFromSettingsOrDefault(): same shape as findFilePrinter().
+
+The webkitPrintOperationPrintPagesForFrame() signature was already
+fine (the body's GTK_UNIX_PRINTING guard makes the function a no-op
+that falls into the `if (!printer)` early-return branch when the type
+is opaque). The webkit_print_operation_print() call sites compile
+because the stub helpers return nullptr, which the existing
+`if (!printer)` guard turns into a clean error signal.
+
+Sandbox verification: pre-patch source reproduces all 13 errors
+against a synthesized MSYS2 CLANG64 configuration (HAVE(GTK_UNIX_PRINTING)
+unset, <gtk/gtkunixprint.h> not on the include path); post-patch
+source compiles cleanly with the same configuration (the forward
+declaration is the only new symbol, and the function bodies are
+removed by the preprocessor).
+
+---
+ Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp | 31 ++++++++++++++++++++++-
+ 1 file changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp b/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
+index 732ebf9..c5ec6c5 100644
+--- a/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
++++ b/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
+@@ -47,6 +47,16 @@
+ 
+ #if HAVE(GTK_UNIX_PRINTING)
+ #include <gtk/gtkunixprint.h>
++#else
++/* MinGW: GTK4 Unix print backend (gtk/gtkunixprint.h) is not shipped by the
++ * MSYS2 GTK4 build, so HAVE(GTK_UNIX_PRINTING) is unset and GtkPrinter is
++ * not declared. Several function signatures and local variables in this
++ * file still name GtkPrinter (the dialog-less print path, the file-printer
++ * lookup, the print-pages-for-frame helper); an opaque forward declaration
++ * lets them compile, while the function bodies that actually call into
++ * gtk_enumerate_printers()/gtk_print_job_*() are guarded below and
++ * replaced with stubs that report printing as unsupported. */
++typedef struct _GtkPrinter GtkPrinter;
+ #endif
+ 
+ using namespace WebKit;
+@@ -339,8 +349,10 @@ static void webkitPrintOperationFinished(WebKitPrintOperation* printOperation)
+ static void webkitPrintOperationFinished(WebKitPrintOperation* printOperation)
+ {
+     auto* priv = printOperation->priv;
++#if HAVE(GTK_UNIX_PRINTING)
+     priv->printJob = nullptr;
+     priv->data = { };
++#endif
+ 
+     g_signal_emit(printOperation, signals[FINISHED], 0);
+ }
+@@ -419,6 +431,7 @@ static void webkitPrintOperationPrintPagesForFrame(WebKitPrintOperation* printOp
+ #endif
+ }
+ 
++#if HAVE(GTK_UNIX_PRINTING)
+ static GRefPtr<GtkPrinter> findFilePrinter(GtkPrintSettings* settings)
+ {
+     struct FindPrinterData {
+@@ -439,6 +452,15 @@ static GRefPtr<GtkPrinter> findFilePrinter(GtkPrintSettings* settings)
+ 
+     return data.printer;
+ }
++#else
++static GRefPtr<GtkPrinter> findFilePrinter(GtkPrintSettings*)
++{
++    /* MinGW stub: without GTK_UNIX_PRINTING there is no gtk_enumerate_printers
++     * and no GtkPrintBackendFile to discover; the portal path that calls this
++     * helper is also stubbed above for OS(WINDOWS). */
++    return nullptr;
++}
++#endif
+ 
+ struct PrintPortalJobData {
+     GRefPtr<WebKitPrintOperation> printOperation;
+@@ -844,6 +866,7 @@ WebKitPrintOperationResponse webkit_print_operation_run_dialog(WebKitPrintOperat
+     return webkitPrintOperationRunDialogForFrame(printOperation, parent, page.mainFrame());
+ }
+ 
++#if HAVE(GTK_UNIX_PRINTING)
+ static GRefPtr<GtkPrinter> printerFromSettingsOrDefault(GtkPrintSettings* settings)
+ {
+     struct FindPrinterData {
+@@ -867,6 +890,13 @@ static GRefPtr<GtkPrinter> printerFromSettingsOrDefault(GtkPrintSettings* settin
+ 
+     return data.printer;
+ }
++#else
++static GRefPtr<GtkPrinter> printerFromSettingsOrDefault(GtkPrintSettings*)
++{
++    /* MinGW stub: see findFilePrinter() above. */
++    return nullptr;
++}
++#endif
+ 
+ /**
+  * webkit_print_operation_print:
+-- 
+2.39.1
+
