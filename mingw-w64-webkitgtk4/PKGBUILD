@@ -49,6 +49,12 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-gperf"
              "${MINGW_PACKAGE_PREFIX}-ninja"
              "${MINGW_PACKAGE_PREFIX}-perl"
+             # Unprefixed "perl" is the MSYS2 POSIX perl (/usr/bin/perl.exe);
+             # makepkg -s installs it explicitly because the CI images cannot
+             # be relied on to ship it, and the forwarding-headers
+             # pre-generation below depends on it. The native Win32 perl
+             # keeps driving every other generator inside the build.
+             perl
              "${MINGW_PACKAGE_PREFIX}-pkgconf"
              "${MINGW_PACKAGE_PREFIX}-python"
              "${MINGW_PACKAGE_PREFIX}-ruby")
@@ -60,9 +66,9 @@ source=("https://webkitgtk.org/releases/webkitgtk-${pkgver}.tar.xz"
         "0005-MinGW-Skia-FreeType-backend-and-GTK-font-manager.patch"
         "0006-MinGW-libpas-and-compat-shims.patch")
 sha256sums=('ea0bbb02dbdbc596874a4e7ad35b66645b3e0a232bd0e4081de5ed92eb0a397d'
-            '32cdfab124e28db7428639e342b01ff203769c06e11ec2b7353875cb0b15a652'
+            '392a2cbe24bd9fea15fc4543929f2610ade469a709c9d7cd0734ca7bbfbd2760'
             '93ebc9fd165f935f601b3fe1fd655dfb319d2b1db4489cc09fc1298354b3fb78'
-            '1ed599ec2dfe99c381ed8e5784db44a2d4e972d3869acf1e7e3adbd3f740af2f'
+            'dd1e39a488441ea721b2821d9c8a47e82985a7ce5931154804bc67cc017ea6bf'
             '48bdd9a09ea25def38d270dbb004c6ca9e1e283db45e2259863b4f2551091889'
             '6448eca77ca587b664eb69a5781dd01bdd130a3f1a3f017576ecb97c32cd74fa'
             '03c4adc57769152d45019c2c53efdc003ebb381e171f3c793b722556840349a4')
@@ -130,14 +136,41 @@ build() {
     extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
   fi
 
-  # MinGW: point the WebKit forwarding-headers generation step at the MSYS2
-  # POSIX perl. The native Win32 perl (${MINGW_PACKAGE_PREFIX}-perl) has been
-  # observed to stall indefinitely inside that step on CI, which deadlocks
-  # the whole build graph; the POSIX perl runs the same script reliably and
-  # every other perl-based generator keeps using PERL_EXECUTABLE.
+  # MinGW: pre-generate the WebKit forwarding headers with the MSYS2 POSIX
+  # perl, straight from bash, and neutralize the ninja-side step with
+  # -DWEBKIT_FORWARDING_HEADERS_SKIP=ON. The native Win32 perl
+  # (${MINGW_PACKAGE_PREFIX}-perl) has hung indefinitely inside that step on
+  # the CI runners in two consecutive rounds (the log stops at the perl
+  # command and every remaining build edge depends on it), and the round-28
+  # attempt to re-point the ninja-side command at /usr/bin/perl.exe never
+  # took effect on the runner. Running the script directly removes
+  # cmd.exe/ninja and the native perl from the loop; the script is
+  # deterministic and its output layout
+  # (<build>/DerivedSources/ForwardingHeaders/WebKit/<basename>) does not
+  # depend on the interpreter's path syntax, so the ninja graph consumes
+  # byte-identical files either way.
+  local _skip_forwarding=OFF
   if [[ -x /usr/bin/perl.exe ]]; then
-    extra_config+=("-DWEBKIT_FORWARDING_HEADERS_PERL=$(cygpath -w /usr/bin/perl.exe)")
+    local _fwd_output="${srcdir}/build-${MSYSTEM}/DerivedSources/ForwardingHeaders"
+    mkdir -p "${_fwd_output}"
+    (
+      cd "${srcdir}/webkitgtk-${pkgver}" && /usr/bin/perl.exe \
+        Source/WebKit/Scripts/generate-forwarding-headers.pl \
+        --include-path "${srcdir}/webkitgtk-${pkgver}/Source/WebKit" \
+        --output "${_fwd_output}" \
+        --platform gtk --platform soup
+    )
+    # WKBase.h is included via <WebKit/WKBase.h> from several in-tree
+    # headers, so its forwarding header must exist once generation ran.
+    test -f "${_fwd_output}/WebKit/WKBase.h" || {
+      echo "forwarding-header pre-generation did not produce WebKit/WKBase.h" >&2
+      return 1
+    }
+    _skip_forwarding=ON
+  else
+    echo "WARNING: /usr/bin/perl.exe not found; the forwarding-headers step will run inside the build with the native perl" >&2
   fi
+  extra_config+=("-DWEBKIT_FORWARDING_HEADERS_SKIP=${_skip_forwarding}")
 
   mkdir -p "${srcdir}/build-${MSYSTEM}" && cd "${srcdir}/build-${MSYSTEM}"
 

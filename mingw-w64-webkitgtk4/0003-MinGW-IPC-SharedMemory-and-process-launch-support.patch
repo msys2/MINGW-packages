@@ -243,6 +243,31 @@ IPC and process plumbing for the GTK/MinGW target:
   present/absent) with mock GTK4 prototypes, and the (b) construction is
   byte-identical in shape to the Update 27 createConnectionIdentifierPair
   line already verified in the round-27 sandbox on both mingw targets.
+
+  Update 29 (fixing the round-29 CLANG64/CLANGARM64 realpath errors):
+  WebKitWebContext.cpp's sandbox-path helper
+  pathExistsAndIsNotHomeDirectory() calls realpath(3), which MinGW does
+  not provide - "use of undeclared identifier 'realpath'" at :1427 and
+  :1439 on both clang runners (upstream only ever built this TU on
+  Linux; it feeds webkit_web_context_add_path_to_sandbox()). The
+  OS(WINDOWS) branch replaces the call with mingwRealpathForSandbox():
+  MultiByteToWideChar(CP_UTF8) -> GetFullPathNameW ->
+  WideCharToMultiByte(CP_UTF8) round trip, i.e. a canonical absolute
+  path malloc'd exactly like realpath(path, nullptr) with UTF-8
+  preserved for the g_get_home_dir() comparison, plus g_file_test()
+  restoring realpath(3)'s ENOENT-for-missing-path semantics so the
+  caller keeps its "must be created before adding it to the sandbox"
+  diagnostic. The block pins its own include order (winsock2.h before
+  windows.h, matching the WebKitPrefix.h Update 28 pin, and NOMINMAX)
+  because windows.h visibility differs between the WebKit and
+  WebKitUIProcess prefix-header flavors; the "/home" special case is
+  dropped in the Windows branch as a Linux bwrap artifact. Verification:
+  clang 19 --target=x86_64-w64-mingw32 against mingw-w64 headers
+  reproduces the two undeclared-realpath errors with the original
+  shape, compiles the patched shape with zero errors and no min/max
+  macro leakage, tolerates a pre-included windows.h, and the kernel32
+  import library exposes GetFullPathNameW/MultiByteToWideChar/
+  WideCharToMultiByte.
 ---
 
  Source/WebCore/SourcesGTK.txt                      |   1 +
@@ -270,13 +295,14 @@ IPC and process plumbing for the GTK/MinGW target:
  Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp |  44 ++-
  Source/WebKit/UIProcess/API/C/WKAPICast.h          |   2 +-
  .../UIProcess/API/glib/WebKitProtocolHandler.cpp   |   5 +-
+ .../WebKit/UIProcess/API/glib/WebKitWebContext.cpp |  91 +++++
  .../UIProcess/API/gtk/WebKitPrintOperation.cpp     |  10 +
  .../Launcher/glib/ProcessLauncherGLib.cpp          |  38 ++-
  Source/WebKit/UIProcess/glib/FenceMonitor.cpp      |  11 +
  Source/WebKit/UIProcess/gtk/Display.cpp            |   7 +
  Source/WebKit/UIProcess/gtk/GtkVersioning.h        |  19 ++
  Source/WebKit/WebKitPrefix.h                       |   8 +
- 31 files changed, 936 insertions(+), 57 deletions(-)
+ 32 files changed, 1027 insertions(+), 57 deletions(-)
 
 diff --git a/Source/WebCore/SourcesGTK.txt b/Source/WebCore/SourcesGTK.txt
 index 30fc9d0..83bcf93 100644
@@ -1843,6 +1869,117 @@ index 8752d80..8e84768 100644
          addTableRow(hardwareAccelerationObject, "Buffer format"_s, renderBufferDescription(request));
  #endif
      }
+diff --git a/Source/WebKit/UIProcess/API/glib/WebKitWebContext.cpp b/Source/WebKit/UIProcess/API/glib/WebKitWebContext.cpp
+index 549ee89..048a7e1 100644
+--- a/Source/WebKit/UIProcess/API/glib/WebKitWebContext.cpp
++++ b/Source/WebKit/UIProcess/API/glib/WebKitWebContext.cpp
+@@ -1422,8 +1422,98 @@ void webkit_web_context_set_sandbox_enabled(WebKitWebContext* context, gboolean
+ #endif
+ 
+ IGNORE_CLANG_WARNINGS_BEGIN("unsafe-buffer-usage-in-libc-call")
++#if OS(WINDOWS)
++/* MinGW does not provide realpath(3), and the windows.h declarations are not
++ * reliably visible through every prefix-header flavor of this target. Pin the
++ * include order (winsock2.h first, matching WebKitPrefix.h) and emulate the
++ * subset of realpath(3) semantics used here: canonicalize to an absolute
++ * path, return a malloc'd buffer the caller frees, or nullptr with errno set
++ * when the path cannot be resolved. Work in UTF-16 and convert back to UTF-8,
++ * the GLib filename encoding on Windows, so non-ASCII paths survive. */
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <winsock2.h>
++#include <windows.h>
++
++static char* mingwRealpathForSandbox(const char* rawPath)
++{
++    errno = 0;
++    if (!rawPath || !*rawPath) {
++        errno = ENOENT;
++        return nullptr;
++    }
++
++    int wideLength = MultiByteToWideChar(CP_UTF8, 0, rawPath, -1, nullptr, 0);
++    if (wideLength <= 1) {
++        errno = ENOENT;
++        return nullptr;
++    }
++    Vector<wchar_t> widePath(wideLength);
++    MultiByteToWideChar(CP_UTF8, 0, rawPath, -1, widePath.data(), wideLength);
++
++    DWORD length = GetFullPathNameW(widePath.data(), 0, nullptr, nullptr);
++    if (!length) {
++        errno = ENOENT;
++        return nullptr;
++    }
++    Vector<wchar_t> buffer(length);
++    if (GetFullPathNameW(widePath.data(), length, buffer.data(), nullptr) >= length) {
++        errno = ENOENT;
++        return nullptr;
++    }
++
++    int utf8Length = WideCharToMultiByte(CP_UTF8, 0, buffer.data(), -1, nullptr, 0, nullptr, nullptr);
++    if (utf8Length <= 1) {
++        errno = ENOENT;
++        return nullptr;
++    }
++    char* resolved = static_cast<char*>(malloc(utf8Length));
++    if (!resolved) {
++        errno = ENOMEM;
++        return nullptr;
++    }
++    if (WideCharToMultiByte(CP_UTF8, 0, buffer.data(), -1, resolved, utf8Length, nullptr, nullptr) != utf8Length) {
++        free(resolved);
++        errno = ENOENT;
++        return nullptr;
++    }
++
++    /* realpath(3) fails for paths that do not exist; keep that behavior so
++     * callers get the "must be created before adding it to the sandbox"
++     * diagnostic instead of silently canonicalizing a missing path. */
++    if (!g_file_test(resolved, G_FILE_TEST_EXISTS)) {
++        free(resolved);
++        errno = ENOENT;
++        return nullptr;
++    }
++    return resolved;
++}
++#endif
++
+ static bool pathExistsAndIsNotHomeDirectory(const char* path)
+ {
++#if OS(WINDOWS)
++    /* The "/home" special case below is a Linux bwrap artifact; a canonical
++     * Windows path can never equal that literal, so only the home-directory
++     * comparison is meaningful here. */
++    std::unique_ptr<char, decltype(free)*> resolvedPath(mingwRealpathForSandbox(path), free);
++    if (!resolvedPath) {
++        if (errno == ENOENT)
++            g_warning("Path %s must be created before adding it to the sandbox", path);
++        else
++            g_warning("Failed to canonicalize path %s: %s", path, g_strerror(errno));
++        return false;
++    }
++
++    std::unique_ptr<char, decltype(free)*> resolvedHomeDirectory(mingwRealpathForSandbox(g_get_home_dir()), free);
++    if (!resolvedHomeDirectory) {
++        g_warning("Failed to canonicalize path %s: %s", g_get_home_dir(), g_strerror(errno));
++        return false;
++    }
++
++    return strcmp(resolvedPath.get(), resolvedHomeDirectory.get());
++#else
+     std::unique_ptr<char, decltype(free)*> resolvedPath(realpath(path, nullptr), free);
+     if (!resolvedPath) {
+         if (errno == ENOENT)
+@@ -1443,6 +1533,7 @@ static bool pathExistsAndIsNotHomeDirectory(const char* path)
+     }
+ 
+     return strcmp(resolvedPath.get(), resolvedHomeDirectory.get());
++#endif
+ }
+ IGNORE_CLANG_WARNINGS_END
+ 
 diff --git a/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp b/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
 index 578321a..cd1ff52 100644
 --- a/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
