@@ -208,6 +208,20 @@ prepare() {
   fi
 }
 
+_print_archive_rule_diagnostics() {
+  # $1 = rules.ninja 路径（相对当前构建目录）；$2 = 构建目录绝对路径（擦除提示用）。
+  # 归档规则门禁失败时打印三方对账：缓存里的 -D 值 / 规则里实际引用的工具 /
+  # 探测产物内嵌的归档器（真正的规则来源，沙盒 E2/E5 证实它会遮蔽缓存）。
+  echo "  --- archive-rule diagnostics ---" >&2
+  grep -E '^CMAKE_(AR|RANLIB):' CMakeCache.txt 2>/dev/null | sed 's/^/  cache:    /' >&2
+  grep -m2 -A2 'rule CXX_STATIC_LIBRARY' "$1" 2>/dev/null | sed 's/^/  rule:     /' >&2
+  grep -rhs 'set(CMAKE_AR ' CMakeFiles --include='CMake*Compiler.cmake' 2>/dev/null | sort -u | sed 's/^/  detected: /' >&2
+  echo "  note: -DCMAKE_AR only takes effect on a fresh configure; an existing build" >&2
+  echo "  directory keeps its originally-detected archiver (compiler-info shadowing)." >&2
+  echo "  If the detected archiver above is GNU ar, wipe the build directory and re-run:" >&2
+  echo "  rm -rf '$2'" >&2
+}
+
 build() {
   declare -a extra_config
   if check_option "debug" "n"; then
@@ -226,15 +240,23 @@ build() {
     rm -rf "${_build_dir}"
   fi
 
-  # 其二（Round 37）：UCRT64 旧缓存里的 GNU ar 无法被 -D 覆盖（实测 cmake 4.4：已有目录上
-  # CMAKE_AR 的命令行覆盖不改变已生成的归档规则），会静默复活 libSkia.a 卡死——必须擦除。
-  # CLANG64/CLANGARM64 默认工具链即 LLVM binutils（msys2.org 文档："Only uses LLVM tools"），
-  # 缓存路径不含 llvm-ar 字样也无需擦除，保留其构建产物。
-  if [[ "${MSYSTEM}" == "UCRT64" && -f "${_build_dir}/CMakeCache.txt" ]] \
-     && ! grep -q '^CMAKE_AR:FILEPATH=.*llvm-ar\.exe$' "${_build_dir}/CMakeCache.txt" \
-     && ! grep -q '^CMAKE_AR:UNINITIALIZED=.*llvm-ar\.exe$' "${_build_dir}/CMakeCache.txt"; then
-    echo "Stale UCRT64 build directory at ${_build_dir} (GNU ar from a pre-Round-37 run; -D cannot retarget it); wiping to switch archives to llvm-ar." >&2
-    rm -rf "${_build_dir}"
+  # 其二（Round 37 引入，Round 39 升级判定依据）：UCRT64 旧构建目录里的 GNU ar 无法被
+  # -D 覆盖——沙盒实验（cmake 4.4.4 + ninja 1.13，E2/E5）证实：命令行 -DCMAKE_AR 只写
+  # 缓存，归档规则实际取自 CMakeFiles/<ver>/CMake{,CXX}Compiler.cmake 内嵌的
+  # set(CMAKE_AR ...)（普通变量，遮蔽缓存），重配不更新 ⇒ 缓存看着对、规则仍旧用
+  # GNU ar，静默复活 libSkia.a 卡死。判定地面真值改为探测产物；缓存值仅作辅助。
+  # CLANG64/CLANGARM64 默认工具链即 LLVM binutils（msys2.org 文档："Only uses LLVM
+  # tools"），通用名/LLVM 名均指向 LLVM 工具，无需擦除，保留其构建产物。
+  if [[ "${MSYSTEM}" == "UCRT64" && -f "${_build_dir}/CMakeCache.txt" ]]; then
+    local _detected_ar _cache_ar_ok=1
+    _detected_ar="$(grep -rhs 'set(CMAKE_AR ' "${_build_dir}/CMakeFiles" --include='CMake*Compiler.cmake' | head -1)"
+    grep -q '^CMAKE_AR:FILEPATH=.*llvm-ar\.exe$' "${_build_dir}/CMakeCache.txt" \
+      || grep -q '^CMAKE_AR:UNINITIALIZED=.*llvm-ar\.exe$' "${_build_dir}/CMakeCache.txt" \
+      || _cache_ar_ok=0
+    if [[ -n "${_detected_ar}" && "${_detected_ar}" != *llvm-ar* ]] || (( ! _cache_ar_ok )); then
+      echo "Stale UCRT64 build directory at ${_build_dir} (detected archiver: ${_detected_ar:-<none>}; -D cannot retarget an existing directory); wiping to switch archives to llvm-ar." >&2
+      rm -rf "${_build_dir}"
+    fi
   fi
 
   # Pre-generate forwarding headers with MSYS2 POSIX perl; native Win32 perl stalls on this step.
@@ -269,12 +291,19 @@ build() {
   fi
 
   # ENABLE_INTROSPECTION stays OFF: g-ir-scanner against the WebKit DLL is untested on MSYS2 and the package has no .gir/.typelib/.vapi consumers.
-  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
+  # Round 39：归档工具路径先经 cygpath -m 显式转成 Windows 混合形式（C:/…），不再依赖
+  # MSYS2 参数自动转换；两个 -D 前缀同步加入排除清单双保险（值已是 Windows 形式，
+  # 转换本就是空操作）。CMAKE_INSTALL_PREFIX 必须保持 MSYS 形式：DESTDIR 装配依赖它
+  # 不被转换（转成绝对 Windows 路径会绕过 DESTDIR，装进真实系统目录）。
+  local _llvm_ar_win _llvm_ranlib_win
+  _llvm_ar_win="$(cygpath -m "${MINGW_PREFIX}/bin/llvm-ar.exe")"
+  _llvm_ranlib_win="$(cygpath -m "${MINGW_PREFIX}/bin/llvm-ranlib.exe")"
+  MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=;-DCMAKE_AR;-DCMAKE_RANLIB" \
   ${MINGW_PREFIX}/bin/cmake.exe \
     -GNinja \
     -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
-    -DCMAKE_AR:FILEPATH="${MINGW_PREFIX}/bin/llvm-ar.exe" \
-    -DCMAKE_RANLIB:FILEPATH="${MINGW_PREFIX}/bin/llvm-ranlib.exe" \
+    -DCMAKE_AR:FILEPATH="${_llvm_ar_win}" \
+    -DCMAKE_RANLIB:FILEPATH="${_llvm_ranlib_win}" \
     "${extra_config[@]}" \
     -DPORT=GTK \
     -DUSE_GTK4=ON \
@@ -308,15 +337,41 @@ build() {
     return 1
   fi
 
-  # Round 38: 归档规则落地验证（configure 后硬门禁）——build.ninja 的静态库规则必须
-  # 已引用 llvm-ar/llvm-ranlib。Round 37 实测：-DCMAKE_AR 对已有构建目录的已生成
-  # 规则不生效（stale 检测依赖缓存内容判断），此检查兜底一切"静默回落 GNU ar"
-  # 的路径（含未来 cmake 行为变化）；GNU ar 归档 libSkia.a 级别库在 Windows 上
-  # 病态缓慢（小时级直至判定卡死），宁可立即失败也不允许静默复活。
-  if ! grep -q 'llvm-ar\.exe' build.ninja || ! grep -q 'llvm-ranlib\.exe' build.ninja; then
-    echo "ERROR: build.ninja static-library rules do not reference llvm-ar/llvm-ranlib." >&2
-    echo "  The -DCMAKE_AR/-DCMAKE_RANLIB overrides did not reach the generated rules" >&2
-    echo "  (stale-cache or toolchain-detection quirk). Wipe ${_build_dir} and re-run." >&2
+  # Round 39（修正 Round 38 误报）：归档规则落地验证（configure 后硬门禁）。
+  # CMake Ninja 生成器把全部工具命令行（编译/归档/链接）写入 CMakeFiles/rules.ninja，
+  # build.ninja 只存边（edge）与目标——沙盒实验（cmake 4.4.4 + ninja 1.13，微型静态库
+  # 工程，-D 覆盖生效后）复现：build.ninja 0 命中 / CMakeFiles/rules.ninja 1 命中。
+  # Round 38 在 build.ninja 里 grep 工具名属检查错文件，三环境必然 100% 误报（本轮
+  # CI 实证：三环境均在 configure 完成后立刻报错退出）。改为检查 rules.ninja，
+  # 语义按环境区分：
+  #   UCRT64：通用名 ar.exe 即 GNU binutils（libSkia.a 归档小时级卡死的根源）
+  #           → 必须引用 -D 强制指派的 llvm-ar.exe / llvm-ranlib.exe。
+  #   CLANG64/CLANGARM64：默认工具链即 LLVM binutils；旧目录探测产物遮蔽 -D
+  #           （沙盒 E2/E5）时规则可能引用通用名 ar.exe —— 该名字在这些环境同样
+  #           指向 LLVM 工具，用 --version 验明正身后放行。
+  local _rules="CMakeFiles/rules.ninja"
+  if [[ ! -f "${_rules}" ]]; then
+    echo "ERROR: ${_rules} not found after configure; cannot verify archive rules." >&2
+    return 1
+  fi
+  if grep -q 'llvm-ar\.exe' "${_rules}" && grep -q 'llvm-ranlib\.exe' "${_rules}"; then
+    echo "archive rules verified: llvm-ar/llvm-ranlib referenced in ${_rules}." >&2
+  elif [[ "${MSYSTEM}" != "UCRT64" ]]; then
+    local _g_ar _g_ranlib
+    _g_ar="$(grep -m1 -oE '[^ ;"]*[/\\](llvm-)?ar\.exe' "${_rules}" || true)"
+    _g_ranlib="$(grep -m1 -oE '[^ ;"]*[/\\](llvm-)?ranlib\.exe' "${_rules}" || true)"
+    if [[ -n "${_g_ar}" && -n "${_g_ranlib}" ]] \
+       && "${_g_ar}" --version 2>/dev/null | grep -qi 'LLVM' \
+       && "${_g_ranlib}" --version 2>/dev/null | grep -qi 'LLVM'; then
+      echo "archive rules verified: generic names ${_g_ar} / ${_g_ranlib} resolve to LLVM tools." >&2
+    else
+      echo "ERROR: ${MSYSTEM} archive rules reference a non-LLVM archiver (GNU ar archives libSkia.a at hours-long stall)." >&2
+      _print_archive_rule_diagnostics "${_rules}" "${_build_dir}"
+      return 1
+    fi
+  else
+    echo "ERROR: UCRT64 archive rules do not reference llvm-ar/llvm-ranlib (GNU ar archives libSkia.a at hours-long stall)." >&2
+    _print_archive_rule_diagnostics "${_rules}" "${_build_dir}"
     return 1
   fi
 
