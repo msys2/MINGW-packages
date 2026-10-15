@@ -48,6 +48,11 @@ optdepends=("${MINGW_PACKAGE_PREFIX}-gst-plugins-good: media codec plugins"
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-cmake"
              "${MINGW_PACKAGE_PREFIX}-gperf"
+             # llvm-ar/llvm-ranlib: UCRT64 的 GNU ar 归档巨型静态库（libSkia.a，~2900 个对象）在
+             # Windows 上病态缓慢（文件系统开销 + Defender 实时扫描，已知 1h+ 直至被判定卡死）；
+             # CLANG64/CLANGARM64 默认即 LLVM binutils（msys2.org 文档："Only uses LLVM tools"）。
+             # 三环境统一显式指派 llvm-ar/llvm-ranlib（产出标准归档，GNU ld 完全兼容）。
+             "${MINGW_PACKAGE_PREFIX}-llvm"
              "${MINGW_PACKAGE_PREFIX}-ninja"
              "${MINGW_PACKAGE_PREFIX}-perl"
              # POSIX perl (/usr/bin/perl.exe): hard requirement for forwarding-headers pre-generation; native Win32 perl stalls on that step.
@@ -66,7 +71,8 @@ source=("https://webkitgtk.org/releases/webkitgtk-${pkgver}.tar.xz"
         "0008-MinGW-ProcessLauncherGLib-unix-IPC-identifier.patch"
         "0009-MinGW-GLFence-unix-methods-portable-declaration.patch"
         "0010-MinGW-NotificationService-write-fsync-Windows-stubs.patch"
-        "0011-MinGW-NetworkCacheDataGLib-skip-gfiledescriptorbased.patch")
+        "0011-MinGW-NetworkCacheDataGLib-skip-gfiledescriptorbased.patch"
+        "0012-MinGW-IPC-serialization-manifests-mutually-exclusive.patch")
 sha256sums=('ea0bbb02dbdbc596874a4e7ad35b66645b3e0a232bd0e4081de5ed92eb0a397d'
             'b5f8de25f3d5ae5d88fbcbb0c8ce1d5792383e0b5d0f259a79c4ec7cd329f1ed'
             '93ebc9fd165f935f601b3fe1fd655dfb319d2b1db4489cc09fc1298354b3fb78'
@@ -78,7 +84,8 @@ sha256sums=('ea0bbb02dbdbc596874a4e7ad35b66645b3e0a232bd0e4081de5ed92eb0a397d'
             '2a6a5c5879999ad032605435cec090a5e8ca3dbb9f547f5982134b721cb5d0ee'
             'e989d05edad53e0545e32a25a0fd33c11e80791e545be9175ab3ed21c3c81dd7'
             'f44afd289a8815e6003db644b9b4c1546dc41fb1e98284c7c3edb4fb9d3843e8'
-            '0af61e2fb3b2f6c3d4b1e7683e362ce1df67a1a5ba4b21598e5592f4fd7e7558')
+            '0af61e2fb3b2f6c3d4b1e7683e362ce1df67a1a5ba4b21598e5592f4fd7e7558'
+            '8ac9e8de4cef3c29ca00bfa3d1c9ac38571536a256e7e664b72deb96c024cb60')
 
 # Tarball ships one dangling symlink (skia/ports/fontations/Cargo.toml) whose target is absent; MSYS2 bsdtar aborts extraction on it, so we skip auto-extract and drop the entry in prepare().
 noextract=("webkitgtk-${pkgver}.tar.xz")
@@ -121,6 +128,7 @@ prepare() {
   patch -Np1 -i "${startdir}/0009-MinGW-GLFence-unix-methods-portable-declaration.patch"
   patch -Np1 -i "${startdir}/0010-MinGW-NotificationService-write-fsync-Windows-stubs.patch"
   patch -Np1 -i "${startdir}/0011-MinGW-NetworkCacheDataGLib-skip-gfiledescriptorbased.patch"
+  patch -Np1 -i "${startdir}/0012-MinGW-IPC-serialization-manifests-mutually-exclusive.patch"
 
   # Post-patch sentinels: assert each round's marker landed; abort before multi-hour recompile on regression.
   local _sentinel_fail=0
@@ -164,6 +172,13 @@ prepare() {
     echo "SENTINEL FAIL: NetworkCacheDataGLib.cpp still has bare '#if !PLATFORM(WIN)' guard; 0011 gfiledescriptorbased skip hunk missing." >&2
     _sentinel_fail=1
   fi
+  # Round 37: 序列化清单必须携带互斥平台守卫（否则生成的 WebKitPlatformGeneratedSerializers.cpp
+  # 在 CLANG64/CLANGARM64 上报 10 错误：m_handle 重复定义 / 构造参数超量）。
+  if ! grep -q '#if OS(WINDOWS) && !USE(UNIX_DOMAIN_SOCKETS)' Source/WebKit/Platform/IPC/ConnectionHandle.serialization.in \
+     || ! grep -q '#if OS(WINDOWS) && !USE(UNIX_DOMAIN_SOCKETS)' Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in; then
+    echo "SENTINEL FAIL: serialization manifests missing mutually-exclusive platform guards; 0012 hunk missing." >&2
+    _sentinel_fail=1
+  fi
   if (( _sentinel_fail )); then
     echo "One or more sentinels failed; aborting prepare(). Run 'rm -rf ${srcdir}/webkitgtk-${pkgver} && makepkg -f' to force a clean extraction+patch." >&2
     return 1
@@ -176,6 +191,27 @@ build() {
     extra_config+=("-DCMAKE_BUILD_TYPE=Release")
   else
     extra_config+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
+
+  # Stale build dir detection 必须在转发头预生成之前：擦除会连带删除预生成产物，而
+  # -DWEBKIT_FORWARDING_HEADERS_SKIP=ON 又跳过 CMake 侧生成——先擦后生成，顺序不可颠倒。
+  # 其一：Round 31 SKIP 项缺失（Round 30 或更早缓存）。
+  local _build_dir="${srcdir}/build-${MSYSTEM}"
+  if [[ -f "${_build_dir}/CMakeCache.txt" ]] \
+     && ! grep -q '^WEBKIT_FORWARDING_HEADERS_SKIP:BOOL=ON$' "${_build_dir}/CMakeCache.txt"; then
+    echo "Stale build directory at ${_build_dir} (no SKIP entry); wiping to force clean reconfigure." >&2
+    rm -rf "${_build_dir}"
+  fi
+
+  # 其二（Round 37）：UCRT64 旧缓存里的 GNU ar 无法被 -D 覆盖（实测 cmake 4.4：已有目录上
+  # CMAKE_AR 的命令行覆盖不改变已生成的归档规则），会静默复活 libSkia.a 卡死——必须擦除。
+  # CLANG64/CLANGARM64 默认工具链即 LLVM binutils（msys2.org 文档："Only uses LLVM tools"），
+  # 缓存路径不含 llvm-ar 字样也无需擦除，保留其构建产物。
+  if [[ "${MSYSTEM}" == "UCRT64" && -f "${_build_dir}/CMakeCache.txt" ]] \
+     && ! grep -q '^CMAKE_AR:FILEPATH=.*llvm-ar\.exe$' "${_build_dir}/CMakeCache.txt" \
+     && ! grep -q '^CMAKE_AR:UNINITIALIZED=.*llvm-ar\.exe$' "${_build_dir}/CMakeCache.txt"; then
+    echo "Stale UCRT64 build directory at ${_build_dir} (GNU ar from a pre-Round-37 run; -D cannot retarget it); wiping to switch archives to llvm-ar." >&2
+    rm -rf "${_build_dir}"
   fi
 
   # Pre-generate forwarding headers with MSYS2 POSIX perl; native Win32 perl stalls on this step.
@@ -198,21 +234,24 @@ build() {
   }
   extra_config+=("-DWEBKIT_FORWARDING_HEADERS_SKIP=ON")
 
-  # Stale build dir detection: wipe if Round 31 SKIP entry is absent (Round 30 or earlier cache).
-  local _build_dir="${srcdir}/build-${MSYSTEM}"
-  if [[ -f "${_build_dir}/CMakeCache.txt" ]] \
-     && ! grep -q '^WEBKIT_FORWARDING_HEADERS_SKIP:BOOL=ON$' "${_build_dir}/CMakeCache.txt"; then
-    echo "Stale build directory at ${_build_dir} (no SKIP entry); wiping to force clean reconfigure." >&2
-    rm -rf "${_build_dir}"
-  fi
-
   mkdir -p "${_build_dir}" && cd "${_build_dir}"
+
+  # Round 37: 归档工具硬门禁 —— llvm-ar 缺失时立即失败，绝不静默回落到会卡死的 GNU ar 路径
+  # （Round 31 教训：已知会死锁的构建边，不允许因探测失败而静默复活）。
+  if [[ ! -x "${MINGW_PREFIX}/bin/llvm-ar.exe" || ! -x "${MINGW_PREFIX}/bin/llvm-ranlib.exe" ]]; then
+    echo "ERROR: ${MINGW_PREFIX}/bin/llvm-ar.exe / llvm-ranlib.exe not found." >&2
+    echo "  GNU ar 归档 libSkia.a 等巨型静态库在 Windows 上病态缓慢（CI 上被判定为卡死）；" >&2
+    echo "  本包要求 llvm-ar/llvm-ranlib（已列入 makedepends）。请安装: pacman -S ${MINGW_PACKAGE_PREFIX}-llvm" >&2
+    return 1
+  fi
 
   # ENABLE_INTROSPECTION stays OFF: g-ir-scanner against the WebKit DLL is untested on MSYS2 and the package has no .gir/.typelib/.vapi consumers.
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
   ${MINGW_PREFIX}/bin/cmake.exe \
     -GNinja \
     -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}" \
+    -DCMAKE_AR:FILEPATH="${MINGW_PREFIX}/bin/llvm-ar.exe" \
+    -DCMAKE_RANLIB:FILEPATH="${MINGW_PREFIX}/bin/llvm-ranlib.exe" \
     "${extra_config[@]}" \
     -DPORT=GTK \
     -DUSE_GTK4=ON \

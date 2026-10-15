@@ -1,0 +1,154 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Wed, 15 Oct 2026 02:30:00 +0000
+Subject: [PATCH] MinGW: make IPC serialization manifests' platform variants
+ mutually exclusive
+
+Update 37 (fixing the round-36 CLANG64/CLANGARM64
+WebKitPlatformGeneratedSerializers.cpp 10-error block at [8504|8460]/8564;
+UCRT64 still stalls at [7041] Linking CXX static library libSkia.a - a
+separate issue addressed by the PKGBUILD llvm-ar change of this round).
+
+CI errors (identical on CLANG64 and CLANGARM64, WebKitPlatformGeneratedSerializers.cpp):
+
+  :91   error: static assertion failed due to requirement
+        'std::is_same_v<WTF::UnixFileDescriptor, WTF::Win32Handle>'
+  :101  error: duplicate member 'm_handle' (Win32Handle vs previous UnixFileDescriptor)
+  :107  error: static assertion failed: sizeof(ShouldBeSameSizeAsConnectionHandle)
+        == sizeof(IPC::ConnectionHandle) evaluates '1 == 8'
+  :137  error: redefinition of 'm_handle' (decoder.decode<Win32Handle> vs
+        previous decoder.decode<UnixFileDescriptor>)
+  :145  error: no matching constructor for 'IPC::ConnectionHandle' (2 arguments
+        provided - both the USE(UNIX_DOMAIN_SOCKETS) and the OS(WINDOWS) branch
+        of the braced initializer list are active)
+  ... and the same five errors again for WebCore::SharedMemoryHandle at
+  :6655/:6666/:6670/:6723/:6738 (3 arguments vs SharedMemoryHandle(Type&&, uint64_t)).
+
+Root cause: the .serialization.in manifests declare the platform-specific
+m_handle member as three INDEPENDENT #if blocks:
+
+  #if USE(UNIX_DOMAIN_SOCKETS)
+      UnixFileDescriptor m_handle;
+  #endif
+  #if OS(WINDOWS)
+      Win32Handle m_handle;
+  #endif
+  #if OS(DARWIN)
+      MachSendRight m_handle;
+  #endif
+
+generate-serializers.py parses each #if expression verbatim into
+member.condition and emits every member variant as its own #if block
+(static_assert, ShouldBeSameSizeAs member, IsIncreasing/offsetof entry,
+encode statement, decode local, constructor initializer - 6 emission
+sites per variant). On every upstream platform at most one of these
+conditions is true, so the independent #ifs happen to be exclusive.
+On MinGW GTK both USE(UNIX_DOMAIN_SOCKETS) (PlatformUse.h defines it
+unconditionally for PLATFORM(GTK)||PLATFORM(WPE), even on Windows) and
+OS(WINDOWS) are true simultaneously, and the generated
+WebKitPlatformGeneratedSerializers.cpp becomes ill-formed.
+
+The real C++ headers (ConnectionHandle.h:53-82, SharedMemory.h Type alias
+and private members) already model this correctly with a #if/#elif/#elif
+chain in which USE(UNIX_DOMAIN_SOCKETS) takes precedence; that is why the
+headers themselves compile fine on MinGW GTK and only the GENERATED
+serializers break. IPCSemaphore.serialization.in hit the same class of
+problem in round 27 and was fixed with the identical
+`OS(WINDOWS) && !USE(UNIX_DOMAIN_SOCKETS)` pattern.
+
+Fix: make the manifest variants mirror the headers' #elif semantics by
+excluding the unix flavor from the other two variants:
+
+  #if OS(WINDOWS) && !USE(UNIX_DOMAIN_SOCKETS)
+  #if OS(DARWIN) && !USE(UNIX_DOMAIN_SOCKETS)
+
+This is a no-op on every upstream platform (Linux GTK/WPE: OS(WINDOWS)=0,
+OS(DARWIN)=0; Cocoa: USE(UNIX_DOMAIN_SOCKETS)=0 so the DARWIN/WINDOWS
+conditions keep their original value; WinCairo: USE(UNIX_DOMAIN_SOCKETS)=0)
+and only changes behavior for the MinGW GTK combination, where the unix
+flavor now wins - exactly matching the headers the generated code is
+asserted against.
+
+Files touched (no existing patch touches either file):
+
+  Source/WebKit/Platform/IPC/ConnectionHandle.serialization.in
+  Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in (SharedMemoryHandle)
+
+Verification (Linux sandbox, generator + compile-shape methodology of
+rounds 27-36):
+
+1. Generator-level: ran Scripts/generate-serializers.py over all 329
+   .serialization.in manifests of the patched tree (split-by-directory
+   mode, same invocation the CMake custom command uses). PRE vs POST
+   diff of ALL generated outputs (WebKitPlatformGeneratedSerializers.cpp,
+   SerializedTypeInfo.cpp and every per-bundle file) shows exactly 28
+   changed lines - every emitted `#if OS(WINDOWS)` / `#if OS(DARWIN)`
+   guard of the two types' variants gains `&& !USE(UNIX_DOMAIN_SOCKETS)`;
+   nothing else changes.
+
+2. Compile-shape matrix (g++ -std=c++23 -fsyntax-only, verbatim-extracted
+   encode/decode blocks from the real generated file, real-class stubs
+   mirroring ConnectionHandle.h / SharedMemory.h member layout, real
+   wtf/IsIncreasing.h):
+
+     PRE  + MinGW GTK (UNIX=1,WINDOWS=1)  -> FAIL, reproducing every CI
+                                             error class (static_assert
+                                             is_same failure, duplicate
+                                             m_handle member, redefinition
+                                             of auto m_handle, no matching
+                                             constructor for the 2-arg /
+                                             3-arg braced initializers)
+     PRE  + Linux GTK  (UNIX=1)           -> PASS
+     POST + MinGW GTK  (UNIX=1,WINDOWS=1) -> PASS   <-- fix target
+     POST + Linux GTK  (UNIX=1)           -> PASS   (no regression)
+     POST + WinCairo   (UNIX=0,WINDOWS=1) -> PASS   (no regression)
+     POST + Darwin     (UNIX=0,DARWIN=1)  -> PASS   (no regression)
+
+3. Scope sweep: grepped all 329 manifests for platform-conditioned
+   members. Only ConnectionHandle and SharedMemoryHandle carry the
+   USE(UNIX_DOMAIN_SOCKETS)/OS(WINDOWS) dual-true combination
+   (IPCSemaphore was fixed in round 27; the ProcessID `using` aliases in
+   WTFArgumentCoders/WebCoreArgumentCoders are #if/#else and match the
+   real wtf/ProcessID.h on MinGW; SharedFileHandle is COCOA-only;
+   TestSerializedType.serialization.in is the generator's own unit-test
+   fixture and is not part of the CMake build).
+---
+ .../IPC/ConnectionHandle.serialization.in         | 4 ++--
+ .../WebCoreArgumentCoders.serialization.in        | 4 ++--
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/Source/WebKit/Platform/IPC/ConnectionHandle.serialization.in b/Source/WebKit/Platform/IPC/ConnectionHandle.serialization.in
+--- a/Source/WebKit/Platform/IPC/ConnectionHandle.serialization.in
++++ b/Source/WebKit/Platform/IPC/ConnectionHandle.serialization.in
+@@ -25,10 +25,10 @@ webkit_platform_header: "ConnectionHandle.h"
+ #if USE(UNIX_DOMAIN_SOCKETS)
+     UnixFileDescriptor m_handle;
+ #endif
+-#if OS(WINDOWS)
++#if OS(WINDOWS) && !USE(UNIX_DOMAIN_SOCKETS)
+     Win32Handle m_handle;
+ #endif
+-#if OS(DARWIN)
++#if OS(DARWIN) && !USE(UNIX_DOMAIN_SOCKETS)
+     MachSendRight m_handle;
+ #endif
+ }
+diff --git a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
+--- a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
++++ b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
+@@ -1661,10 +1661,10 @@ headers: <WebCore/SharedMemory.h>
+ #if USE(UNIX_DOMAIN_SOCKETS)
+     [Validator='!!m_handle && *m_handle'] UnixFileDescriptor m_handle;
+ #endif
+-#if OS(DARWIN)
++#if OS(DARWIN) && !USE(UNIX_DOMAIN_SOCKETS)
+     [Validator='!!m_handle && *m_handle'] MachSendRight m_handle;
+ #endif
+-#if OS(WINDOWS)
++#if OS(WINDOWS) && !USE(UNIX_DOMAIN_SOCKETS)
+     [Validator='!!m_handle && *m_handle'] Win32Handle m_handle;
+ #endif
+     uint64_t m_size;
+--
+2.47.0
+
