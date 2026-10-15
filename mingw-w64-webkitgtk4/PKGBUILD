@@ -22,6 +22,10 @@ depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
          "${MINGW_PACKAGE_PREFIX}-gdk-pixbuf2"
          "${MINGW_PACKAGE_PREFIX}-glib2"
          "${MINGW_PACKAGE_PREFIX}-glib-networking"
+         # girepository-1.0 runtime + system girs/typelibs (Gtk-4.0 etc.) that
+         # our installed WebKit-6.0 typelib resolves against at consumer runtime
+         # (same convention as the MSYS2 gtk4 package, which also ships typelibs).
+         "${MINGW_PACKAGE_PREFIX}-gobject-introspection"
          "${MINGW_PACKAGE_PREFIX}-gst-plugins-bad"
          "${MINGW_PACKAGE_PREFIX}-gst-plugins-base"
          "${MINGW_PACKAGE_PREFIX}-gstreamer"
@@ -48,6 +52,8 @@ optdepends=("${MINGW_PACKAGE_PREFIX}-gst-plugins-good: media codec plugins"
 makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-cmake"
              "${MINGW_PACKAGE_PREFIX}-gperf"
+             # gobject-introspection (tools: g-ir-scanner/g-ir-compiler) comes via
+             # depends - the MSYS2 package ships tools and runtime together.
              # llvm-ar/llvm-ranlib: UCRT64 的 GNU ar 归档巨型静态库（libSkia.a，~2900 个对象）在
              # Windows 上病态缓慢（文件系统开销 + Defender 实时扫描，已知 1h+ 直至被判定卡死）；
              # CLANG64/CLANGARM64 默认即 LLVM binutils（msys2.org 文档："Only uses LLVM tools"）。
@@ -59,7 +65,12 @@ makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
              perl
              "${MINGW_PACKAGE_PREFIX}-pkgconf"
              "${MINGW_PACKAGE_PREFIX}-python"
-             "${MINGW_PACKAGE_PREFIX}-ruby")
+             "${MINGW_PACKAGE_PREFIX}-ruby"
+             # vapigen (vala 0.56.19+): ENABLE_VAPIGEN 生成 webkitgtk-6.0 / javascriptcoregtk-6.0 /
+             # webkitgtk-web-process-extension-6.0 三个 .vapi（安装到未版本化的 share/vala/vapi，
+             # 与 libadwaita/gtksourceview5 等 MSYS2 库包同路径，不会与 vala 包自带的
+             # vala-0.56/vapi 旧拷贝冲突，且 vala 搜索优先命中我们的新文件）。
+             "${MINGW_PACKAGE_PREFIX}-vala")
 source=("https://webkitgtk.org/releases/webkitgtk-${pkgver}.tar.xz"
         "0001-MinGW-build-system-and-WTF-win-headers.patch"
         "0002-MinGW-WTF-threading-and-compiler-compatibility.patch"
@@ -74,7 +85,8 @@ source=("https://webkitgtk.org/releases/webkitgtk-${pkgver}.tar.xz"
         "0011-MinGW-NetworkCacheDataGLib-skip-gfiledescriptorbased.patch"
         "0012-MinGW-IPC-serialization-manifests-mutually-exclusive.patch"
         "0013-MinGW-final-link-undefined-symbols.patch"
-        "0014-MinGW-injected-bundle-export-macros.patch")
+        "0014-MinGW-injected-bundle-export-macros.patch"
+        "0015-MinGW-enable-gobject-introspection.patch")
 sha256sums=('ea0bbb02dbdbc596874a4e7ad35b66645b3e0a232bd0e4081de5ed92eb0a397d'
             'b5f8de25f3d5ae5d88fbcbb0c8ce1d5792383e0b5d0f259a79c4ec7cd329f1ed'
             '93ebc9fd165f935f601b3fe1fd655dfb319d2b1db4489cc09fc1298354b3fb78'
@@ -89,7 +101,8 @@ sha256sums=('ea0bbb02dbdbc596874a4e7ad35b66645b3e0a232bd0e4081de5ed92eb0a397d'
             '0af61e2fb3b2f6c3d4b1e7683e362ce1df67a1a5ba4b21598e5592f4fd7e7558'
             '8ac9e8de4cef3c29ca00bfa3d1c9ac38571536a256e7e664b72deb96c024cb60'
             '77bfed2a3a84410671da440f23dced8abfb17807ddefa6e0abf5a57841e178d0'
-            '581b918a5fa4cf1659c12d8ebf3a93f218a0a3505fd0af31c01fb18da984004d')
+            '581b918a5fa4cf1659c12d8ebf3a93f218a0a3505fd0af31c01fb18da984004d'
+            '48a2d3a87d00252be6f577fda9aeefa67a9490b9c06e2b280f84eac58e5e05c1')
 
 # Tarball ships one dangling symlink (skia/ports/fontations/Cargo.toml) whose target is absent; MSYS2 bsdtar aborts extraction on it, so we skip auto-extract and drop the entry in prepare().
 noextract=("webkitgtk-${pkgver}.tar.xz")
@@ -135,6 +148,7 @@ prepare() {
   patch -Np1 -i "${startdir}/0012-MinGW-IPC-serialization-manifests-mutually-exclusive.patch"
   patch -Np1 -i "${startdir}/0013-MinGW-final-link-undefined-symbols.patch"
   patch -Np1 -i "${startdir}/0014-MinGW-injected-bundle-export-macros.patch"
+  patch -Np1 -i "${startdir}/0015-MinGW-enable-gobject-introspection.patch"
 
   # Post-patch sentinels: assert each round's marker landed; abort before multi-hour recompile on regression.
   local _sentinel_fail=0
@@ -216,6 +230,32 @@ prepare() {
      || ! grep -q '#include "WKDeclarationSpecifiers.h"' \
         Source/WebKit/WebProcess/InjectedBundle/API/glib/WebProcessExtensionManager.h; then
     echo "SENTINEL FAIL: WebProcessExtensionManager.h missing WK_EXPORT on singleton()/initialize(); 0014 injected-bundle export hunk missing." >&2
+    _sentinel_fail=1
+  fi
+  # Round 41: introspection 四件套缺一不可（否则构建数小时后在 g-ir-scanner/vapigen 阶段炸裂，
+  # 或 import 库找不到导致 "ERROR: can't resolve libraries to shared libraries"）：
+  #   a) FindGI.cmake 必须 --filelist 化（CreateProcess 32767 字符命令行限制）
+  #   b) WebKit/JavaScriptCore 的 ARCHIVE（import 库）必须重定向到 bin（与 DLL 同目录，
+  #      g-ir-scanner 的 resolve_windows_libs 只认 lib*.dll.a 候选且只搜 --library-path）
+  #   c) GENERATE_VAPI 必须落在 FindGI 与三个 GI_INTROSPECT 调用点
+  #   d) JSC 的 custom.vala 必须存在（GCallback 泛型 delegate 修正）
+  if ! grep -q -- '--filelist=' Source/cmake/FindGI.cmake \
+     || ! grep -q 'GENERATE_VAPI' Source/cmake/FindGI.cmake; then
+    echo "SENTINEL FAIL: FindGI.cmake missing --filelist/GENERATE_VAPI support; 0015 FindGI hunk missing." >&2
+    _sentinel_fail=1
+  fi
+  if ! grep -q 'ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"' Source/WebKit/CMakeLists.txt; then
+    echo "SENTINEL FAIL: WebKit CMakeLists missing import-library-to-bin redirection; 0015 hunk missing." >&2
+    _sentinel_fail=1
+  fi
+  if ! grep -q 'GENERATE_VAPI' Source/WebKit/PlatformGTK.cmake \
+     || ! grep -q 'GENERATE_VAPI' Source/JavaScriptCore/PlatformGTK.cmake \
+     || ! grep -q 'ENABLE_VAPIGEN' Source/cmake/OptionsGTK.cmake; then
+    echo "SENTINEL FAIL: GENERATE_VAPI/ENABLE_VAPIGEN not wired at call sites/options; 0015 hunks missing." >&2
+    _sentinel_fail=1
+  fi
+  if [[ ! -f Source/JavaScriptCore/API/glib/JavaScriptCore-6.0-custom.vala ]]; then
+    echo "SENTINEL FAIL: JavaScriptCore-6.0-custom.vala missing; 0015 new-file hunk missing." >&2
     _sentinel_fail=1
   fi
   if (( _sentinel_fail )); then
@@ -306,7 +346,12 @@ build() {
     return 1
   fi
 
-  # ENABLE_INTROSPECTION stays OFF: g-ir-scanner against the WebKit DLL is untested on MSYS2 and the package has no .gir/.typelib/.vapi consumers.
+  # Round 41: 开放 ENABLE_INTROSPECTION（.gir/.typelib）与 ENABLE_VAPIGEN（.vapi）。
+  # g-ir-scanner 在 Windows 的完整链路：dump 程序以 -L<bin> -lwebkitgtk-6.0 链接（需
+  # libwebkitgtk-6.0.dll.a 与 DLL 同目录，0015 已重定向 ARCHIVE_OUTPUT_DIRECTORY），
+  # 运行时靠 get_internal_link_flags 把 --library-path 前插进 PATH 找 DLL。
+  # ENABLE_VAPIGEN 需要 vapigen >= 0.56.18（g-i >= 1.82 的 gir 含 <doc:format> 元素，
+  # 旧解析器报 "unknown child element `doc:format' in `repository'"；MSYS2 vala 现为 0.56.19）。
   # Round 39：归档工具路径先经 cygpath -m 显式转成 Windows 混合形式（C:/…），不再依赖
   # MSYS2 参数自动转换；两个 -D 前缀同步加入排除清单双保险（值已是 Windows 形式，
   # 转换本就是空操作）。CMAKE_INSTALL_PREFIX 必须保持 MSYS 形式：DESTDIR 装配依赖它
@@ -323,7 +368,8 @@ build() {
     "${extra_config[@]}" \
     -DPORT=GTK \
     -DUSE_GTK4=ON \
-    -DENABLE_INTROSPECTION=OFF \
+    -DENABLE_INTROSPECTION=ON \
+    -DENABLE_VAPIGEN=ON \
     -DENABLE_DOCUMENTATION=OFF \
     -DENABLE_MINIBROWSER=ON \
     -DENABLE_WEBDRIVER=OFF \
@@ -391,6 +437,23 @@ build() {
     return 1
   fi
 
+  # Round 41：introspection/vapi 边落地验证（configure 后硬门禁）。三条 gir、三条 typelib、
+  # 三条 vapi 边必须同时出现在 build.ninja（DESC 描述行）；任一缺失即说明
+  # ENABLE_INTROSPECTION/ENABLE_VAPIGEN 未生效或旧构建目录未重配，立即失败
+  # 避免数小时构建后才发现产物缺失。
+  local _gi_edge
+  for _gi_edge in "JavaScriptCore-6.0.gir" "WebKit-6.0.gir" "WebKitWebProcessExtension-6.0.gir" \
+                  "JavaScriptCore-6.0.typelib" "WebKit-6.0.typelib" "WebKitWebProcessExtension-6.0.typelib" \
+                  "javascriptcoregtk-6.0.vapi" "webkitgtk-6.0.vapi" "webkitgtk-web-process-extension-6.0.vapi"; do
+    if ! grep -q "DESC = Generating ${_gi_edge}" build.ninja; then
+      echo "ERROR: introspection edge 'Generating ${_gi_edge}' not found in build.ninja" >&2
+      echo "  -DENABLE_INTROSPECTION=ON / -DENABLE_VAPIGEN=ON 未生效（或旧构建目录未重配）。" >&2
+      echo "  若为旧目录残留：rm -rf '${_build_dir}' 后重跑。" >&2
+      return 1
+    fi
+  done
+  echo "introspection edges verified: 3 gir + 3 typelib + 3 vapi present in build.ninja." >&2
+
   # Round 38: 构建可观测性强化（UCRT64 卡点定位）。
   # 关键事实：ninja 只在一条边【完成】时打印 "[n/total] <desc>"——CI 日志停在
   # [7041] 只能证明 libSkia.a 归档已完成（llvm-ar 生效后的预期行为），真正悬挂
@@ -424,6 +487,31 @@ package() {
   for _pc in webkitgtk-6.0 javascriptcoregtk-6.0 webkitgtk-web-process-extension-6.0; do
     test -f "${pkgdir}${MINGW_PREFIX}/lib/pkgconfig/${_pc}.pc" || {
       echo "pkg-config file ${_pc}.pc is missing from the package" >&2
+      exit 1
+    }
+  done
+
+  # Round 41：introspection 产物断言（gir 按命名空间名、typelib 同名、vapi 按包名；
+  # vapi 装在未版本化的 share/vala/vapi，与 libadwaita/gtksourceview5 同路径）。
+  for _ns in JavaScriptCore-6.0 WebKit-6.0 WebKitWebProcessExtension-6.0; do
+    test -f "${pkgdir}${MINGW_PREFIX}/share/gir-1.0/${_ns}.gir" || {
+      echo "gir file ${_ns}.gir is missing from the package" >&2
+      exit 1
+    }
+    test -f "${pkgdir}${MINGW_PREFIX}/lib/girepository-1.0/${_ns}.typelib" || {
+      echo "typelib file ${_ns}.typelib is missing from the package" >&2
+      exit 1
+    }
+  done
+  for _vapi in javascriptcoregtk-6.0 webkitgtk-6.0 webkitgtk-web-process-extension-6.0; do
+    test -f "${pkgdir}${MINGW_PREFIX}/share/vala/vapi/${_vapi}.vapi" || {
+      echo "vapi file ${_vapi}.vapi is missing from the package" >&2
+      exit 1
+    }
+  done
+  for _deps in webkitgtk-6.0 webkitgtk-web-process-extension-6.0; do
+    test -f "${pkgdir}${MINGW_PREFIX}/share/vala/vapi/${_deps}.deps" || {
+      echo "vapi deps file ${_deps}.deps is missing from the package" >&2
       exit 1
     }
   done

@@ -1,0 +1,319 @@
+--- a/Source/cmake/FindGI.cmake
++++ b/Source/cmake/FindGI.cmake
+@@ -140,6 +140,29 @@
+     return()
+ endif ()
+ 
++# MinGW port, introspection: optional Vala API generation. vapigen is
++# discovered here (not gated on ENABLE_INTROSPECTION) so that the version
++# can be checked once at configure time; the per-introspection GENERATE_VAPI
++# opt-in below consumes it.
++find_program(VAPIGEN_EXE
++    NAMES vapigen vapigen-0.56
++    DOC "Vala API generator"
++)
++if (VAPIGEN_EXE)
++    execute_process(
++        COMMAND "${VAPIGEN_EXE}" --version
++        OUTPUT_VARIABLE _vapigen_version_output
++        OUTPUT_STRIP_TRAILING_WHITESPACE
++        ERROR_QUIET
++        RESULT_VARIABLE _vapigen_version_result
++    )
++    if (_vapigen_version_result EQUAL 0 AND _vapigen_version_output MATCHES "Vala API Generator ([0-9]+\\.[0-9]+\\.[0-9]+)")
++        set(VAPIGEN_VERSION "${CMAKE_MATCH_1}")
++    endif ()
++    unset(_vapigen_version_output)
++    unset(_vapigen_version_result)
++endif ()
++
+ define_property(TARGET
+     PROPERTY GI_GIR_PATH
+     BRIEF_DOCS "Path to .gir file"
+@@ -222,9 +245,9 @@
+ 
+ function(GI_INTROSPECT namespace nsversion header)
+     cmake_parse_arguments(PARSE_ARGV 2 opt
+-        "NO_IMPLICIT_SOURCES"
++        "NO_IMPLICIT_SOURCES;GENERATE_VAPI"
+         "IDENTIFIER_PREFIX;PACKAGE;SYMBOL_PREFIX;TARGET"
+-        "DEPENDENCIES;SOURCES;OPTIONS"
++        "DEPENDENCIES;SOURCES;OPTIONS;VAPI_SOURCES"
+     )
+     if (NOT opt_PACKAGE)
+         string(TOLOWER "${namespace}" opt_PACKAGE)
+@@ -334,15 +357,33 @@
+     # Generate .gir
+     set(target_def "$<TARGET_PROPERTY:${opt_TARGET},COMPILE_DEFINITIONS>")
+     set(target_inc "$<TARGET_PROPERTY:${opt_TARGET},INTERFACE_INCLUDE_DIRECTORIES>")
++    # MinGW port: the WebKit and JavaScriptCore scans pass a few hundred
++    # source paths; on Windows a single command line that long can approach
++    # the 32767-character CreateProcess limit. Pass the sources through
++    # g-ir-scanner's --filelist response file instead (the same mechanism
++    # Meson uses for every GIR scan), keeping the explicit DEPENDS list so
++    # the Ninja dependency graph is unchanged.
++    set(gir_filelist "${CMAKE_BINARY_DIR}/${gir_name}.sources")
++    string(REPLACE ";" "\n" gir_filelist_content "${gir_srcs}")
++    file(WRITE "${gir_filelist}" "${gir_filelist_content}\n")
++    # MinGW port: the scanner runs warning-clean on the upstream Linux CI,
++    # but MinGW preprocessing (different system headers and compiler builtin
++    # macros) can surface new scanner warnings; they must not abort an
++    # hours-long build on Windows.
++    if (WIN32)
++        set(gi_scanner_fatal_warnings "")
++    else ()
++        set(gi_scanner_fatal_warnings "--warn-error")
++    endif ()
+     add_custom_command(
+         OUTPUT "${gir_path}"
+         COMMENT "Generating ${gir_name}.gir"
+         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+-        DEPENDS ${gir_deps} ${gir_srcs}
++        DEPENDS ${gir_deps} "${gir_filelist}" ${gir_srcs}
+         VERBATIM
+         COMMAND_EXPAND_LISTS
+         COMMAND ${CMAKE_COMMAND} -E env "CC=${CMAKE_C_COMPILER}" "CFLAGS=${CMAKE_C_FLAGS}"
+-            "${GI_SCANNER_EXE}" --quiet --warn-all --warn-error --no-libtool
++            "${GI_SCANNER_EXE}" --quiet --warn-all ${gi_scanner_fatal_warnings} --no-libtool
+             "--output=${gir_path}"
+             "--library=$<TARGET_FILE_BASE_NAME:${opt_TARGET}>"
+             "--library-path=$<TARGET_FILE_DIR:${opt_TARGET}>"
+@@ -356,7 +397,7 @@
+             "$<$<BOOL:${target_inc}>:-I$<JOIN:${target_inc},;-I>>"
+             ${scanner_flags}
+             ${opt_OPTIONS}
+-            ${gir_srcs}
++            "--filelist=${gir_filelist}"
+     )
+ 
+     add_custom_target("gir-${namespace}" DEPENDS "${gir_path}")
+@@ -397,6 +438,92 @@
+         COMPONENT runtime
+     )
+ 
++    # Generate .vapi (MinGW port; generic opt-in via GENERATE_VAPI, further
++    # gated on the ENABLE_VAPIGEN build option when that option is defined -
++    # the WebKit GTK port defines it, keeping default Linux builds free of
++    # any vala tool dependency).
++    #
++    # vapigen resolves each <include> of the gir either as a .vapi or as a
++    # .gir: --vapidir/--girdir pointing at the build directory pick up the
++    # sibling namespaces generated in this build (e.g. WebKit-6.0 finds
++    # JavaScriptCore-6.0), while dependencies on system namespaces resolve
++    # through the default search directories exactly like they do for the
++    # vapis shipped by the vala project itself. The --pkg entries name the
++    # pkg-config/vapi packages of the DEPENDENCIES so that already-generated
++    # sibling vapis (preferred) are loaded instead of re-parsing girs.
++    if (opt_GENERATE_VAPI AND (NOT DEFINED ENABLE_VAPIGEN OR ENABLE_VAPIGEN))
++        if (NOT VAPIGEN_EXE)
++            message(FATAL_ERROR
++                "vapigen is needed to generate the ${opt_PACKAGE}-${nsversion} vapi"
++            )
++        endif ()
++
++        set(vapi_library "${opt_PACKAGE}-${nsversion}")
++        set(vapi_path "${CMAKE_BINARY_DIR}/${vapi_library}.vapi")
++        set(vapi_pkgs)
++        set(vapi_deps "${gir_path}" "gir-${namespace}")
++        foreach (dep IN LISTS opt_DEPENDENCIES)
++            if (TARGET "gir-${dep}")
++                get_property(dep_gir_path TARGET "gir-${dep}" PROPERTY GI_GIR_PATH)
++                get_property(dep_package TARGET "gir-${dep}" PROPERTY GI_PACKAGE)
++                if (dep_gir_path)
++                    list(APPEND vapi_deps "${CMAKE_BINARY_DIR}/${dep_package}.vapi")
++                endif ()
++                if (dep_package)
++                    list(APPEND vapi_pkgs "${dep_package}")
++                endif ()
++            elseif (dep MATCHES "^([a-zA-Z0-9._-]+):([a-z0-9._\\+-]+)$")
++                list(APPEND vapi_pkgs "${CMAKE_MATCH_2}")
++            endif ()
++        endforeach ()
++        set(vapi_pkg_flags)
++        foreach (pkg IN LISTS vapi_pkgs)
++            list(APPEND vapi_pkg_flags "--pkg=${pkg}")
++        endforeach ()
++
++        add_custom_command(
++            OUTPUT "${vapi_path}"
++            COMMENT "Generating ${vapi_library}.vapi"
++            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
++            DEPENDS ${vapi_deps} ${opt_VAPI_SOURCES}
++            VERBATIM
++            COMMAND "${VAPIGEN_EXE}" --quiet
++                "--library=${vapi_library}"
++                "--vapidir=${CMAKE_BINARY_DIR}"
++                "--girdir=${CMAKE_BINARY_DIR}"
++                "--directory=${CMAKE_BINARY_DIR}"
++                ${vapi_pkg_flags}
++                ${opt_VAPI_SOURCES}
++                "${gir_path}"
++        )
++
++        add_custom_target("vapi-${namespace}" DEPENDS "${vapi_path}")
++
++        if (NOT TARGET vapi-all)
++            add_custom_target(vapi-all ALL COMMENT "All GI .vapi targets")
++        endif ()
++        add_dependencies(vapi-all "vapi-${namespace}")
++
++        install(
++            FILES "${vapi_path}"
++            DESTINATION "${CMAKE_INSTALL_DATADIR}/vala/vapi"
++            COMPONENT runtime
++        )
++
++        # .deps companion listing the vapi packages this one builds on
++        # (consumed by valac when this vapi is used through --deps).
++        if (vapi_pkgs)
++            set(vapi_depsfile "${CMAKE_BINARY_DIR}/${vapi_library}.deps")
++            string(REPLACE ";" "\n" vapi_depsfile_content "${vapi_pkgs}")
++            file(WRITE "${vapi_depsfile}" "${vapi_depsfile_content}\n")
++            install(
++                FILES "${vapi_depsfile}"
++                DESTINATION "${CMAKE_INSTALL_DATADIR}/vala/vapi"
++                COMPONENT runtime
++            )
++        endif ()
++    endif ()
++
+     # Record in targets to use later on e.g. with gi-docgen.
+     set_property(TARGET "gir-${namespace}" PROPERTY GI_GIR_PATH "${gir_path}")
+     set_property(TARGET "gir-${namespace}" PROPERTY GI_GIR_LIBRARY "$<TARGET_FILE_BASE_NAME:${opt_TARGET}>")
+--- a/Source/cmake/OptionsGTK.cmake
++++ b/Source/cmake/OptionsGTK.cmake
+@@ -49,6 +49,7 @@
+ # and the option is not relevant to other WebKit ports.
+ WEBKIT_OPTION_DEFINE(ENABLE_DOCUMENTATION "Whether to generate documentation." PUBLIC ON)
+ WEBKIT_OPTION_DEFINE(ENABLE_INTROSPECTION "Whether to enable GObject introspection." PUBLIC ON)
++WEBKIT_OPTION_DEFINE(ENABLE_VAPIGEN "Whether to generate Vala API (.vapi) files from the introspection data." PUBLIC OFF)
+ WEBKIT_OPTION_DEFINE(ENABLE_JOURNALD_LOG "Whether to enable journald logging" PUBLIC ON)
+ WEBKIT_OPTION_DEFINE(ENABLE_QUARTZ_TARGET "Whether to enable support for the Quartz windowing target." PUBLIC ON)
+ WEBKIT_OPTION_DEFINE(ENABLE_WAYLAND_TARGET "Whether to enable support for the Wayland windowing target." PUBLIC ON)
+@@ -66,6 +67,7 @@
+ WEBKIT_OPTION_DEFINE(ENABLE_JSC_RESTRICTED_OPTIONS_BY_DEFAULT "Whether to enable dangerous development options in JSC by default." PRIVATE OFF)
+ 
+ WEBKIT_OPTION_DEPEND(ENABLE_DOCUMENTATION ENABLE_INTROSPECTION)
++WEBKIT_OPTION_DEPEND(ENABLE_VAPIGEN ENABLE_INTROSPECTION)
+ WEBKIT_OPTION_DEPEND(USE_GBM USE_LIBDRM)
+ 
+ # Private options specific to the GTK port. Changing these options is
+@@ -319,6 +321,20 @@
+     message(FATAL_ERROR "GObjectIntrospection is needed for ENABLE_INTROSPECTION.")
+ endif ()
+ 
++# MinGW port, introspection: vapigen tool checks for ENABLE_VAPIGEN. The
++# version floor exists because .gir files emitted by gobject-introspection
++# >= 1.82 carry a <doc:format> repository element that only the vala
++# 0.56.18 gir parser understands; older vapigen aborts with
++# "unknown child element `doc:format' in `repository'".
++if (ENABLE_VAPIGEN)
++    if (NOT VAPIGEN_EXE)
++        message(FATAL_ERROR "Vala vapigen is needed for ENABLE_VAPIGEN (install the vala package).")
++    endif ()
++    if (VAPIGEN_VERSION AND VAPIGEN_VERSION VERSION_LESS 0.56.18)
++        message(FATAL_ERROR "vapigen ${VAPIGEN_VERSION} is too old for ENABLE_VAPIGEN: the .gir files produced by gobject-introspection >= 1.82 contain <doc:format> elements that only vapigen >= 0.56.18 understands.")
++    endif ()
++endif ()
++
+ find_package(GIDocgen)
+ if (ENABLE_DOCUMENTATION AND NOT GIDocgen_FOUND)
+     message(FATAL_ERROR "gi-docgen is needed for ENABLE_DOCUMENTATION.")
+--- a/Source/WebKit/CMakeLists.txt
++++ b/Source/WebKit/CMakeLists.txt
+@@ -1518,6 +1518,20 @@
+     endif ()
+ 
+     if (WIN32)
++        # MinGW port, introspection: g-ir-scanner (FindGI.cmake GI_INTROSPECT)
++        # receives --library-path=$<TARGET_FILE_DIR:WebKit|JavaScriptCore>,
++        # which on PE is the RUNTIME output directory (bin). The scanner's
++        # Windows library resolver (resolve_windows_libs in g-ir-scanner)
++        # only accepts import-library candidates (lib*.dll.a, lib*.a, *.lib)
++        # and never a bare DLL, and the MinGW linkers also prefer the import
++        # library over direct DLL binding. Keep the import libraries next to
++        # the DLLs in bin so that -lwebkitgtk-6.0 / -ljavascriptcoregtk-6.0
++        # resolve for the scanner dump program; the install(TARGETS ...
++        # ARCHIVE DESTINATION lib) rules below still deliver them to lib for
++        # consumers. Without this the ENABLE_INTROSPECTION build fails with
++        # "ERROR: can't resolve libraries to shared libraries".
++        set_target_properties(WebKit JavaScriptCore PROPERTIES
++            ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+         # PE install layout (MinGW). libwebkitgtk-6.0.dll is the RUNTIME
+         # artifact of the WebKit target: it must ship in bin because MSYS2
+         # requires runtime DLLs on PATH (the process executables in libexec
+--- a/Source/WebKit/PlatformGTK.cmake
++++ b/Source/WebKit/PlatformGTK.cmake
+@@ -664,6 +664,7 @@
+         JavaScriptCore
+         Gtk-${GTK_API_VERSION}.0:${GTK_PKGCONFIG_PACKAGE}
+         Soup-3.0:libsoup-3.0
++    GENERATE_VAPI
+     SOURCES
+         ${WebKitGTK_INSTALLED_HEADERS}
+         ${WEBKITGTK_SOURCES_FOR_INTROSPECTION}
+@@ -700,6 +701,7 @@
+         JavaScriptCore
+         Gtk-${GTK_API_VERSION}.0:${GTK_PKGCONFIG_PACKAGE}
+         Soup-3.0:libsoup-3.0
++    GENERATE_VAPI
+     SOURCES
+         ${WebKitDOM_SOURCES_FOR_INTROSPECTION}
+         ${WebKitWebProcessExtension_INSTALLED_HEADERS}
+--- a/Source/JavaScriptCore/PlatformGTK.cmake
++++ b/Source/JavaScriptCore/PlatformGTK.cmake
+@@ -28,9 +28,25 @@
+         DESTINATION "${WEBKITGTK_HEADER_INSTALL_DIR}/jsc"
+ )
+ 
++# MinGW port, introspection: optional Vala API generation. The JSC gir
++# models the JSCClass callback registration through raw GCallback
++# parameters, which vapigen cannot express with Vala generics; the
++# per-API-version *-custom.vala file (same recipe the vala project uses
++# for its own shipped javascriptcoregtk vapis) redeclares those members
++# with proper generic delegates. Only the 6.0 flavor is shipped, other
++# API versions fall back to plain vapigen output.
++set(JavaScriptCore_VAPI_CUSTOM_SOURCES)
++if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/API/glib/JavaScriptCore-${WEBKITGTK_API_VERSION}-custom.vala")
++    list(APPEND JavaScriptCore_VAPI_CUSTOM_SOURCES
++        "${CMAKE_CURRENT_SOURCE_DIR}/API/glib/JavaScriptCore-${WEBKITGTK_API_VERSION}-custom.vala"
++    )
++endif ()
++
+ GI_INTROSPECT(JavaScriptCore ${WEBKITGTK_API_VERSION} jsc/jsc.h
+     PACKAGE javascriptcoregtk
+     SYMBOL_PREFIX jsc
+     DEPENDENCIES GObject-2.0
++    GENERATE_VAPI
++    VAPI_SOURCES ${JavaScriptCore_VAPI_CUSTOM_SOURCES}
+ )
+ GI_DOCGEN(JavaScriptCore API/glib/docs/jsc.toml.in)
+--- /dev/null
++++ b/Source/JavaScriptCore/API/glib/JavaScriptCore-6.0-custom.vala
+@@ -0,0 +1,26 @@
++// Vala API additions for the JavaScriptCore-6.0 gir.
++//
++// The gir models the JSCClass callback registration (jsc_class_add_property
++// and the constructor/method callbacks) through raw GCallback parameters,
++// which vapigen cannot express with Vala generics. This file redeclares
++// those members with proper generic delegates, matching the
++// JavaScriptCore-6.0-custom.vala that the vala project uses when generating
++// its own shipped javascriptcoregtk-6.0.vapi.
++//
++// Copyright (C) 2025 The vala project contributors
++// SPDX-License-Identifier: LGPL-2.1-or-later
++
++namespace JSC {
++	public class Class : GLib.Object {
++		public void add_property (string name, GLib.Type property_type, [CCode (delegate_target_pos = 4.33333, destroy_notify_pos = 4.66667, type = "GCallback")] owned JSC.ClassGetPropertyCb? getter, [CCode (delegate_target_pos = 4.33333, destroy_notify_pos = 4.66667, type = "GCallback")] owned JSC.ClassSetPropertyCb? setter);
++	}
++	[CCode (cname = "GCallback", instance_pos = 1.9)]
++	public delegate T ClassGetPropertyCb<T> (JSC.Class instance);
++	[CCode (cname = "GCallback", instance_pos = 2.9)]
++	public delegate void ClassSetPropertyCb<T> (JSC.Class instance, T value);
++
++	[CCode (cname = "GCallback", instance_pos = 1.9)]
++	public delegate T ClassConstructorCb<T> (GLib.GenericArray<JSC.Value> values);
++	[CCode (cname = "GCallback", instance_pos = 2.9)]
++	public delegate T ClassMethodCb<T> (JSC.Class instance, GLib.GenericArray<JSC.Value> values);
++}
