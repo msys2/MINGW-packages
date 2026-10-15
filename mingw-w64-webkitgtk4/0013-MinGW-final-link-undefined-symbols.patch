@@ -1,0 +1,148 @@
+diff --git a/Source/ThirdParty/skia/CMakeLists.txt b/Source/ThirdParty/skia/CMakeLists.txt
+index 6d826bf..0a63b57 100644
+--- a/Source/ThirdParty/skia/CMakeLists.txt
++++ b/Source/ThirdParty/skia/CMakeLists.txt
+@@ -177,6 +177,10 @@ add_library(Skia STATIC
+     src/core/SkPath.cpp
+     src/core/SkPathBuilder.cpp
+     src/core/SkPathData.cpp
++    # MinGW/GTK note: SkPathDump.cpp defines SkPath::dump(SkWStream*, bool), referenced by
++    # SkPathOpsDebug.cpp (always compiled); without it the final DLL link fails on lld
++    # (undefined symbol) — GNU ld merely hides the issue for shared libraries.
++    src/core/SkPathDump.cpp
+     src/core/SkPathEffect.cpp
+     src/core/SkPathIter.cpp
+     src/core/SkPathMeasure.cpp
+@@ -238,6 +242,10 @@ add_library(Skia STATIC
+     src/core/SkStream.cpp
+     src/core/SkStrike.cpp
+     src/core/SkStrikeCache.cpp
++    # MinGW/GTK note: SkStrikeRef.cpp defines the SkStrikeRef ctors referenced by
++    # SkFont::makeStrikeRef() (SkFont.cpp); missing from this list it breaks the final
++    # DLL link on lld (undefined symbol).
++    src/core/SkStrikeRef.cpp
+     src/core/SkStrikeSpec.cpp
+     src/core/SkString.cpp
+     src/core/SkStringUtils.cpp
+@@ -827,6 +835,11 @@ if (WIN32 AND NOT MINGW)
+ else ()
+     if (MINGW)
+         target_sources(Skia PRIVATE
++            # MinGW defines SK_BUILD_FOR_WIN (see include/private/SkFeatures.h), so
++            # src/ports/SkLog_stdio.cpp compiles to an empty TU here — its SkLogVAList is
++            # guarded by `#if !defined(SK_BUILD_FOR_WIN)`. SkLog.cpp/SkDebug.cpp reference
++            # SkLogVAList unconditionally, so the Windows flavor must be compiled in.
++            src/ports/SkLog_win.cpp
+             src/ports/SkOSFile_win.cpp
+         )
+     else ()
+diff --git a/Source/WebCore/platform/MainThreadSharedTimer.cpp b/Source/WebCore/platform/MainThreadSharedTimer.cpp
+index 89ea63b..4e96b12 100644
+--- a/Source/WebCore/platform/MainThreadSharedTimer.cpp
++++ b/Source/WebCore/platform/MainThreadSharedTimer.cpp
+@@ -46,7 +46,10 @@ MainThreadSharedTimer& MainThreadSharedTimer::singleton()
+     return instance;
+ }
+ 
+-#if USE(CF) || OS(WINDOWS)
++// MinGW GTK note: see the matching comment in MainThreadSharedTimer.h. When the host OS is
++// Windows but this is the GTK port (USE(GLIB)), the GLib RunLoop::Timer implementation below
++// is the one that actually links — the CF/Win32 platform files are not part of this port.
++#if USE(CF) || (OS(WINDOWS) && !USE(GLIB))
+ MainThreadSharedTimer::MainThreadSharedTimer() = default;
+ #else
+ MainThreadSharedTimer::MainThreadSharedTimer()
+diff --git a/Source/WebCore/platform/MainThreadSharedTimer.h b/Source/WebCore/platform/MainThreadSharedTimer.h
+index c117f78..0884f87 100644
+--- a/Source/WebCore/platform/MainThreadSharedTimer.h
++++ b/Source/WebCore/platform/MainThreadSharedTimer.h
+@@ -30,7 +30,12 @@
+ #include <wtf/Forward.h>
+ #include <wtf/TZoneMalloc.h>
+ 
+-#if !USE(CF) && !OS(WINDOWS)
++// MinGW GTK note: the GTK port builds the GLib RunLoop everywhere, so even when the host OS is
++// Windows we must keep the RunLoop-based shape. The CF branch is for ports that provide their
++// own platform implementation file (MainThreadSharedTimerCF.cpp on Cocoa, the Win32 file on
++// WinCairo) — neither is part of the GTK port, so following them would leave the vtable
++// entries (setFireInterval/stop/invalidate) undefined. Hence the `|| USE(GLIB)` carve-out.
++#if !USE(CF) && (!OS(WINDOWS) || USE(GLIB))
+ #include <wtf/CanMakeWeakPtr.h>
+ #include <wtf/RunLoop.h>
+ #endif
+@@ -38,7 +43,7 @@
+ namespace WebCore {
+ 
+ class MainThreadSharedTimer final : public SharedTimer
+-#if !USE(CF) && !OS(WINDOWS)
++#if !USE(CF) && (!OS(WINDOWS) || USE(GLIB))
+     , public CanMakeWeakPtr<MainThreadSharedTimer>
+ #endif
+ {
+@@ -68,7 +73,7 @@ private:
+     MainThreadSharedTimer();
+ 
+     Function<void()> m_firedFunction;
+-#if !USE(CF) && !OS(WINDOWS)
++#if !USE(CF) && (!OS(WINDOWS) || USE(GLIB))
+     RunLoop::Timer m_timer;
+ #endif
+ };
+diff --git a/Source/WebKit/UIProcess/gtk/AcceleratedBackingStore.cpp b/Source/WebKit/UIProcess/gtk/AcceleratedBackingStore.cpp
+index 84ca897..ab78c68 100644
+--- a/Source/WebKit/UIProcess/gtk/AcceleratedBackingStore.cpp
++++ b/Source/WebKit/UIProcess/gtk/AcceleratedBackingStore.cpp
+@@ -391,6 +391,12 @@ void AcceleratedBackingStore::BufferDMABuf::release()
+ }
+ #endif
+ 
++// MinGW GTK note: BufferEGLImage is the EGL-image fallback path for DMABUF buffers, and it
++// calls into DMABufBuffer::createEGLImage(), whose only implementation lives inside
++// `#if USE(GBM)` in DMABufBuffer.cpp. On configurations with USE(GBM)=0 (the GTK port on
++// Windows has no GBM/DMABUF) that symbol is never defined, so this whole section must be
++// guarded the same way to keep the UIProcess link line resolvable.
++#if USE(GBM)
+ RefPtr<AcceleratedBackingStore::Buffer> AcceleratedBackingStore::BufferEGLImage::create(WebPageProxy& webPage, uint64_t id, uint64_t surfaceID, const IntSize& size, RendererBufferFormat::Usage usage, DMABufBufferAttributes&& dmaBufAttributes)
+ {
+     auto* glDisplay = Display::singleton().glDisplay();
+@@ -497,6 +503,7 @@ void AcceleratedBackingStore::BufferEGLImage::release()
+ #endif
+     didRelease();
+ }
++#endif // USE(GBM)
+ 
+ #if USE(GBM)
+ RefPtr<AcceleratedBackingStore::Buffer> AcceleratedBackingStore::BufferGBM::create(WebPageProxy& webPage, uint64_t id, uint64_t surfaceID, const IntSize& size, RendererBufferFormat::Usage usage, uint32_t format, UnixFileDescriptor&& fd, uint32_t stride)
+@@ -744,8 +751,10 @@ void AcceleratedBackingStore::didCreateDMABufBuffer(uint64_t id, DMABufBufferAtt
+     }
+ #endif
+ 
++#if USE(GBM)
+     if (RefPtr buffer = BufferEGLImage::create(*webPage, id, m_surfaceID, size, usage, WTF::move(dmaBufAttributes)))
+         m_buffers.add(id, WTF::move(buffer));
++#endif
+ }
+ 
+ void AcceleratedBackingStore::didCreateSHMBuffer(uint64_t id, ShareableBitmap::Handle&& handle)
+diff --git a/Source/WebKit/UIProcess/gtk/AcceleratedBackingStore.h b/Source/WebKit/UIProcess/gtk/AcceleratedBackingStore.h
+index 1e24717..2202032 100644
+--- a/Source/WebKit/UIProcess/gtk/AcceleratedBackingStore.h
++++ b/Source/WebKit/UIProcess/gtk/AcceleratedBackingStore.h
+@@ -170,6 +170,9 @@ private:
+     };
+ #endif
+ 
++    // MinGW GTK note: guarded because the implementation depends on DMABufBuffer::createEGLImage()
++    // which only exists when USE(GBM) is enabled (see AcceleratedBackingStore.cpp).
++#if USE(GBM)
+     class BufferEGLImage final : public Buffer {
+     public:
+         static RefPtr<Buffer> create(WebPageProxy&, uint64_t id, uint64_t surfaceID, const WebCore::IntSize&, RendererBufferFormat::Usage, WebCore::DMABufBufferAttributes&&);
+@@ -198,6 +201,7 @@ private:
+         unsigned m_textureID { 0 };
+ #endif
+     };
++#endif // USE(GBM)
+ 
+ #if USE(GBM)
+     class BufferGBM final : public Buffer {
