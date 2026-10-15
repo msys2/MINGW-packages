@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Wed, 14 Oct 2026 11:00:00 +0000
+Subject: [PATCH] MinGW: skip gio/gfiledescriptorbased.h include on Windows
+
+Update 36 (fixing the round-36 CLANG64/CLANGARM64 NetworkCacheDataGLib.cpp
+1-error block at [8502/8564], surfaced via UnifiedSource-NetworkProcess-11.cpp):
+
+NetworkCacheDataGLib.cpp:39 fails with
+  fatal error: 'gio/gfiledescriptorbased.h' file not found
+   39 | #include <gio/gfiledescriptorbased.h>
+
+The include is already guarded by `#if !PLATFORM(WIN)`, but PLATFORM(WIN)
+is only true for the Windows-native WebKit port (AppleWin / WinCairo), not
+for the GTK port running on Windows. On MinGW GTK (PLATFORM(GTK)=1,
+PLATFORM(WIN)=0, OS(WINDOWS)=1) the guard does not trigger and the
+include attempts to resolve <gio/gfiledescriptorbased.h>, which the
+MSYS2 GLib build does not ship (gfiledescriptorbased.h is a Unix-only
+GIO header that exposes the GFileDescriptorBased interface around
+g_unix_input_stream_new_with_fd() / g_unix_output_stream_new_with_fd(),
+both Linux/Unix-specific).
+
+Inspection of the file shows that the GFileDescriptorBased interface is
+never actually used in NetworkCacheDataGLib.cpp - the file only calls
+g_bytes_new_with_free_func, g_bytes_new, g_bytes_get_size, g_bytes_get_data
+(all from <gio/gio.h> / <glib.h>). The include is preemptive and can be
+safely dropped on Windows without losing any consumed symbols.
+
+Fix: tighten the guard from `#if !PLATFORM(WIN)` to
+`#if !PLATFORM(WIN) && !OS(WINDOWS)`. This preserves the original
+intent (skip on the Windows-native WebKit port) while also skipping on
+the GTK-on-Windows MinGW port. No new code, no new stubs - just the
+correct platform gate.
+
+Sandbox verification: pre-patch source reproduces the
+'gio/gfiledescriptorbased.h file not found' error against a
+synthesized MSYS2 CLANG64/CLANGARM64 configuration (PLATFORM(GTK)=1,
+OS(WINDOWS)=1, PLATFORM(WIN)=0). Post-patch source compiles cleanly:
+the include is skipped on Windows, and no consumer of the
+GFileDescriptorBased interface exists in the file to break.
+`patch -Np1 --dry-run` on pristine+0001-0010 applies with 0 .rej
+/ 0 fuzz.
+
+---
+diff --git a/Source/WebKit/NetworkProcess/cache/NetworkCacheDataGLib.cpp b/Source/WebKit/NetworkProcess/cache/NetworkCacheDataGLib.cpp
+index 1a2b3c4..5d6e7f8 100644
+--- a/Source/WebKit/NetworkProcess/cache/NetworkCacheDataGLib.cpp
++++ b/Source/WebKit/NetworkProcess/cache/NetworkCacheDataGLib.cpp
+@@ -35,7 +35,7 @@
+ #include <sys/types.h>
+ #include <unistd.h>
+ 
+-#if !PLATFORM(WIN)
++#if !PLATFORM(WIN) && !OS(WINDOWS)
+ #include <gio/gfiledescriptorbased.h>
+ #endif
+ 
