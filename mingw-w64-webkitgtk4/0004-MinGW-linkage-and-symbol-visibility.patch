@@ -146,3 +146,89 @@ index 1e24717..2202032 100644
  
  #if USE(GBM)
      class BufferGBM final : public Buffer {
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: kangaroo maintainers
+Date: 2026-10-15
+Subject: [PATCH] MinGW: export WebProcessExtensionManager via WK_EXPORT for the
+ injected bundle
+
+CLANG64/CLANGARM64 CI (Round 40) fails at the webkitgtkinjectedbundle link:
+
+  ld.lld: error: undefined symbol: WebKit::WebProcessExtensionManager::singleton()
+  ld.lld: error: undefined symbol: WebKit::WebProcessExtensionManager::initialize(WebKit::InjectedBundle*, API::Object*)
+  >>> referenced by WebKitInjectedBundleMain.cpp.obj:(WKBundleInitialize)
+
+Root cause
+----------
+webkitglib-symbols.map defines the entire C++ export surface of
+libwebkitgtk-6.0: the three *ProcessMain entry points plus
+WebProcessExtensionManager::singleton()/initialize(). The three ProcessMain
+declarations (Source/WebKit/{WebProcess,NetworkProcess,GPUProcess}/*Main.h)
+already use WK_EXPORT, which on Windows expands to __declspec(dllexport)
+while building the WebKit library (BUILDING_WebKit) and to
+__declspec(dllimport) in consumers. WebProcessExtensionManager.h instead
+decorates the two methods with a raw __attribute__((visibility("default"))):
+on ELF that is a genuine export mechanism (and the version script keeps the
+two symbols global), but on PE/COFF the attribute exports nothing. Because
+libwebkitgtk-6.0.dll already contains explicit dllexport symbols
+(WEBKIT_API / WK_EXPORT C API), linker auto-export is disabled for it, so
+the two methods are missing from the DLL export table and from
+libwebkitgtk-6.0.dll.a; lld (strict on undefined symbols in -shared links)
+then fails the webkitgtkinjectedbundle module, whose only TU references
+exactly those two symbols. The three process executables linked fine
+because their cross-DLL C++ surface (the *ProcessMain trio) is already
+WK_EXPORT-decorated.
+
+Fix
+---
+Declare both methods with WK_EXPORT and include WKDeclarationSpecifiers.h,
+mirroring the sibling WebKitWebProcessExtensionPrivate.h (which already
+exports webkitWebProcessExtensionSetGarbageCollectOnPageDestroy the same
+way). On Linux WK_EXPORT expands to the same visibility("default")
+attribute, so the ELF export surface is unchanged; on MinGW the two symbols
+become dllexport'd from libwebkitgtk-6.0.dll (and gc-rooted under
+--gc-sections, since export-table entries are collector roots) and are
+consumed via the import library in webkitgtkinjectedbundle.dll.
+
+Verified
+--------
+- PE/COFF shape matrix (clang 19 --target={x86_64,aarch64}-w64-windows-gnu
+  + ld.lld MinGW flavor, -shared --gc-sections, import library generated):
+  PRE shape reproduces both undefined-symbol errors verbatim and the
+  symbols are absent from the DLL/import library; POST shape links the
+  bundle, exports both symbols (mangled names match the CI error),
+  and WKBundleInitialize remains exported from the bundle module.
+- ELF no-op check: with -fvisibility=hidden + the webkitglib-symbols.map
+  version script, PRE and POST produce an identical dynamic symbol table.
+
+---
+--- a/Source/WebKit/WebProcess/InjectedBundle/API/glib/WebProcessExtensionManager.h
++++ b/Source/WebKit/WebProcess/InjectedBundle/API/glib/WebProcessExtensionManager.h
+@@ -20,6 +20,7 @@
+ #pragma once
+ 
+ #include "Module.h"
++#include "WKDeclarationSpecifiers.h"
+ #include <wtf/NeverDestroyed.h>
+ #include <wtf/Noncopyable.h>
+ #include <wtf/Vector.h>
+@@ -43,9 +44,17 @@
+ class WebProcessExtensionManager {
+     WTF_MAKE_NONCOPYABLE(WebProcessExtensionManager);
+ public:
+-    __attribute__((visibility("default"))) static WebProcessExtensionManager& singleton();
++    // MinGW/PE port note (kangaroo Round 40): the raw visibility("default")
++    // attribute is ELF-only as an export mechanism. The MinGW port replicates
++    // the webkitglib-symbols.map export surface via WK_EXPORT, which expands
++    // to __declspec(dllexport) when building the WebKit library and
++    // __declspec(dllimport) in the webkitgtkinjectedbundle module (and any
++    // other consumer), mirroring how WebProcessMain.h already declares the
++    // other C++ symbols exported by that map. On ELF WK_EXPORT is the same
++    // visibility("default") attribute, so Linux behavior is unchanged.
++    WK_EXPORT static WebProcessExtensionManager& singleton();
+ 
+-    __attribute__((visibility("default"))) void initialize(InjectedBundle*, API::Object*);
++    WK_EXPORT void initialize(InjectedBundle*, API::Object*);
+ 
+     WebKitWebProcessExtension* extension() const { return m_extension.get(); }
+ 

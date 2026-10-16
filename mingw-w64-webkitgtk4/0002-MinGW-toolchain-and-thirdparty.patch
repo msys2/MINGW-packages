@@ -1,5 +1,352 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Taozuhong <taozuhong@hotmail.com>
+Date: Mon, 12 Oct 2026 07:22:50 +0000
+Subject: [PATCH 4/6] MinGW: CMake package discovery and harfbuzz-icu shim
+
+- FindHarfBuzz.cmake: under WIN32, degrade the (MSYS2-)missing
+  harfbuzz-icu component to the core library so the HarfBuzz::ICU
+  target still exists for FreeType.cmake/Skia.cmake.
+- mingw-compat hb-icu.h: inline shim reimplementing the only WebKit
+  entry point hb_icu_script_to_script() on top of ICU
+  uscript_getShortName + hb_script_from_string.
+---
+ .../ThirdParty/mingw-compat/include/hb-icu.h  | 75 +++++++++++++++++++
+ Source/cmake/FindHarfBuzz.cmake               | 15 ++++
+ 2 files changed, 90 insertions(+)
+ create mode 100644 Source/ThirdParty/mingw-compat/include/hb-icu.h
+
+diff --git a/Source/ThirdParty/mingw-compat/include/hb-icu.h b/Source/ThirdParty/mingw-compat/include/hb-icu.h
+new file mode 100644
+index 0000000..84024a5
+--- /dev/null
++++ b/Source/ThirdParty/mingw-compat/include/hb-icu.h
+@@ -0,0 +1,75 @@
++/*
++ * Copyright (C) 2025 Taozuhong <taozuhong@hotmail.com>
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/*
++ * MinGW compat shim: minimal hb-icu replacement.
++ *
++ * Modern HarfBuzz releases (>= 12) removed the ICU integration entirely:
++ * there is no libharfbuzz-icu and no <hb-icu.h> header anymore, and
++ * MSYS2/MinGW environments therefore cannot provide them. The GTK port
++ * of WebKit only uses one entry point from that API:
++ *
++ *     hb_icu_script_to_script(UScriptCode)
++ *
++ * This header re-implements it inline on top of ICU's uscript API and
++ * HarfBuzz's hb_script_from_string(), matching the semantics of the
++ * original implementation in harfbuzz/src/hb-icu.cc. Since it is a
++ * static inline function no hb_icu_* symbols are ever referenced, so
++ * linking against plain libharfbuzz + libicuuc is sufficient.
++ */
++
++#ifndef MINGW_COMPAT_HB_ICU_H
++#define MINGW_COMPAT_HB_ICU_H
++
++#include <hb.h>
++#include <unicode/utypes.h>
++#include <unicode/uscript.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++static inline hb_script_t
++hb_icu_script_to_script(UScriptCode script)
++{
++    if (script == USCRIPT_INHERITED)
++        return HB_SCRIPT_INHERITED;
++    if (script == USCRIPT_COMMON)
++        return HB_SCRIPT_COMMON;
++
++    /* uscript_getShortName() returns the 4-letter ISO 15924 code (e.g. "Latn"),
++     * or NULL for invalid script codes. */
++    const char* tag = uscript_getShortName(script);
++    if (!tag || !*tag)
++        return HB_SCRIPT_UNKNOWN;
++
++    return hb_script_from_string(tag, -1);
++}
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* MINGW_COMPAT_HB_ICU_H */
+diff --git a/Source/cmake/FindHarfBuzz.cmake b/Source/cmake/FindHarfBuzz.cmake
+index 6dd9b8b..49af958 100644
+--- a/Source/cmake/FindHarfBuzz.cmake
++++ b/Source/cmake/FindHarfBuzz.cmake
+@@ -124,6 +124,21 @@ if ("ICU" IN_LIST HarfBuzz_FIND_COMPONENTS)
+         else ()
+            list(APPEND HarfBuzz_LIBS_FOUND "ICU (optional): ${HarfBuzz_ICU_LIBRARY}")
+         endif ()
++    elseif (WIN32)
++        # Modern HarfBuzz releases no longer ship the ICU integration
++        # (no harfbuzz-icu library, no hb-icu.h), so MSYS2/MinGW systems
++        # cannot provide it. WebKit only uses hb_icu_script_to_script(),
++        # which the mingw-compat shim re-implements inline on top of
++        # libharfbuzz and libicuuc -- both already linked. Point the ICU
++        # component at the core library so the HarfBuzz::ICU imported
++        # target still exists for the FreeType/Skia CMake modules.
++        set(HarfBuzz_ICU_LIBRARY "${HarfBuzz_LIBRARY}")
++        set(HarfBuzz_ICU_INCLUDE_DIR "${HarfBuzz_INCLUDE_DIR}")
++        if (HarfBuzz_FIND_REQUIRED_ICU)
++            list(APPEND HarfBuzz_LIBS_FOUND "ICU (via mingw-compat shim): ${HarfBuzz_ICU_LIBRARY}")
++        else ()
++            list(APPEND HarfBuzz_LIBS_FOUND "ICU (optional, via mingw-compat shim): ${HarfBuzz_ICU_LIBRARY}")
++        endif ()
+     else ()
+         if (HarfBuzz_FIND_REQUIRED_ICU)
+            set(_HarfBuzz_REQUIRED_LIBS_FOUND OFF)
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Mon, 12 Oct 2026 07:22:50 +0000
+Subject: [PATCH 5/6] MinGW: Skia FreeType backend and GTK font manager
+
+- ThirdParty/skia: build the FreeType/Fontconfig branch under MinGW
+  (the release tarball lacks all four skia/src/utils/win/ files needed
+  by the DirectWrite backend); file IO via SkOSFile_win.cpp instead of
+  the sys/mman.h-requiring posix variant; SK_TYPEFACE_FACTORY=FREETYPE.
+- FontCacheSkia.cpp: the GTK platform uses SkFontMgr_New_FontConfig
+  (same shape as Linux GTK) instead of DirectWrite.
+
+  Update 26 (fixing the round-26 UCRT64 Skia -Wformat warnings, first
+  hit at SkAssert.h:141 via SkLog.h:35 while compiling SkSVGText.cpp):
+  SK_PRINTF_LIKE expands to format(printf, ...) and MinGW gcc checks
+  the plain printf archetype against the MSVCRT (ms_printf), which does
+  not know C99 length modifiers, so every SkLog/SK_ABORT call site
+  taking size_t warned "unknown conversion type character 'z' in
+  format" plus "too many arguments for format" (9 warnings per TU on
+  every Skia TU including SkAssert.h). The runtime side is fine on all
+  three environments: __USE_MINGW_ANSI_STDIO=1 (PKGBUILD CFLAGS) routes
+  printf-family calls through the C99-conformant __mingw_*
+  implementations and the UCRT printf handles %zu natively. The
+  attribute now maps to __gnu_printf__ for MinGW gcc on _UCRT or
+  __USE_MINGW_ANSI_STDIO targets, mirroring mingw-w64's own
+  __MINGW_PRINTF_FORMAT mapping and the PAS_FORMAT_PRINTF mapping
+  already established in 0006; clang (which checks the plain archetype
+  as C99 and produced no CI warnings) and non-MinGW hosts keep the
+  default. The SkAssert.h TU goes from 9 warnings to 0.
+
+  Update 18 (fixing one UCRT64 and one CLANG64 Skia failure):
+  include/private/SkAttributes.h maps SK_ALWAYS_INLINE to
+  __forceinline whenever SK_BUILD_FOR_WIN is set, and both MinGW
+  compilers trigger that branch via _WIN32. MinGW GCC only survives
+  the keyword when a CRT header happens to be included first - the
+  mingw-w64 _mingw.h defines __forceinline as a macro and libstdc++
+  pulls one in before SkAssert.h:191 - but clang64's libc++ headers
+  pull no CRT header on that path, so the token reached the parser
+  and SkAssert.h:191 died with "unknown type name '__forceinline'".
+  The keyword is now reserved to real MSVC-family compilers
+  (SK_BUILD_FOR_WIN && _MSC_VER), matching the guard SkFeatures.h
+  already applies to SK_RESTRICT; MinGW compilers fall back to the
+  portable SK_ATTRIBUTE(always_inline) inline form.
+  src/core/SkRasterPipeline.h enables SK_HAS_MUSTTAIL whenever
+  __has_cpp_attribute(clang::musttail) fires, and GCC 15 understands
+  [[clang::musttail]]. The Win64 ABI passes Skia's 16-byte vector
+  values by invisible reference, so GCC rejects every highp stage
+  tail call with "cannot tail-call: argument must be passed by
+  copying" (first hit at sse3::set_base_pointer while compiling
+  SkOpts.cpp; 20 errors before -fmax-errors cut it off). The flag now
+  also requires !(__MINGW32__ && !__clang__): MinGW clang folds the
+  same tail calls successfully (verified against the emitted objects,
+  since clang passes the vectors by value there) and keeps them,
+  while MinGW GCC compiles the stages as regular calls, which is also
+  how MSVC builds behave.
+
+  Update 20 (fixing one CLANG64 and one CLANGARM64 Skia failure):
+  src/ports/SkFontHost_FreeType.cpp includes <dlfcn.h> whenever the
+  default SK_FREETYPE_MINIMUM_RUNTIME_VERSION carries the
+  SK_FREETYPE_DLOPEN flag (SkFontHost_FreeType.cpp:91), and mingw-w64
+  does not ship <dlfcn.h>, so both CLANG64 and CLANGARM64 died on the
+  first FreeType translation unit with "fatal error: 'dlfcn.h' file
+  not found". The dl*() symbols are not referenced anywhere in the
+  file - that include is the flag's only remaining consumer - so the
+  include is now guarded with !defined(_WIN32). Windows builds simply
+  use the FreeType library they link against, which is what the
+  dlopen fallback would have handed them anyway.
+---
+ Source/ThirdParty/skia/CMakeLists.txt            | 16 ++++++++++++----
+ .../skia/include/private/SkAttributes.h          |  6 +++++-
+ .../ThirdParty/skia/src/core/SkRasterPipeline.h  |  6 ++++++
+ .../platform/graphics/skia/FontCacheSkia.cpp     |  4 ++--
+ .../skia/src/ports/SkFontHost_FreeType.cpp       |  4 +++-
+ 5 files changed, 28 insertions(+), 8 deletions(-)
+
+diff --git a/Source/ThirdParty/skia/CMakeLists.txt b/Source/ThirdParty/skia/CMakeLists.txt
+index 49b9262..6d826bf 100644
+--- a/Source/ThirdParty/skia/CMakeLists.txt
++++ b/Source/ThirdParty/skia/CMakeLists.txt
+@@ -1,7 +1,7 @@
+ set_property(DIRECTORY . PROPERTY FOLDER "skia")
+ 
+ # Skia dependencies not used directly in WebKit.
+-if (NOT WIN32 AND NOT PLAYSTATION)
++if ((NOT WIN32 OR MINGW) AND NOT PLAYSTATION)
+     find_package(Freetype 2.9.0 REQUIRED)
+     find_package(Fontconfig 2.13.0 REQUIRED)
+ endif ()
+@@ -811,7 +811,7 @@ add_library(Skia STATIC
+     modules/skcms/src/skcms_TransformSkx.cc
+ )
+ 
+-if (WIN32)
++if (WIN32 AND NOT MINGW)
+     target_sources(Skia PRIVATE
+         src/ports/SkFontHost_win.cpp
+         src/ports/SkFontMgr_win_dw.cpp
+@@ -825,10 +825,18 @@ if (WIN32)
+         src/utils/win/SkHRESULT.cpp
+     )
+ else ()
++    if (MINGW)
++        target_sources(Skia PRIVATE
++            src/ports/SkOSFile_win.cpp
++        )
++    else ()
++        target_sources(Skia PRIVATE
++            src/ports/SkOSFile_posix.cpp
++        )
++    endif ()
+     target_sources(Skia PRIVATE
+         src/ports/SkFontHost_FreeType.cpp
+         src/ports/SkFontHost_FreeType_common.cpp
+-        src/ports/SkOSFile_posix.cpp
+         src/ports/SkTypeface_proxy.cpp
+     )
+     target_link_libraries(Skia PRIVATE Freetype::Freetype)
+@@ -1082,7 +1090,7 @@ target_compile_definitions(Skia PUBLIC
+     SK_ASSUME_WEBGL=0
+ )
+ 
+-if (WIN32)
++if (WIN32 AND NOT MINGW)
+     target_compile_definitions(Skia PRIVATE SK_TYPEFACE_FACTORY_DIRECTWRITE)
+ else ()
+     target_compile_definitions(Skia PRIVATE SK_TYPEFACE_FACTORY_FREETYPE)
+diff --git a/Source/ThirdParty/skia/include/private/SkAttributes.h b/Source/ThirdParty/skia/include/private/SkAttributes.h
+index 8499525..1aa3d41 100644
+--- a/Source/ThirdParty/skia/include/private/SkAttributes.h
++++ b/Source/ThirdParty/skia/include/private/SkAttributes.h
+@@ -24,7 +24,11 @@
+  *     SK_ALWAYS_INLINE void someMethod() { ... }   // should always be inlined
+  */
+ #if !defined(SK_ALWAYS_INLINE)
+-#  if defined(SK_BUILD_FOR_WIN)
++#  if defined(SK_BUILD_FOR_WIN) && defined(_MSC_VER)
++// Real MSVC-family compilers only. MinGW GCC and MinGW clang do not know
++// the __forceinline keyword, and GCC only survives it when a CRT header
++// (which defines the keyword as a macro) happens to be included first, so
++// fall back to the portable attribute form on those toolchains.
+ #    define SK_ALWAYS_INLINE __forceinline
+ #  else
+ #    define SK_ALWAYS_INLINE SK_ATTRIBUTE(always_inline) inline
+@@ -49,7 +53,21 @@
+  * `B` is the (1 based) index of the first argument used by the format string.
+  */
+ #if !defined(SK_PRINTF_LIKE)
+-#  define SK_PRINTF_LIKE(A, B) SK_ATTRIBUTE(format(printf, (A), (B)))
++#  if defined(__MINGW32__) && defined(__GNUC__) && !defined(__clang__) \
++      && (defined(_UCRT) || __USE_MINGW_ANSI_STDIO)
++   /* MinGW gcc checks the plain printf archetype against the MSVCRT
++      (ms_printf), which does not know C99 length modifiers such as %zu,
++      while the C runtime's printf family itself is declared with the
++      gnu_printf archetype (C99-conformant __mingw_printf is used at
++      runtime thanks to __USE_MINGW_ANSI_STDIO, and the UCRT supports
++      %zu natively). Mirror mingw-w64's own stdio.h mapping for
++      __MINGW_PRINTF_FORMAT so these attributes match the implementations
++      actually called; clang already checks the plain printf archetype as
++      C99, and MSVC/non-MinGW hosts keep the default. */
++#    define SK_PRINTF_LIKE(A, B) SK_ATTRIBUTE(format(__gnu_printf__, (A), (B)))
++#  else
++#    define SK_PRINTF_LIKE(A, B) SK_ATTRIBUTE(format(printf, (A), (B)))
++#  endif
+ #endif
+ 
+ /**
+diff --git a/Source/ThirdParty/skia/src/core/SkRasterPipeline.h b/Source/ThirdParty/skia/src/core/SkRasterPipeline.h
+index feb9cc0..f5d9a70 100644
+--- a/Source/ThirdParty/skia/src/core/SkRasterPipeline.h
++++ b/Source/ThirdParty/skia/src/core/SkRasterPipeline.h
+@@ -29,9 +29,15 @@ struct skcms_TransferFunction;
+ 
+ #if __has_cpp_attribute(clang::musttail) && !defined(__EMSCRIPTEN__) && !defined(SK_CPU_ARM32) && \
+         !defined(SK_CPU_LOONGARCH) && !defined(SK_CPU_PPC) && \
++        !(defined(__MINGW32__) && !defined(__clang__)) && \
+         !(defined(_WIN32) && defined(SK_BUILD_FOR_ANDROID_FRAMEWORK))
+     // [[clang::musttail]] is disabled for the Android version of Skia running on Windows as it
+     // causes crashes (This is probably related to http://crbug.com/1505442).
++    // It is also disabled for MinGW GCC: the Win64 ABI passes Skia's 16-byte
++    // vector values by invisible reference, so GCC 15+ (which understands
++    // [[clang::musttail]]) rejects every stage tail call with
++    // "cannot tail-call: argument must be passed by copying". MinGW clang
++    // folds the same calls successfully, so it keeps the tail calls.
+     #define SK_HAS_MUSTTAIL 1
+ #else
+     #define SK_HAS_MUSTTAIL 0
+diff --git a/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp b/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
+index e5885cc..c7ec06d 100644
+--- a/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
++++ b/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
+@@ -44,7 +44,7 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+ 
+ #if OS(ANDROID)
+ #include <skia/ports/SkFontMgr_android.h>
+-#elif PLATFORM(WIN)
++#elif OS(WINDOWS) && !PLATFORM(GTK)
+ #include <dwrite.h>
+ #include <skia/ports/SkTypeface_win.h>
+ #else
+@@ -63,7 +63,7 @@ SkFontMgr& FontCache::fontManager() const
+     if (!m_fontManager) {
+ #if OS(ANDROID)
+         m_fontManager = SkFontMgr_New_Android(nullptr, SkFontScanner_Make_FreeType());
+-#elif OS(WINDOWS)
++#elif OS(WINDOWS) && !PLATFORM(GTK)
+         auto result = createDWriteFactory();
+         m_fontManager = SkFontMgr_New_DirectWrite(result.factory.get(), result.fontCollection.get());
+ #else
+diff --git a/Source/ThirdParty/skia/src/ports/SkFontHost_FreeType.cpp b/Source/ThirdParty/skia/src/ports/SkFontHost_FreeType.cpp
+index f8043f25e91e..7d75e17be6b5 100644
+--- a/Source/ThirdParty/skia/src/ports/SkFontHost_FreeType.cpp
++++ b/Source/ThirdParty/skia/src/ports/SkFontHost_FreeType.cpp
+@@ -88,7 +88,9 @@
+ #  endif
+ #endif
+ #if SK_FREETYPE_MINIMUM_RUNTIME_VERSION & SK_FREETYPE_DLOPEN
+-#  include <dlfcn.h>
++#  if !defined(_WIN32)
++#    include <dlfcn.h>
++#  endif
+ #endif
+ 
+ #ifdef TT_SUPPORT_COLRV1
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
 Date: Mon, 12 Oct 2026 07:22:51 +0000
 Subject: [PATCH 6/6] MinGW: libpas/bmalloc and compatibility shims
 
