@@ -91,7 +91,8 @@ source=("https://webkitgtk.org/releases/webkitgtk-${pkgver}.tar.xz"
         "0013-MinGW-final-link-undefined-symbols.patch"
         "0014-MinGW-injected-bundle-export-macros.patch"
         "0015-MinGW-enable-gobject-introspection.patch"
-        "0016-MinGW-gir-scanner-pkgconfig-path-wrapper.patch")
+        "0016-MinGW-gir-scanner-pkgconfig-path-wrapper.patch"
+        "0017-MinGW-gir-scanner-cache-and-dump-program-hardening.patch")
 sha256sums=('ea0bbb02dbdbc596874a4e7ad35b66645b3e0a232bd0e4081de5ed92eb0a397d'
             'b5f8de25f3d5ae5d88fbcbb0c8ce1d5792383e0b5d0f259a79c4ec7cd329f1ed'
             '93ebc9fd165f935f601b3fe1fd655dfb319d2b1db4489cc09fc1298354b3fb78'
@@ -108,7 +109,8 @@ sha256sums=('ea0bbb02dbdbc596874a4e7ad35b66645b3e0a232bd0e4081de5ed92eb0a397d'
             '77bfed2a3a84410671da440f23dced8abfb17807ddefa6e0abf5a57841e178d0'
             '581b918a5fa4cf1659c12d8ebf3a93f218a0a3505fd0af31c01fb18da984004d'
             '48a2d3a87d00252be6f577fda9aeefa67a9490b9c06e2b280f84eac58e5e05c1'
-            '50fd57d7bc121c5949b9c1be4532483a38653cc837f167a91aa9d52151df40e2')
+            '50fd57d7bc121c5949b9c1be4532483a38653cc837f167a91aa9d52151df40e2'
+            'ce7b0208eb43a1975fb0f9d2bacff34119c11748be8a1829f9756ee03c6c92b9')
 
 # Tarball ships one dangling symlink (skia/ports/fontations/Cargo.toml) whose target is absent; MSYS2 bsdtar aborts extraction on it, so we skip auto-extract and drop the entry in prepare().
 noextract=("webkitgtk-${pkgver}.tar.xz")
@@ -156,6 +158,7 @@ prepare() {
   patch -Np1 -i "${startdir}/0014-MinGW-injected-bundle-export-macros.patch"
   patch -Np1 -i "${startdir}/0015-MinGW-enable-gobject-introspection.patch"
   patch -Np1 -i "${startdir}/0016-MinGW-gir-scanner-pkgconfig-path-wrapper.patch"
+  patch -Np1 -i "${startdir}/0017-MinGW-gir-scanner-cache-and-dump-program-hardening.patch"
 
   # Post-patch sentinels: assert each round's marker landed; abort before multi-hour recompile on regression.
   local _sentinel_fail=0
@@ -285,6 +288,30 @@ prepare() {
     echo "SENTINEL FAIL: FindGI.cmake missing LDFLAGS=-fuse-ld=lld for the dump-program link; 0016 hunk missing." >&2
     _sentinel_fail=1
   fi
+
+  # Round 43（0017）：g-ir-scanner 扫描器环境三件套（全部 WIN32 限定）：
+  #   a) GI_SCANNER_DISABLE_CACHE=1 —— g-i 1.86.0 的 cachestore 无跨进程锁、
+  #      shutil.move 非原子、load() 只容 ENOENT；ninja 并行跑三条扫描边共享
+  #      %USERPROFILE%\.cache\g-ir-scanner，CI 实测 CLANG64 启动即
+  #      PermissionError [Errno 13]（杀软对新鲜多 MB pickle 的扫描窗口）。
+  #   b) dump 程序链接 LDFLAGS 追加 -Wl,--stack,0x1000000（16MiB）—— PE 默认
+  #      2MiB 仅为 Linux 8MiB 默认值的 1/4，dump 要在主线程驱动整个 UI-process
+  #      API 的 class_init 链与属性默认值求值。
+  #   c) GI_SCANNER_DEBUG=save-temps —— 扫描失败时保留 tmp-introspect*/
+  #      （dump 程序 + functions.txt + 部分 dump.xml，其最后一个 <class> 即
+  #      崩溃时刻正在处理的类型，崩溃现场取证的关键产物）。
+  if ! grep -q 'GI_SCANNER_DISABLE_CACHE=1' Source/cmake/FindGI.cmake; then
+    echo "SENTINEL FAIL: FindGI.cmake missing GI_SCANNER_DISABLE_CACHE=1 scanner env; 0017 hunk missing." >&2
+    _sentinel_fail=1
+  fi
+  if ! grep -q -- '-Wl,--stack,0x1000000' Source/cmake/FindGI.cmake; then
+    echo "SENTINEL FAIL: FindGI.cmake missing --stack dump-program link flag; 0017 hunk missing." >&2
+    _sentinel_fail=1
+  fi
+  if ! grep -q 'GI_SCANNER_DEBUG=save-temps' Source/cmake/FindGI.cmake; then
+    echo "SENTINEL FAIL: FindGI.cmake missing GI_SCANNER_DEBUG=save-temps scanner env; 0017 hunk missing." >&2
+    _sentinel_fail=1
+  fi
   if (( _sentinel_fail )); then
     echo "One or more sentinels failed; aborting prepare(). Run 'rm -rf ${srcdir}/webkitgtk-${pkgver} && makepkg -f' to force a clean extraction+patch." >&2
     return 1
@@ -303,6 +330,29 @@ _print_archive_rule_diagnostics() {
   echo "  directory keeps its originally-detected archiver (compiler-info shadowing)." >&2
   echo "  If the detected archiver above is GNU ar, wipe the build directory and re-run:" >&2
   echo "  rm -rf '$2'" >&2
+}
+
+_collect_gir_crash_evidence() {
+  # Round 43：g-ir dump 程序（WebKit-6.0.exe 等）崩溃/挂死时的零权限取证。
+  # 三路证据：
+  #   1) Windows 应用程序事件日志的 WER 记录（Event ID 1000/1001）——含异常代码、
+  #      故障模块名与偏移，是把 0xC0000409 类 fail-fast 崩溃定位到具体模块的
+  #      唯一零成本手段（无需 cdb/windbg，无需管理员）；
+  #   2) GI_SCANNER_DEBUG=save-temps 保留的 tmp-introspect*/ 目录清单；
+  #   3) 部分 dump.xml 的最后一个 <class>/<interface> 即崩溃时刻正在处理的类型。
+  # 全部 best-effort：powershell 不可用/无匹配事件时静默降级。
+  echo "--- gir dump crash evidence (Application event log, WER 1000/1001) ---" >&2
+  powershell.exe -NoProfile -Command 'try { Get-WinEvent -FilterHashtable @{ LogName = "Application"; Id = 1000, 1001 } -MaxEvents 60 -ErrorAction Stop | Where-Object { $_.Message -match "WebKit-6\.0\.exe|WebKitWebProcessExtension-6\.0\.exe|JavaScriptCore-6\.0\.exe|g-ir-|vapigen" } | Select-Object -First 6 TimeCreated, Id, @{ n = "Message"; e = { ($_.Message -split "`r?`n" | Select-Object -First 12) -join " | " } } | Format-List } catch { "no matching WER events (or query unavailable)" }' 2>/dev/null | grep -vE '^[[:space:]]*$' | head -60 >&2
+  echo "--- leftover introspection temp dirs (GI_SCANNER_DEBUG=save-temps) ---" >&2
+  local _tdir
+  for _tdir in $(ls -dt "${srcdir}"/webkitgtk-${pkgver}/tmp-introspect* 2>/dev/null | head -6); do
+    echo "  ${_tdir}:" >&2
+    ls -l "${_tdir}" 2>/dev/null | tail -n +2 | head -8 | sed 's/^/    /' >&2
+    if [[ -f "${_tdir}/dump.xml" ]]; then
+      echo "    last dumped type: $(grep -oE '<(class|interface|record|enumeration|bitfield) name="[^"]+"' "${_tdir}/dump.xml" 2>/dev/null | tail -1)" >&2
+    fi
+  done
+  echo "--- end crash evidence ---" >&2
 }
 
 build() {
@@ -402,6 +452,11 @@ build() {
   # Round 42（0016）：扫描器环境注入 PKG_CONFIG=<构建树内的 pkg-config-msys2 输出
   # 转换包装器>（MSYS 路径 → Windows 路径）与 LDFLAGS=-fuse-ld=lld；UCRT64 另以
   # CMAKE_*_LINKER_FLAGS 全局改走 lld（见上方 Round 42 块）。
+  # Round 43（0017）：扫描器环境再注入 GI_SCANNER_DISABLE_CACHE=1（g-i 1.86.0
+  # cachestore 无跨进程锁，ninja 并行扫描边共享用户级缓存目录在 CI 上实测
+  # PermissionError [Errno 13]）、dump 链接 LDFLAGS 追加 -Wl,--stack,0x1000000
+  # （PE 默认 2MiB 栈仅 Linux 默认 1/4）、GI_SCANNER_DEBUG=save-temps（失败时保留
+  # tmp-introspect*/ 崩溃现场）。
   # ENABLE_VAPIGEN 需要 vapigen >= 0.56.18（g-i >= 1.82 的 gir 含 <doc:format> 元素，
   # 旧解析器报 "unknown child element `doc:format' in `repository'"；MSYS2 vala 现为 0.56.19）。
   # Round 39：归档工具路径先经 cygpath -m 显式转成 Windows 混合形式（C:/…），不再依赖
@@ -530,13 +585,19 @@ build() {
   # UCRT64 的 gcc/collect2/ld 三件套只能猜）。新增 powershell Get-CimInstance
   # 抓取关键进程的【完整命令行】，下次悬挂时直接定位到具体构建边；powershell
   # 不可用时静默降级（ps -W 照常工作）。
+  # Round 43 升级：introspection 尾部阶段（构建的最后几条边）加入 dump 程序与
+  # gir 后处理工具画像——WebKit-6.0.exe / JavaScriptCore-6.0.exe /
+  # WebKitWebProcessExtension-6.0.exe（tmp-introspect 目录里的 dump 程序）、
+  # g-ir-compiler.exe、vapigen.exe。dump 运行是当前唯一未经 CI 验证的阶段
+  # （CLANGARM64 已在此崩溃 0xC0000409、UCRT64 疑似在此挂死），其存活与否
+  # 直接决定下一轮的修复方向。
   (
     while true; do
       sleep 300
       echo "[watchdog $(date '+%H:%M:%S')] live build processes:" >&2
-      ps -W 2>/dev/null | grep -iE 'ninja|clang|g\+\+|gcc|llvm-(ar|ranlib)|ld\.exe|\bar\.exe|python|perl|ruby|cmake' | grep -vE 'grep -iE|watchdog' | head -20 >&2
+      ps -W 2>/dev/null | grep -iE 'ninja|clang|g\+\+|gcc|llvm-(ar|ranlib)|ld\.exe|\bar\.exe|python|perl|ruby|cmake|-6\.0\.exe|g-ir|vapigen' | grep -vE 'grep -iE|watchdog' | head -20 >&2
       echo "[watchdog $(date '+%H:%M:%S')] live process command lines:" >&2
-      powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='ld.exe' or Name='ld.lld.exe' or Name='lld-link.exe' or Name='collect2.exe' or Name='gcc.exe' or Name='g++.exe' or Name='clang.exe' or Name='clang++.exe' or Name='llvm-ar.exe' or Name='ninja.exe' or Name='python.exe' or Name='perl.exe' or Name='cmake.exe' or Name='g-ir-scanner.exe' or Name='sh.exe'\" | Select-Object ProcessId,CommandLine | Format-List" 2>/dev/null | grep -vE '^\s*$' | head -80 >&2 || true
+      powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='ld.exe' or Name='ld.lld.exe' or Name='lld-link.exe' or Name='collect2.exe' or Name='gcc.exe' or Name='g++.exe' or Name='clang.exe' or Name='clang++.exe' or Name='llvm-ar.exe' or Name='ninja.exe' or Name='python.exe' or Name='perl.exe' or Name='cmake.exe' or Name='g-ir-scanner.exe' or Name='sh.exe' or Name='WebKit-6.0.exe' or Name='JavaScriptCore-6.0.exe' or Name='WebKitWebProcessExtension-6.0.exe' or Name='g-ir-compiler.exe' or Name='vapigen.exe'\" | Select-Object ProcessId,CommandLine | Format-List" 2>/dev/null | grep -vE '^\s*$' | head -80 >&2 || true
       echo "[watchdog $(date '+%H:%M:%S')] memory: $(free -m 2>/dev/null | awk '/Mem:/{print "used "$3"MB / total "$2"MB"}' || echo n/a)" >&2
     done
   ) &
@@ -546,6 +607,12 @@ build() {
   local _build_status=$?
 
   kill "${_watchdog_pid}" 2>/dev/null
+
+  # Round 43：构建失败时收集 dump 程序崩溃证据（WER 事件日志 + save-temps 现场），
+  # 再向 makepkg 透传失败状态。取证失败不影响退出码。
+  if (( _build_status != 0 )); then
+    _collect_gir_crash_evidence
+  fi
   return ${_build_status}
 }
 

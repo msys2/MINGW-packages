@@ -1,0 +1,112 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: kangaroo maintainers
+Date: 2026-10-16
+Subject: [PATCH] MinGW: g-ir-scanner cache disable + dump-program link/run hardening
+
+The first 0016-enabled CI run pushed all three MINGW environments past
+the pkg-config path crash and the GNU-ld dump-link stall, and exposed
+the next toolchain-specific failure layer of the introspection tail
+(edges ~8570/8577, the last steps of the whole build):
+
+CLANG64 - the WebKit-6.0.gir scan aborted at scanner startup:
+
+  File ".../giscanner/transformer.py", line 140, in register_include
+  ... transformer.py:232 x4 (recursive include resolution)
+  File ".../giscanner/cachestore.py", line 166, in load
+    fd = open(store_filename, 'rb')
+  PermissionError: [Errno 13] Permission denied:
+  'C:/Users/runneradmin/.cache/g-ir-scanner/7536ef06...'
+
+gobject-introspection 1.86.0 (as shipped by MSYS2 - the traceback line
+numbers match the upstream sources byte for byte) has NO cross-process
+locking in its parse cache: CacheStore writes entries with tempfile +
+shutil.move (non-atomic on Windows) and load() only tolerates ENOENT;
+every other OSError aborts the whole scan. Ninja runs the
+JavaScriptCore / WebKit / WebProcessExtension scanner edges in
+parallel, all sharing the one %USERPROFILE%\.cache\g-ir-scanner
+directory, and the freshly-written multi-MB .gir parse pickles are
+held open by the CI machines' real-time antivirus just long enough for
+the concurrent WebKit scan to hit a sharing violation. g-i's own
+utils.rmtree() docstring documents the very same virus-scanner
+interference. Setting GI_SCANNER_DISABLE_CACHE (any value; the code is
+a presence check in CacheStore._get_cachedir) makes _directory None,
+turning load()/store() into no-ops: no shared files, no lock windows,
+no stale entries carried across CI runs. The cost is re-parsing the
+include .gir XML per scan - seconds against a multi-hour build.
+
+CLANGARM64 - the WebKit-6.0 introspection dump program exited with
+status 3221226505 (0xC0000409, fail-fast: clang lowers
+__stack_chk_fail to int 0x29 on Windows, and the UCRT
+_invalid_parameter handler fail-fasts the same way). Two mechanisms
+are already ruled out by the same CI log: the WebProcessExtension
+dump, which loads the very same libwebkitgtk-6.0 DLL, succeeded (its
+vapigen edge started right after), so DLL loading and static
+initialization are healthy; and glib's gmodule resolves the get_type
+functions through find_in_any_module() (a Toolhelp snapshot walk over
+all loaded modules' export tables), so exe-level export configuration
+is irrelevant. What remains is the dump run itself: ~200 UI-process
+get_type functions, their complete class_init chains and the property
+default-value evaluation, driven on a main thread whose PE default
+stack reservation is 2 MiB - a quarter of the 8 MiB Linux default
+WebKit code is tuned against. Reserve a 16 MiB stack for the dump
+program (purely virtual, committed on demand, dump program only).
+
+UCRT64 - the build stalled again after the 0016 linker switch (no log
+tail provided; the Round-42 watchdog will name the live command line
+next time). With the dump link now on lld, the first untested step on
+UCRT64 is the same dump-program run, so the same hardening applies.
+
+Additionally set GI_SCANNER_DEBUG=save-temps for the scanner runs: on
+any scan failure g-ir-scanner then keeps its tmp-introspect*/
+directory - the dump program, functions.txt and the partial dump.xml,
+whose last <class>/<interface> element names the type being processed
+when the dump program died. That is the single most valuable artifact
+for debugging dump-program crashes on CI machines, at the cost of a
+few hundred KB per scan.
+
+All changes are WIN32-only (inside the gi_scanner_env block of the
+GI_INTROSPECT macro); Linux builds are untouched.
+---
+--- a/Source/cmake/FindGI.cmake
++++ b/Source/cmake/FindGI.cmake
+@@ -528,7 +528,39 @@
+         # while lld (installed alongside llvm-ar/llvm-ranlib) links it
+         # instantly and is the linker the CLANG environments use for
+         # every other target anyway.
+-        list(APPEND gi_scanner_env "LDFLAGS=-fuse-ld=lld")
++        # The dump program also loads the multi-hundred-MB libwebkitgtk
++        # DLL and drives the complete GType registration of the scanned
++        # API (hundreds of class_init chains plus property default value
++        # evaluation) on its main thread. The PE default stack
++        # reservation is 2 MiB, a quarter of the 8 MiB Linux default
++        # WebKit code is tuned against; reserve 16 MiB instead (a purely
++        # virtual reservation, committed on demand, and only the dump
++        # program is affected).
++        list(APPEND gi_scanner_env "LDFLAGS=-fuse-ld=lld -Wl,--stack,0x1000000")
++        # g-ir-scanner's cross-process parse cache (giscanner/cachestore.py)
++        # has no locking at all in gobject-introspection 1.86.0: entries
++        # are written via tempfile + shutil.move (non-atomic on Windows)
++        # and load() only tolerates ENOENT. Ninja runs the JavaScriptCore
++        # / WebKit / WebProcessExtension scans in parallel over the one
++        # shared %USERPROFILE%\.cache\g-ir-scanner directory, and the CI
++        # machines' real-time antivirus holds freshly-written multi-MB
++        # pickles open long enough for a concurrent reader to hit a
++        # sharing violation (PermissionError [Errno 13], observed
++        # aborting the WebKit-6.0 scan at startup on CLANG64). Disabling
++        # the cache costs a re-parse of the include .gir files per scan
++        # (seconds) and removes the entire failure class: no shared
++        # files, no lock windows, no stale entries carried across CI
++        # runs.
++        list(APPEND gi_scanner_env "GI_SCANNER_DISABLE_CACHE=1")
++        # Keep the tmp-introspect*/ directory (dump program,
++        # functions.txt, partial dump.xml) when a scan fails:
++        # GI_SCANNER_DEBUG=save-temps makes g-ir-scanner skip its
++        # post-run cleanup, preserving the crash scene - the last
++        # <class>/<interface> element of a partial dump.xml names the
++        # type being processed when the dump program died, the single
++        # most valuable artifact for debugging dump-program crashes on
++        # CI machines. Costs a few hundred KB per scan.
++        list(APPEND gi_scanner_env "GI_SCANNER_DEBUG=save-temps")
+     endif ()
+     add_custom_command(
+         OUTPUT "${gir_path}"
