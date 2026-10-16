@@ -49,7 +49,11 @@ depends=("${MINGW_PACKAGE_PREFIX}-cc-libs"
 optdepends=("${MINGW_PACKAGE_PREFIX}-gst-plugins-good: media codec plugins"
             "${MINGW_PACKAGE_PREFIX}-gst-plugins-ugly: media codec plugins"
             "${MINGW_PACKAGE_PREFIX}-gst-libav: media codec plugins")
-makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+makedepends=("${MINGW_PACKAGE_PREFIX}-binutils"
+             # dlltool/nm: g-ir-scanner 的 resolve_windows_libs 找到 import 库后用
+             # dlltool --identify 反查 DLL 名（Round 42；CLANG 环境默认不带 GNU binutils，
+             # 缺失时该步骤 FileNotFoundError 中断 gir 生成）。
+             "${MINGW_PACKAGE_PREFIX}-cc"
              "${MINGW_PACKAGE_PREFIX}-cmake"
              "${MINGW_PACKAGE_PREFIX}-gperf"
              # gobject-introspection (tools: g-ir-scanner/g-ir-compiler) comes via
@@ -86,7 +90,8 @@ source=("https://webkitgtk.org/releases/webkitgtk-${pkgver}.tar.xz"
         "0012-MinGW-IPC-serialization-manifests-mutually-exclusive.patch"
         "0013-MinGW-final-link-undefined-symbols.patch"
         "0014-MinGW-injected-bundle-export-macros.patch"
-        "0015-MinGW-enable-gobject-introspection.patch")
+        "0015-MinGW-enable-gobject-introspection.patch"
+        "0016-MinGW-gir-scanner-pkgconfig-path-wrapper.patch")
 sha256sums=('ea0bbb02dbdbc596874a4e7ad35b66645b3e0a232bd0e4081de5ed92eb0a397d'
             'b5f8de25f3d5ae5d88fbcbb0c8ce1d5792383e0b5d0f259a79c4ec7cd329f1ed'
             '93ebc9fd165f935f601b3fe1fd655dfb319d2b1db4489cc09fc1298354b3fb78'
@@ -102,7 +107,8 @@ sha256sums=('ea0bbb02dbdbc596874a4e7ad35b66645b3e0a232bd0e4081de5ed92eb0a397d'
             '8ac9e8de4cef3c29ca00bfa3d1c9ac38571536a256e7e664b72deb96c024cb60'
             '77bfed2a3a84410671da440f23dced8abfb17807ddefa6e0abf5a57841e178d0'
             '581b918a5fa4cf1659c12d8ebf3a93f218a0a3505fd0af31c01fb18da984004d'
-            '48a2d3a87d00252be6f577fda9aeefa67a9490b9c06e2b280f84eac58e5e05c1')
+            '48a2d3a87d00252be6f577fda9aeefa67a9490b9c06e2b280f84eac58e5e05c1'
+            '50fd57d7bc121c5949b9c1be4532483a38653cc837f167a91aa9d52151df40e2')
 
 # Tarball ships one dangling symlink (skia/ports/fontations/Cargo.toml) whose target is absent; MSYS2 bsdtar aborts extraction on it, so we skip auto-extract and drop the entry in prepare().
 noextract=("webkitgtk-${pkgver}.tar.xz")
@@ -149,6 +155,7 @@ prepare() {
   patch -Np1 -i "${startdir}/0013-MinGW-final-link-undefined-symbols.patch"
   patch -Np1 -i "${startdir}/0014-MinGW-injected-bundle-export-macros.patch"
   patch -Np1 -i "${startdir}/0015-MinGW-enable-gobject-introspection.patch"
+  patch -Np1 -i "${startdir}/0016-MinGW-gir-scanner-pkgconfig-path-wrapper.patch"
 
   # Post-patch sentinels: assert each round's marker landed; abort before multi-hour recompile on regression.
   local _sentinel_fail=0
@@ -258,6 +265,26 @@ prepare() {
     echo "SENTINEL FAIL: JavaScriptCore-6.0-custom.vala missing; 0015 new-file hunk missing." >&2
     _sentinel_fail=1
   fi
+  # Round 42: g-ir-scanner 的 MSYS2 兼容三件套缺一不可（否则 gir 生成阶段以
+  # FileNotFoundError: '/clang64/lib' 中断，或 dump 程序链接在 GNU ld 上挂死）：
+  #   a) FindGI.cmake 必须生成 pkg-config 输出转换包装器（MSYS 路径 → Windows 路径，
+  #      覆盖 giscanner.pkgconfig 的 --cflags/--libs/--libs-only-L/--variable 四类查询）
+  #   b) 扫描器环境必须注入 PKG_CONFIG=<包装器>（giscanner.pkgconfig 只认该环境变量）
+  #   c) 扫描器环境必须注入 LDFLAGS=-fuse-ld=lld（dump 程序链接走 lld，GNU ld 在
+  #      CI 上对该链接 20 分钟零进展）
+  if ! grep -q 'pkg-config-msys2.bat' Source/cmake/FindGI.cmake \
+     || ! grep -q 'MSYS2_ROOT' Source/cmake/FindGI.cmake; then
+    echo "SENTINEL FAIL: FindGI.cmake missing pkg-config-msys2 wrapper generation; 0016 hunk missing." >&2
+    _sentinel_fail=1
+  fi
+  if ! grep -q 'PKG_CONFIG=${GI_PKG_CONFIG_WRAPPER}' Source/cmake/FindGI.cmake; then
+    echo "SENTINEL FAIL: FindGI.cmake missing PKG_CONFIG env routing to the wrapper; 0016 hunk missing." >&2
+    _sentinel_fail=1
+  fi
+  if ! grep -q 'LDFLAGS=-fuse-ld=lld' Source/cmake/FindGI.cmake; then
+    echo "SENTINEL FAIL: FindGI.cmake missing LDFLAGS=-fuse-ld=lld for the dump-program link; 0016 hunk missing." >&2
+    _sentinel_fail=1
+  fi
   if (( _sentinel_fail )); then
     echo "One or more sentinels failed; aborting prepare(). Run 'rm -rf ${srcdir}/webkitgtk-${pkgver} && makepkg -f' to force a clean extraction+patch." >&2
     return 1
@@ -346,10 +373,35 @@ build() {
     return 1
   fi
 
+  # Round 42: UCRT64 全部链接改走 lld（-fuse-ld=lld）。与 Round 37 的 llvm-ar 决策同一哲学：
+  # GNU 工具链在本工程规模上有病态卡点——g-ir-scanner 的 dump 程序链接（gcc 驱动的
+  # 小型 C 链接）在本轮 CI 上被 watchdog 实测挂死 20 分钟零进展（gcc/collect2/ld.exe
+  # 三进程全程存活），而 CLANG64/CLANGARM64（默认即 lld）的同类链接秒级完成。
+  # 链接器标志写进 CMAKE_*_LINKER_FLAGS（重配后随 build.ninja 边再生效；增量目录
+  # 亦适用——链接命令行变化只触发重链接，lld 重链接为分钟级）。值不含路径成分，
+  # 无需加入 MSYS2_ARG_CONV_EXCL。CLANG 环境默认已是 lld，不再显式叠加（避免
+  # 全量重链接）。
+  if [[ "${MSYSTEM}" == "UCRT64" ]]; then
+    if [[ ! -x "${MINGW_PREFIX}/bin/ld.lld.exe" ]]; then
+      echo "ERROR: ${MINGW_PREFIX}/bin/ld.lld.exe not found." >&2
+      echo "  GNU ld 对本工程的关键链接存在挂死路径（dump 程序链接 CI 实测 20 分钟零进展）；" >&2
+      echo "  本包 UCRT64 要求 lld（ld.lld 与 llvm-ar 同包，已列入 makedepends）。" >&2
+      return 1
+    fi
+    extra_config+=(
+      "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld"
+      "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld"
+      "-DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld"
+    )
+  fi
+
   # Round 41: 开放 ENABLE_INTROSPECTION（.gir/.typelib）与 ENABLE_VAPIGEN（.vapi）。
   # g-ir-scanner 在 Windows 的完整链路：dump 程序以 -L<bin> -lwebkitgtk-6.0 链接（需
   # libwebkitgtk-6.0.dll.a 与 DLL 同目录，0015 已重定向 ARCHIVE_OUTPUT_DIRECTORY），
   # 运行时靠 get_internal_link_flags 把 --library-path 前插进 PATH 找 DLL。
+  # Round 42（0016）：扫描器环境注入 PKG_CONFIG=<构建树内的 pkg-config-msys2 输出
+  # 转换包装器>（MSYS 路径 → Windows 路径）与 LDFLAGS=-fuse-ld=lld；UCRT64 另以
+  # CMAKE_*_LINKER_FLAGS 全局改走 lld（见上方 Round 42 块）。
   # ENABLE_VAPIGEN 需要 vapigen >= 0.56.18（g-i >= 1.82 的 gir 含 <doc:format> 元素，
   # 旧解析器报 "unknown child element `doc:format' in `repository'"；MSYS2 vala 现为 0.56.19）。
   # Round 39：归档工具路径先经 cygpath -m 显式转成 Windows 混合形式（C:/…），不再依赖
@@ -454,6 +506,19 @@ build() {
   done
   echo "introspection edges verified: 3 gir + 3 typelib + 3 vapi present in build.ninja." >&2
 
+  # Round 42: UCRT64 lld 落地验证（configure 后硬门禁）。链接标志由 CMake 烘焙进
+  # build.ninja 边（LINK_FLAGS/LINK_LIBRARIES）或 CMakeFiles/rules.ninja 规则，
+  # 两处任一命中即通过；零命中说明旧缓存未更新（重配未生效），立即失败。
+  if [[ "${MSYSTEM}" == "UCRT64" ]]; then
+    if ! grep -q -- '-fuse-ld=lld' build.ninja \
+       && ! grep -q -- '-fuse-ld=lld' CMakeFiles/rules.ninja; then
+      echo "ERROR: UCRT64 link commands do not reference -fuse-ld=lld after configure." >&2
+      echo "  旧构建目录缓存未随 -DCMAKE_*_LINKER_FLAGS 更新；rm -rf '${_build_dir}' 后重跑。" >&2
+      return 1
+    fi
+    echo "UCRT64 linker verified: -fuse-ld=lld present in the generated build graph." >&2
+  fi
+
   # Round 38: 构建可观测性强化（UCRT64 卡点定位）。
   # 关键事实：ninja 只在一条边【完成】时打印 "[n/total] <desc>"——CI 日志停在
   # [7041] 只能证明 libSkia.a 归档已完成（llvm-ar 生效后的预期行为），真正悬挂
@@ -461,11 +526,17 @@ build() {
   #   1) --verbose 让每条边打印完整命令行：再发生悬挂时，日志最后一行即卡点命令；
   #   2) 后台 watchdog 每 5 分钟 dump 一次正在运行的构建子进程（含内存压力），
   #      与 --verbose 互为印证（区分"工具慢"与"进程僵死/资源耗尽"）。
+  # Round 42 升级：ps -W 只能看到进程映像名，分辨不了"是哪条链接在挂"（本轮
+  # UCRT64 的 gcc/collect2/ld 三件套只能猜）。新增 powershell Get-CimInstance
+  # 抓取关键进程的【完整命令行】，下次悬挂时直接定位到具体构建边；powershell
+  # 不可用时静默降级（ps -W 照常工作）。
   (
     while true; do
       sleep 300
       echo "[watchdog $(date '+%H:%M:%S')] live build processes:" >&2
       ps -W 2>/dev/null | grep -iE 'ninja|clang|g\+\+|gcc|llvm-(ar|ranlib)|ld\.exe|\bar\.exe|python|perl|ruby|cmake' | grep -vE 'grep -iE|watchdog' | head -20 >&2
+      echo "[watchdog $(date '+%H:%M:%S')] live process command lines:" >&2
+      powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='ld.exe' or Name='ld.lld.exe' or Name='lld-link.exe' or Name='collect2.exe' or Name='gcc.exe' or Name='g++.exe' or Name='clang.exe' or Name='clang++.exe' or Name='llvm-ar.exe' or Name='ninja.exe' or Name='python.exe' or Name='perl.exe' or Name='cmake.exe' or Name='g-ir-scanner.exe' or Name='sh.exe'\" | Select-Object ProcessId,CommandLine | Format-List" 2>/dev/null | grep -vE '^\s*$' | head -80 >&2 || true
       echo "[watchdog $(date '+%H:%M:%S')] memory: $(free -m 2>/dev/null | awk '/Mem:/{print "used "$3"MB / total "$2"MB"}' || echo n/a)" >&2
     done
   ) &
