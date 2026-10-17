@@ -1,0 +1,225 @@
+diff --git a/src/3rdparty/chromium/tools/grit/grit/tool/build.py b/src/3rdparty/chromium/tools/grit/grit/tool/build.py
+index f3f61c4cf2..6e837858b6 100644
+--- a/src/3rdparty/chromium/tools/grit/grit/tool/build.py
++++ b/src/3rdparty/chromium/tools/grit/grit/tool/build.py
+@@ -362,6 +362,10 @@ are exported to translation interchange files (e.g. XMB files), etc.
+                        'chrome_messages_json_gzip', 'policy_templates'):
+       return 'utf_8'
+     # TODO(gfeher) modify here to set utf-8 encoding for admx/adml
++    if sys.platform == 'win32' and 'MINGW' in sys.version:
++      # windres cannot handle utf-16 encoding
++      if output_type == 'rc_all':
++        return 'utf_8'
+     return 'utf_16'
+ 
+   def Process(self):
+diff --git "a/src/3rdparty/chromium/tools/licenses/licenses.py" "b/src/3rdparty/chromium/tools/licenses/licenses.py"
+index 175e50e0ae..95f917397d 100644
+--- "a/src/3rdparty/chromium/tools/licenses/licenses.py"
++++ "b/src/3rdparty/chromium/tools/licenses/licenses.py"
+@@ -336,6 +336,14 @@ SPECIAL_CASES = {
+         "License": "Apache 2.0",
+         "License File": ["//third_party/dawn/third_party/khronos/LICENSE"],
+     },
++    os.path.join('third_party', 'tflite'): {
++        "Name": "TensorFlow Lite",
++        "URL": "https://github.com/tensorflow/tflite-micro",
++        "Shipped": "yes",
++        "License": "Apache 2.0 and compatible licenses",
++        "License Android Compatible": "yes",
++        "License File": ["//third_party/tflite_support/LICENSE"],
++    },
+ }
+ 
+ # These buildtools/third_party directories only contain
+diff --git "a/src/3rdparty/chromium/tools/licenses/sbom.py" "b/src/3rdparty/chromium/tools/licenses/sbom.py"
+index 490e45f9db..5b9bb2baad 100644
+--- "a/src/3rdparty/chromium/tools/licenses/sbom.py"
++++ "b/src/3rdparty/chromium/tools/licenses/sbom.py"
+@@ -14,6 +14,7 @@ import pathlib
+ import subprocess
+ import datetime
+ import logging
++import shutil
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -48,7 +49,7 @@ PACKAGES_TO_OVERRIDE_LICENSE_FILE_WITH_ID = [
+ 
+ # Command to find the first "Baseline" git commit in src/3rdparty
+ FIND_BASELINE_COMMIT_GIT_COMMAND = \
+-  ['git', 'rev-list', '-n1', '--first-parent', '--grep=^BASELINE: Update Chromium', 'HEAD', '--']
++  [shutil.which('git'), 'rev-list', '-n1', '--first-parent', '--grep=^BASELINE: Update Chromium', 'HEAD', '--']
+ 
+ # Hardcoded metadata for GN
+ GN_BASE_METADATA = {
+@@ -184,12 +185,16 @@ def CleanupLicenseMetadata(dep_metadata):
+     dep_metadata['License File'] = dep_metadata['License File'][0]
+ 
+ def IsChromiumSubmoduleGitHistoryAvailable():
+-  baseline_cmd_result = subprocess.run(
+-      FIND_BASELINE_COMMIT_GIT_COMMAND + ['.'],
+-      cwd=ROOT,
+-      capture_output=True,
+-      encoding='utf-8')
+-  return baseline_cmd_result.returncode == 0 and baseline_cmd_result.stdout.strip()
++  try:
++    baseline_cmd_result = subprocess.run(
++        FIND_BASELINE_COMMIT_GIT_COMMAND + ['.'],
++        cwd=ROOT,
++        capture_output=True,
++        encoding='utf-8')
++    return baseline_cmd_result.returncode == 0 and baseline_cmd_result.stdout.strip()
++  except:
++    # some issues running git
++    return False
+ 
+ def GetTargetMetadatas(gn_binary: str, gn_out_dir: str, gn_target: str):
+   optional_keys = list(CHROMIUM_TO_SPDX_KEY.keys()) + ['Short Name', 'CPEPrefix']
+@@ -301,15 +306,15 @@ def main():
+ 
+   logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING)
+   logger.info("sbom.py run with arguments: %s" % (' '.join(sys.argv)))
+-  gn_target_list = args.gn_target_list.split(';')
+-  build_dir_list = args.build_dir_list.split(';')
++  gn_target_list = args.gn_target_list.strip('\"').split(';')
++  build_dir_list = args.build_dir_list.strip('\"').split(';')
+   if len(gn_target_list) != len(build_dir_list):
+     print("Number of targets must match number of build directories (%s, %s)" % (gn_target_list, build_dir_list))
+     sys.exit(1)
+ 
+   targets_and_metadatas = [(t, GetTargetMetadatas(args.gn_binary, b, t)) for b, t in zip(build_dir_list, gn_target_list)]
+ 
+-  spdx_text = CreateSpdxText(targets_and_metadatas, args.package_id, args.namespace, args.gn_version)
++  spdx_text = CreateSpdxText(targets_and_metadatas, args.package_id, args.namespace.strip('\"'), args.gn_version)
+ 
+   with open(args.output_file, 'w', encoding='utf-8') as f:
+     f.write(spdx_text)
+diff --git a/src/3rdparty/chromium/tools/perf/chrome_telemetry_build/BUILD.gn b/src/3rdparty/chromium/tools/perf/chrome_telemetry_build/BUILD.gn
+index 7b28151b85..8d0539ffe8 100644
+--- a/src/3rdparty/chromium/tools/perf/chrome_telemetry_build/BUILD.gn
++++ b/src/3rdparty/chromium/tools/perf/chrome_telemetry_build/BUILD.gn
+@@ -99,6 +99,9 @@ group("telemetry_chrome_test") {
+       "//build/win:copy_cdb_to_output",
+       "//third_party/crashpad/crashpad/tools:crashpad_database_util",
+     ]
++    if (is_mingw) {
++      data_deps -= [ "//build/win:copy_cdb_to_output", ]
++    }
+   }
+ }
+ 
+diff --git a/src/3rdparty/chromium/tools/protoc_wrapper/protoc_convert.py b/src/3rdparty/chromium/tools/protoc_wrapper/protoc_convert.py
+index 4c730ce2c8..22275f12ec 100644
+--- a/src/3rdparty/chromium/tools/protoc_wrapper/protoc_convert.py
++++ b/src/3rdparty/chromium/tools/protoc_wrapper/protoc_convert.py
+@@ -19,8 +19,8 @@ def Main():
+                       help='Path to output file that will be used as stdout.')
+   args, passthrough_args = parser.parse_known_args()
+ 
+-  stdin = open(args.infile, 'r')
+-  stdout = open(args.outfile, 'w')
++  stdin = open(args.infile, 'r', encoding='utf-8')
++  stdout = open(args.outfile, 'w', encoding='utf-8')
+ 
+   subprocess.check_call([args.protoc] + passthrough_args, stdin=stdin,
+       stdout=stdout)
+diff --git a/src/3rdparty/chromium/tools/protoc_wrapper/protoc_wrapper.py b/src/3rdparty/chromium/tools/protoc_wrapper/protoc_wrapper.py
+index d339b3458d..8373a2c04f 100644
+--- a/src/3rdparty/chromium/tools/protoc_wrapper/protoc_wrapper.py
++++ b/src/3rdparty/chromium/tools/protoc_wrapper/protoc_wrapper.py
+@@ -53,7 +53,7 @@ def WriteIncludes(headers, include):
+   for filename in headers:
+     include_point_found = False
+     contents = []
+-    with open(filename) as f:
++    with open(filename, 'r', encoding='utf-8') as f:
+       for line in f:
+         stripped_line = line.strip()
+         contents.append(stripped_line)
+@@ -68,7 +68,7 @@ def WriteIncludes(headers, include):
+         raise RuntimeError("Include point not found in header: "
+                            "{0} .".format(filename))
+ 
+-    with open(filename, "w") as f:
++    with open(filename, 'w', encoding='utf-8') as f:
+       for line in contents:
+         print(line, file=f)
+ 
+diff --git a/src/3rdparty/chromium/tools/typescript/ts_library.py b/src/3rdparty/chromium/tools/typescript/ts_library.py
+index 404517415a..2bb5dcdaaa 100644
+--- a/src/3rdparty/chromium/tools/typescript/ts_library.py
++++ b/src/3rdparty/chromium/tools/typescript/ts_library.py
+@@ -177,8 +177,11 @@ def main(argv):
+       assert isMappingAllowed(is_ash_target, target_path, mapping_path), \
+           f'Cannot use mapping to Ash-specific folder {mapping_path} from ' \
+           f'non-Ash target {target_path}'
+-      path_mappings[mapping[0]].append(os.path.join('./', mapping[1]))
++      # Avoid 'IndexError: list out of range' error
++      if len(mapping) > 1:
++        path_mappings[mapping[0]].append(os.path.join('./', mapping[1]))
+ 
++  tsconfig['compilerOptions']['baseUrl'] = '.'
+   tsconfig['compilerOptions']['paths'] = path_mappings
+ 
+   tsconfig_file = f'tsconfig_{args.output_suffix}.json'
+diff --git a/src/3rdparty/chromium/tools/v8_context_snapshot/BUILD.gn b/src/3rdparty/chromium/tools/v8_context_snapshot/BUILD.gn
+index ab4286508f..b7acd42c62 100644
+--- a/src/3rdparty/chromium/tools/v8_context_snapshot/BUILD.gn
++++ b/src/3rdparty/chromium/tools/v8_context_snapshot/BUILD.gn
+@@ -124,7 +124,7 @@ if (use_v8_context_snapshot) {
+   # disable it while taking a V8 snapshot.
+   config("disable_icf") {
+     visibility = [ ":*" ]  # Only targets in this file can depend on this.
+-    if (is_win) {
++    if (is_msvc) {
+       ldflags = [ "/OPT:NOICF" ]  # link.exe, but also lld-link.exe.
+     } else if (is_apple && !use_lld) {
+       ldflags = [ "-Wl,-no_deduplicate" ]  # ld64.
+diff --git a/src/3rdparty/chromium/tools/win/DebugVisualizers/BUILD.gn b/src/3rdparty/chromium/tools/win/DebugVisualizers/BUILD.gn
+index 3e13d746e2..e952c11e9a 100644
+--- a/src/3rdparty/chromium/tools/win/DebugVisualizers/BUILD.gn
++++ b/src/3rdparty/chromium/tools/win/DebugVisualizers/BUILD.gn
+@@ -20,11 +20,15 @@ assert(is_win)
+ config("chrome") {
+   # chrome.natvis listed as an input in //base:base to guarantee relinking on
+   # changes.
+-  ldflags = [ "/NATVIS:" + rebase_path("chrome.natvis", root_build_dir) ]
++  if (is_msvc) {
++    ldflags = [ "/NATVIS:" + rebase_path("chrome.natvis", root_build_dir) ]
++  }
+ }
+ 
+ config("blink") {
+   # blink.natvis listed as an input in
+   # //third_party/blink/renderer/platform/wtf to guarantee relinking on changes.
+-  ldflags = [ "/NATVIS:" + rebase_path("blink.natvis", root_build_dir) ]
++  if (is_msvc) {
++    ldflags = [ "/NATVIS:" + rebase_path("blink.natvis", root_build_dir) ]
++  }
+ }
+diff --git a/src/3rdparty/chromium/base/functional/bind_internal.h b/src/3rdparty/chromium/base/functional/bind_internal.h
+index 6131a02588..00c62b0407 100644
+--- a/src/3rdparty/chromium/base/functional/bind_internal.h
++++ b/src/3rdparty/chromium/base/functional/bind_internal.h
+@@ -55,7 +55,7 @@
+ //  `BindState<>` -- Stores the curried parameters, and is the main entry point
+ //                   into the `Bind()` system.
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_MSVC)
+ namespace Microsoft {
+ namespace WRL {
+ template <typename>
+@@ -64,6 +64,11 @@ class ComPtr;
+ }  // namespace Microsoft
+ #endif
+ 
++#if BUILDFLAG(IS_MINGW)
++#include <wrl.h>
++#endif 
++
++
+ namespace base {
+ 
+ template <typename T>
