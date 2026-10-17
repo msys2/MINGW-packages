@@ -1,0 +1,214 @@
+--- a/cmake/init_target.cmake
++++ b/cmake/init_target.cmake
+@@ -5,6 +5,26 @@
+ # https://github.com/desktop-app/legal/blob/master/LEGAL
+ 
+ set(MAXIMUM_CXX_STANDARD cxx_std_20)
++
++set(DESKTOP_APP_HOST_TOOLS_DIR "" CACHE PATH
++    "Directory containing separately native-built code generators for cross compilation")
++
++function(desktop_app_import_host_tool target_name)
++    if (NOT CMAKE_CROSSCOMPILING OR TARGET ${target_name})
++        return()
++    endif()
++    if (NOT DESKTOP_APP_HOST_TOOLS_DIR)
++        message(FATAL_ERROR
++            "Cross compilation requires DESKTOP_APP_HOST_TOOLS_DIR with native-built ${target_name}")
++    endif()
++    find_program(host_tool
++        NAMES ${target_name}
++        PATHS "${DESKTOP_APP_HOST_TOOLS_DIR}"
++        NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH NO_CACHE REQUIRED
++    )
++    add_executable(${target_name} IMPORTED GLOBAL)
++    set_target_properties(${target_name} PROPERTIES IMPORTED_LOCATION "${host_tool}")
++endfunction()
+ 
+ function(init_target_folder target_name folder_name)
+     if (NOT "${folder_name}" STREQUAL "")
+--- a/Telegram/codegen/CMakeLists.txt
++++ b/Telegram/codegen/CMakeLists.txt
+@@ -1,3 +1,10 @@
++if (CMAKE_CROSSCOMPILING)
++    foreach (tool codegen_emoji codegen_lang codegen_style)
++        desktop_app_import_host_tool(${tool})
++    endforeach()
++    return()
++endif()
++
+ add_subdirectory(codegen/common)
+ add_subdirectory(codegen/emoji)
+ add_subdirectory(codegen/lang)
+--- a/Telegram/cmake/generate_lang.cmake
++++ b/Telegram/cmake/generate_lang.cmake
+@@ -23,7 +23,7 @@
+     BYPRODUCTS
+         ${gen_files}
+     COMMAND
+-        codegen_lang
++        $<TARGET_FILE:codegen_lang>
+         -o${gen_dst}
+         ${lang_file}
+     COMMENT "Generating lang (${target_name})"
+@@ -56,7 +56,7 @@
+             ${subsets_timestamp}
+             ${subset_headers}
+         COMMAND
+-            codegen_lang
++            $<TARGET_FILE:codegen_lang>
+             --subsets-only
+             -o${gen_dst}
+             -s${src_loc}
+--- a/Telegram/lib_ui/cmake/generate_emoji.cmake
++++ b/Telegram/lib_ui/cmake/generate_emoji.cmake
+@@ -20,7 +20,7 @@
+     BYPRODUCTS
+         ${gen_files}
+     COMMAND
+-        codegen_emoji
++        $<TARGET_FILE:codegen_emoji>
+         -o${gen_dst}
+         ${gen_src}
+     COMMENT "Generating emoji (${target_name})"
+--- a/Telegram/lib_ui/cmake/generate_palette.cmake
++++ b/Telegram/lib_ui/cmake/generate_palette.cmake
+@@ -15,7 +15,7 @@
+     BYPRODUCTS
+         ${gen_files}
+     COMMAND
+-        codegen_style
++        $<TARGET_FILE:codegen_style>
+         -I${gen_dst}
+         -o${gen_dst}/styles
+         -t${gen_dst}/styles/palette
+--- a/Telegram/lib_ui/cmake/generate_styles.cmake
++++ b/Telegram/lib_ui/cmake/generate_styles.cmake
+@@ -22,7 +22,7 @@
+     BYPRODUCTS
+         ${gen_files}
+     COMMAND
+-        codegen_style
++        $<TARGET_FILE:codegen_style>
+         -I${src_loc}
+         -I${submodules_loc}/lib_ui
+         -I${submodules_loc}/Resources
+--- a/Telegram/cmake/generate_numbers.cmake
++++ b/Telegram/cmake/generate_numbers.cmake
+@@ -5,6 +5,11 @@
+ # https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ 
+ function(generate_numbers target_name numbers_file)
++    set(numbers_command codegen_numbers)
++    if (CMAKE_CROSSCOMPILING)
++        desktop_app_import_host_tool(codegen_numbers)
++        set(numbers_command $<TARGET_FILE:codegen_numbers>)
++    endif()
+     set(gen_dst ${CMAKE_CURRENT_BINARY_DIR}/gen)
+     file(MAKE_DIRECTORY ${gen_dst})
+ 
+@@ -20,7 +25,7 @@
+     BYPRODUCTS
+         ${gen_files}
+     COMMAND
+-        codegen_numbers
++        ${numbers_command}
+         -o${gen_dst}
+         ${numbers_file}
+     COMMENT "Generating numbers (${target_name})"
+--- a/Telegram/cmake/lib_zxcvbn.cmake
++++ b/Telegram/cmake/lib_zxcvbn.cmake
+@@ -45,21 +45,26 @@
+ )
+ list(TRANSFORM zxcvbn_words PREPEND ${zxcvbn_loc}/)
+ 
+-add_executable(zxcvbn_dictgen ${zxcvbn_loc}/dict-generate.cpp)
+-init_target(zxcvbn_dictgen "(codegen)")
+-target_compile_features(zxcvbn_dictgen PRIVATE cxx_std_11)
+-if (MSVC)
+-    target_link_libraries(zxcvbn_dictgen PRIVATE lib_zxcvbn_warnings_off)
++if (CMAKE_CROSSCOMPILING)
++    desktop_app_import_host_tool(zxcvbn_dictgen)
++    desktop_app_import_host_tool(zxcvbn_translit)
+ else()
+-    target_compile_options(zxcvbn_dictgen PRIVATE -w)
++    add_executable(zxcvbn_dictgen ${zxcvbn_loc}/dict-generate.cpp)
++    init_target(zxcvbn_dictgen "(codegen)")
++    target_compile_features(zxcvbn_dictgen PRIVATE cxx_std_11)
++    if (MSVC)
++        target_link_libraries(zxcvbn_dictgen PRIVATE lib_zxcvbn_warnings_off)
++    else()
++        target_compile_options(zxcvbn_dictgen PRIVATE -w)
++    endif()
++
++    add_executable(zxcvbn_translit
++        ${src_loc}/_other/zxcvbn_translit.cpp
++        ${src_loc}/ui/passcode_strength_translit.cpp
++    )
++    init_target(zxcvbn_translit "(codegen)")
++    target_include_directories(zxcvbn_translit PRIVATE ${src_loc})
+ endif()
+-
+-add_executable(zxcvbn_translit
+-    ${src_loc}/_other/zxcvbn_translit.cpp
+-    ${src_loc}/ui/passcode_strength_translit.cpp
+-)
+-init_target(zxcvbn_translit "(codegen)")
+-target_include_directories(zxcvbn_translit PRIVATE ${src_loc})
+ 
+ # The generator drops every word with a byte above 0x7F, so the Cyrillic lists
+ # are transliterated first, by the table the estimator itself applies.
+@@ -70,7 +75,7 @@
+     add_custom_command(
+         OUTPUT ${zxcvbn_gen}/${latin_name}
+         COMMAND ${CMAKE_COMMAND} -E make_directory ${zxcvbn_gen}
+-        COMMAND zxcvbn_translit ${res_loc}/zxcvbn/${name} ${zxcvbn_gen}/${latin_name}
++        COMMAND $<TARGET_FILE:zxcvbn_translit> ${res_loc}/zxcvbn/${name} ${zxcvbn_gen}/${latin_name}
+         DEPENDS zxcvbn_translit ${res_loc}/zxcvbn/${name}
+         COMMENT "Transliterating zxcvbn ${name}"
+         VERBATIM
+@@ -92,7 +97,7 @@
+ add_custom_command(
+     OUTPUT ${zxcvbn_gen}/dict-src.h
+     COMMAND ${CMAKE_COMMAND} -E make_directory ${zxcvbn_gen}
+-    COMMAND zxcvbn_dictgen -o ${zxcvbn_gen}/dict-src.h ${zxcvbn_words} ${zxcvbn_latin_words}
++    COMMAND $<TARGET_FILE:zxcvbn_dictgen> -o ${zxcvbn_gen}/dict-src.h ${zxcvbn_words} ${zxcvbn_latin_words}
+     DEPENDS zxcvbn_dictgen ${zxcvbn_words} ${zxcvbn_latin_words}
+     COMMENT "Generating zxcvbn dict-src.h"
+     VERBATIM
+--- a/Telegram/cmake/qrhi_shaders.cmake
++++ b/Telegram/cmake/qrhi_shaders.cmake
+@@ -11,14 +11,25 @@
+     return()
+ endif()
+ 
+-find_program(QSB_EXECUTABLE qsb
+-    HINTS
+-        "${QT_DIR}/../../../libexec"
+-        "${QT_DIR}/../../../bin"
+-        "${QT_DIR}/../../qt6/libexec"
+-        "${QT_DIR}/../../qt6/bin"
+-        "${QT_DIR}/../../../opt/qtshadertools/bin"
+-    PATHS ENV PATH)
++if (CMAKE_CROSSCOMPILING)
++    # qsb is run on the build host, just like Qt's moc/rcc from QT_HOST_PATH.
++    # Do not let the target Qt prefix or sysroot select an ARM executable.
++    if (NOT QSB_EXECUTABLE AND NOT QT_HOST_PATH)
++        message(FATAL_ERROR "Cross compilation requires QT_HOST_PATH or a native QSB_EXECUTABLE")
++    endif()
++    find_program(QSB_EXECUTABLE qsb
++        HINTS "${QT_HOST_PATH}/bin" "${QT_HOST_PATH}/libexec"
++        NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
++else()
++    find_program(QSB_EXECUTABLE qsb
++        HINTS
++            "${QT_DIR}/../../../libexec"
++            "${QT_DIR}/../../../bin"
++            "${QT_DIR}/../../qt6/libexec"
++            "${QT_DIR}/../../qt6/bin"
++            "${QT_DIR}/../../../opt/qtshadertools/bin"
++        PATHS ENV PATH)
++endif()
+ 
+ if (NOT QSB_EXECUTABLE)
+     message(FATAL_ERROR
