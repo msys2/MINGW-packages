@@ -131,7 +131,13 @@ pacman -Sy
 pacman -R --recursive --unneeded --noconfirm --noprogressbar git python
 
 # Install ntldd
-pacman -S --needed --noconfirm ${MINGW_PACKAGE_PREFIX}-ntldd
+if ! pacman -S --needed --noconfirm "${MINGW_PACKAGE_PREFIX}-ntldd"; then
+  echo "Package ${MINGW_PACKAGE_PREFIX}-ntldd not found in repo. Fetching archived package..."
+  # hotfix for dropped mingw64
+  curl -O -L "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-ntldd-r19.7fb9365-4-any.pkg.tar.zst"
+  pacman -U --noconfirm mingw-w64-x86_64-ntldd-*.pkg.tar.zst
+fi
+
 
 # Enable linting
 export MAKEPKG_LINT_PKGBUILD=1
