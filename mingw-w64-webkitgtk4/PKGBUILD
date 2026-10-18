@@ -320,6 +320,141 @@ _print_archive_rule_diagnostics() {
   echo "  rm -rf '$2'" >&2
 }
 
+_run_gir_dump_subset() {
+  # Round 45: run one dump-program execution over a given functions list.
+  # $1 = dump exe, $2 = DLL dir (PATH prefix), $3 = functions list file,
+  # $4 = output dump.xml path. The exe's exit code lands in _GIR_DUMP_RC
+  # (timeout kills surface as 124); the helper itself always returns 0 so a
+  # crashing run can never abort the caller under `set -e` (makepkg runs
+  # build() with -e; a bail-out here would kill the whole evidence chain).
+  # WEBKIT_GIR_DUMP_MODE=1 keeps parity with the scanner-run environment
+  # (the 0018 gate inside webkitInitialize).
+  # NOTE: the `|| _rc=$?` idiom is load-bearing - under makepkg's `set -e`
+  # a bare failing command would abort this function before the exit code
+  # is even captured, killing the whole evidence chain.
+  local _rc=0
+  WEBKIT_GIR_DUMP_MODE=1 PATH="$2:${PATH}" timeout 300 "$1" "--introspect-dump=$3,$4" >/dev/null 2>&1 || _rc=$?
+  _GIR_DUMP_RC=${_rc}
+  return 0
+}
+
+_bisect_gir_dump_crash() {
+  # Round 45: decisive evidence machine for the WebKit-6.0 dump-program crash
+  # (0xC0000409 fail-fast, CLANG64/CLANGARM64, surviving Round 44's 0018 gate).
+  #
+  # What it does: GI_SCANNER_DEBUG=save-temps (Round 43) preserves each scan's
+  # tmp-introspect*/ directory, which contains the dump program itself
+  # (WebKit-6.0.exe), its input symbol list (functions.txt, one get_type
+  # symbol per line) and the partial dump.xml. That is everything needed to
+  # re-run the exact crashing binary under controlled inputs, on the exact
+  # machine that crashed - no compiler, no scanner, no rebuild.
+  #
+  # Algorithm per dump program:
+  #   1. full-set rerun: reproduces the crash standalone (if it does not, the
+  #      crash needed the parallel-scan environment - reported and skipped);
+  #   2. binary search over the symbol list: run [lo,mid); failure narrows
+  #      into the failing half, success moves to the other half; ~log2(N)
+  #      runs converge on one get_type symbol;
+  #   3. verdict runs: the converged symbol alone, the prefix ending at it,
+  #      and the suffix starting at it - distinguishing a single-symbol
+  #      crash from a cumulative/stateful one (an earlier class_init leaving
+  #      half-initialized state that a later type trips on) and from pure
+  #      interaction effects;
+  #   4. timeout kills (rc=124) are treated as failures too and labeled -
+  #      a hang and a fail-fast are both evidence.
+  # Any run that crashes writes a fresh WER event; this function therefore
+  # runs BEFORE _collect_gir_crash_evidence so its WER query captures the
+  # bisect's own crash events (module + offset, per-symbol).
+  _GIR_BISECT_SUMMARY=""
+  local _tree="${srcdir}/webkitgtk-${pkgver}"
+  # libwebkitgtk DLL directory: the dump exe loads it (and its deps) at
+  # startup; g-ir-scanner arranged this via os.add_dll_directory, a bare
+  # rerun needs the PATH prefix.
+  local _dll_dir
+  _dll_dir="$(find "${srcdir}/build-${MSYSTEM}" -name 'libwebkitgtk-6.0*.dll' -printf '%h\n' 2>/dev/null | head -1)"
+  if [[ -z "${_dll_dir}" ]]; then
+    echo "[bisect] libwebkitgtk-6.0 DLL not found under ${srcdir}/build-${MSYSTEM}; dump reruns impossible (build failed too early?)." >&2
+    return 0
+  fi
+  echo "[bisect] dump-program dependency DLL dir: ${_dll_dir}" >&2
+
+  local _tdir _exe _fx _sym _rc _n _lo _hi _mid
+  for _tdir in $(ls -dt "${_tree}"/tmp-introspect* 2>/dev/null | head -8); do
+    _exe="$(ls "${_tdir}"/*-6.0.exe 2>/dev/null | head -1)"
+    _fx="${_tdir}/functions.txt"
+    [[ -f "${_exe}" && -s "${_fx}" ]] || continue
+
+    echo "[bisect] === dump program: $(basename "${_exe}") ===" >&2
+    local -a _syms=()
+    while IFS= read -r _sym; do
+      _sym="${_sym//$'\r'/}"
+      _sym="${_sym//[[:space:]]/}"
+      # if-form (not `[[ ]] &&`) so a blank line can never trip `set -e`
+      if [[ -n "${_sym}" ]]; then
+        _syms+=("$_sym")
+      fi
+    done < "${_fx}"
+    _n=${#_syms[@]}
+    if (( _n == 0 )); then
+      echo "[bisect] functions.txt has no symbols; skipping." >&2
+      continue
+    fi
+    echo "[bisect] ${_n} get_type symbols; full-set rerun first..." >&2
+
+    _run_gir_dump_subset "${_exe}" "${_dll_dir}" "${_fx}" "${_tdir}/bisect-full.xml"
+    _rc=${_GIR_DUMP_RC}
+    if (( _rc == 0 )); then
+      echo "[bisect] full-set rerun SUCCEEDED (exit 0) - the crash does not reproduce standalone for this program (needs the scanner/parallel environment); no bisection possible." >&2
+      _GIR_BISECT_SUMMARY+="$(basename "${_exe}"): full-set rerun OK standalone; "
+      continue
+    fi
+    echo "[bisect] full-set rerun FAILED rc=${_rc} (0x$(printf '%x' "${_rc}")) - reproduces standalone; bisecting..." >&2
+    _GIR_BISECT_SUMMARY+="$(basename "${_exe}"): standalone repro rc=${_rc}; "
+
+    _lo=0 _hi=$_n
+    while (( _hi - _lo > 1 )); do
+      _mid=$(( (_lo + _hi) / 2 ))
+      printf '%s\n' "${_syms[@]:_lo:_mid-_lo}" > "${_tdir}/bisect-subset.txt"
+      _run_gir_dump_subset "${_exe}" "${_dll_dir}" "${_tdir}/bisect-subset.txt" "${_tdir}/bisect-sub.xml"
+      _rc=${_GIR_DUMP_RC}
+      if (( _rc == 0 )); then
+        echo "[bisect] symbols [${_lo},${_mid}) ok -> crash must be in [${_mid},${_hi})" >&2
+        _lo=$_mid
+      else
+        echo "[bisect] symbols [${_lo},${_mid}) FAILED rc=${_rc} -> crash is inside this half" >&2
+        _hi=$_mid
+      fi
+    done
+
+    local _crash_sym="${_syms[$_lo]}"
+    local _ctx_start=$(( _lo > 4 ? _lo - 4 : 0 ))
+    echo "[bisect] converged on symbol #${_lo} of ${_n}: ${_crash_sym}" >&2
+    echo "[bisect]   neighborhood: ${_syms[@]:_ctx_start:9}" >&2
+
+    printf '%s\n' "${_crash_sym}" > "${_tdir}/bisect-single.txt"
+    _run_gir_dump_subset "${_exe}" "${_dll_dir}" "${_tdir}/bisect-single.txt" "${_tdir}/bisect-single.xml"
+    local _rc_single=${_GIR_DUMP_RC}
+    printf '%s\n' "${_syms[@]:0:_lo+1}" > "${_tdir}/bisect-prefix.txt"
+    _run_gir_dump_subset "${_exe}" "${_dll_dir}" "${_tdir}/bisect-prefix.txt" "${_tdir}/bisect-prefix.xml"
+    local _rc_prefix=${_GIR_DUMP_RC}
+    printf '%s\n' "${_syms[@]:_lo}" > "${_tdir}/bisect-suffix.txt"
+    _run_gir_dump_subset "${_exe}" "${_dll_dir}" "${_tdir}/bisect-suffix.txt" "${_tdir}/bisect-suffix.xml"
+    local _rc_suffix=${_GIR_DUMP_RC}
+    echo "[bisect] verdict runs: single rc=${_rc_single} | prefix[0..${_lo}] rc=${_rc_prefix} | suffix[${_lo}..end] rc=${_rc_suffix}" >&2
+    if (( _rc_single != 0 )); then
+      echo "[bisect] VERDICT: SINGLE-SYMBOL crash confirmed - ${_crash_sym} alone kills the dump program (rc=${_rc_single})." >&2
+      _GIR_BISECT_SUMMARY+="CRASH SYMBOL ${_crash_sym} (single-symbol rc=${_rc_single}); "
+    elif (( _rc_prefix != 0 )); then
+      echo "[bisect] VERDICT: CUMULATIVE crash - ${_crash_sym} only dies after the earlier symbols ran (prefix rc=${_rc_prefix}); an earlier class_init leaves state that this type trips on." >&2
+      _GIR_BISECT_SUMMARY+="CUMULATIVE crash at ${_crash_sym} (prefix rc=${_rc_prefix}); "
+    else
+      echo "[bisect] VERDICT: INTERACTION effect - no single-symbol repro (single rc=0, prefix rc=0); the crash needs a combination outside the converged prefix; subsets kept in ${_tdir}/bisect-*.txt." >&2
+      _GIR_BISECT_SUMMARY+="interaction-only crash near ${_crash_sym}; "
+    fi
+  done
+  echo "[bisect] done." >&2
+}
+
 _collect_gir_crash_evidence() {
   # Round 43：g-ir dump 程序（WebKit-6.0.exe 等）崩溃/挂死时的零权限取证。
   # 三路证据：
@@ -328,7 +463,15 @@ _collect_gir_crash_evidence() {
   #      唯一零成本手段（无需 cdb/windbg，无需管理员）；
   #   2) GI_SCANNER_DEBUG=save-temps 保留的 tmp-introspect*/ 目录清单；
   #   3) 部分 dump.xml 的最后一个 <class>/<interface> 即崩溃时刻正在处理的类型。
+  # Round 45：新增第 0 路——二分定位器的结论（见 _bisect_gir_dump_crash），
+  # 以及醒目的 BEGIN/END 标记行（前两轮用户报告均未包含本段输出，标记行
+  # 让它在长日志里不可错过：报告时请从 BEGIN 行截到 END 行）。
   # 全部 best-effort：powershell 不可用/无匹配事件时静默降级。
+  echo "===== GIR CRASH EVIDENCE (BEGIN) =====" >&2
+  if [[ -n "${_GIR_BISECT_SUMMARY:-}" ]]; then
+    echo "--- bisect verdict (Round 45) ---" >&2
+    echo "  ${_GIR_BISECT_SUMMARY}" >&2
+  fi
   echo "--- gir dump crash evidence (Application event log, WER 1000/1001) ---" >&2
   powershell.exe -NoProfile -Command 'try { Get-WinEvent -FilterHashtable @{ LogName = "Application"; Id = 1000, 1001 } -MaxEvents 60 -ErrorAction Stop | Where-Object { $_.Message -match "WebKit-6\.0\.exe|WebKitWebProcessExtension-6\.0\.exe|JavaScriptCore-6\.0\.exe|g-ir-|vapigen" } | Select-Object -First 6 TimeCreated, Id, @{ n = "Message"; e = { ($_.Message -split "`r?`n" | Select-Object -First 12) -join " | " } } | Format-List } catch { "no matching WER events (or query unavailable)" }' 2>/dev/null | grep -vE '^[[:space:]]*$' | head -60 >&2
   echo "--- leftover introspection temp dirs (GI_SCANNER_DEBUG=save-temps) ---" >&2
@@ -340,7 +483,7 @@ _collect_gir_crash_evidence() {
       echo "    last dumped type: $(grep -oE '<(class|interface|record|enumeration|bitfield) name="[^"]+"' "${_tdir}/dump.xml" 2>/dev/null | tail -1)" >&2
     fi
   done
-  echo "--- end crash evidence ---" >&2
+  echo "===== GIR CRASH EVIDENCE (END) =====" >&2
 }
 
 build() {
@@ -631,7 +774,11 @@ build() {
 
   # Round 43：构建失败时收集 dump 程序崩溃证据（WER 事件日志 + save-temps 现场），
   # 再向 makepkg 透传失败状态。取证失败不影响退出码。
+  # Round 45：先跑二分定位器再取证——二分的每次崩溃运行都会写入新的 WER 事件，
+  # 后查事件日志即可拿到【按符号区分】的故障模块与偏移（比只看原始一次崩溃
+  # 的 WER 记录强得多）；两段输出都以醒目的 marker 行包裹，报告时请完整截取。
   if (( _build_status != 0 )); then
+    _bisect_gir_dump_crash
     _collect_gir_crash_evidence
   fi
   return ${_build_status}
