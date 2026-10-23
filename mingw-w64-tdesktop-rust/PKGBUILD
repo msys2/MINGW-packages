@@ -1,0 +1,127 @@
+# Maintainer: luadebug <lin@sz.cn.eu.org>
+
+_realname=tdesktop-rust
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=7.3.1
+pkgrel=1
+pkgdesc="Telegram Desktop's combined tlottie and wallet-engine Rust library and C++ bindings (mingw-w64)"
+arch=('any')
+mingw_arch=('ucrt64' 'clang64' 'clangarm64')
+url='https://desktop.telegram.org/'
+msys2_repository_url='https://github.com/telegramdesktop/tdesktop'
+license=('spdx:MIT AND (MIT OR Apache-2.0) AND BSD-3-Clause AND MPL-2.0 AND Unicode-3.0')
+depends=("${MINGW_PACKAGE_PREFIX}-cc-libs")
+makedepends=("${MINGW_PACKAGE_PREFIX}-cc"
+             "${MINGW_PACKAGE_PREFIX}-rust>=1.96.1"
+             "${MINGW_PACKAGE_PREFIX}-jq")
+options=('!strip')
+
+_tlottie_revision=92df98dc209bc39b1e567ec74a8c86a0af5239de
+_wallet_revision=e59e0d89d7ee90c388bf36e3334c5b276f396697
+_patches_revision=aec474953ff7ee9b6e4cd9b8658288ea86d124f3
+source=("tlottie-${_tlottie_revision}.tar.gz::https://codeload.github.com/dkaraush/tlottie/tar.gz/${_tlottie_revision}"
+        "wallet-engine-${_wallet_revision}.tar.gz::https://codeload.github.com/i582/wallet-engine/tar.gz/${_wallet_revision}"
+        "wallet-engine.patch::https://raw.githubusercontent.com/desktop-app/patches/${_patches_revision}/wallet-engine.patch")
+sha256sums=('7855c45912e59c51fbc530af5e849d6867e52e4d64a0117815add728e5cbee92'
+            '45d22ed481dc4fab07390abfa811c095c424e11c745e87b9d0d27b40efa17da2'
+            'b40aba82c39a42d0526a85ecfa40d613baa57b1a2d6600e601a42a1576b3b822')
+
+prepare() {
+  cd "${srcdir}/wallet-engine-${_wallet_revision}"
+  # The patch supplies the signData TL-B decoding API used by Desktop 7.3.1.
+  patch -p1 -i "${srcdir}/wallet-engine.patch"
+
+  cd "${srcdir}"
+  cargo new --lib --vcs none --edition 2024 --name tdesktop_rust "${_realname}"
+  cd "${_realname}"
+  # Seed from upstream before adding local crates to preserve dependency versions.
+  cp "../wallet-engine-${_wallet_revision}/Cargo.lock" Cargo.lock
+  printf 'pub use ::tlottie;\npub use ::wallet_engine;\n' > src/lib.rs
+  cargo add --path "../wallet-engine-${_wallet_revision}"
+  cargo add --path "../tlottie-${_tlottie_revision}" --features c-api
+
+  # UniFFI inspects unfiltered Cargo metadata, including other target platforms.
+  cargo fetch --locked \
+    --manifest-path "${srcdir}/${_realname}/Cargo.toml"
+  cargo fetch --locked \
+    --manifest-path "${srcdir}/wallet-engine-${_wallet_revision}/bindgen/cpp/bindgen/Cargo.toml"
+}
+
+build() {
+  if [[ "${RUST_CHOST}" == *-windows-gnullvm ]]; then
+    export RUSTFLAGS="${RUSTFLAGS/+crt-static/-crt-static}"
+  fi
+  # UniFFI's internal cargo metadata invocation must stay offline too.
+  export CARGO_NET_OFFLINE=true
+  export CARGO_TARGET_DIR="${srcdir}/build-${MSYSTEM}"
+
+  cd "${srcdir}/${_realname}"
+  # One staticlib for both dependencies: separate archives duplicate Rust std.
+  # The temporary DLL carries UniFFI metadata for the matching C++ generator.
+  cargo rustc --frozen --release --lib \
+    --target "${RUST_CHOST}" \
+    --crate-type staticlib --crate-type cdylib \
+    --config "profile.release.opt-level='z'" \
+    --config "profile.release.lto='thin'" \
+    --config "profile.release.codegen-units=1" \
+    --config "profile.release.panic='unwind'" \
+    --config "profile.release.package.tlottie.opt-level=3" \
+    -- --print native-static-libs
+
+  mkdir -p "${srcdir}/bindings-${MSYSTEM}"
+  cargo run --frozen --release \
+    --target "${RUST_CHOST}" \
+    --manifest-path "${srcdir}/wallet-engine-${_wallet_revision}/bindgen/cpp/bindgen/Cargo.toml" \
+    -- --library --out-dir "${srcdir}/bindings-${MSYSTEM}" \
+    "${CARGO_TARGET_DIR}/${RUST_CHOST}/release/tdesktop_rust.dll"
+}
+
+package() {
+  install -Dm644 "${srcdir}/build-${MSYSTEM}/${RUST_CHOST}/release/libtdesktop_rust.a" \
+    "${pkgdir}${MINGW_PREFIX}/lib/libtdesktop_rust.a"
+  install -Dm644 "${srcdir}/tlottie-${_tlottie_revision}/include/tlottie.h" \
+    "${pkgdir}${MINGW_PREFIX}/include/tlottie/tlottie.h"
+  # Desktop's packaged CMake compiles wallet_engine.cpp beside these headers.
+  install -Dm644 "${srcdir}/bindings-${MSYSTEM}/wallet_engine.hpp" \
+    "${pkgdir}${MINGW_PREFIX}/include/wallet_engine/wallet_engine.hpp"
+  install -Dm644 "${srcdir}/bindings-${MSYSTEM}/wallet_engine_scaffolding.hpp" \
+    "${pkgdir}${MINGW_PREFIX}/include/wallet_engine/wallet_engine_scaffolding.hpp"
+  install -Dm644 "${srcdir}/bindings-${MSYSTEM}/wallet_engine.cpp" \
+    "${pkgdir}${MINGW_PREFIX}/include/wallet_engine/wallet_engine.cpp"
+
+  local _license_dir="${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}"
+  local _crate _license _repository _manifest _notice
+  install -dm755 "${_license_dir}"
+  : > "${_license_dir}/third-party.txt"
+  cd "${srcdir}/${_realname}"
+  (
+    set -o pipefail
+    shopt -s nullglob nocaseglob
+    cargo metadata --frozen --format-version 1 --filter-platform "${RUST_CHOST}" |
+      jq -j '.packages | sort_by(.name, .version)[] |
+        [.name + "-" + .version,
+         (if (.license // "") == "" then "See source license files" else .license end),
+         (.repository // ""), .manifest_path][] + "\u0000"' |
+      while IFS= read -r -d '' _crate &&
+        IFS= read -r -d '' _license &&
+        IFS= read -r -d '' _repository &&
+        IFS= read -r -d '' _manifest; do
+        printf '%s: %s\n' "${_crate}" "${_license}" >> "${_license_dir}/third-party.txt"
+        if [[ -n "${_repository}" ]]; then
+          printf '%s\n' "${_repository}" >> "${_license_dir}/third-party.txt"
+        fi
+        _manifest=$(cygpath -u "${_manifest}")
+        for _notice in "${_manifest%/*}"/{LICENSE,LICENCE,COPYING,NOTICE,COPYRIGHT}*; do
+          if [[ -d "${_notice}" ]]; then
+            install -dm755 "${_license_dir}/${_crate}"
+            cp -aL -- "${_notice}" "${_license_dir}/${_crate}/"
+          else
+            install -Dm644 "${_notice}" "${_license_dir}/${_crate}/${_notice##*/}"
+          fi
+        done
+      done
+  )
+  install -Dm644 "${srcdir}/wallet-engine-${_wallet_revision}/bindgen/cpp/LICENSE" \
+    "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/uniffi-bindgen-cpp/LICENSE"
+}
