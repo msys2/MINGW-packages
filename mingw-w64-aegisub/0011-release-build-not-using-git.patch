@@ -1,0 +1,130 @@
+diff --git a/tools/version.ps1 b/tools/version.ps1
+index 1293ae6..90d2a4c 100755
+--- a/tools/version.ps1
++++ b/tools/version.ps1
+@@ -14,11 +14,11 @@ $defineStringMatch = [regex] "^#define\s+(\w+)\s+[`"']?(.+?)[`"']?$"
+ $semVerMatch = [regex] 'v?(\d+)\.(\d+).(\d+)(?:-(\w+))?'
+ 
+ $repositoryRootPath = Join-Path $PSScriptRoot .. | Resolve-Path
+-if (!(git -C $repositoryRootPath rev-parse --is-inside-work-tree 2>$null)) {
+-  throw "$repositoryRootPath is not a git repository"
++if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
++  $SourceRoot = $repositoryRootPath
+ }
+ 
+-if ($BuildRoot -eq $null -or $BuildRoot.Trim() -eq "")  {
++if ([string]::IsNullOrWhiteSpace($BuildRoot))  {
+   $BuildRoot = $repositoryRootPath
+ }
+ 
+@@ -28,13 +28,52 @@ if ([System.IO.Path]::GetFullPath([System.IO.Path]::Combine((pwd).Path, $BuildRo
+     $BuildRoot = Join-Path $repositoryRootPath 'build'
+   }
+ $gitVersionHeaderPath = Join-Path $BuildRoot 'git_version.h'
++$rootVersionHeaderPath = Join-Path $SourceRoot 'git_version.h'
++
++# Checks that the header has the two values the build needs and never rewrites it.
++function Assert-VersionHeader([string]$path) {
++  $header = Get-Content -Raw $path
++  foreach ($name in 'BUILD_GIT_VERSION_NUMBER', 'BUILD_GIT_VERSION_STRING') {
++    if ($header -notmatch "(?m)^\s*#define\s+$name\s+\S") {
++      Write-Error "invalid git_version.h: $name is missing ($path)"
++      exit 2
++    }
++  }
++}
++
++# The header exists in release tarball source: copy it into the build dir if it differs.
++if (Test-Path $rootVersionHeaderPath) {
++  New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
++  if (!(Test-Path $gitVersionHeaderPath) -or
++      ((Get-Content -Raw $rootVersionHeaderPath) -ne (Get-Content -Raw $gitVersionHeaderPath))) {
++    Copy-Item -Force $rootVersionHeaderPath $gitVersionHeaderPath
++  }
++  Assert-VersionHeader $gitVersionHeaderPath
++  exit 0
++}
++
++# No git available or not a checkout: reuse a cached build header.
++$haveGit = (Get-Command git -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $SourceRoot '.git'))
++if (!$haveGit) {
++  if (Test-Path $gitVersionHeaderPath) {
++    Assert-VersionHeader $gitVersionHeaderPath
++    exit 0
++  }
++  Write-Error "no git repository (or git.exe) and no cached git_version.h"
++  exit 2
++}
+ 
+ $version = @{}
+ if (Test-Path $gitVersionHeaderPath) {
+   Get-Content $gitVersionHeaderPath | %{$_.Trim()} | ?{$_} | %{
+     switch -regex ($_) {
++      $defineVersionListMatch {
++        $version['RESOURCE_BASE_VERSION'] = $Matches[1..3];
++        continue
++      }
+       $defineNumberMatch {
+         $version[$Matches[1]] = [int]$Matches[2];
++        continue
+       }
+       $defineStringMatch {
+         $version[$Matches[1]] = $Matches[2];
+@@ -43,8 +82,8 @@ if (Test-Path $gitVersionHeaderPath) {
+   }
+ }
+ 
+-$gitRevision = $lastSvnRevision + ((git -C $repositoryRootPath log --pretty=oneline "$($lastSvnHash)..HEAD" 2>$null | Measure-Object).Count)
+-$gitBranch = [string](git -C $repositoryRootPath symbolic-ref --short HEAD 2>$null)
++$gitRevision = $lastSvnRevision + ((git -C $SourceRoot log --pretty=oneline "$($lastSvnHash)..HEAD" 2>$null | Measure-Object).Count)
++$gitBranch = [string](git -C $SourceRoot symbolic-ref --short HEAD 2>$null)
+ if ([string]::IsNullOrEmpty($gitBranch)) {
+   $gitBranch = [Environment]::GetEnvironmentVariable('AEGISUB_BUILD_BRANCH')
+ }
+@@ -52,9 +91,9 @@ $gitBranch = (($gitBranch -replace '[^A-Za-z0-9._-]', '-') -replace '-+', '-').T
+ if ([string]::IsNullOrEmpty($gitBranch)) {
+   $gitBranch = 'unnamed-branch'
+ }
+-$gitHash = git -C $repositoryRootPath rev-parse --short HEAD 2>$null
++$gitHash = git -C $SourceRoot rev-parse --short HEAD 2>$null
+ $gitVersionString = $gitRevision, $gitBranch, $gitHash -join '-'
+-$exactGitTag = git -C $repositoryRootPath describe --exact-match --tags 2>$null
++$exactGitTag = git -C $SourceRoot describe --exact-match --tags 2>$null
+ 
+ if ($gitVersionString -eq $version['BUILD_GIT_VERSION_STRING']) {
+   exit 0
+@@ -68,13 +107,13 @@ if ($exactGitTag -match $semVerMatch) {
+   $gitVersionString = $joinedVersion + @("-$($Matches[4])",'')[!$Matches[4]]
+   $version['INSTALLER_VERSION'] = $joinedVersion
+ } else {
+-  foreach ($rev in (git -C $repositoryRootPath rev-list --tags 2>$null)) {
+-    $tag = git -C $repositoryRootPath describe --exact-match --tags $rev 2>$null
+-    if ($tag -match $semVerMatch) {#
++  foreach ($rev in (git -C $SourceRoot rev-list --tags 2>$null)) {
++    $tag = git -C $SourceRoot describe --exact-match --tags $rev 2>$null
++    if ($tag -match $semVerMatch) {
+       $version['TAGGED_RELEASE'] = $false
+       $version['RESOURCE_BASE_VERSION'] = $Matches[1..3]
+       $version['INSTALLER_VERSION'] = ($Matches[1..3] -join '.')
+-      break;
++      break
+     }
+   }
+ }
+@@ -82,6 +121,7 @@ if ($exactGitTag -match $semVerMatch) {
+ $version['BUILD_GIT_VERSION_NUMBER'] = $gitRevision
+ $version['BUILD_GIT_VERSION_STRING'] = $gitVersionString
+ 
++New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
+ $version.GetEnumerator() | %{
+   $type = $_.Value.GetType()
+   $value = $_.Value
+@@ -92,7 +132,7 @@ $version.GetEnumerator() | %{
+     ([object[]]) {$value -join ', '}
+     default {
+       Write-Host "no format known for type '$type' - trying default string conversion" -ForegroundColor Red
+-      {"`"$($value.ToString())`""}
++      "`"$($value.ToString())`""
+     }
+   }
+   "`n#define $($_.Key) $($fmtValue)"
