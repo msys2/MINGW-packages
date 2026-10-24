@@ -70,31 +70,43 @@ int main(int argc, char **argv) {
   size_t s = 0;
   char* args[ARGV_SIZE];
 
-  int show = (argc == 2 && strcmp(argv[1], "-show") == 0);
+  #define RUN (1<<0)
+  #define SHOW_COMPILE (1<<1)
+  #define SHOW_LINK (1<<2)
+  unsigned mode = RUN;
+  if(argc == 2) {
+    if(strcmp(argv[1], "-show") == 0) mode = SHOW_COMPILE | SHOW_LINK;
+    if(strcmp(argv[1], "-show:compile") == 0) mode = SHOW_COMPILE;
+    if(strcmp(argv[1], "-show:link") == 0) mode = SHOW_LINK;
+  }
   
   {
 	  char* buffer = malloc(MAX_PATH*sizeof(char)); if(!buffer) abort();
     args[s++] = GetEnvironmentVariable(ENV, buffer, MAX_PATH) > 0 ? buffer : printf_new("%s/%s", bin, DRV);
   }
   
-  args[s++] = printf_new("-I%s/include", root);
+  if(mode & RUN || mode & SHOW_COMPILE) {
+    args[s++] = printf_new("-I%s/include", root);
+  }
 
   // inject wrapper's arguments
-  if(!show) for(size_t v = 1; v < argc; ++v) args[s++] = argv[v];
+  if(mode & RUN) {
+    for(size_t v = 1; v < argc; ++v) args[s++] = argv[v];
+  }
 
-  args[s++] = printf_new("-L%s/lib", root);
-
-	args[s++] = "-l:libmsmpi.dll.a";
-
+  if(mode & RUN || mode & SHOW_LINK) {
+    args[s++] = printf_new("-L%s/lib", root);
+    args[s++] = "-l:libmsmpi.dll.a";
 #ifdef FC
-	args[s++] = "-l:libmsmpifec.dll.a";
+    args[s++] = "-l:libmsmpifec.dll.a";
 #endif
+}
 
   args[s++] = NULL;
 
   if(s > ARGV_SIZE) abort();
 
-  if(show) {
+  if(!(mode & RUN)) {
     for(char** p = args; *p; ++p) {
       fprintf(stdout, "'%s' ", *p); // TODO
     }
