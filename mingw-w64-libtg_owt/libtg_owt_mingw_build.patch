@@ -1,0 +1,184 @@
+--- a/src/modules/audio_coding/codecs/isac/main/source/os_specific_inline.h
++++ b/src/modules/audio_coding/codecs/isac/main/source/os_specific_inline.h
+@@ -15,7 +15,7 @@
+
+ #include "rtc_base/system/arch.h"
+
+-#if defined(WEBRTC_POSIX)
++#if (defined(WEBRTC_POSIX) || defined(__MINGW32__))
+ #define WebRtcIsac_lrint lrint
+ #elif (defined(WEBRTC_ARCH_X86) && defined(WIN32))
+ static __inline long int WebRtcIsac_lrint(double x_dbl) {
+--- a/src/modules/audio_coding/neteq/reorder_optimizer.cc
++++ b/src/modules/audio_coding/neteq/reorder_optimizer.cc
+@@ -12,6 +12,7 @@
+
+ #include <algorithm>
+ #include <limits>
++#include <cstdint>
+ #include <vector>
+
+ namespace webrtc {
+--- a/src/modules/desktop_capture/desktop_capture_types.h
++++ b/src/modules/desktop_capture/desktop_capture_types.h
+@@ -11,8 +11,6 @@
+ #ifndef MODULES_DESKTOP_CAPTURE_DESKTOP_CAPTURE_TYPES_H_
+ #define MODULES_DESKTOP_CAPTURE_DESKTOP_CAPTURE_TYPES_H_
+
+-#include <stdint.h>
+-
+ namespace webrtc {
+
+ enum class CaptureType { kWindow, kScreen, kAnyScreenContent };
+--- a/src/modules/desktop_capture/win/desktop_capture_utils.cc
++++ b/src/modules/desktop_capture/win/desktop_capture_utils.cc
+@@ -10,7 +10,8 @@
+
+ #include "modules/desktop_capture/win/desktop_capture_utils.h"
+
+-#include "rtc_base/strings/string_builder.h"
++#include <cstdio>
++#include <cstdlib>
+
+ namespace webrtc {
+ namespace desktop_capture {
+@@ -19,12 +20,15 @@ namespace utils {
+ // Generates a human-readable string from a COM error.
+ std::string ComErrorToString(const _com_error& error) {
+   char buffer[1024];
+-  rtc::SimpleStringBuilder string_builder(buffer);
+-  // Use _bstr_t to simplify the wchar to char conversion for ErrorMessage().
+-  _bstr_t error_message(error.ErrorMessage());
+-  string_builder.AppendFormat("HRESULT: 0x%08X, Message: %s", error.Error(),
+-                              static_cast<const char*>(error_message));
+-  return string_builder.str();
++  int offset = snprintf(buffer, sizeof(buffer),
++                        "HRESULT: 0x%08lX, Message: ", error.Error());
++#ifdef _UNICODE
++  wcstombs(buffer + offset, error.ErrorMessage(), sizeof(buffer) - offset);
++#else
++  strncpy(buffer + offset, error.ErrorMessage(), sizeof(buffer) - offset);
++#endif
++  buffer[sizeof(buffer) - 1] = 0;
++  return buffer;
+ }
+
+ }  // namespace utils
+--- a/src/modules/desktop_capture/win/wgc_capture_session.cc
++++ b/src/modules/desktop_capture/win/wgc_capture_session.cc
+@@ -12,7 +12,16 @@
+
+ #include <DispatcherQueue.h>
+ #include <windows.graphics.capture.interop.h>
+-#include <windows.graphics.directX.direct3d11.interop.h>
++#ifndef __MINGW32__
++#  include <windows.graphics.directX.direct3d11.interop.h>
++#else
++#  include <dxgi.h>
++#  include <inspectable.h>
++extern "C" {
++HRESULT __stdcall CreateDirect3D11DeviceFromDXGIDevice(
++    ::IDXGIDevice* dxgiDevice, ::IInspectable** graphicsDevice);
++}
++#endif
+ #include <windows.graphics.h>
+ #include <wrl/client.h>
+ #include <wrl/event.h>
+--- a/src/rtc_base/platform_thread_types.cc
++++ b/src/rtc_base/platform_thread_types.cc
+@@ -99,6 +99,8 @@ void SetCurrentThreadName(const char* name) {
+     set_thread_description_func(::GetCurrentThread(), wide_thread_name);
+   }
+
++#if defined(_MSC_VER)
++  // SEH is only impelmented for the MSVC compiler
+   // For details see:
+   // https://docs.microsoft.com/en-us/visualstudio/debugger/how-to-set-a-thread-name-in-native-code
+ #pragma pack(push, 8)
+@@ -118,6 +120,7 @@ void SetCurrentThreadName(const char* name) {
+   } __except (EXCEPTION_EXECUTE_HANDLER) {  // NOLINT
+   }
+ #pragma warning(pop)
++#endif // _MSC_VER
+ #elif defined(WEBRTC_LINUX) || defined(WEBRTC_ANDROID)
+   prctl(PR_SET_NAME, reinterpret_cast<unsigned long>(name));  // NOLINT
+ #elif defined(WEBRTC_FREEBSD)
+--- a/src/rtc_base/socket.h
++++ b/src/rtc_base/socket.h
+@@ -67,6 +67,20 @@
+ #define EHOSTUNREACH WSAEHOSTUNREACH
+ #undef ENETUNREACH
+ #define ENETUNREACH WSAENETUNREACH
++#undef ENOTEMPTY
++#define ENOTEMPTY WSAENOTEMPTY
++#undef EPROCLIM
++#define EPROCLIM WSAEPROCLIM
++#undef EUSERS
++#define EUSERS WSAEUSERS
++#undef EDQUOT
++#define EDQUOT WSAEDQUOT
++#undef ESTALE
++#define ESTALE WSAESTALE
++#undef EREMOTE
++#define EREMOTE WSAEREMOTE
++#undef EACCES
++#define EACCES WSAEACCES
+ #define SOCKET_EACCES WSAEACCES
+ #endif  // WEBRTC_WIN
+
+--- a/src/rtc_base/system/file_wrapper.cc
++++ b/src/rtc_base/system/file_wrapper.cc
+@@ -21,7 +21,7 @@
+ #include "rtc_base/numerics/safe_conversions.h"
+
+ #ifdef _WIN32
+-#include <Windows.h>
++#include <windows.h>
+ #else
+ #endif
+
+--- a/src/rtc_base/system/rtc_export_template.h
++++ b/src/rtc_base/system/rtc_export_template.h
+@@ -185,7 +185,9 @@
+
+ RTC_EXPORT_TEMPLATE_TEST(DEFAULT, );  // NOLINT
+ RTC_EXPORT_TEMPLATE_TEST(DEFAULT, __attribute__((visibility("default"))));
++#ifdef _MSC_VER
+ RTC_EXPORT_TEMPLATE_TEST(MSVC_HACK, __declspec(dllexport));
++#endif
+ RTC_EXPORT_TEMPLATE_TEST(DEFAULT, __declspec(dllimport));
+
+ #undef RTC_EXPORT_TEMPLATE_TEST
+--- a/src/rtc_base/win/create_direct3d_device.h
++++ b/src/rtc_base/win/create_direct3d_device.h
+@@ -11,8 +11,18 @@
+ #ifndef RTC_BASE_WIN_CREATE_DIRECT3D_DEVICE_H_
+ #define RTC_BASE_WIN_CREATE_DIRECT3D_DEVICE_H_
+
+-#include <windows.graphics.directX.direct3d11.h>
+-#include <windows.graphics.directX.direct3d11.interop.h>
++#include <windows.graphics.directx.direct3d11.h>
++#ifndef __MINGW32__
++#  include <windows.graphics.directX.direct3d11.interop.h>
++#else
++#  include <dxgi.h>
++#  include <inspectable.h>
++extern "C" {
++// This function is only used in decltype(..)
++HRESULT __stdcall CreateDirect3D11DeviceFromDXGIDevice(
++    ::IDXGIDevice* dxgiDevice, ::IInspectable** graphicsDevice);
++}
++#endif
+ #include <winerror.h>
+ #include <wrl/client.h>
+
+--- a/src/rtc_base/win/windows_version.cc
++++ b/src/rtc_base/win/windows_version.cc
+@@ -17,7 +17,7 @@
+ #include "rtc_base/checks.h"
+ #include "rtc_base/string_utils.h"
+
+-#if !defined(__clang__) && _MSC_FULL_VER < 191125507
++#if !defined(__clang__) && defined(_MSC_VER) && _MSC_FULL_VER < 191125507
+ #error VS 2017 Update 3.2 or higher is required
+ #endif
