@@ -1,0 +1,228 @@
+diff --git a/src/3rdparty/chromium/net/BUILD.gn b/src/3rdparty/chromium/net/BUILD.gn
+index ae1600a..a4de257 100644
+--- a/src/3rdparty/chromium/net/BUILD.gn
++++ b/src/3rdparty/chromium/net/BUILD.gn
+@@ -1420,6 +1420,14 @@ jumbo_component("net") {
+       "ssl/client_cert_store_win.h",
+       "ssl/ssl_platform_key_win.cc",
+     ]
++    if (is_mingw) {
++      sources -= [
++        "base/network_change_notifier_win.cc",
++        "base/network_change_notifier_win.h",
++        "base/network_cost_change_notifier_win.cc",
++        "base/network_cost_change_notifier_win.h",
++      ]
++    }
+   }
+ 
+   if (use_kerberos) {
+@@ -1617,7 +1625,20 @@ jumbo_component("net") {
+     ]
+   }
+ 
+-  if (is_win) {
++  if (is_mingw) {
++    libs = [
++      "crypt32",
++      "dhcpcsvc",
++      "iphlpapi",
++      "ncrypt",
++      "rpcrt4",
++      "secur32",
++      "urlmon",
++      "winhttp",
++    ]
++  }
++
++  if (is_msvc) {
+     libs = [
+       "crypt32.lib",
+       "dhcpcsvc.lib",
+@@ -3381,7 +3402,12 @@ target(_test_target_type, "net_unittests") {
+     }
+   }
+ 
+-  if (is_win) {
++  if (is_mingw) {
++    libs = [
++      "iphlpapi",
++      "ncrypt",
++    ]
++  } else if (is_msvc) {
+     libs = [
+       "iphlpapi.lib",
+       "ncrypt.lib",
+@@ -3395,7 +3421,7 @@ target(_test_target_type, "net_unittests") {
+       "//net/data/ssl/chrome_root_store:gen_root_store_test_inc",
+     ]
+ 
+-    if (is_win) {
++    if (is_msvc) {
+       sources += [ "cert/internal/trust_store_win_unittest.cc" ]
+       sources += [ "cert/internal/path_builder_trust_store_win_unittest.cc" ]
+       libs += [ "crypt32.lib" ]
+diff --git a/src/3rdparty/chromium/net/base/network_change_notifier.cc b/src/3rdparty/chromium/net/base/network_change_notifier.cc
+index 4d0bbdd..ba8cdf4 100644
+--- a/src/3rdparty/chromium/net/base/network_change_notifier.cc
++++ b/src/3rdparty/chromium/net/base/network_change_notifier.cc
+@@ -302,7 +302,7 @@ std::unique_ptr<NetworkChangeNotifier> NetworkChangeNotifier::CreateIfNeeded(
+         initial_type, initial_subtype);
+   }
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_MSVC)
+   std::unique_ptr<NetworkChangeNotifierWin> network_change_notifier =
+       std::make_unique<NetworkChangeNotifierWin>();
+   network_change_notifier->WatchForAddressChange();
+diff --git a/src/3rdparty/chromium/net/dns/host_resolver_system_task.cc b/src/3rdparty/chromium/net/dns/host_resolver_system_task.cc
+index 5c79b0a..20bd084 100644
+--- a/src/3rdparty/chromium/net/dns/host_resolver_system_task.cc
++++ b/src/3rdparty/chromium/net/dns/host_resolver_system_task.cc
+@@ -542,13 +542,13 @@ int SystemHostResolverCall(const std::string& host,
+   if (host_resolver_flags & HOST_RESOLVER_CANONNAME)
+     hints.ai_flags |= AI_CANONNAME;
+ 
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_MSVC)
+   // See crbug.com/1176970. Flag not documented (other than the declaration
+   // comment in ws2def.h) but confirmed by Microsoft to work for this purpose
+   // and be safe.
+   if (host_resolver_flags & HOST_RESOLVER_AVOID_MULTICAST)
+     hints.ai_flags |= AI_DNS_ONLY;
+-#endif  // BUILDFLAG(IS_WIN)
++#endif  // BUILDFLAG(IS_MSVC)
+ 
+   // Restrict result set to only this socket type to avoid duplicates.
+   hints.ai_socktype = SOCK_STREAM;
+diff --git a/src/3rdparty/chromium/net/http/http_auth_sspi_win.h b/src/3rdparty/chromium/net/http/http_auth_sspi_win.h
+index b46a627..6b02e63 100644
+--- a/src/3rdparty/chromium/net/http/http_auth_sspi_win.h
++++ b/src/3rdparty/chromium/net/http/http_auth_sspi_win.h
+@@ -14,7 +14,9 @@
+ 
+ // security.h needs to be included for CredHandle. Unfortunately CredHandle
+ // is a typedef and can't be forward declared.
++#ifndef SECURITY_WIN32
+ #define SECURITY_WIN32 1
++#endif
+ #include <security.h>
+ 
+ #include <string>
+diff --git a/src/3rdparty/chromium/net/socket/tcp_socket_win.cc b/src/3rdparty/chromium/net/socket/tcp_socket_win.cc
+index 79505e9..9402ab1 100644
+--- a/src/3rdparty/chromium/net/socket/tcp_socket_win.cc
++++ b/src/3rdparty/chromium/net/socket/tcp_socket_win.cc
+@@ -968,6 +968,7 @@ int TCPSocketWin::DoConnect() {
+     return ERR_ADDRESS_INVALID;
+   }
+ 
++#if !defined(COMPILER_GCC) // FIXME: missing SO_RANDOMIZE_PORT
+   // Set option to choose a random port, if the socket is not already bound.
+   // Ignore failures, which may happen if the socket was already bound.
+   if (base::win::GetVersion() >= base::win::Version::WIN10_20H1 &&
+@@ -977,6 +978,7 @@ int TCPSocketWin::DoConnect() {
+                reinterpret_cast<const char*>(&randomize_port),
+                sizeof(randomize_port));
+   }
++#endif
+ 
+   if (!connect(socket_, storage.addr(), storage.addr_len)) {
+     // Connected without waiting!
+diff --git a/src/3rdparty/chromium/net/socket/udp_socket_win.cc b/src/3rdparty/chromium/net/socket/udp_socket_win.cc
+index 8e6f516..ea43cc8 100644
+--- a/src/3rdparty/chromium/net/socket/udp_socket_win.cc
++++ b/src/3rdparty/chromium/net/socket/udp_socket_win.cc
+@@ -501,12 +501,14 @@ int UDPSocketWin::InternalConnect(const IPEndPoint& address) {
+   DCHECK(!is_connected());
+   DCHECK(!remote_address_.get());
+ 
++#if !defined(COMPILER_GCC) // FIXME: missing SO_RANDOMIZE_PORT
+   // Always do a random bind.
+   // Ignore failures, which may happen if the socket was already bound.
+   DWORD randomize_port_value = 1;
+   setsockopt(socket_, SOL_SOCKET, SO_RANDOMIZE_PORT,
+              reinterpret_cast<const char*>(&randomize_port_value),
+              sizeof(randomize_port_value));
++#endif
+ 
+   SockaddrStorage storage;
+   if (!address.ToSockAddr(storage.addr(), &storage.addr_len)) {
+@@ -647,6 +649,7 @@ int UDPSocketWin::SetRecvTos() {
+   }
+   int v6_only = 0;
+   int ecn = 1;
++#if !defined(COMPILER_GCC) // FIXME: missing IPV6_RECVECN, IP_RECVECN
+   if (addr_family_ == AF_INET6 && !address.address().IsIPv4MappedIPv6()) {
+     rv = setsockopt(socket_, IPPROTO_IPV6, IPV6_RECVECN,
+                     reinterpret_cast<const char*>(&ecn), sizeof(ecn));
+@@ -673,6 +676,7 @@ int UDPSocketWin::SetRecvTos() {
+       return LogAndReturnError();
+     }
+   }
++#endif
+   wsa_recv_msg_ = GetRecvMsgPointer();
+   if (wsa_recv_msg_ == nullptr) {
+     return LogAndReturnError();
+@@ -1537,6 +1541,7 @@ int DscpManager::PrepareForSend(const IPEndPoint& remote_address) {
+   // We won't try this address again if we get an error.
+   configured_.emplace(remote_address);
+ 
++#if !defined(COMPILER_GCC) // FIXME: missing QOS_NON_ADAPTIVE_FLOW
+   // We don't need to call SetFlow if we already have a qos flow.
+   bool new_flow = flow_id_ == 0;
+ 
+@@ -1565,6 +1570,7 @@ int DscpManager::PrepareForSend(const IPEndPoint& remote_address) {
+     api_->SetFlow(qos_handle_, flow_id_, QOSSetOutgoingDSCPValue, sizeof(buf),
+                   &buf, 0, nullptr);
+   }
++#endif
+ 
+   return OK;
+ }
+diff --git a/src/3rdparty/chromium/net/ssl/client_cert_store_win.cc b/src/3rdparty/chromium/net/ssl/client_cert_store_win.cc
+index a1d1925..3179092 100644
+--- a/src/3rdparty/chromium/net/ssl/client_cert_store_win.cc
++++ b/src/3rdparty/chromium/net/ssl/client_cert_store_win.cc
+@@ -16,7 +16,9 @@
+ 
+ #include <windows.h>
+ 
++#ifndef SECURITY_WIN32
+ #define SECURITY_WIN32
++#endif
+ #include <security.h>
+ 
+ #include "base/functional/bind.h"
+diff --git a/src/3rdparty/chromium/net/ssl/ssl_platform_key_win.cc b/src/3rdparty/chromium/net/ssl/ssl_platform_key_win.cc
+index 8f0919f..a0b3445 100644
+--- a/src/3rdparty/chromium/net/ssl/ssl_platform_key_win.cc
++++ b/src/3rdparty/chromium/net/ssl/ssl_platform_key_win.cc
+@@ -258,6 +258,7 @@ class SSLPlatformKeyCNG : public ThreadedSSLPrivateKey::Delegate {
+     // result, if this is a TPM-based key, we only report PSS as supported if
+     // the salt length will match the digest length.
+     bool supports_pss = true;
++#if !defined(COMPILER_GCC) // FIXME: missing NCRYPT_PCP_PSS*, NCRYPT_TPM_PSS*
+     if (provider_name_ == MS_PLATFORM_KEY_STORAGE_PROVIDER) {
+       DWORD salt_size = 0;
+       DWORD size_of_salt_size = sizeof(salt_size);
+@@ -269,6 +270,7 @@ class SSLPlatformKeyCNG : public ThreadedSSLPrivateKey::Delegate {
+         supports_pss = false;
+       }
+     }
++#endif
+     if (prefer_sha1_) {
+       std::vector<uint16_t> ret = {
+           SSL_SIGN_RSA_PKCS1_SHA1,
+diff --git a/src/3rdparty/chromium/net/third_party/quiche/src/quiche/http2/adapter/window_manager.h b/src/3rdparty/chromium/net/third_party/quiche/src/quiche/http2/adapter/window_manager.h
+index ffe1a7f..4666f32 100644
+--- a/src/3rdparty/chromium/net/third_party/quiche/src/quiche/http2/adapter/window_manager.h
++++ b/src/3rdparty/chromium/net/third_party/quiche/src/quiche/http2/adapter/window_manager.h
+@@ -4,6 +4,7 @@
+ #include <stddef.h>
+ #include <stdint.h>
+ 
++#include <cstdint>
+ #include <functional>
+ 
+ #include "quiche/common/platform/api/quiche_export.h"
