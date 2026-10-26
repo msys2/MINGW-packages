@@ -1,0 +1,87 @@
+From 7987c6208a25154fa3b4d5dfe3fe0831c6707f6c Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Tue, 14 Apr 2026 12:45:21 +0200
+Subject: [PATCH 07/N] add type overloads and const-correctness fixes for
+ MinGW
+
+On MSVC x86_64, `DWORD` is `unsigned long` and `unsigned long` has the
+same width as `unsigned int`, so implicit conversions are harmless.
+On MinGW x86_64, `long` and `unsigned long` are distinct types from
+`int` and `unsigned int` even when they have the same width, causing
+ambiguous overload resolution.  Add explicit `SetValue(long)`,
+`SetValue(unsigned long)`, and `Assign(long)` overloads to resolve the
+ambiguity.  These are added unconditionally because they are correct
+on any platform where the types are distinct.
+
+MSVC also silently converts string literals (const TCHAR*) to the
+non-const LPTSTR that several functions expect.  GCC rejects this as
+a const-to-non-const implicit conversion.  Add a `Return(LPCTSTR)`
+overload that delegates via const_cast to the existing `Return(LPTSTR)`,
+and wrap the SetValue call in error.cpp's UnhandledException with
+const_cast for the same reason.  Both are gated on `#ifdef __MINGW32__`
+since MSVC does not need them.
+---
+ source/defines.h | 8 ++++++++
+ source/error.cpp | 4 ++--
+ source/var.h     | 7 +++++++
+ 3 files changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/source/defines.h b/source/defines.h
+index b00527b..86e97f5 100644
+--- a/source/defines.h
++++ b/source/defines.h
+@@ -384,6 +384,8 @@ struct ExprTokenType  // Something in the compiler hates the name TokenType, so
+ 	void SetValue(int aValue) { SetValue((__int64)aValue); }
+ 	void SetValue(UINT aValue) { SetValue((__int64)aValue); }
+ 	void SetValue(UINT64 aValue) { SetValue((__int64)aValue); }
++	void SetValue(long aValue) { SetValue((__int64)aValue); }
++	void SetValue(unsigned long aValue) { SetValue((__int64)aValue); }
+ 	void SetValue(double aValue)
+ 	{
+ 		symbol = SYM_FLOAT;
+@@ -495,6 +497,12 @@ struct ResultToken : public ExprTokenType
+ 	LPTSTR Malloc(LPTSTR aValue, size_t aLength);
+ 
+ 	ResultType Return(LPTSTR aValue, size_t aLength = -1);
++#ifdef __MINGW32__
++	ResultType Return(LPCTSTR aValue, size_t aLength = -1)
++	{
++		return Return(const_cast<LPTSTR>(aValue), aLength);
++	}
++#endif
+ 	ResultType ReturnPtr(LPTSTR aValue)
+ 	// Return a null-terminated string which is already in persistent memory.
+ 	{
+diff --git a/source/error.cpp b/source/error.cpp
+index c58c088..b56ffe4 100644
+--- a/source/error.cpp
++++ b/source/error.cpp
+@@ -1091,8 +1091,8 @@ ResultType Script::UnhandledException(Line* aLine, ResultType aErrorType)
+ 		sOnErrorRunning = true;
+ 		ExprTokenType param[2];
+ 		param[0].CopyValueFrom(*token);
+-		param[1].SetValue(aErrorType == CRITICAL_ERROR ? _T("ExitApp")
+-			: aErrorType == FAIL_OR_OK ? _T("Return") : _T("Exit"));
++		param[1].SetValue(const_cast<LPTSTR>(aErrorType == CRITICAL_ERROR ? _T("ExitApp")
++			: aErrorType == FAIL_OR_OK ? _T("Return") : _T("Exit")));
+ 		mOnError.Call(param, 2, INT_MAX, &retval);
+ 		sOnErrorRunning = false;
+ 		if (g.ThrownToken) // An exception was thrown by the callback.
+diff --git a/source/var.h b/source/var.h
+index bc23c4b..a3dbcba 100644
+--- a/source/var.h
++++ b/source/var.h
+@@ -292,6 +292,13 @@ public:
+ 		return AssignBinaryNumber(aValueToAssign, VAR_ATTRIB_CONTENTS_OUT_OF_DATE|VAR_ATTRIB_IS_INT64);
+ 	}
+ 
++#ifdef __MINGW32__
++	inline ResultType Assign(long aValueToAssign)
++	{
++		return Assign((__int64)aValueToAssign);
++	}
++#endif
++
+ 	inline ResultType Assign(__int64 aValueToAssign)
+ 	{
+ 		return AssignBinaryNumber(aValueToAssign, VAR_ATTRIB_CONTENTS_OUT_OF_DATE|VAR_ATTRIB_IS_INT64);

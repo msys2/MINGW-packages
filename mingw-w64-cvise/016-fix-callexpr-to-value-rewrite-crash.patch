@@ -1,0 +1,70 @@
+--- a/clang_delta/RewriteUtils.cpp
++++ b/clang_delta/RewriteUtils.cpp
+@@ -721,27 +721,35 @@
+ bool RewriteUtils::replaceExpr(const Expr *E,
+                                const std::string &ES)
+ {
+   SourceRange ExprRange = E->getSourceRange();
++  SourceLocation StartLoc = ExprRange.getBegin();
++  SourceLocation EndLoc = ExprRange.getEnd();
++
++  if (StartLoc.isMacroID()) {
++    StartLoc = SrcManager->getExpansionLoc(StartLoc);
++  }
++  if (SrcManager->isMacroBodyExpansion(EndLoc) ||
++      SrcManager->isMacroArgExpansion(EndLoc)) {
++    // Expand macro-end locations to a real source interval before rewriting.
++    EndLoc = getExpansionEndLoc(EndLoc);
++  }
++  else if (EndLoc.isMacroID()) {
++    EndLoc = SrcManager->getExpansionLoc(EndLoc);
++  }
++
++  if (StartLoc.isInvalid() || EndLoc.isInvalid() ||
++      !Rewriter::isRewritable(StartLoc) ||
++      !Rewriter::isRewritable(EndLoc)) {
++    return false;
++  }
++
++  ExprRange = SourceRange(StartLoc, EndLoc);
+ 
+   int RangeSize = TheRewriter->getRangeSize(ExprRange);
+   if (RangeSize == -1) {
+-    SourceLocation StartLoc = ExprRange.getBegin();
+-    if (StartLoc.isMacroID()) {
+-      StartLoc = SrcManager->getExpansionLoc(StartLoc);
+-    }
+-    SourceLocation EndLoc = ExprRange.getEnd();
+-    if (SrcManager->isMacroBodyExpansion(EndLoc) ||
+-        SrcManager->isMacroArgExpansion(EndLoc)) {
+-      // FIXME: handle cases below:
+-      // #define macro bar(1,2);
+-      // int bar(int p1, int p2) { return p1 + p2; }
+-      // void foo(void) { int x = macro }
+-      EndLoc = getExpansionEndLoc(EndLoc);
+-    }
+-    Hints->AddPatch(SourceRange(StartLoc, EndLoc), ES);
+-    return !(TheRewriter->ReplaceText(SourceRange(StartLoc, EndLoc), ES));
++    return false;
+   }
+ 
+   Hints->AddPatch(ExprRange, ES);
+   return !(TheRewriter->ReplaceText(ExprRange, ES));
+ }
+--- a/clang_delta/tests/test_clang_delta.py
++++ b/clang_delta/tests/test_clang_delta.py
+@@ -158,7 +158,14 @@
+             begin_index=0,
+             end_index=1,
+         )
+ 
++    def test_callexpr_to_value_macro3(self):
++        self.check_clang_delta(
++            'callexpr-to-value/macro3.cc',
++            '--transformation=callexpr-to-value --counter=1',
++            'callexpr-to-value/macro3.cc',
++        )
++
+     def test_callexpr_to_value_test1(self):
+         self.check_clang_delta(
+             'callexpr-to-value/test1.c',

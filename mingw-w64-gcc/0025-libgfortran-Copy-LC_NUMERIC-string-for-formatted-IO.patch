@@ -1,0 +1,59 @@
+From 91cd1193b2235507e93c00fcea449870dd134176 Mon Sep 17 00:00:00 2001
+From: Yohann Vautrin <Yohann.Vautrin@cnrc-nrc.gc.ca>
+Date: Tue, 4 Aug 2026 10:28:31 -0400
+Subject: [PATCH 2/2] libgfortran: Copy LC_NUMERIC string for formatted I/O
+
+setlocale returns a pointer to internal storage that may be invalidated
+by a subsequent call to setlocale.  data_transfer_init_worker saves this
+pointer and then changes LC_NUMERIC to "C".  finalize_transfer may
+therefore pass an invalid or corrupted string to setlocale when
+restoring the original locale.  This is observable with the Windows
+UCRT.
+
+Copy the locale string before changing LC_NUMERIC, and free the copy
+after restoring the locale.
+---
+ libgfortran/io/transfer.c | 20 +++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/libgfortran/io/transfer.c b/libgfortran/io/transfer.c
+index ee7d4d319..27cd79813 100644
+--- a/libgfortran/io/transfer.c
++++ b/libgfortran/io/transfer.c
+@@ -3757,7 +3757,17 @@ data_transfer_init_worker (st_parameter_dt *dtp, int read_flag)
+       __gthread_mutex_lock (&old_locale_lock);
+       if (!old_locale_ctr++)
+ 	{
+-	  old_locale = setlocale (LC_NUMERIC, NULL);
++	  const char *current_locale = setlocale (LC_NUMERIC, NULL);
++
++	  if (current_locale != NULL)
++	    {
++	      size_t length = strlen (current_locale) + 1;
++	      old_locale = xmalloc (length);
++	      memcpy (old_locale, current_locale, length);
++	    }
++	  else
++	    old_locale = NULL;
++
+ 	  setlocale (LC_NUMERIC, "C");
+ 	}
+       __gthread_mutex_unlock (&old_locale_lock);
+@@ -4602,8 +4612,12 @@ finalize_transfer (st_parameter_dt *dtp)
+       __gthread_mutex_lock (&old_locale_lock);
+       if (!--old_locale_ctr)
+ 	{
+-	  setlocale (LC_NUMERIC, old_locale);
+-	  old_locale = NULL;
++	  if (old_locale != NULL)
++	    {
++	      setlocale (LC_NUMERIC, old_locale);
++	      free (old_locale);
++	      old_locale = NULL;
++	    }
+ 	}
+       __gthread_mutex_unlock (&old_locale_lock);
+ #endif
+-- 
+2.55.0
+

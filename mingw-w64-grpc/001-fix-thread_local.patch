@@ -1,0 +1,96 @@
+--- a/src/core/util/time.cc
++++ b/src/core/util/time.cc
+@@ -147,9 +147,13 @@
+ 
+ }  // namespace
+ 
+-thread_local Timestamp::Source* Timestamp::thread_local_time_source_{
++thread_local Timestamp::Source* Timestamp::thread_local_time_source_var_{
+     NoDestructSingleton<GprNowTimeSource>::Get()};
+ 
++Timestamp::Source*& Timestamp::thread_local_time_source_() {
++  return thread_local_time_source_var_;
++}
++
+ Timestamp ScopedTimeCache::Now() {
+   if (!cached_time_.has_value()) {
+     previous()->InvalidateCache();
+--- a/src/core/util/time.h
++++ b/src/core/util/time.h
+@@ -86,15 +86,15 @@
+ 
+   class ScopedSource : public Source {
+    public:
+-    ScopedSource() : previous_(thread_local_time_source_) {
+-      thread_local_time_source_ = this;
++    ScopedSource() : previous_(thread_local_time_source_()) {
++      thread_local_time_source_() = this;
+     }
+     ScopedSource(const ScopedSource&) = delete;
+     ScopedSource& operator=(const ScopedSource&) = delete;
+     void InvalidateCache() override { previous_->InvalidateCache(); }
+ 
+    protected:
+-    ~ScopedSource() { thread_local_time_source_ = previous_; }
++    ~ScopedSource() { thread_local_time_source_() = previous_; }
+     Source* previous() const { return previous_; }
+ 
+    private:
+@@ -110,7 +110,7 @@
+   static Timestamp FromCycleCounterRoundUp(gpr_cycle_counter c);
+   static Timestamp FromCycleCounterRoundDown(gpr_cycle_counter c);
+ 
+-  static Timestamp Now() { return thread_local_time_source_->Now(); }
++  static Timestamp Now() { return thread_local_time_source_()->Now(); }
+ 
+   static constexpr Timestamp FromMillisecondsAfterProcessEpoch(int64_t millis) {
+     return Timestamp(millis);
+@@ -163,7 +163,8 @@
+   explicit constexpr Timestamp(int64_t millis) : millis_(millis) {}
+ 
+   int64_t millis_ = 0;
+-  static thread_local Timestamp::Source* thread_local_time_source_;
++  static Timestamp::Source*& thread_local_time_source_();
++  static thread_local Timestamp::Source* thread_local_time_source_var_;
+ };
+ 
+ class ScopedTimeCache final : public Timestamp::ScopedSource {
+--- a/src/core/util/per_cpu.cc.orig	2026-05-12 01:28:10.683149800 +0800
++++ b/src/core/util/per_cpu.cc	2026-05-12 01:29:44.850670700 +0800
+@@ -22,7 +22,10 @@
+ namespace grpc_core {
+ 
+ #ifndef GPR_CPU_CUSTOM
+-thread_local PerCpuShardingHelper::State PerCpuShardingHelper::state_;
++thread_local PerCpuShardingHelper::State PerCpuShardingHelper::state_var_;
++PerCpuShardingHelper::State& PerCpuShardingHelper::state_() {
++  return state_var_;
++}
+ #endif  // GPR_CPU_CUSTOM
+ 
+ size_t PerCpuOptions::Shards() {
+--- a/src/core/util/per_cpu.h.orig	2026-03-25 07:06:54.000000000 +0800
++++ b/src/core/util/per_cpu.h	2026-05-12 01:27:41.823374200 +0800
+@@ -70,9 +70,9 @@
+     // Ideally we'd just call gpr_cpu_current_cpu() every call of this function
+     // to get perfect distribution, but that function is currently quite slow on
+     // some platforms and so we need to cache it somewhat.
+-    if (GPR_UNLIKELY(state_.uses_until_refresh == 0)) state_ = State();
+-    --state_.uses_until_refresh;
+-    return state_.last_seen_cpu;
++    if (GPR_UNLIKELY(state_().uses_until_refresh == 0)) state_() = State();
++    --state_().uses_until_refresh;
++    return state_().last_seen_cpu;
+   }
+ 
+  private:
+@@ -80,7 +80,8 @@
+     uint16_t last_seen_cpu = gpr_cpu_current_cpu();
+     uint16_t uses_until_refresh = 65535;
+   };
+-  static thread_local State state_;
++  static thread_local State state_var_;
++  static State& state_();
+ };
+ #endif  // GPR_CPU_CUSTOM
+ 

@@ -7,12 +7,12 @@ pkgver=1.0
 pkgrel=1
 pkgdesc="Some package (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+mingw_arch=('ucrt64' 'clang64' 'clangarm64')
 url='https://www.somepackage.org/'
 license=('LICENSE')
 makedepends=("${MINGW_PACKAGE_PREFIX}-meson"
              "${MINGW_PACKAGE_PREFIX}-ninja"
-             "${MINGW_PACKAGE_PREFIX}-pkg-config"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
              "${MINGW_PACKAGE_PREFIX}-cc")
 source=("https://www.somepackage.org/${_realname}/${_realname}-${pkgver}.tar.gz"
         "0001-An-important-fix.patch"
@@ -24,8 +24,8 @@ sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 prepare() {
   cd "${_realname}-${pkgver}"
 
-  patch -Np1 -i "${srcdir}"/0001-A-really-important-fix.patch
-  patch -Np1 -i "${srcdir}"/0002-A-less-important-fix.patch
+  patch -Np1 -i ../0001-A-really-important-fix.patch
+  patch -Np1 -i ../0002-A-less-important-fix.patch
 }
 
 build() {
@@ -48,5 +48,5 @@ check() {
 package() {
   meson install -C "build-${MSYSTEM}" --destdir "${pkgdir}"
 
-  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING"
+  install -Dm644 "${_realname}-${pkgver}/COPYING" "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING"
 }

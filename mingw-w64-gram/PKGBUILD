@@ -1,0 +1,98 @@
+# Maintainer: Maksim Bondarenkov <maksapple2306@gmail.com>
+
+_realname=gram
+pkgbase=mingw-w64-${_realname}
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=3.4.1
+pkgrel=2
+pkgdesc="A code editor for humanoid apes and grumpy toads (mingw-w64)"
+arch=('any')
+mingw_arch=('ucrt64' 'clang64' 'clangarm64')
+url='https://gram-editor.com'
+msys2_repository_url='https://codeberg.org/GramEditor/gram'
+msys2_documentation_url='https://gram-editor.com/docs'
+license=('spdx:Apache-2.0 AND GPL-3.0-or-later')
+install=gram-${MSYSTEM}.install
+msys2_references=(
+  'anitya:'
+  'archlinux: gram'
+  'aur:'
+)
+depends=("${MINGW_PACKAGE_PREFIX}-nodejs"
+         "${MINGW_PACKAGE_PREFIX}-zstd"
+         "${MINGW_PACKAGE_PREFIX}-sqlite3")
+makedepends=("${MINGW_PACKAGE_PREFIX}-rust"
+             "${MINGW_PACKAGE_PREFIX}-cmake"
+             "${MINGW_PACKAGE_PREFIX}-pkgconf"
+             "${MINGW_PACKAGE_PREFIX}-protobuf"
+             "${MINGW_PACKAGE_PREFIX}-rust-bindgen"
+             "${MINGW_PACKAGE_PREFIX}-nasm"
+             "${MINGW_PACKAGE_PREFIX}-efxc2"
+             'git')
+optdepends=("${MINGW_PACKAGE_PREFIX}-rustup: to build extensions"
+            "${MINGW_PACKAGE_PREFIX}-clang: to build extensions"
+            "${MINGW_PACKAGE_PREFIX}-wasi-compiler-rt: to build extensions"
+            "${MINGW_PACKAGE_PREFIX}-git: for a better Git integration")
+source=("git+${msys2_repository_url}.git#tag=${pkgver}"
+        "zstd-sys.tar.gz::https://static.crates.io/crates/zstd-sys/2.1.1+zstd.1.5.7/download"
+        "zstd-sys-remove-statik.patch")
+sha256sums=('d705ae3fa083e08a874c69d5fe10fc9477caf9de1842579c0e8ef02d9503720e'
+            'aeec9eaf2dffbbd09201e23bd0ffcbaa33bb8e9266a10734fd7ed90a85eca078'
+            '48f4900ceb02d3aaf9a1020f33d56629156e96759f456c0e7ca18bfcf910767b')
+
+prepare() {
+  cd "${_realname}"
+  rm rust-toolchain.toml
+
+  # link system deps dynamically
+  patch -d ../zstd-sys-2.1.1+zstd.1.5.7 -i ../zstd-sys-remove-statik.patch
+  # use patched *-sys crates
+  sed -i '/\[patch\.crates-io\]/a zstd-sys.path = "../zstd-sys-2.1.1+zstd.1.5.7"' Cargo.toml
+
+  cargo update -p zstd-sys
+  cargo fetch --locked --target "${RUST_CHOST}"
+}
+
+build() {
+  cd "${_realname}"
+
+  export PROTOC="${MINGW_PREFIX}/bin/protoc.exe"
+  export PROTOC_INCLUDE="${MINGW_PREFIX}/include"
+  export OPENSSL_NO_VENDOR=1
+  export ZSTD_SYS_USE_PKG_CONFIG=1
+  export WINAPI_NO_BUNDLED_LIBRARIES=1
+  export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+  export GRAM_UPDATE_EXPLANATION='Updates are handled by pacman'
+  # optimize release builds even more
+  export CARGO_PROFILE_RELEASE_DEBUG=0
+  export CARGO_PROFILE_RELEASE_LTO="fat"
+  export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+  export RELEASE_CHANNEL="stable"
+  export RELEASE_VERSION="${pkgver} (Rev${pkgrel}, Built by MSYS2 project)"
+  # set path to our fxc compiler
+  export GPUI_FXC_PATH="${MINGW_PREFIX}/bin/fxc.exe"
+  # should be synced with .cargo/config.toml
+  export RUSTFLAGS="${RUSTFLAGS/+crt-static/-crt-static} --cfg windows_slim_errors"
+
+  cargo build --release --frozen -p gram -p cli
+}
+
+check() {
+  cd "${_realname}"
+
+  cargo test --release --frozen -p gram -p cli
+}
+
+package() {
+  install -Dm755 "${_realname}/target/release/cli" "${pkgdir}${MINGW_PREFIX}/bin/gram"
+  install -Dm755 "${_realname}/target/release/gram" "${pkgdir}${MINGW_PREFIX}/lib/gram/gram-editor"
+  # WSL script
+  install -Dm755 "${_realname}/crates/gram/resources/windows/gram.sh" "${pkgdir}${MINGW_PREFIX}/bin/gram-wsl"
+  # completions
+  local _complete="${pkgdir}${MINGW_PREFIX}/bin/gram --completions"
+  install -Dm644 <($_complete bash) "${pkgdir}${MINGW_PREFIX}/share/bash-completion/completions/${_realname}"
+  install -Dm644 <($_complete fish) "${pkgdir}${MINGW_PREFIX}/share/fish/vendor_completions.d/${_realname}.fish"
+  install -Dm644 <($_complete zsh) "${pkgdir}${MINGW_PREFIX}/share/zsh/site-functions/_${_realname}"
+
+  install -Dm644 "${_realname}"/LICENSE -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/"
+}

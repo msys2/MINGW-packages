@@ -1,0 +1,337 @@
+From fc3e395351cb7359075b4bc169f22a0438f96ce8 Mon Sep 17 00:00:00 2001
+From: oltolm <oleg.tolmatcev@gmail.com>
+Date: Tue, 17 Feb 2026 23:21:45 +0100
+Subject: [PATCH] libcurl_wrapper: port to Windows
+
+---
+ src/common/linux/libcurl_wrapper.cc | 144 ++++++----------------------
+ src/common/linux/libcurl_wrapper.h  |  22 -----
+ 2 files changed, 28 insertions(+), 138 deletions(-)
+
+diff --git a/src/common/linux/libcurl_wrapper.cc b/src/common/linux/libcurl_wrapper.cc
+index 670a7401..17089a12 100644
+--- a/src/common/linux/libcurl_wrapper.cc
++++ b/src/common/linux/libcurl_wrapper.cc
+@@ -41,7 +41,6 @@
+ namespace google_breakpad {
+ LibcurlWrapper::LibcurlWrapper()
+     : init_ok_(false),
+-      curl_lib_(nullptr),
+       last_curl_error_(""),
+       curl_(nullptr),
+       formpost_(nullptr),
+@@ -50,9 +49,8 @@ LibcurlWrapper::LibcurlWrapper()
+ 
+ LibcurlWrapper::~LibcurlWrapper() {
+   if (init_ok_) {
+-    (*easy_cleanup_)(curl_);
+-    (*global_cleanup_)();
+-    dlclose(curl_lib_);
++    curl_easy_cleanup(curl_);
++    curl_global_cleanup();
+   }
+ }
+ 
+@@ -62,13 +60,13 @@ bool LibcurlWrapper::SetProxy(const std::string& proxy_host,
+ 
+   // Set proxy information if necessary.
+   if (!proxy_host.empty()) {
+-    (*easy_setopt_)(curl_, CURLOPT_PROXY, proxy_host.c_str());
++    curl_easy_setopt(curl_, CURLOPT_PROXY, proxy_host.c_str());
+   } else {
+     std::cout << "SetProxy called with empty proxy host.";
+     return false;
+   }
+   if (!proxy_userpwd.empty()) {
+-    (*easy_setopt_)(curl_, CURLOPT_PROXYUSERPWD, proxy_userpwd.c_str());
++    curl_easy_setopt(curl_, CURLOPT_PROXYUSERPWD, proxy_userpwd.c_str());
+   } else {
+     std::cout << "SetProxy called with empty proxy username/password.";
+     return false;
+@@ -83,7 +81,7 @@ bool LibcurlWrapper::AddFile(const std::string& upload_file_path,
+ 
+   std::cout << "Adding " << upload_file_path << " to form upload.";
+   // Add form file.
+-  (*formadd_)(&formpost_, &lastptr_,
++  curl_formadd(&formpost_, &lastptr_,
+               CURLFORM_COPYNAME, basename.c_str(),
+               CURLFORM_FILE, upload_file_path.c_str(),
+               CURLFORM_END);
+@@ -112,12 +110,12 @@ bool LibcurlWrapper::SendRequest(
+ 
+   std::map<std::string, std::string>::const_iterator iter = parameters.begin();
+   for (; iter != parameters.end(); ++iter)
+-    (*formadd_)(&formpost_, &lastptr_,
++    curl_formadd(&formpost_, &lastptr_,
+                 CURLFORM_COPYNAME, iter->first.c_str(),
+                 CURLFORM_COPYCONTENTS, iter->second.c_str(),
+                 CURLFORM_END);
+ 
+-  (*easy_setopt_)(curl_, CURLOPT_HTTPPOST, formpost_);
++  curl_easy_setopt(curl_, CURLOPT_HTTPPOST, formpost_);
+ 
+   return SendRequestInner(url, http_status_code, http_header_data,
+                           http_response_data);
+@@ -129,7 +127,7 @@ bool LibcurlWrapper::SendGetRequest(const std::string& url,
+                                     std::string* http_response_data) {
+   if (!CheckInit()) return false;
+ 
+-  (*easy_setopt_)(curl_, CURLOPT_HTTPGET, 1L);
++  curl_easy_setopt(curl_, CURLOPT_HTTPGET, 1L);
+ 
+   return SendRequestInner(url, http_status_code, http_header_data,
+                           http_response_data);
+@@ -143,9 +141,9 @@ bool LibcurlWrapper::SendPutRequest(const std::string& url,
+   if (!CheckInit()) return false;
+ 
+   FILE* file = fopen(path.c_str(), "rb");
+-  (*easy_setopt_)(curl_, CURLOPT_UPLOAD, 1L);
+-  (*easy_setopt_)(curl_, CURLOPT_PUT, 1L);
+-  (*easy_setopt_)(curl_, CURLOPT_READDATA, file);
++  curl_easy_setopt(curl_, CURLOPT_UPLOAD, 1L);
++  curl_easy_setopt(curl_, CURLOPT_PUT, 1L);
++  curl_easy_setopt(curl_, CURLOPT_READDATA, file);
+ 
+   bool success = SendRequestInner(url, http_status_code, http_header_data,
+                                   http_response_data);
+@@ -162,12 +160,12 @@ bool LibcurlWrapper::SendSimplePostRequest(const std::string& url,
+                                            std::string* http_response_data) {
+   if (!CheckInit()) return false;
+ 
+-  (*easy_setopt_)(curl_, CURLOPT_POSTFIELDSIZE, body.size());
+-  (*easy_setopt_)(curl_, CURLOPT_COPYPOSTFIELDS, body.c_str());
++  curl_easy_setopt(curl_, CURLOPT_POSTFIELDSIZE, body.size());
++  curl_easy_setopt(curl_, CURLOPT_COPYPOSTFIELDS, body.c_str());
+ 
+   if (!content_type.empty()) {
+     std::string content_type_header = "Content-Type: " + content_type;
+-    headerlist_ = (*slist_append_)(
++    headerlist_ = (*curl_slist_append)(
+         headerlist_,
+         content_type_header.c_str());
+   }
+@@ -177,41 +175,11 @@ bool LibcurlWrapper::SendSimplePostRequest(const std::string& url,
+ }
+ 
+ bool LibcurlWrapper::Init() {
+-  // First check to see if libcurl was statically linked:
+-  curl_lib_ = dlopen(nullptr, RTLD_NOW);
+-  if (curl_lib_ &&
+-      (!dlsym(curl_lib_, "curl_easy_init") ||
+-      !dlsym(curl_lib_, "curl_easy_setopt"))) {
+-    // Not statically linked, try again below.
+-    dlerror();  // Clear dlerror before attempting to open libraries.
+-    dlclose(curl_lib_);
+-    curl_lib_ = nullptr;
+-  }
+-  if (!curl_lib_) {
+-    curl_lib_ = dlopen("libcurl.so", RTLD_NOW);
+-  }
+-  if (!curl_lib_) {
+-    curl_lib_ = dlopen("libcurl.so.4", RTLD_NOW);
+-  }
+-  if (!curl_lib_) {
+-    curl_lib_ = dlopen("libcurl.so.3", RTLD_NOW);
+-  }
+-  if (!curl_lib_) {
+-    std::cout << "Could not find libcurl via dlopen";
+-    return false;
+-  }
+-
+-  if (!SetFunctionPointers()) {
+-    std::cout << "Could not find function pointers";
+-    return false;
+-  }
+-
+-  curl_ = (*easy_init_)();
++  curl_ = curl_easy_init();
+ 
+   last_curl_error_ = "No Error";
+ 
+   if (!curl_) {
+-    dlclose(curl_lib_);
+     std::cout << "Curl initialization failed";
+     return false;
+   }
+@@ -220,97 +188,41 @@ bool LibcurlWrapper::Init() {
+   return true;
+ }
+ 
+-#define SET_AND_CHECK_FUNCTION_POINTER(var, function_name, type) \
+-  var = reinterpret_cast<type>(dlsym(curl_lib_, function_name)); \
+-  if (!var) { \
+-    std::cout << "Could not find libcurl function " << function_name; \
+-    init_ok_ = false; \
+-    return false; \
+-  }
+-
+-bool LibcurlWrapper::SetFunctionPointers() {
+-
+-  SET_AND_CHECK_FUNCTION_POINTER(easy_init_,
+-                                 "curl_easy_init",
+-                                 CURL*(*)());
+-
+-  SET_AND_CHECK_FUNCTION_POINTER(easy_setopt_,
+-                                 "curl_easy_setopt",
+-                                 CURLcode(*)(CURL*, CURLoption, ...));
+-
+-  SET_AND_CHECK_FUNCTION_POINTER(formadd_, "curl_formadd",
+-      CURLFORMcode(*)(curl_httppost**, curl_httppost**, ...));
+-
+-  SET_AND_CHECK_FUNCTION_POINTER(slist_append_, "curl_slist_append",
+-      curl_slist*(*)(curl_slist*, const char*));
+-
+-  SET_AND_CHECK_FUNCTION_POINTER(easy_perform_,
+-                                 "curl_easy_perform",
+-                                 CURLcode(*)(CURL*));
+-
+-  SET_AND_CHECK_FUNCTION_POINTER(easy_cleanup_,
+-                                 "curl_easy_cleanup",
+-                                 void(*)(CURL*));
+-
+-  SET_AND_CHECK_FUNCTION_POINTER(easy_getinfo_,
+-                                 "curl_easy_getinfo",
+-                                 CURLcode(*)(CURL*, CURLINFO info, ...));
+-
+-  SET_AND_CHECK_FUNCTION_POINTER(easy_reset_,
+-                                 "curl_easy_reset",
+-                                 void(*)(CURL*));
+-
+-  SET_AND_CHECK_FUNCTION_POINTER(slist_free_all_,
+-                                 "curl_slist_free_all",
+-                                 void(*)(curl_slist*));
+-
+-  SET_AND_CHECK_FUNCTION_POINTER(formfree_,
+-                                 "curl_formfree",
+-                                 void(*)(curl_httppost*));
+-
+-  SET_AND_CHECK_FUNCTION_POINTER(global_cleanup_,
+-                                 "curl_global_cleanup",
+-                                 void(*)(void));
+-  return true;
+-}
+-
+ bool LibcurlWrapper::SendRequestInner(const std::string& url,
+                                       long* http_status_code,
+                                       std::string* http_header_data,
+                                       std::string* http_response_data) {
+   std::string url_copy(url);
+-  (*easy_setopt_)(curl_, CURLOPT_URL, url_copy.c_str());
++  curl_easy_setopt(curl_, CURLOPT_URL, url_copy.c_str());
+ 
+   // Disable 100-continue header.
+   char buf[] = "Expect:";
+-  headerlist_ = (*slist_append_)(headerlist_, buf);
+-  (*easy_setopt_)(curl_, CURLOPT_HTTPHEADER, headerlist_);
++  headerlist_ = curl_slist_append(headerlist_, buf);
++  curl_easy_setopt(curl_, CURLOPT_HTTPHEADER, headerlist_);
+ 
+   if (http_response_data != nullptr) {
+     http_response_data->clear();
+-    (*easy_setopt_)(curl_, CURLOPT_WRITEFUNCTION, WriteCallback);
+-    (*easy_setopt_)(curl_, CURLOPT_WRITEDATA,
++    curl_easy_setopt(curl_, CURLOPT_WRITEFUNCTION, WriteCallback);
++    curl_easy_setopt(curl_, CURLOPT_WRITEDATA,
+                     reinterpret_cast<void*>(http_response_data));
+   }
+   if (http_header_data != nullptr) {
+     http_header_data->clear();
+-    (*easy_setopt_)(curl_, CURLOPT_HEADERFUNCTION, WriteCallback);
+-    (*easy_setopt_)(curl_, CURLOPT_HEADERDATA,
++    curl_easy_setopt(curl_, CURLOPT_HEADERFUNCTION, WriteCallback);
++    curl_easy_setopt(curl_, CURLOPT_HEADERDATA,
+                     reinterpret_cast<void*>(http_header_data));
+   }
+   CURLcode err_code = CURLE_OK;
+-  err_code = (*easy_perform_)(curl_);
+-  easy_strerror_ = reinterpret_cast<const char* (*)(CURLcode)>
+-      (dlsym(curl_lib_, "curl_easy_strerror"));
++  err_code = curl_easy_perform(curl_);
+ 
+   if (http_status_code != nullptr) {
+-    (*easy_getinfo_)(curl_, CURLINFO_RESPONSE_CODE, http_status_code);
++    curl_easy_getinfo(curl_, CURLINFO_RESPONSE_CODE, http_status_code);
+   }
+ 
+   if (err_code != CURLE_OK)
+     fprintf(stderr, "Failed to send http request to %s, error: %s\n",
+             url.c_str(),
+-            (*easy_strerror_)(err_code));
++            curl_easy_strerror(err_code));
+ 
+   Reset();
+ 
+@@ -319,16 +231,16 @@ bool LibcurlWrapper::SendRequestInner(const std::string& url,
+ 
+ void LibcurlWrapper::Reset() {
+   if (headerlist_ != nullptr) {
+-    (*slist_free_all_)(headerlist_);
++    curl_slist_free_all(headerlist_);
+     headerlist_ = nullptr;
+   }
+ 
+   if (formpost_ != nullptr) {
+-    (*formfree_)(formpost_);
++    curl_formfree(formpost_);
+     formpost_ = nullptr;
+   }
+ 
+-  (*easy_reset_)(curl_);
++  curl_easy_reset(curl_);
+ }
+ 
+ bool LibcurlWrapper::CheckInit() {
+diff --git a/src/common/linux/libcurl_wrapper.h b/src/common/linux/libcurl_wrapper.h
+index b92fe5e5..8174a2ec 100644
+--- a/src/common/linux/libcurl_wrapper.h
++++ b/src/common/linux/libcurl_wrapper.h
+@@ -68,10 +68,6 @@ class LibcurlWrapper {
+                              std::string* http_response_data);
+ 
+  private:
+-  // This function initializes class state corresponding to function
+-  // pointers into the CURL library.
+-  bool SetFunctionPointers();
+-
+   bool SendRequestInner(const std::string& url, long* http_status_code,
+                         std::string* http_header_data,
+                         std::string* http_response_data);
+@@ -81,35 +77,17 @@ class LibcurlWrapper {
+   bool CheckInit();
+ 
+   bool init_ok_;                 // Whether init succeeded
+-  void* curl_lib_;               // Pointer to result of dlopen() on
+-                                 // curl library
+   std::string last_curl_error_;  // The text of the last error when
+                                  // dealing
+   // with CURL.
+ 
+   CURL* curl_;                   // Pointer for handle for CURL calls.
+ 
+-  CURL* (*easy_init_)(void);
+-
+   // Stateful pointers for calling into curl_formadd()
+   struct curl_httppost* formpost_;
+   struct curl_httppost* lastptr_;
+   struct curl_slist* headerlist_;
+ 
+-  // Function pointers into CURL library
+-  CURLcode (*easy_setopt_)(CURL*, CURLoption, ...);
+-  CURLFORMcode (*formadd_)(struct curl_httppost**,
+-                           struct curl_httppost**, ...);
+-  struct curl_slist* (*slist_append_)(struct curl_slist*, const char*);
+-  void (*slist_free_all_)(struct curl_slist*);
+-  CURLcode (*easy_perform_)(CURL*);
+-  const char* (*easy_strerror_)(CURLcode);
+-  void (*easy_cleanup_)(CURL*);
+-  CURLcode (*easy_getinfo_)(CURL*, CURLINFO info, ...);
+-  void (*easy_reset_)(CURL*);
+-  void (*formfree_)(struct curl_httppost*);
+-  void (*global_cleanup_)(void);
+-
+ };
+ }
+ 
+-- 
+2.53.0.windows.1
+

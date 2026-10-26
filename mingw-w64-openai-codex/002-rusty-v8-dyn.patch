@@ -1,0 +1,183 @@
+diff --git a/build.rs b/build.rs
+index a27baf1..bf10a20 100644
+--- a/build.rs
++++ b/build.rs
+@@ -74,6 +74,13 @@ fn main() {
+     return;
+   }
+
++  if let Some(system_v8) = system_v8_config() {
++    print_system_link_flags(&system_v8);
++    print_system_src_binding_path(&system_v8);
++    build_system_binding();
++    return;
++  }
++
+   print_link_flags();
+
+   // Don't attempt rebuild but link
+@@ -542,8 +549,9 @@ fn prebuilt_features_suffix() -> String {
+ }
+
+ fn static_lib_name(suffix: &str) -> String {
++  let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap();
+   let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+-  if target_os == "windows" {
++  if target_os == "windows" && target_env == "msvc" {
+     format!("rusty_v8{suffix}.lib")
+   } else {
+     format!("librusty_v8{suffix}.a")
+@@ -842,6 +850,117 @@ fn print_link_flags() {
+   }
+ }
+
++struct SystemV8Config {
++  bin_dir: PathBuf,
++  lib_dir: PathBuf,
++  src_binding_path: PathBuf,
++}
++
++fn system_v8_config() -> Option<SystemV8Config> {
++  let target = env::var("TARGET").unwrap();
++  if !target.contains("windows-gnu") {
++    return None;
++  }
++
++  let root = env::var_os("MSYSTEM_PREFIX").map(PathBuf::from).unwrap();
++  let bin_dir = root.join("bin");
++  let lib_dir = root.join("lib");
++
++  // Hacky, but it works
++  let binding_name = match env::var("CARGO_CFG_TARGET_ARCH").unwrap().as_str() {
++    "aarch64" => "src_binding_release_aarch64-unknown-linux-gnu.rs",
++    "x86_64" => "src_binding_release_x86_64-unknown-linux-gnu.rs",
++    _ => panic!(),
++  };
++  let src_binding_path = get_dirs().root.join("gen").join(binding_name);
++  assert!(
++    src_binding_path.exists(),
++    "expected binding file at {}",
++    src_binding_path.display()
++  );
++
++  Some(SystemV8Config {
++    bin_dir,
++    lib_dir,
++    src_binding_path,
++  })
++}
++
++fn patched_system_binding_source() -> String {
++  fs::read_to_string("src/binding.cc").unwrap()
++}
++
++fn build_system_binding() {
++  let dir = static_lib_dir();
++  fs::create_dir_all(&dir).unwrap();
++  println!("cargo:rustc-link-search={}", dir.display());
++
++  let patched_binding = dir.join("binding_system.cc");
++  fs::write(&patched_binding, patched_system_binding_source()).unwrap();
++
++  let object = dir.join("binding_system.o");
++  let status = Command::new("c++")
++    .current_dir(get_dirs().root)
++    .arg("-std=c++20")
++    .arg("-I.")
++    .arg("-Isrc")
++    .arg("-Iv8")
++    .arg("-Iv8/include")
++    .arg("-c")
++    .arg(&patched_binding)
++    .arg("-o")
++    .arg(&object)
++    .status()
++    .unwrap();
++  assert!(status.success(), "failed to compile {patched_binding:?}");
++
++  let static_lib = static_lib_path();
++  if static_lib.exists() {
++    fs::remove_file(&static_lib).unwrap();
++  }
++
++  let status = Command::new("ar")
++    .arg("crs")
++    .arg(&static_lib)
++    .arg(&object)
++    .status()
++    .unwrap();
++  assert!(status.success(), "failed to archive {static_lib:?}");
++}
++
++fn print_system_src_binding_path(system_v8: &SystemV8Config) {
++  println!(
++    "cargo:rustc-env=RUSTY_V8_SRC_BINDING_PATH={}",
++    system_v8.src_binding_path.display()
++  );
++}
++
++fn print_system_link_flags(system_v8: &SystemV8Config) {
++  println!("cargo:rustc-link-lib=static=rusty_v8");
++  println!(
++    "cargo:rustc-link-search=native={}",
++    system_v8.lib_dir.display()
++  );
++  println!(
++    "cargo:rustc-env=CODEX_SYSTEM_V8_BIN_DIR={}",
++    system_v8.bin_dir.display()
++  );
++  println!("cargo:rustc-link-lib=dylib=v8");
++  println!("cargo:rustc-link-lib=dylib=v8_libbase");
++  println!("cargo:rustc-link-lib=dylib=v8_libplatform");
++  println!("cargo:rustc-link-lib=dylib=icuuc");
++  println!("cargo:rustc-link-lib=dylib=icuin");
++
++  // It's duplicated, but if removed, it errors on linking
++  if let Ok(stdlib) = env::var("CXXSTDLIB") {
++    if !stdlib.is_empty() {
++      println!("cargo:rustc-link-lib=dylib={stdlib}");
++    }
++  } else {
++    println!("cargo:rustc-link-lib=dylib=c++");
++  }
++}
++
+ fn print_prebuilt_src_binding_path() {
+   if let Ok(binding) = env::var("RUSTY_V8_SRC_BINDING_PATH") {
+     println!("cargo:rustc-env=RUSTY_V8_SRC_BINDING_PATH={binding}");
+diff --git a/src/binding.cc b/src/binding.cc
+index 63d6f94..8c6c2aa 100644
+--- a/src/binding.cc
++++ b/src/binding.cc
+@@ -22,7 +22,6 @@
+ #include "v8-platform.h"
+ #include "v8-profiler.h"
+ #include "v8.h"
+-#include "v8/src/flags/flags.h"
+ #include "v8/src/libplatform/default-platform.h"
+
+ using namespace support;
+@@ -129,10 +128,8 @@ extern "C" bool v8__V8__IsSandboxEnabled() {
+ extern "C" {
+ void v8__V8__SetFlagsFromCommandLine(int* argc, char** argv,
+                                      const char* usage) {
+-  namespace i = v8::internal;
+-  using HelpOptions = i::FlagList::HelpOptions;
+-  HelpOptions help_options = HelpOptions(HelpOptions::kExit, usage);
+-  i::FlagList::SetFlagsFromCommandLine(argc, argv, true, help_options);
++  (void)usage;
++  v8::V8::SetFlagsFromCommandLine(argc, argv, true);
+ }
+
+ void v8__V8__SetFlagsFromString(const char* flags, size_t length) {
+@@ -4134,8 +4131,8 @@ void v8__CompiledWasmModule__DELETE(v8::CompiledWasmModule* self) {
+ extern "C" {
+
+ size_t icu_get_default_locale(char* output, size_t output_len) {
+-  const icu_77::Locale& default_locale = icu::Locale::getDefault();
+-  icu_77::CheckedArrayByteSink sink(output, static_cast<uint32_t>(output_len));
++  const icu::Locale& default_locale = icu::Locale::getDefault();
++  icu::CheckedArrayByteSink sink(output, static_cast<uint32_t>(output_len));
+   UErrorCode status = U_ZERO_ERROR;
+   default_locale.toLanguageTag(sink, status);
+   assert(status == U_ZERO_ERROR);

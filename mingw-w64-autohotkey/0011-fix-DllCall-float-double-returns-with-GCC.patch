@@ -1,0 +1,69 @@
+From cc0fcdf8fb13e6f5b81149911b6251e3639d81db Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Mon, 14 Apr 2025 00:00:00 +0000
+Subject: [PATCH 11/N] fix DllCall float/double returns with GCC
+
+GetFloatRetval and GetDoubleRetval are no-op stubs that rely on XMM0
+still holding the float return value from the previously called target
+function inside PerformDynaCall/DynaCall.  MSVC happens to preserve
+XMM0 between the PerformDynaCall return and the GetDoubleRetval call,
+but GCC treats XMM0 as volatile (caller-saved) after any function that
+returns an integer type, and may reuse XMM0 for scratch computation in
+the intervening C++ code.
+
+The fix: save XMM0 to a module-global after every "call rax", and have
+GetFloatRetval/GetDoubleRetval load from that global instead of
+assuming XMM0 is still intact.
+---
+ source/libx64call/x64call.asm | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/source/libx64call/x64call.asm b/source/libx64call/x64call.asm
+index ae9d91f..0d48a26 100644
+--- a/source/libx64call/x64call.asm
++++ b/source/libx64call/x64call.asm
+@@ -27,6 +27,10 @@
+ ;
+ ;//////////////////////////////////////////////////////////////////////////////
+ 
++.data
++
++xmm0_retval dq 0
++
+ .code
+ 
+ include ksamd64.inc
+@@ -75,6 +79,7 @@ PerformDynaCall proc frame
+ 	; Call function
+ 	sub rsp, 8*4 ; spill area
+ 	call rax
++	movsd qword ptr [xmm0_retval], xmm0
+ 
+ 	; Restore stack pointer
+ 	;mov rsp, rbp	; Although mov works too, MSDN says "add RSP,constant or lea RSP,constant[FPReg]" must be used for exception-handling to work reliably. http://msdn.microsoft.com/en-us/library/tawsa7cb.aspx
+@@ -130,6 +135,7 @@ DynaCall proc frame
+ 
+ 	; Call function
+ 	call rax
++	movsd qword ptr [xmm0_retval], xmm0
+ 
+ 	; Restore stack pointer
+ 	;mov rsp, rbp	; Although mov works too, MSDN says "add RSP,constant or lea RSP,constant[FPReg]" must be used for exception-handling to work reliably. http://msdn.microsoft.com/en-us/library/tawsa7cb.aspx
+@@ -143,12 +149,16 @@ DynaCall proc frame
+ DynaCall endp
+ 
+ GetFloatRetval proc
+-	; Nothing is actually done here - we just declare the appropriate return type in C++.
++	; Load the saved XMM0 value.  The original code relied on XMM0 still
++	; holding the target function's return value, but compilers other than
++	; MSVC may clobber XMM0 between the DynaCall return and this call.
++	movss xmm0, dword ptr [xmm0_retval]
+ 	ret
+ GetFloatRetval endp
+ 
+ GetDoubleRetval proc
+ 	; See above.
++	movsd xmm0, qword ptr [xmm0_retval]
+ 	ret
+ GetDoubleRetval endp
+ 

@@ -1,0 +1,299 @@
+From 00133a13954240e49b2d347a70229696f24fffaa Mon Sep 17 00:00:00 2001
+From: Zoltan Gyarmati <zgyarmati@foss.dk>
+Date: Fri, 5 Dec 2025 22:55:32 +0100
+Subject: [PATCH] Add some fixes to enable build on msys2 under Windows
+
+  * Check for strndup() and l64a() and using own implementation
+    in compat.c if they are not available
+  * Ditch dependecy on arpa/inet.h and use own implementation to
+    format IP address
+  * Also checking for ncursesw and formw
+---
+ Makefile.am       |  8 +++----
+ README.md         |  2 +-
+ configure.ac      | 10 ++++++---
+ inc/bitwise.h     |  9 ++++++--
+ inc/compat.h      | 14 ++++++++++++
+ src/compat.c      | 56 +++++++++++++++++++++++++++++++++++++++++++++++
+ src/interactive.c |  6 ++++-
+ src/main.c        | 11 ++++------
+ src/misc.c        | 14 ++++++++++++
+ 9 files changed, 112 insertions(+), 18 deletions(-)
+ create mode 100644 inc/compat.h
+ create mode 100644 src/compat.c
+
+diff --git a/Makefile.am b/Makefile.am
+index eba85a1..e7031c7 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -1,9 +1,9 @@
+ bin_PROGRAMS=bitwise
+-bitwise_SOURCES= src/main.c src/misc.c \
++bitwise_SOURCES= src/main.c src/misc.c src/compat.c\
+ 				 src/interactive.c src/cmd.c \
+ 				 src/stack.c src/shunting-yard.c \
+-				 src/help.c inc/bitwise.h inc/stack.h \
+-				 inc/shunting-yard.h
++				 src/help.c inc/bitwise.h \
++				 inc/stack.h inc/shunting-yard.h
+ 
+ dist_man_MANS=bitwise.1
+ 
+@@ -24,7 +24,7 @@ AM_CFLAGS = $(MAYBE_COVERAGE) $(MAYBE_DEBUG) $(MAYBE_TRACE)
+ check_PROGRAMS = tests/test-shunting-yard
+ tests_test_shunting_yard_SOURCES = src/shunting-yard.c inc/shunting-yard.h \
+                                    src/stack.c inc/stack.h inc/bitwise.h \
+-								   src/misc.c \
++				   src/misc.c src/compat.c \
+                                    tests/test-shunting-yard.c
+ tests_test_shunting_yard_LDADD = -lcunit
+ 
+diff --git a/README.md b/README.md
+index 5cf67ea..c19a2b2 100644
+--- a/README.md
++++ b/README.md
+@@ -156,7 +156,7 @@ brew install bitwise
+ ```
+ 
+ ### Windows
+-NCurses doesn't support Windows. You can use the Windows Subsystem for Linux as a workaround.
++Bitwise is possible to compile on Windows under mingw or msys2
+ 
+ ### Nix
+ ```
+diff --git a/configure.ac b/configure.ac
+index f55923a..70b1f22 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -25,13 +25,17 @@ if test "$ac_cv_have_readline" = no; then
+     AC_MSG_ERROR([requires readline library])
+ fi
+ 
++# Checks for header files. Ncurses is a bit of a mess in windows/mingw, has form in separate include location
++AC_CHECK_HEADERS([fcntl.h inttypes.h stdint.h stdlib.h string.h curses.h form.h ncursesw/ncurses.h ncursesw/form.h])
++
+ # Checks for libraries.
+ AC_CHECK_LIB([form], [form_driver])
++AC_CHECK_LIB([formw], [form_driver])
+ AC_CHECK_LIB([ncurses], [newwin])
++AC_CHECK_LIB([ncursesw], [newwin])
+ AC_SEARCH_LIBS([sqrt], [m])
+ 
+-# Checks for header files.
+-AC_CHECK_HEADERS([fcntl.h inttypes.h stdint.h stdlib.h string.h curses.h form.h])
++
+ 
+ AC_CHECK_DECLS([bswap_32], [], [], [[#include <byteswap.h>]])
+ AM_CONDITIONAL(HAVE_BYTESWAP_H, [test "x$ac_cv_have_decl_bswap_32" = "xyes"])
+@@ -42,7 +46,7 @@ AC_TYPE_UINT64_T
+ 
+ # Checks for library functions.
+ AC_FUNC_STRCOLL
+-AC_CHECK_FUNCS([memchr memmove memset stpcpy strchr strcspn strdup strerror strpbrk strrchr strspn strstr])
++AC_CHECK_FUNCS([memchr memmove memset stpcpy strchr strcspn strdup strndup strerror strpbrk strrchr strspn strstr l64a])
+ 
+ # Then check for the variable considering both possible locations
+ AC_CHECK_DECL([rl_change_environment],
+diff --git a/inc/bitwise.h b/inc/bitwise.h
+index c50e733..0df8e43 100644
+--- a/inc/bitwise.h
++++ b/inc/bitwise.h
+@@ -9,11 +9,15 @@
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <stdbool.h>
+-#include <form.h>
+ #include <string.h>
+ #include "config.h"
++#include "compat.h"
++#if defined(HAVE_NCURSESW_FORM_H)
++#include <ncursesw/form.h>
++#else
++#include <form.h>
++#endif
+ /* Readine checks */
+-
+ #ifdef HAVE_LIBREADLINE
+ #  if defined(HAVE_READLINE_READLINE_H)
+ #    include <readline/readline.h>
+@@ -68,6 +72,7 @@ int sprintf_type(uint64_t val, char *buf, output_type type);
+ 
+ void init_terminal(void);
+ void deinit_terminal(void);
++const char *ipv4_to_str(uint32_t ip, char out[static 16]);
+ 
+ /* Interactive */
+ extern FORM *form;
+diff --git a/inc/compat.h b/inc/compat.h
+new file mode 100644
+index 0000000..db4bd11
+--- /dev/null
++++ b/inc/compat.h
+@@ -0,0 +1,14 @@
++#ifndef COMPAT_H
++#define COMPAT_H
++// Functions needed to substitute some POSIX extensions on Windows/MinGW
++
++#ifndef HAVE_STRNDUP
++char *strndup(const char *s, size_t n);
++#endif
++
++#ifndef HAVE_L64A
++char *l64a(long value);
++#endif
++
++#endif
++
+diff --git a/src/compat.c b/src/compat.c
+new file mode 100644
+index 0000000..735dd0d
+--- /dev/null
++++ b/src/compat.c
+@@ -0,0 +1,56 @@
++#include <stdlib.h>
++#include <string.h>
++#include <limits.h>
++#include <stdint.h>
++
++#ifndef HAVE_STRNDUP
++char *strndup(const char *s, size_t n)
++{
++    char *copy;
++    size_t len;
++
++    if (!s) {
++        return NULL;  // Handle NULL input safely
++    }
++
++    // Determine the number of characters to copy (up to n or up to '\0')
++    len = 0;
++    while (len < n && s[len] != '\0') {
++        len++;
++    }
++
++    // Prevent overflow: len + 1 must not overflow size_t
++    if (len == SIZE_MAX) {
++        return NULL; // extremely unlikely but technically correct
++    }
++
++    copy = (char *)malloc(len + 1);
++    if (!copy) {
++        return NULL;
++    }
++
++    memcpy(copy, s, len);
++    copy[len] = '\0';
++    return copy;
++}
++#endif
++
++
++#ifndef HAVE_L64A
++char *l64a(long value)
++{
++    static char buf[7];
++    static const char tbl[] =
++        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
++    int i = 0;
++    if (value == 0) {
++        buf[i++] = '.';
++    } else {        while (value && i < 6) {
++            buf[i++] = tbl[value & 0x3F];
++            value >>= 6;
++        }
++    }
++    buf[i] = '\0';
++    return buf;
++}
++#endif
+diff --git a/src/interactive.c b/src/interactive.c
+index 8d9b0a0..e41ae3b 100644
+--- a/src/interactive.c
++++ b/src/interactive.c
+@@ -3,7 +3,6 @@
+  */
+ 
+ #include <stdlib.h>
+-#include <form.h>
+ #include <ctype.h>
+ #include <stdint.h>
+ #include <inttypes.h>
+@@ -14,6 +13,11 @@
+ #include <sys/stat.h>
+ #include <math.h>
+ #include "bitwise.h"
++#if defined(HAVE_NCURSESW_FORM_H)
++#include <ncursesw/form.h>
++#else
++#include <form.h>
++#endif
+ 
+ #define MAX_DEC_DIGITS_64 20
+ #define MAX_HEX_DIGITS_64 16
+diff --git a/src/main.c b/src/main.c
+index 772726b..8b683b7 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -8,7 +8,6 @@
+ #include <stdint.h>
+ #include <getopt.h>
+ #include <locale.h>
+-#include <arpa/inet.h>
+ #include <limits.h>
+ 
+ #ifdef HAVE_DECL_BSWAP_32
+@@ -23,14 +22,12 @@
+ #include "bitwise.h"
+ #include "shunting-yard.h"
+ 
+-
+ int print_conversions(uint64_t val, bool si)
+ {
+ 	char buf_size[16];
+ 	char binary[512];
+ 	int pos = 0;
+ 	int i, j;
+-	struct in_addr ip_addr;
+ 
+ 	buf_size[0] = '\0';
+ 	sprintf_size(val, buf_size, si);
+@@ -69,10 +66,10 @@ int print_conversions(uint64_t val, bool si)
+ 	if (val > UINT_MAX) {
+ 		printf("%sIPv4: %s%s\n", color_green, color_blue, "Value too big to be a valid IPv4 address");
+ 	} else {
+-		ip_addr.s_addr = val;
+-		printf("%sIPv4 (Network byte order - Big): %s %s\n", color_green, color_blue, inet_ntoa(ip_addr));
+-		ip_addr.s_addr = bswap_32(val);
+-		printf("%sIPv4 (Reversed byte order - Little): %s %s\n", color_green, color_blue, inet_ntoa(ip_addr));
++		char ipstrbuf[16];
++		printf("%sIPv4 (Network byte order - Big): %s %s\n", color_green, color_blue, ipv4_to_str(val, ipstrbuf));
++		const uint64_t reversedval = bswap_32(val);
++		printf("%sIPv4 (Reversed byte order - Little): %s %s\n", color_green, color_blue, ipv4_to_str(reversedval, ipstrbuf));
+ 	}
+ 
+ 	printf("%sASCII: %s", color_green, color_blue);
+diff --git a/src/misc.c b/src/misc.c
+index 2ad317e..b8786f9 100644
+--- a/src/misc.c
++++ b/src/misc.c
+@@ -360,3 +360,17 @@ int set_width(char width)
+ 
+ 	return 0;
+ }
++
++
++const char *
++ipv4_to_str(uint32_t ip, char out[static 16])
++{
++    const unsigned char b0 = (ip >> 24) & 0xFF;
++    const unsigned char b1 = (ip >> 16) & 0xFF;
++    const unsigned char b2 = (ip >> 8)  & 0xFF;
++    const unsigned char b3 = ip & 0xFF;
++
++    snprintf(out, 16, "%u.%u.%u.%u", b0, b1, b2, b3);
++    return out;
++}
++
+-- 
+2.51.0
+

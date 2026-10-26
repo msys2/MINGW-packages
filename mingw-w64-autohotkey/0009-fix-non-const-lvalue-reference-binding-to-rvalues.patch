@@ -1,0 +1,318 @@
+From b9c373d32d7e8f7e0c99123506fe5ffa6ed47c27 Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Tue, 14 Apr 2026 12:45:22 +0200
+Subject: [PATCH 09/N] fix non-const lvalue reference binding to rvalues
+
+GCC 15 strictly enforces the C++ rule that a non-const lvalue reference
+cannot bind to an rvalue. MSVC allows this as an extension. AutoHotkey
+frequently constructs a temporary ExprTokenType and passes it to a
+function expecting a non-const reference, e.g.:
+
+  SetOwnProp(name, ExprTokenType(value))
+
+where SetOwnProp takes `ExprTokenType &`. GCC rejects the temporary
+as an rvalue. The fix is to introduce a named local variable at each
+call site so the argument is an lvalue:
+
+  ExprTokenType t(value);
+  SetOwnProp(name, t);
+
+This pattern is applied across 9 files and 23 call sites in the
+Debugger, error handling, COM interface, Object/Array/Map methods,
+Var operations, and BIF functions.
+---
+ source/Debugger.cpp      |  3 ++-
+ source/lib/vars.cpp      |  3 ++-
+ source/script2.cpp       | 20 ++++++++++++++++----
+ source/script_com.cpp    |  6 ++++--
+ source/script_object.cpp | 26 ++++++++++++++++++--------
+ source/script_object.h   | 22 +++++++++++++---------
+ source/var.cpp           |  8 ++++++--
+ source/var.h             |  3 ++-
+ 8 files changed, 63 insertions(+), 28 deletions(-)
+
+diff --git a/source/Debugger.cpp b/source/Debugger.cpp
+index 20a5d13..4c921ae 100644
+--- a/source/Debugger.cpp
++++ b/source/Debugger.cpp
+@@ -1311,7 +1311,8 @@ int Debugger::WriteEnumItems(PropertyInfo &aProp)
+ void Debugger::PropertyWriter::WriteEnumItems(IObject *aEnumerable, int aStart, int aEnd)
+ {
+ 	IObject *enumerator;
+-	auto result = GetEnumerator(enumerator, ExprTokenType(aEnumerable), 2, false);
++	ExprTokenType enum_token(aEnumerable);
++	auto result = GetEnumerator(enumerator, enum_token, 2, false);
+ 	if (result != OK)
+ 	{
+ 		// Just return no items, since setting an error would prevent any other properties
+diff --git a/source/lib/vars.cpp b/source/lib/vars.cpp
+index a8ccf81..997f6f0 100644
+--- a/source/lib/vars.cpp
++++ b/source/lib/vars.cpp
+@@ -161,7 +161,8 @@ BIV_DECL_W(BIV_Clipboard_Set)
+ 				_f_return_FAIL;
+ 			return;
+ 		}
+-		_f_throw_type(_T("ClipboardAll"), ExprTokenType(obj));
++		ExprTokenType obj_token(obj);
++		_f_throw_type(_T("ClipboardAll"), obj_token);
+ 	}
+ 	size_t aLength;
+ 	LPTSTR aBuf = BivRValueToString(&aLength);
+diff --git a/source/script2.cpp b/source/script2.cpp
+index ddf15f3..d3c0355 100644
+--- a/source/script2.cpp
++++ b/source/script2.cpp
+@@ -1844,7 +1844,10 @@ ResultType GetObjectIntProperty(IObject *aObject, LPTSTR aPropName, __int64 &aVa
+ 			return aResultToken.Error(ERR_TYPE_MISMATCH, aPropName, ErrorPrototype::Type);
+ 		//aValue = 0; // Caller should set default value for these cases.
+ 		if (!aOptional)
+-			return aResultToken.UnknownMemberError(ExprTokenType(aObject), IT_GET, aPropName);
++		{
++			ExprTokenType obj_token(aObject);
++			return aResultToken.UnknownMemberError(obj_token, IT_GET, aPropName);
++		}
+ 		return result; // Let caller know it wasn't found.
+ 	}
+ 
+@@ -1863,7 +1866,10 @@ ResultType SetObjectIntProperty(IObject *aObject, LPTSTR aPropName, __int64 aVal
+ 	if (result == FAIL || result == EARLY_EXIT)
+ 		return aResultToken.SetExitResult(result);
+ 	if (result == INVOKE_NOT_HANDLED)
+-		return aResultToken.UnknownMemberError(ExprTokenType(aObject), IT_GET, aPropName);
++	{
++		ExprTokenType obj_token(aObject);
++		return aResultToken.UnknownMemberError(obj_token, IT_GET, aPropName);
++	}
+ 	return OK;
+ }
+ 
+@@ -3628,7 +3634,10 @@ ResultType ValidateFunctor(IObject *aFunc, int aParamCount, ResultToken &aResult
+ 	if (aUseMinParams) // CallbackCreate's signal to default to MinParams.
+ 	{
+ 		if (!has_minparams)
+-			return aShowError ? aResultToken.UnknownMemberError(ExprTokenType(aFunc), IT_GET, _T("MinParams")) : CONDITION_FALSE;
++		{
++			ExprTokenType func_token(aFunc);
++			return aShowError ? aResultToken.UnknownMemberError(func_token, IT_GET, _T("MinParams")) : CONDITION_FALSE;
++		}
+ 		*aUseMinParams = aParamCount = (int)min_params;
+ 	}
+ 	else if (has_minparams && aParamCount < (int)min_params)
+@@ -3653,7 +3662,10 @@ ResultType ValidateFunctor(IObject *aFunc, int aParamCount, ResultToken &aResult
+ 	if (min_result == INVOKE_NOT_HANDLED && max_result == INVOKE_NOT_HANDLED)
+ 		if (Object *obj = dynamic_cast<Object *>(aFunc))
+ 			if (!obj->HasMethod(_T("Call")))
+-				return aShowError ? aResultToken.UnknownMemberError(ExprTokenType(aFunc), IT_CALL, _T("Call")) : CONDITION_FALSE;
++			{
++				ExprTokenType func_token(aFunc);
++				return aShowError ? aResultToken.UnknownMemberError(func_token, IT_CALL, _T("Call")) : CONDITION_FALSE;
++			}
+ 		// Otherwise: COM objects can be callable via DISPID_VALUE.  There's probably
+ 		// no way to determine whether the object supports that without invoking it.
+ 	return OK;
+diff --git a/source/script_com.cpp b/source/script_com.cpp
+index 866553a..28b3b70 100644
+--- a/source/script_com.cpp
++++ b/source/script_com.cpp
+@@ -2001,8 +2001,10 @@ void ComObject::DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int a
+ 	if (aPage == 0 && aDepth > 0)
+ 	{
+ 		// For simplicity, assume aPageSize >= 2.
+-		aDebugger->WriteProperty("Value", ExprTokenType(mVal64));
+-		aDebugger->WriteProperty("VarType", ExprTokenType((__int64)mVarType));
++		ExprTokenType value_token(mVal64);
++		aDebugger->WriteProperty("Value", value_token);
++		ExprTokenType vartype_token((__int64)mVarType);
++		aDebugger->WriteProperty("VarType", vartype_token);
+ 	}
+ 	aDebugger->EndProperty(rootCookie);
+ }
+diff --git a/source/script_object.cpp b/source/script_object.cpp
+index 9c0b43f..1b5cd0c 100644
+--- a/source/script_object.cpp
++++ b/source/script_object.cpp
+@@ -436,7 +436,8 @@ bool Object::Delete()
+ 
+ 		{
+ 			FuncResult rt;
+-			CallMeta(_T("__Delete"), rt, ExprTokenType(this), nullptr, 0);
++			ExprTokenType this_token(this);
++			CallMeta(_T("__Delete"), rt, this_token, nullptr, 0);
+ 			rt.Free();
+ 		}
+ 
+@@ -843,7 +844,8 @@ void Map::__Item(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *
+ 		{
+ 			if (ParamIndexIsOmitted(1))
+ 			{
+-				auto result = Invoke(aResultToken, IT_GET, _T("Default"), ExprTokenType { this }, nullptr, 0);
++				ExprTokenType this_token { this };
++				auto result = Invoke(aResultToken, IT_GET, _T("Default"), this_token, nullptr, 0);
+ 				if (result == INVOKE_NOT_HANDLED)
+ 					_o_throw(ERR_ITEM_UNSET, *aParam[0], ErrorPrototype::UnsetItem);
+ 				return;
+@@ -900,7 +902,8 @@ ResultType Object::CallMeta(LPTSTR aName, ResultToken &aResultToken, ExprTokenTy
+ 	IObject *method;
+ 	if (method = GetMethod(aName))
+ 	{
+-		return CallAsMethod(ExprTokenType(method), aResultToken, aThisToken, aParam, aParamCount);
++		ExprTokenType method_token(method);
++		return CallAsMethod(method_token, aResultToken, aThisToken, aParam, aParamCount);
+ 	}
+ 	return INVOKE_NOT_HANDLED;
+ }
+@@ -923,7 +926,8 @@ ResultType Object::CallMetaVarg(int aFlags, LPTSTR aName, ResultToken &aResultTo
+ 	if (IS_INVOKE_SET)
+ 		param[param_count++] = aParam[aParamCount]; // value
+ 	// return %func%(this, name, args [, value])
+-	ResultType aResult = func->Invoke(aResultToken, IT_CALL, nullptr, ExprTokenType(func), param, param_count);
++	ExprTokenType func_token(func);
++	ResultType aResult = func->Invoke(aResultToken, IT_CALL, nullptr, func_token, param, param_count);
+ 	vargs->Release();
+ 	return aResult;
+ }
+@@ -1067,7 +1071,8 @@ Object *Object::CreatePrototype(LPTSTR aClassName, Object *aBase)
+ {
+ 	auto obj = new Object();
+ 	obj->mFlags |= ClassPrototype;
+-	obj->SetOwnProp(_T("__Class"), ExprTokenType(aClassName));
++	ExprTokenType class_name_token(aClassName);
++	obj->SetOwnProp(_T("__Class"), class_name_token);
+ 	obj->SetBase(aBase);
+ 	return obj;
+ }
+@@ -1538,7 +1543,10 @@ void Object::GetOwnPropDesc(ResultToken &aResultToken, int aID, int aFlags, Expr
+ 		_o_throw_param(0);
+ 	auto field = FindField(name);
+ 	if (!field)
+-		_o__ret(aResultToken.UnknownMemberError(ExprTokenType(this), IT_GET, name));
++	{
++		ExprTokenType this_token(this);
++		_o__ret(aResultToken.UnknownMemberError(this_token, IT_GET, name));
++	}
+ 	auto desc = Object::Create();
+ 	desc->SetInternalCapacity(field->symbol == SYM_DYNAMIC ? 3 : 1);
+ 	if (field->symbol == SYM_DYNAMIC)
+@@ -2014,7 +2022,8 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
+ 				aResultToken.CopyValueFrom(*aParam[1]);
+ 				return;
+ 			}
+-			auto result = Object::Invoke(aResultToken, IT_GET, _T("Default"), ExprTokenType{this}, nullptr, 0);
++			ExprTokenType this_token{this};
++			auto result = Object::Invoke(aResultToken, IT_GET, _T("Default"), this_token, nullptr, 0);
+ 			if (result != INVOKE_NOT_HANDLED)
+ 				_o_return_retval;
+ 			_o_throw(ERR_ITEM_UNSET, *aParam[0], ErrorPrototype::UnsetItem);
+@@ -3278,7 +3287,8 @@ BIF_DECL(Class_CallNestedClass)
+ 	}
+ 	else
+ 		aResultToken.symbol = SYM_STRING; // Set the default expected by Invoke.
+-	cls->Invoke(aResultToken, IT_CALL, nullptr, ExprTokenType { cls }, aParam + 1, aParamCount - 1);
++	ExprTokenType cls_token { cls };
++	cls->Invoke(aResultToken, IT_CALL, nullptr, cls_token, aParam + 1, aParamCount - 1);
+ }
+ 
+ 
+diff --git a/source/script_object.h b/source/script_object.h
+index ec6d39e..cc49b58 100644
+--- a/source/script_object.h
++++ b/source/script_object.h
+@@ -445,9 +445,9 @@ public:
+ 		return field->Assign(aValue);
+ 	}
+ 
+-	bool SetOwnProp(name_t aName, __int64 aValue) { return SetOwnProp(aName, ExprTokenType(aValue)); }
+-	bool SetOwnProp(name_t aName, IObject *aValue) { return SetOwnProp(aName, ExprTokenType(aValue)); }
+-	bool SetOwnProp(name_t aName, LPCTSTR aValue) { return SetOwnProp(aName, ExprTokenType(const_cast<LPTSTR>(aValue))); }
++	bool SetOwnProp(name_t aName, __int64 aValue) { ExprTokenType t(aValue); return SetOwnProp(aName, t); }
++	bool SetOwnProp(name_t aName, IObject *aValue) { ExprTokenType t(aValue); return SetOwnProp(aName, t); }
++	bool SetOwnProp(name_t aName, LPCTSTR aValue) { ExprTokenType t(const_cast<LPTSTR>(aValue)); return SetOwnProp(aName, t); }
+ 
+ 	void DeleteOwnProp(name_t aName)
+ 	{
+@@ -580,8 +580,8 @@ public:
+ 
+ 	bool Append(ExprTokenType &aValue);
+ 	bool Append(LPCTSTR aValue, size_t aValueLength = -1) { return Append(const_cast<LPTSTR>(aValue), aValueLength); }
+-	bool Append(LPTSTR aValue, size_t aValueLength = -1) { return Append(ExprTokenType(aValue, aValueLength)); }
+-	bool Append(__int64 aValue) { return Append(ExprTokenType(aValue)); }
++	bool Append(LPTSTR aValue, size_t aValueLength = -1) { ExprTokenType t(aValue, aValueLength); return Append(t); }
++	bool Append(__int64 aValue) { ExprTokenType t(aValue); return Append(t); }
+ 
+ 	Array *Clone();
+ 
+@@ -689,7 +689,8 @@ public:
+ 
+ 	bool HasItem(ExprTokenType &aKey)
+ 	{
+-		return GetItem(ExprTokenType(), aKey); // Conserves code size vs. calling FindItem() directly and is unlikely to perform worse.
++		ExprTokenType t;
++		return GetItem(t, aKey);
+ 	}
+ 
+ 	bool GetItem(ExprTokenType &aToken, ExprTokenType &aKey)
+@@ -727,17 +728,20 @@ public:
+ 
+ 	bool SetItem(LPTSTR aKey, ExprTokenType &aValue)
+ 	{
+-		return SetItem(ExprTokenType(aKey), aValue);
++		ExprTokenType k(aKey);
++		return SetItem(k, aValue);
+ 	}
+ 
+ 	bool SetItem(LPTSTR aKey, __int64 aValue)
+ 	{
+-		return SetItem(aKey, ExprTokenType(aValue));
++		ExprTokenType v(aValue);
++		return SetItem(aKey, v);
+ 	}
+ 
+ 	bool SetItem(LPTSTR aKey, IObject *aValue)
+ 	{
+-		return SetItem(aKey, ExprTokenType(aValue));
++		ExprTokenType v(aValue);
++		return SetItem(aKey, v);
+ 	}
+ 
+ 	ResultType SetItems(ExprTokenType *aParam[], int aParamCount);
+diff --git a/source/var.cpp b/source/var.cpp
+index 4657984..ee66ad8 100644
+--- a/source/var.cpp
++++ b/source/var.cpp
+@@ -575,7 +575,10 @@ ResultType Var::AssignString(LPCTSTR aBuf, VarSizeType aLength, bool aExactSize)
+ 	if (mType == VAR_VIRTUAL)
+ 	{
+ 		if (do_assign)
+-			return AssignVirtual(ExprTokenType(const_cast<LPTSTR>(aBuf), aLength));
++		{
++			ExprTokenType assign_token(const_cast<LPTSTR>(aBuf), aLength);
++			return AssignVirtual(assign_token);
++		}
+ 		// Since above didn't return, the caller wants to allocate some temporary memory for
+ 		// writing the value into, and should call Close() in order to commit the actual value.
+ 	}
+@@ -790,7 +793,8 @@ ResultType Var::AssignSkipAddRef(IObject *aValueToAssign)
+ 
+ 	if (mType == VAR_VIRTUAL)
+ 	{
+-		auto result = AssignVirtual(ExprTokenType(aValueToAssign));
++		ExprTokenType obj_token(aValueToAssign);
++		auto result = AssignVirtual(obj_token);
+ 		aValueToAssign->Release(); // Caller wanted us to take responsibility for this.
+ 		return result;
+ 	}
+diff --git a/source/var.h b/source/var.h
+index a3dbcba..cc261ac 100644
+--- a/source/var.h
++++ b/source/var.h
+@@ -806,7 +806,8 @@ public:
+ 		if (mType == VAR_VIRTUAL)
+ 		{
+ 			// Commit the value in our temporary buffer.
+-			auto result = AssignVirtual(ExprTokenType(mCharContents, CharLength()));
++			ExprTokenType t(mCharContents, CharLength());
++			auto result = AssignVirtual(t);
+ 			Free(); // Free temporary memory and remove VAR_ATTRIB_VIRTUAL_OPEN.
+ 			return result;
+ 		}

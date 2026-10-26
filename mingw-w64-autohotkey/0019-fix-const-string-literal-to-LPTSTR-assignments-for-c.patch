@@ -1,0 +1,172 @@
+From 44a89bbf3dae64ef58b435adb2d7d94f2bfa9c85 Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Wed, 15 Apr 2026 09:12:06 -0700
+Subject: [PATCH 19/N] fix const string literal to LPTSTR assignments for
+ clang
+
+Clang treats assignment of a const wchar_t* string literal to a
+non-const LPTSTR as a hard error, whereas GCC merely warns
+(-Wwritable-strings). This affects many places where _T("") or other
+string literal fallbacks are assigned to LPTSTR variables or array
+elements.
+
+Where the variable is only read through the pointer (passed to
+functions taking LPCTSTR, or used in comparisons), the variable type
+is changed to LPCTSTR: format_str in vars.cpp, param[] in win.cpp,
+target_label in script2.cpp, line_raw_arg1/2 and loop_name in
+script.cpp.
+
+Where the variable is also assigned non-const values (return value of
+ITOA64, Contents(), ParamIndexToString, or flows into an LPTSTR
+return type), const_cast<LPTSTR> is applied to just the literal:
+result in script2.cpp, result_to_return and arg_deref[] in
+script_expression.cpp, value_name in script_registry.cpp, and name in
+script_object.cpp.
+---
+ source/lib/vars.cpp          | 2 +-
+ source/lib/win.cpp           | 2 +-
+ source/script.cpp            | 6 +++---
+ source/script2.cpp           | 6 +++---
+ source/script_expression.cpp | 6 +++---
+ source/script_object.cpp     | 2 +-
+ source/script_registry.cpp   | 2 +-
+ 7 files changed, 13 insertions(+), 13 deletions(-)
+
+diff --git a/source/lib/vars.cpp b/source/lib/vars.cpp
+index 997f6f0..54d2e4c 100644
+--- a/source/lib/vars.cpp
++++ b/source/lib/vars.cpp
+@@ -173,7 +173,7 @@ BIV_DECL_W(BIV_Clipboard_Set)
+ 
+ BIV_DECL_R(BIV_MMM_DDD)
+ {
+-	LPTSTR format_str;
++	LPCTSTR format_str;
+ 	switch(ctoupper(aVarName[2]))
+ 	{
+ 	// Use the case-sensitive formats required by GetDateFormat():
+diff --git a/source/lib/win.cpp b/source/lib/win.cpp
+index 1df50fd..e1d8280 100644
+--- a/source/lib/win.cpp
++++ b/source/lib/win.cpp
+@@ -2306,7 +2306,7 @@ ResultType DetermineTargetWindow(HWND &aWindow, ResultToken &aResultToken, ExprT
+ 		}
+ 	}
+ 	TCHAR number_buf[4][MAX_NUMBER_SIZE];
+-	LPTSTR param[4];
++	LPCTSTR param[4];
+ 	for (int i = 0, j = 0; i < 4; ++i, ++j)
+ 	{
+ 		if (i == 2) j += aNonWinParamCount;
+diff --git a/source/script.cpp b/source/script.cpp
+index 298af89..4388ea8 100644
+--- a/source/script.cpp
++++ b/source/script.cpp
+@@ -7476,8 +7476,8 @@ Line *Script::PreparseCommands(Line *aStartingLine)
+ {
+ 	for (Line *line = aStartingLine; line; line = line->mNextLine)
+ 	{
+-		LPTSTR line_raw_arg1 = LINE_RAW_ARG1; // Resolve only once to help reduce code size.
+-		LPTSTR line_raw_arg2 = LINE_RAW_ARG2; //
++		LPCTSTR line_raw_arg1 = LINE_RAW_ARG1; // Resolve only once to help reduce code size.
++		LPCTSTR line_raw_arg2 = LINE_RAW_ARG2; //
+ 		
+ 		switch (line->mActionType)
+ 		{
+@@ -7551,7 +7551,7 @@ Line *Script::PreparseCommands(Line *aStartingLine)
+ 					// It seems unlikely that computing the target loop at runtime would be useful.
+ 					// For simplicity, rule out things like "break(var)" and "break(func())":
+ 					return line->PreparseError(ERR_PARAM1_INVALID); //_T("Target label of Break/Continue cannot be dynamic."));
+-				LPTSTR loop_name = line_raw_arg1;
++				LPTSTR loop_name = const_cast<LPTSTR>(line_raw_arg1);
+ 				Label *loop_label = nullptr;
+ 				Line *loop_line, *innermost_loop = nullptr;
+ 				if (*loop_name && !IsNumeric(loop_name))
+diff --git a/source/script2.cpp b/source/script2.cpp
+index aba9f3d..0d90e14 100644
+--- a/source/script2.cpp
++++ b/source/script2.cpp
+@@ -1911,7 +1911,7 @@ bool Line::FileIsFilteredOut(LoopFilesStruct &aCurrentFile, FileLoopModeType aFi
+ 
+ Label *Line::GetJumpTarget(bool aIsDereferenced)
+ {
+-	LPTSTR target_label = aIsDereferenced ? ARG1 : RAW_ARG1;
++	LPCTSTR target_label = aIsDereferenced ? ARG1 : RAW_ARG1;
+ 	Label *label = g_script.FindLabel(target_label);
+ 	if (!label)
+ 	{
+@@ -3451,7 +3451,7 @@ LPTSTR TokenToString(ExprTokenType &aToken, LPTSTR aBuf, size_t *aLength)
+ 		}
+ 		return result;
+ 	case SYM_INTEGER:
+-		result = aBuf ? ITOA64(aToken.value_int64, aBuf) : _T("");
++		result = aBuf ? ITOA64(aToken.value_int64, aBuf) : const_cast<LPTSTR>(_T(""));
+ 		break;
+ 	case SYM_FLOAT:
+ 		if (aBuf)
+@@ -3465,7 +3465,7 @@ LPTSTR TokenToString(ExprTokenType &aToken, LPTSTR aBuf, size_t *aLength)
+ 	//case SYM_OBJECT: // Treat objects as empty strings (or TRUE where appropriate).
+ 	//case SYM_MISSING:
+ 	default:
+-		result = _T("");
++		result = const_cast<LPTSTR>(_T(""));
+ 	}
+ 	if (aLength) // Caller wants to know the string's length as well.
+ 		*aLength = _tcslen(result);
+diff --git a/source/script_expression.cpp b/source/script_expression.cpp
+index ccf9f47..6ac0806 100644
+--- a/source/script_expression.cpp
++++ b/source/script_expression.cpp
+@@ -72,7 +72,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
+ 	// "in scope" in case of early "goto" (goto substantially boosts performance and reduces code size here).
+ 	ExprTokenType **to_free = (ExprTokenType **)_alloca(mArg[aArgIndex].max_alloc * sizeof(ExprTokenType *));
+ 	int to_free_count = 0; // The actual number of items in use in the above array.
+-	LPTSTR result_to_return = _T(""); // By contrast, NULL is used to tell the caller to abort the current thread.
++	LPTSTR result_to_return = const_cast<LPTSTR>(_T("")); // By contrast, NULL is used to tell the caller to abort the current thread.
+ 	LPCTSTR error_msg = ERR_EXPR_EVAL, error_info = _T("");
+ 	ExprTokenType *error_value;
+ 	Var *output_var = (mActionType == ACT_ASSIGNEXPR) ? VAR(mArg[0]) : NULL; // Resolve early because it's similar in usage/scope to the above.
+@@ -1330,7 +1330,7 @@ push_this_token:
+ 		// This is an optimization that improves the speed of ACT_IF by up to 50% (ACT_WHILE is
+ 		// probably improved by only up-to-15%). Simple expressions like "if (x < y)" see the biggest
+ 		// speedup.
+-		result_to_return = TokenToBOOL(result_token) ? _T("1") : _T(""); // Return "" vs. "0" for FALSE for consistency with "goto abnormal_end" (which bypasses this section).
++		result_to_return = const_cast<LPTSTR>(TokenToBOOL(result_token) ? _T("1") : _T("")); // Return "" vs. "0" for FALSE for consistency with "goto abnormal_end" (which bypasses this section).
+ 		goto normal_end_skip_output_var; // ACT_IF never has an output_var.
+ 	}
+ 	
+@@ -2286,7 +2286,7 @@ ResultType Line::ExpandArgs(ResultToken *aResultTokens)
+ 				(   mActionType == ACT_ASSIGNEXPR && i == 1  // By contrast, for the below i==anything (all args):
+ 				||  mActionType == ACT_IF
+ 				//|| mActionType == ACT_WHILE // Not necessary to check this one because loadtime leaves ACT_WHILE as an expression in all common cases.
+-				) ? _T("") : NULL; // See "Update #2" and later comments above.
++				) ? const_cast<LPTSTR>(_T("")) : NULL; // See "Update #2" and later comments above.
+ 			
+ 		} // for each arg.
+ 
+diff --git a/source/script_object.cpp b/source/script_object.cpp
+index 1df41b8..f5a740b 100644
+--- a/source/script_object.cpp
++++ b/source/script_object.cpp
+@@ -521,7 +521,7 @@ ResultType Object::Invoke(IObject_Invoke_PARAMS_DECL)
+ 	name_t name;
+ 	if (!aName)
+ 	{
+-		name = IS_INVOKE_CALL ? _T("Call") : _T("__Item");
++		name = const_cast<LPTSTR>(IS_INVOKE_CALL ? _T("Call") : _T("__Item"));
+ 		aFlags |= IF_BYPASS_METAFUNC;
+ 	}
+ 	else
+diff --git a/source/script_registry.cpp b/source/script_registry.cpp
+index c65284d..b8ff8df 100644
+--- a/source/script_registry.cpp
++++ b/source/script_registry.cpp
+@@ -635,7 +635,7 @@ BIF_DECL(BIF_Reg)
+ 	BuiltInFunctionID action = _f_callee_id;
+ 	HKEY root_key;
+ 	LPTSTR sub_key;
+-	LPTSTR value_name = action == FID_RegDeleteKey ? NULL : _T(""); // Set default.
++	LPTSTR value_name = action == FID_RegDeleteKey ? NULL : const_cast<LPTSTR>(_T("")); // Set default.
+ 	DWORD value_type = REG_NONE; // RegWrite
+ 	ExprTokenType *value = nullptr; // RegWrite
+ 	bool close_root;

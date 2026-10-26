@@ -1,0 +1,133 @@
+From ce13cc1c250d1c37c3fc9365ff1f621a4ade7ad7 Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Tue, 14 Apr 2026 12:45:20 +0200
+Subject: [PATCH 04/N] fix C++ type portability issues for GCC
+
+GCC requires several syntax adjustments that MSVC accepts silently:
+
+In abi.h, nullptr_t requires <cstddef> under GCC. Rather than adding
+the include, use decltype(nullptr) which works everywhere.
+
+In WinGroup.h, a forward declaration of an enum without an underlying
+type is a GCC error. Add `: int` to satisfy the requirement.
+
+In hook.h, the extra-qualified member name `input_type::input_type` in
+the constructor declaration is rejected by GCC. Remove the redundant
+class qualification.
+
+In MdType.h, an incorrect `typename` keyword on a non-dependent type
+is rejected in strict mode. The md_cat token-pasting macro also needs
+two-level indirection because the C/C++ preprocessor's `##` operator
+suppresses macro expansion of its operands. If a single-level
+`md_cat(a,b)` directly contained `a ## b`, any macros passed as
+arguments would be pasted literally without being expanded first.
+The fix introduces `md_cat_(a,b)` as the inner macro that performs
+the actual `##` paste, and `md_cat(a,...)` as the outer macro that
+merely forwards its arguments. When the outer macro's body is
+expanded, the preprocessor expands any macros in the arguments before
+they reach the inner `##` in `md_cat_`.
+
+In script.h, the forward declaration of BuiltInFunctionID needs an
+underlying type (`: int`) for GCC, and the extra-qualified member name
+`ScriptTimer::Disable` in the class body must drop the class prefix.
+---
+ source/MdType.h   | 5 +++--
+ source/WinGroup.h | 2 +-
+ source/abi.h      | 4 ++--
+ source/hook.h     | 2 +-
+ source/script.h   | 4 ++--
+ 5 files changed, 9 insertions(+), 8 deletions(-)
+
+diff --git a/source/MdType.h b/source/MdType.h
+index 9d3c351..49462c7 100644
+--- a/source/MdType.h
++++ b/source/MdType.h
+@@ -91,7 +91,7 @@ template<MdType T> struct md_optout { typedef typename md_argtype<T>::t *t; };
+ template<> struct md_optout<MdType::String> { typedef StrRet *t; };
+ template<> struct md_optout<MdType::Variant> { typedef ResultToken *t; };
+ 
+-template<MdType T> struct md_optional { typedef typename optl<typename md_argtype<T>::t> t; };
++template<MdType T> struct md_optional { typedef optl<typename md_argtype<T>::t> t; };
+ template<> struct md_optional<MdType::Variant> { typedef ExprTokenType *t; };
+ 
+ //template<MdType T> struct md_retval { typedef typename md_argtype<T>::t t; };
+@@ -110,7 +110,8 @@ template<> struct md_retval<MdType::ResultType> { typedef ResultType t; };
+ 
+ #include "map.h"
+ 
+-#define md_cat(a, ...) a ## __VA_ARGS__
++#define md_cat_(a, ...) a ## __VA_ARGS__
++#define md_cat(a, ...) md_cat_(a, __VA_ARGS__)
+ 
+ #define md_arg_decl_type_In(type) md_argtype<MdType::type>::t
+ #define md_arg_decl_type_In_Opt(type) md_optional<MdType::type>::t
+diff --git a/source/WinGroup.h b/source/WinGroup.h
+index b4fc9dd..bb3ece8 100644
+--- a/source/WinGroup.h
++++ b/source/WinGroup.h
+@@ -48,7 +48,7 @@ public:
+ 
+ 
+ 
+-enum BuiltInFunctionID;
++enum BuiltInFunctionID : int;
+ class WinGroup
+ {
+ private:
+diff --git a/source/abi.h b/source/abi.h
+index 39d3feb..012bab4 100644
+--- a/source/abi.h
++++ b/source/abi.h
+@@ -36,7 +36,7 @@ template<typename T> class optl
+ 	const T *_value;
+ public:
+ 	optl(T &v) : _value {&v} {}
+-	optl(nullptr_t) : _value {nullptr} {}
++	optl(decltype(nullptr)) : _value {nullptr} {}
+ 	bool has_value() { return _value != nullptr; }
+ 	T operator* () { return *_value; }
+ 	T value() { return *_value; }
+@@ -63,7 +63,7 @@ template<> class optl<IObject *>
+ 	IObject *_value;
+ public:
+ 	optl(IObject *v) : _value {v} {}
+-	optl(nullptr_t) : _value {nullptr} {}
++	optl(decltype(nullptr)) : _value {nullptr} {}
+ 	bool has_value() { return _value != nullptr; }
+ 	IObject *value() { return _value; }
+ };
+diff --git a/source/hook.h b/source/hook.h
+index 220b113..6c9e807 100644
+--- a/source/hook.h
++++ b/source/hook.h
+@@ -215,7 +215,7 @@ struct input_type
+ 	UINT EndingMatchIndex;
+ 	UCHAR KeyVK[VK_ARRAY_COUNT]; // A sparse array of key flags by VK.
+ 	UCHAR KeySC[SC_ARRAY_COUNT]; // A sparse array of key flags by SC.
+-	input_type::input_type() // A simple constructor to initialize the fields that need it.
++	input_type() // A simple constructor to initialize the fields that need it.
+ 		: Status(INPUT_OFF), Prev(NULL), ScriptObject(NULL)
+ 		, Buffer(NULL), match(NULL), MatchBuf(NULL), MatchBufSize(0)
+ 		, EndChars(NULL), EndCharsMax(0), KeyVK(), KeySC(), BufferLength(0)
+diff --git a/source/script.h b/source/script.h
+index 7293245..52217d3 100644
+--- a/source/script.h
++++ b/source/script.h
+@@ -590,7 +590,7 @@ enum JoyControls {JOYCTRL_INVALID, JOYCTRL_XPOS, JOYCTRL_YPOS, JOYCTRL_ZPOS
+ // in g_BIF) which are implemented using a single C++ function.  These IDs are passed to the
+ // C++ function to tell it which function is being called.  Each group starts at ID 0 in case
+ // it helps the compiler to reduce code size.
+-enum BuiltInFunctionID {
++enum BuiltInFunctionID : int {
+ 	FID_Object_New = -1,
+ 	FID_GetMethod = 0, FID_HasMethod,
+ 	FID_DllCall = 0, FID_ComCall,
+@@ -1862,7 +1862,7 @@ public:
+ 	bool mEnabled;
+ 	bool mRunOnlyOnce;
+ 	ScriptTimer *mNextTimer;  // Next items in linked list
+-	void ScriptTimer::Disable();
++	void Disable();
+ 	ScriptTimer(IObject *aLabel)
+ 		#define DEFAULT_TIMER_PERIOD 250
+ 		: mCallback(aLabel), mPeriod(DEFAULT_TIMER_PERIOD), mPriority(0) // Default is always 0.

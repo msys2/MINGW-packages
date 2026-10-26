@@ -1,26 +1,39 @@
+# Maintainer: Maksim Bondarenkov <maksapple2306@gmail.com>
+
 _realname=wasi-libc
 pkgbase=mingw-w64-${_realname}
 pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
-pkgver=0+410+574b88da
-_commit=574b88da481569b65a237cb80daf9a2d5aeaf82d # tags/wasi-sdk-25
+pkgver=0+659+2e6fb9d8
+_commit=2e6fb9d8ee0cdf9e431fbcabe8af3115de000a13 # tags/wasi-sdk-34
 pkgrel=1
 epoch=1
 pkgdesc="WASI libc implementation for WebAssembly (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+mingw_arch=('ucrt64' 'clang64' 'clangarm64')
 url="https://github.com/WebAssembly/wasi-libc"
+msys2_repository_url='https://github.com/WebAssembly/wasi-libc'
 msys2_references=(
   'archlinux: wasi-libc'
 )
-license=('Apache-2.0 WITH LLVM-exception AND Apache-2.0 AND MIT')
+license=('spdx:Apache-2.0 WITH LLVM-exception AND Apache-2.0 AND MIT')
 makedepends=(
   "${MINGW_PACKAGE_PREFIX}-clang"
   "${MINGW_PACKAGE_PREFIX}-llvm"
+  "${MINGW_PACKAGE_PREFIX}-wasi-compiler-rt"
+  "${MINGW_PACKAGE_PREFIX}-wasm-component-ld"
+  "${MINGW_PACKAGE_PREFIX}-wasm-pkg-tools"
+  "${MINGW_PACKAGE_PREFIX}-wasm-tools"
+  "${MINGW_PACKAGE_PREFIX}-wit-bindgen"
+  "${MINGW_PACKAGE_PREFIX}-cmake"
+  "${MINGW_PACKAGE_PREFIX}-ninja"
   'git'
 )
-options=('!strip')
-source=("git+$url.git#commit=${_commit}")
-sha256sums=('6749d76c05778fe53bf3ec6a2cb810dac4d8ccdc295d63e8554f1f899536df84')
+groups=("${MINGW_PACKAGE_PREFIX}-wasi-sdk")
+options=('!buildflags' '!strip')
+source=("git+${url}.git#commit=${_commit}")
+sha256sums=('e35777d8975df1181ce1d05ec7cb2432742b4fc2e848225061dfbca0f9c15c4a')
+
+_targets=(wasm32-wasip1 wasm32-wasip1-threads wasm32-wasip2)
 
 pkgver() {
   cd "${_realname}"
@@ -29,26 +42,65 @@ pkgver() {
 }
 
 build() {
-  cd "${_realname}"
+  # build options are derived from
+  # https://github.com/WebAssembly/wasi-sdk/blob/main/cmake/wasi-sdk-sysroot.cmake
 
-  local -A targets=(
-    wasm32-wasip1         ''
-    wasm32-wasip1-threads 'THREAD_MODEL=posix'
-    wasm32-wasip2         'WASI_SNAPSHOT=p2'
+  local _resource_dir
+  _resource_dir="$(clang --print-resource-dir)"
+
+  local cmake_options=(
+    -Wno-author
+    -S "${_realname}"
+    -GNinja
+    -DCMAKE_INSTALL_PREFIX="${MINGW_PREFIX}/share/wasi-sysroot"
+    -DCMAKE_C_COMPILER="${MINGW_PREFIX}/bin/clang.exe"
+    -DCMAKE_C_COMPILER_WORKS=ON
+    -DCMAKE_CXX_COMPILER="${MINGW_PREFIX}/bin/clang++.exe"
+    -DCMAKE_CXX_COMPILER_WORKS=ON
+    -DCMAKE_AR="${MINGW_PREFIX}/bin/llvm-ar.exe"
+    -DCMAKE_NM="${MINGW_PREFIX}/bin/llvm-nm.exe"
+    -DCMAKE_RANLIB="${MINGW_PREFIX}/bin/llvm-ranlib.exe"
+    -DCMAKE_C_LINKER_DEPFILE_SUPPORTED=OFF
+    -DCMAKE_CXX_LINKER_DEPFILE_SUPPORTED=OFF
+    -DCMAKE_SYSROOT="${MINGW_PREFIX}/share/wasi-sysroot"
+    -DCMAKE_SYSTEM_NAME=WASI
+    -DCMAKE_SYSTEM_PROCESSOR=wasm32
+    -DCMAKE_SYSTEM_VERSION=1
   )
+  if check_option "debug" "n"; then
+    cmake_options+=("-DCMAKE_BUILD_TYPE=Release")
+  else
+    cmake_options+=("-DCMAKE_BUILD_TYPE=Debug")
+  fi
 
-  for target in "${!targets[@]}"; do
-    make CC=clang AR=llvm-ar NM=llvm-nm TARGET_TRIPLE="$target" ${targets[$target]}
+  for _target in "${_targets[@]}"; do
+    extra_cflags="-Wno-deprecated -fno-exceptions"
+
+    if [[ ${target} = *p[23]* ]]; then
+      extra_cflags+=" -fPIC"
+    fi
+
+    cmake_target_options=(
+      -B "build-${MSYSTEM}-${_target}"
+      -DTARGET_TRIPLE="${_target}"
+      -DCMAKE_C_FLAGS="${extra_cflags}"
+      -DCMAKE_ASM_FLAGS="${extra_cflags}"
+      -DBUILTINS_LIB="${_resource_dir}/lib/${_target/wasm32/wasm32-unknown}/libclang_rt.builtins.a"
+    )
+
+    MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=;-DCMAKE_SYSROOT=" \
+      cmake "${cmake_options[@]}" "${cmake_target_options[@]}"
+    cmake --build build-${MSYSTEM}-${_target}
   done
 }
 
 package() {
-  cd "${_realname}"
+  for _target in "${_targets[@]}"; do
+    DESTDIR="${pkgdir}" cmake --install build-${MSYSTEM}-${_target}
+  done
 
-  install -dm755 "${pkgdir}${MINGW_PREFIX}"/share
+  # reduce duplication
+  hardlink -c "${pkgdir}${MINGW_PREFIX}/share/wasi-sysroot"
 
-  cp -dr --preserve=mode,timestamp sysroot "${pkgdir}${MINGW_PREFIX}"/share/wasi-sysroot
-
-  # Package licenses
-  install -Dm644 LICENSE* -t "${pkgdir}${MINGW_PREFIX}"/share/licenses/${_realname}
+  install -Dm644 ${_realname}/LICENSE* -t "${pkgdir}${MINGW_PREFIX}"/share/licenses/${_realname}
 }

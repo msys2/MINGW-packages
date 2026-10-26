@@ -1,0 +1,334 @@
+diff --git a/egg/egg-secure-memory.c b/egg/egg-secure-memory.c
+index ed6fbcc..2f4f835 100644
+--- a/egg/egg-secure-memory.c
++++ b/egg/egg-secure-memory.c
+@@ -31,7 +31,11 @@
+ #include "egg-secure-memory.h"
+ 
+ #include <sys/types.h>
++#ifndef _WIN32
+ #include <sys/mman.h>
++#else
++#include <windows.h>
++#endif
+ #include <stddef.h>
+ #include <string.h>
+ #include <stdio.h>
+@@ -139,6 +143,218 @@ unused_peek (void **stack)
+ 	return *stack;
+ }
+ 
++#ifdef _WIN32
++#  ifndef _SC_PAGE_SIZE
++#    define _SC_PAGE_SIZE 30
++#  endif
++#  define PROT_READ   0x1
++#  define PROT_WRITE  0x2
++#  define MAP_SHARED  0x1
++#  define MAP_PRIVATE 0x2
++#  define MAP_FIXED   0x10
++#  define MAP_ANONYMOUS 0x20
++#  define MAP_ANON MAP_ANONYMOUS
++#  define MAP_FAILED  ((void *) -1)
++
++long sysconf(int name);
++int getpagesize(void);
++void *mmap(void *start, size_t len, int access, int flags, int fd, unsigned long long off);
++void *mmap_impl(void *start, size_t len, int access, int flags, int fd, unsigned long long off, int inherited);
++int munmap (void *start, size_t length);
++int munmap_impl (void *start, size_t length, int anonymous);
++#  define HAVE_MLOCK 1
++int mlock(const void *addr, size_t len);
++int munlock(const void *addr, size_t len);
++
++
++/**
++ * @brief get configurable system variables
++ * @param system variable to be queried
++ * @return -1 on error, current variable value on the system otherwise
++ */
++long
++sysconf (int name)
++{
++  switch(name)
++  {
++    case _SC_PAGE_SIZE:
++      {
++        SYSTEM_INFO sys_info;
++        GetSystemInfo(&sys_info);
++        return sys_info.dwAllocationGranularity;
++      }
++    default:
++      errno = EINVAL;
++      return -1;
++  }
++}
++
++int
++getpagesize (void)
++{
++  return sysconf (_SC_PAGE_SIZE);
++}
++
++void *
++mmap_impl (void *start, size_t len, int access, int flags, int fd,
++                unsigned long long off, int inheritable)
++{
++  DWORD protect;
++  DWORD access_param;
++  DWORD high, low;
++  HANDLE h, hFile;
++  SECURITY_ATTRIBUTES sec_none;
++  void *base;
++  errno = 0;
++
++  switch(access)
++  {
++    case PROT_WRITE:
++      protect = PAGE_READWRITE;
++      access_param = FILE_MAP_WRITE;
++      break;
++    case PROT_READ:
++      protect = PAGE_READONLY;
++      access_param = FILE_MAP_READ;
++      break;
++    default:
++      protect = PAGE_WRITECOPY;
++      access_param = FILE_MAP_COPY;
++      break;
++  }
++
++  h = NULL;
++  base = NULL;
++  if (fd >= 0)
++  {
++
++    sec_none.nLength = sizeof(SECURITY_ATTRIBUTES);
++    sec_none.bInheritHandle = inheritable ? TRUE : FALSE;
++    sec_none.lpSecurityDescriptor = NULL;
++
++    hFile = (HANDLE) _get_osfhandle(fd);
++
++    h = CreateFileMapping(hFile, &sec_none, protect, 0, 0, NULL);
++
++    if (! h)
++    {
++      errno = EINVAL;
++      return MAP_FAILED;
++    }
++
++    high = off >> 32;
++    low = off & ULONG_MAX;
++
++    /* If a non-zero start is given, try mapping using the given address first.
++       If it fails and flags is not MAP_FIXED, try again with NULL address. */
++    if (start)
++      base = MapViewOfFileEx(h, access_param, high, low, len, start);
++    if (!base && !(flags & MAP_FIXED))
++      base = MapViewOfFileEx(h, access_param, high, low, len, NULL);
++  }
++  else if ((flags & MAP_PRIVATE) && (flags & MAP_ANONYMOUS))
++  {
++    if (start)
++      base = VirtualAlloc (start, len, MEM_COMMIT | MEM_RESERVE,
++          protect);
++    if (!base && !(flags & MAP_FIXED))
++      base = VirtualAlloc (NULL, len, MEM_COMMIT | MEM_RESERVE,
++          protect);
++  }
++  else
++  {
++    errno = ENOSYS;
++    return MAP_FAILED;
++  }
++
++  if (!base || ((flags & MAP_FIXED) && base != start))
++  {
++    if (!base)
++    {
++      errno = EINVAL;
++    }
++    else
++      errno = EINVAL;
++
++    if (h)
++      CloseHandle(h);
++    return MAP_FAILED;
++  }
++
++  return base;
++}
++
++void *
++mmap(void *start, size_t len, int access, int flags, int fd, unsigned long long off)
++{
++  return mmap_impl (start, len, access, flags, fd, off, TRUE);
++}
++
++/**
++ * @brief Unmap files from memory
++ * @author Cygwin team
++ * @author Nils Durner
++ */
++int
++munmap_impl (void *start, size_t length, int anonymous)
++{
++  if (anonymous)
++  {
++    if (VirtualFree (start, 0, MEM_RELEASE))
++    {
++      errno = 0;
++      return 0;
++    }
++    else
++    {
++      errno = EINVAL;
++      return (int) MAP_FAILED;
++    }
++  }
++  else
++  {
++    if (UnmapViewOfFile(start))
++    {
++      errno = 0;
++      return 0;
++    }
++    else
++    {
++      errno = EINVAL;
++      return (int) MAP_FAILED;
++    }
++  }
++}
++
++int
++munmap (void *start, size_t length)
++{
++  return munmap_impl (start, length, TRUE);
++}
++
++
++int
++mlock (const void *addr, size_t len)
++{
++  BOOL b;
++  b = VirtualLock ((LPVOID) addr, len);
++  if (0 == b)
++    return EINVAL;
++  return 0;
++}
++
++int
++munlock (const void *addr, size_t len)
++{
++  BOOL b;
++  b = VirtualUnlock ((LPVOID) addr, len);
++  if (0 == b)
++    return EINVAL;
++  return 0;
++}
++#endif
++
++
+ /* -----------------------------------------------------------------------------
+  * POOL META DATA ALLOCATION
+  *
+diff --git a/libsecret/mock-service.c b/libsecret/mock-service.c
+index 55abca0..ef0f820 100644
+--- a/libsecret/mock-service.c
++++ b/libsecret/mock-service.c
+@@ -22,7 +22,12 @@
+ #include <errno.h>
+ #include <stdio.h>
+ #include <string.h>
++#ifndef _WIN32
+ #include <sys/wait.h>
++#else
++#include <windows.h>
++#include <io.h>
++#endif
+ 
+ #ifdef __linux
+ #include <sys/prctl.h>
+@@ -136,12 +141,19 @@ mock_service_stop (void)
+ 	while (g_main_context_iteration (NULL, FALSE));
+ 
+ 	if (pid) {
++#ifndef _WIN32
+ 		if (kill (pid, SIGTERM) < 0) {
+ 			if (errno != ESRCH)
+ 				g_warning ("kill() failed: %s", g_strerror (errno));
+ 		}
+ 
+ 		waitpid (pid, NULL, 0);
++#else
++		if (!TerminateProcess ((HANDLE) pid, 0)) {
++			g_warning ("TerminateProcess() failed: %lu", GetLastError ());
++		}
++		WaitForSingleObject ((HANDLE) pid, INFINITE);
++#endif
+ 		g_spawn_close_pid (pid);
+ 		pid = 0;
+ 	}
+diff --git a/tool/secret-tool.c b/tool/secret-tool.c
+index b20cdb3..a057197 100644
+--- a/tool/secret-tool.c
++++ b/tool/secret-tool.c
+@@ -22,12 +22,17 @@
+ #include "libsecret/secret-paths.h"
+ 
+ #include <glib/gi18n.h>
++#include <glib/gprintf.h>
+ 
+ #include <errno.h>
+ #include <locale.h>
+ #include <limits.h>
+ #include <stdlib.h>
+ #include <string.h>
++#ifdef _WIN32
++#include <io.h>
++#include <conio.h>
++#endif
+ 
+ #define SECRET_DEFAULT_ALIAS "/org/freedesktop/secrets/aliases/default"
+ #define SECRET_COLLECTION_PREFIX "/org/freedesktop/secrets/collection/"
+@@ -302,6 +307,39 @@ read_password_stdin (void)
+ 	}
+ }
+ 
++#if defined(G_OS_WIN32) || defined(__BIONIC__)
++/* win32 doesn't have getpass() */
++#include <stdio.h>
++#ifndef BUFSIZ
++#define BUFSIZ 8192
++#endif
++static gchar *
++getpass (const gchar *prompt)
++{
++  static gchar buf[BUFSIZ];
++  gint i;
++
++  g_printf ("%s", prompt);
++  fflush (stdout);
++
++  for (i = 0; i < BUFSIZ - 1; ++i)
++    {
++#ifdef __BIONIC__
++      buf[i] = getc (stdin);
++#else
++      buf[i] = _getch ();
++#endif
++      if (buf[i] == '\r')
++        break;
++    }
++  buf[i] = '\0';
++
++  g_printf ("\n");
++
++  return &buf[0];
++}
++#endif
++
+ static SecretValue *
+ read_password_tty (void)
+ {

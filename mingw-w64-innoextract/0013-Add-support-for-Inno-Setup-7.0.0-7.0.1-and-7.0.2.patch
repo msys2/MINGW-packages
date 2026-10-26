@@ -1,0 +1,212 @@
+From e48636159522550acb2ac32950e43fb3c0d54281 Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Wed, 29 Jul 2026 18:03:13 +0200
+Subject: [PATCH 13/N] Add support for Inno Setup 7.0.0, 7.0.1 and 7.0.2
+
+The released Inno Setup 7.0.0, 7.0.1 and 7.0.2 identify their setup
+data with the SetupID magic "Inno Setup Setup Data (7.0.0.3)";
+register it as a known Unicode version. Two on-disk format changes
+come with it, both described in Projects/Src/Shared.Struct.pas at
+tag is-7_0_0 in https://github.com/jrsoftware/issrc.
+
+TSetupHeader gained a CompiledCodeVersion field (Cardinal), inserted
+after the entry-count block and before MinVersion, recording the
+version of the compiled Pascal [Code] script. innoextract does not
+run that script and merely reads and stores the value.
+
+That magic also replaced the per-architecture option flags with a
+single-byte enum, TSetupEntryBitness = (ebInstallDefault, eb32Bit,
+eb64Bit, ebNativeBit, ebCurrentProcessBit). It drops fo32Bit/fo64Bit
+from TSetupFileEntry.Options, ro32Bit/ro64Bit from
+TSetupRegistryEntry.Options and roRun32Bit/roRun64Bit from
+TSetupRunEntry.Options; each of those three records now stores a
+Bitness byte immediately before Options.
+
+For 7.0.0.3 and newer, innoextract reads that Bitness byte in place of
+the removed flag pair and maps its two fixed-architecture values,
+eb32Bit and eb64Bit, back onto the Bits32/Bits64 flags so that
+architecture-based file-collision handling keeps working. The
+remaining values (ebInstallDefault, ebNativeBit and
+ebCurrentProcessBit) are architecture-neutral and set no flag.
+
+Assisted-by: Claude Opus 4.8
+Signed-off-by: Johannes Schindelin <johannes.schindelin@gmx.de>
+---
+ src/setup/file.cpp     | 21 ++++++++++++++++++++-
+ src/setup/header.cpp   | 11 +++++++++++
+ src/setup/header.hpp   |  2 ++
+ src/setup/registry.cpp | 18 +++++++++++++++++-
+ src/setup/run.cpp      | 18 +++++++++++++++++-
+ src/setup/version.cpp  |  1 +
+ 6 files changed, 68 insertions(+), 3 deletions(-)
+
+diff --git a/src/setup/file.cpp b/src/setup/file.cpp
+index 484b027..afb5c56 100644
+--- a/src/setup/file.cpp
++++ b/src/setup/file.cpp
+@@ -157,6 +157,25 @@ void file_entry::load(std::istream & is, const info & i) {
+ 		permission = boost::int16_t(-1);
+ 	}
+ 	
++	if(i.version >= INNO_VERSION_EXT(7, 0, 0, 3)) {
++		// Inno Setup 7.0.0 (SetupID "7.0.0.3") removed the fo32Bit/fo64Bit
++		// flags from TSetupFileEntryOption and moved the target
++		// architecture into a dedicated TSetupEntryBitness byte enum
++		// (ebInstallDefault, eb32Bit, eb64Bit, ebNativeBit,
++		// ebCurrentProcessBit) stored before Options. See
++		// Projects/Src/Shared.Struct.pas at tag is-7_0_0 in
++		// https://github.com/jrsoftware/issrc. Translate the two
++		// fixed-architecture values back into the existing Bits32/Bits64
++		// flags so architecture-specific collision handling keeps working;
++		// the runtime-resolved values are treated as architecture-neutral.
++		boost::uint8_t bitness = util::load<boost::uint8_t>(is);
++		if(bitness == 1) {
++			options |= Bits32;
++		} else if(bitness == 2) {
++			options |= Bits64;
++		}
++	}
++	
+ 	stored_flag_reader<flags> flagreader(is, i.version.bits());
+ 	
+ 	flagreader.add(ConfirmOverwrite);
+@@ -219,7 +238,7 @@ void file_entry::load(std::istream & is, const info & i) {
+ 	if(i.version >= INNO_VERSION(5, 1, 0)) {
+ 		flagreader.add(CreateAllSubDirs);
+ 	}
+-	if(i.version >= INNO_VERSION(5, 1, 2)) {
++	if(i.version >= INNO_VERSION(5, 1, 2) && i.version < INNO_VERSION_EXT(7, 0, 0, 3)) {
+ 		flagreader.add(Bits32);
+ 		flagreader.add(Bits64);
+ 	}
+diff --git a/src/setup/header.cpp b/src/setup/header.cpp
+index 7fbac6f..c4ad88f 100644
+--- a/src/setup/header.cpp
++++ b/src/setup/header.cpp
+@@ -390,6 +390,17 @@ void header::load(std::istream & is, const version & version) {
+ 		info_after_size = util::load<boost::int32_t>(is, version.bits());
+ 	}
+ 	
++	if(version >= INNO_VERSION_EXT(7, 0, 0, 3)) {
++		// Inno Setup 7.0.0 (SetupID "7.0.0.3") added a CompiledCodeVersion
++		// (Cardinal) field to TSetupHeader between the entry counts and
++		// MinVersion. See Projects/Src/Shared.Struct.pas at tag is-7_0_0 in
++		// https://github.com/jrsoftware/issrc. innoextract does not run the
++		// compiled [Code] script, so the value is only stored.
++		compiled_code_version = util::load<boost::uint32_t>(is);
++	} else {
++		compiled_code_version = 0;
++	}
++	
+ 	winver.load(is, version);
+ 	
+ 	if(version < INNO_VERSION_EXT(6, 4, 0, 1)) {
+diff --git a/src/setup/header.hpp b/src/setup/header.hpp
+index 2138c22..f2e03f2 100644
+--- a/src/setup/header.hpp
++++ b/src/setup/header.hpp
+@@ -206,6 +206,8 @@ struct header {
+ 	size_t run_entry_count;
+ 	size_t uninstall_run_entry_count;
+ 	
++	boost::uint32_t compiled_code_version; //!< Inno Setup 7.0.0.3+ (CompiledCodeVersion)
++	
+ 	windows_version_range winver;
+ 	
+ 	typedef boost::uint32_t Color;
+diff --git a/src/setup/registry.cpp b/src/setup/registry.cpp
+index f5a1ef4..19fc2ab 100644
+--- a/src/setup/registry.cpp
++++ b/src/setup/registry.cpp
+@@ -103,6 +103,17 @@ void registry_entry::load(std::istream & is, const info & i) {
+ 		type = stored_enum<stored_registry_entry_type_0>(is).get();
+ 	}
+ 	
++	boost::uint8_t bitness = 0;
++	if(i.version >= INNO_VERSION_EXT(7, 0, 0, 3)) {
++		// Inno Setup 7.0.0 (SetupID "7.0.0.3") removed the ro32Bit/ro64Bit
++		// flags from TSetupRegistryEntry.Options and moved the target
++		// registry view into a TSetupEntryBitness byte enum stored after
++		// Typ, before Options. See Projects/Src/Shared.Struct.pas at tag
++		// is-7_0_0 in https://github.com/jrsoftware/issrc. Translated to
++		// the existing Bits32/Bits64 flags after the flag set is read.
++		bitness = util::load<boost::uint8_t>(is);
++	}
++	
+ 	stored_flag_reader<flags> flagreader(is, i.version.bits());
+ 	
+ 	if(i.version.bits() != 16) {
+@@ -125,12 +136,17 @@ void registry_entry::load(std::istream & is, const info & i) {
+ 	if(i.version >= INNO_VERSION(1, 3, 16)) {
+ 		flagreader.add(DontCreateKey);
+ 	}
+-	if(i.version >= INNO_VERSION(5, 1, 0)) {
++	if(i.version >= INNO_VERSION(5, 1, 0) && i.version < INNO_VERSION_EXT(7, 0, 0, 3)) {
+ 		flagreader.add(Bits32);
+ 		flagreader.add(Bits64);
+ 	}
+ 	
+ 	options = flagreader.finalize();
++	if(bitness == 1) {
++		options |= Bits32;
++	} else if(bitness == 2) {
++		options |= Bits64;
++	}
+ }
+ 
+ } // namespace setup
+diff --git a/src/setup/run.cpp b/src/setup/run.cpp
+index d428156..e77c71e 100644
+--- a/src/setup/run.cpp
++++ b/src/setup/run.cpp
+@@ -90,6 +90,17 @@ void run_entry::load(std::istream & is, const info & i) {
+ 	
+ 	wait = stored_enum<stored_run_wait_condition>(is).get();
+ 	
++	boost::uint8_t bitness = 0;
++	if(i.version >= INNO_VERSION_EXT(7, 0, 0, 3)) {
++		// Inno Setup 7.0.0 (SetupID "7.0.0.3") removed the roRun32Bit/
++		// roRun64Bit flags from TSetupRunEntry.Options and moved the target
++		// architecture into a TSetupEntryBitness byte enum stored after
++		// Wait, before Options. See Projects/Src/Shared.Struct.pas at tag
++		// is-7_0_0 in https://github.com/jrsoftware/issrc. Translated to
++		// the existing Bits32/Bits64 flags after the flag set is read.
++		bitness = util::load<boost::uint8_t>(is);
++	}
++	
+ 	stored_flag_reader<flags> flagreader(is, i.version.bits());
+ 	
+ 	if(i.version >= INNO_VERSION(1, 2, 3)) {
+@@ -107,7 +118,7 @@ void run_entry::load(std::istream & is, const info & i) {
+ 	if(i.version >= INNO_VERSION(2, 0, 8)) {
+ 		flagreader.add(HideWizard);
+ 	}
+-	if(i.version >= INNO_VERSION(5, 1, 10)) {
++	if(i.version >= INNO_VERSION(5, 1, 10) && i.version < INNO_VERSION_EXT(7, 0, 0, 3)) {
+ 		flagreader.add(Bits32);
+ 		flagreader.add(Bits64);
+ 	}
+@@ -122,6 +133,11 @@ void run_entry::load(std::istream & is, const info & i) {
+ 	}
+ 	
+ 	options = flagreader.finalize();
++	if(bitness == 1) {
++		options |= Bits32;
++	} else if(bitness == 2) {
++		options |= Bits64;
++	}
+ }
+ 
+ } // namespace setup
+diff --git a/src/setup/version.cpp b/src/setup/version.cpp
+index bdde909..19e2c3c 100644
+--- a/src/setup/version.cpp
++++ b/src/setup/version.cpp
+@@ -194,6 +194,7 @@ const known_version versions[] = {
+ 	{ "Inno Setup Setup Data (6.6.1)",                      INNO_VERSION_EXT(6, 6,  1, 0), version::Unicode },
+ 	{ "Inno Setup Setup Data (6.7.0)",                      INNO_VERSION_EXT(6, 7,  0, 0), version::Unicode },
+ 	{ "Inno Setup Setup Data (7.0.0.1)",   /* prerelease */ INNO_VERSION_EXT(7, 0,  0, 1), version::Unicode },
++	{ "Inno Setup Setup Data (7.0.0.3)",                    INNO_VERSION_EXT(7, 0,  0, 3), version::Unicode },
+ };
+ 
+ } // anonymous namespace

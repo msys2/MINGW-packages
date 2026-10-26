@@ -61,6 +61,13 @@ install_packages() {
     pacman --noprogressbar --upgrade --noconfirm *.pkg.tar.*
 }
 
+pkgver_from_metadata() {
+    local version
+    version="$(sed -n 's/^Version[[:space:]]*:[[:space:]]*//p')"
+    version="${version%-*}"
+    printf '%s\n' "${version#*~}" | sed 's/\./\\./g'
+}
+
 # List DLL dependencies
 list_dll_deps(){
     local target="${1}"
@@ -152,12 +159,16 @@ for package in "${packages[@]}"; do
 
         echo "::group::[meta-diff] ${pkgname}"
         message "Package info diff for ${pkgname}"
-        diff -Nur <(pacman -Si ${MSYSTEM,,}/"${pkgname}") <(pacman -Qip "${pkg}") || true
+        diff -Nur <(pacman -Si ${MSYSTEM,,}/"${pkgname}" | sed '/Download Size/d') <(pacman -Qip "${pkg}" | sed '/Compressed Size/d') || true
         echo "::endgroup::"
 
         echo "::group::[file-diff] ${pkgname}"
         message "File listing diff for ${pkgname}"
-        diff -Nur <(pacman -Fl ${MSYSTEM,,}/"$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
+        old_pkgver="$(pacman -Si ${MSYSTEM,,}/"${pkgname}" | pkgver_from_metadata || true)"
+        new_pkgver="$(pacman -Qip "${pkg}" | pkgver_from_metadata || true)"
+        diff -Nur \
+            <(pacman -Fl ${MSYSTEM,,}/"${pkgname}" | sed -e 's|^[^ ]* |/|' -e "s|${old_pkgver}|PKGVER|g" | sort) \
+            <(pacman -Ql "${pkgname}" | sed -e 's|^[^/]*||' -e "s|${new_pkgver}|PKGVER|g" | sort) || true
         echo "::endgroup::"
 
         echo "::group::[runtime-dependencies] ${pkgname}"
@@ -166,7 +177,7 @@ for package in "${packages[@]}"; do
         if [ "${#binaries[@]}" -ne 0 ]; then
             for binary in ${binaries[@]}; do
                 echo "${binary}:"
-                ntldd -R ${binary} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder\|ngcrecovery\|AzureAttest\|PdmUtilities\|WTDSENSOR\|wtdccm\|SAMSRV\|LSASRV" || true
+                ntldd -R ${binary} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder\|ngcrecovery\|AzureAttest\|PdmUtilities\|WTDSENSOR\|wtdccm\|SAMSRV\|LSASRV\|EDPCSP\|policymanagerprecheck\|dmenterprisediagnostics\|EFSCORE\|FVESKYBACKUP" || true
             done
         fi
         echo "::endgroup::"

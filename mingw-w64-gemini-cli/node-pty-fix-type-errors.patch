@@ -1,0 +1,118 @@
+diff --git a/src/win/winpty.cc b/src/win/winpty.cc
+index b054dee..1010c08 100644
+--- a/src/win/winpty.cc
++++ b/src/win/winpty.cc
+@@ -37,10 +37,10 @@ static volatile LONG ptyCounter;
+ * Helpers
+ */
+ 
+-static winpty_t *get_pipe_handle(int handle) {
++static winpty_t *get_pipe_handle(intptr_t handle) {
+   for (size_t i = 0; i < ptyHandles.size(); ++i) {
+     winpty_t *ptyHandle = ptyHandles[i];
+-    int current = (int)winpty_agent_process(ptyHandle);
++    intptr_t current = (intptr_t)winpty_agent_process(ptyHandle);
+     if (current == handle) {
+       return ptyHandle;
+     }
+@@ -48,10 +48,10 @@ static winpty_t *get_pipe_handle(int handle) {
+   return nullptr;
+ }
+ 
+-static bool remove_pipe_handle(int handle) {
++static bool remove_pipe_handle(intptr_t handle) {
+   for (size_t i = 0; i < ptyHandles.size(); ++i) {
+     winpty_t *ptyHandle = ptyHandles[i];
+-    if ((int)winpty_agent_process(ptyHandle) == handle) {
++    if ((intptr_t)winpty_agent_process(ptyHandle) == handle) {
+       winpty_free(ptyHandle);
+       ptyHandles.erase(ptyHandles.begin() + i);
+       ptyHandle = nullptr;
+@@ -159,22 +159,29 @@ static NAN_METHOD(PtyStartProcess) {
+ 
+   std::string shellpath_(shellpath.begin(), shellpath.end());
+ 
++  // Declare all variables before any goto statements
++  int cols = info[4]->Int32Value(Nan::GetCurrentContext()).FromJust();
++  int rows = info[5]->Int32Value(Nan::GetCurrentContext()).FromJust();
++  bool debug = Nan::To<bool>(info[6]).FromJust();
++  winpty_error_ptr_t error_ptr = nullptr;
++  winpty_config_t* winpty_config = nullptr;
++  winpty_t *pc = nullptr;
++  winpty_spawn_config_t* config = nullptr;
++  HANDLE handle = nullptr;
++  BOOL spawnSuccess = FALSE;
++  v8::Local<v8::Object> marshal = Nan::New<v8::Object>();
++
+   if (shellpath.empty() || !path_util::file_exists(shellpath)) {
+     why << "File not found: " << shellpath_;
+     Nan::ThrowError(why.str().c_str());
+     goto cleanup;
+   }
+ 
+-  int cols = info[4]->Int32Value(Nan::GetCurrentContext()).FromJust();
+-  int rows = info[5]->Int32Value(Nan::GetCurrentContext()).FromJust();
+-  bool debug = Nan::To<bool>(info[6]).FromJust();
+-
+   // Enable/disable debugging
+   SetEnvironmentVariable(WINPTY_DBG_VARIABLE, debug ? "1" : NULL); // NULL = deletes variable
+ 
+   // Create winpty config
+-  winpty_error_ptr_t error_ptr = nullptr;
+-  winpty_config_t* winpty_config = winpty_config_new(0, &error_ptr);
++  winpty_config = winpty_config_new(0, &error_ptr);
+   if (winpty_config == nullptr) {
+     throw_winpty_error("Error creating WinPTY config", error_ptr);
+     goto cleanup;
+@@ -185,7 +192,7 @@ static NAN_METHOD(PtyStartProcess) {
+   winpty_config_set_initial_size(winpty_config, cols, rows);
+ 
+   // Start the pty agent
+-  winpty_t *pc = winpty_open(winpty_config, &error_ptr);
++  pc = winpty_open(winpty_config, &error_ptr);
+   winpty_config_free(winpty_config);
+   if (pc == nullptr) {
+     throw_winpty_error("Error launching WinPTY agent", error_ptr);
+@@ -197,7 +204,7 @@ static NAN_METHOD(PtyStartProcess) {
+   ptyHandles.insert(ptyHandles.end(), pc);
+ 
+   // Create winpty spawn config
+-  winpty_spawn_config_t* config = winpty_spawn_config_new(WINPTY_SPAWN_FLAG_AUTO_SHUTDOWN, shellpath.c_str(), cmdline, cwd, env.c_str(), &error_ptr);
++  config = winpty_spawn_config_new(WINPTY_SPAWN_FLAG_AUTO_SHUTDOWN, shellpath.c_str(), cmdline, cwd, env.c_str(), &error_ptr);
+   if (config == nullptr) {
+     throw_winpty_error("Error creating WinPTY spawn config", error_ptr);
+     goto cleanup;
+@@ -205,8 +212,7 @@ static NAN_METHOD(PtyStartProcess) {
+   winpty_error_free(error_ptr);
+ 
+   // Spawn the new process
+-  HANDLE handle = nullptr;
+-  BOOL spawnSuccess = winpty_spawn(pc, config, &handle, nullptr, nullptr, &error_ptr);
++  spawnSuccess = winpty_spawn(pc, config, &handle, nullptr, nullptr, &error_ptr);
+   winpty_spawn_config_free(config);
+   if (!spawnSuccess) {
+     throw_winpty_error("Unable to start terminal process", error_ptr);
+@@ -215,10 +221,9 @@ static NAN_METHOD(PtyStartProcess) {
+   winpty_error_free(error_ptr);
+ 
+   // Set return values
+-  v8::Local<v8::Object> marshal = Nan::New<v8::Object>();
+   Nan::Set(marshal, Nan::New<v8::String>("innerPid").ToLocalChecked(), Nan::New<v8::Number>((int)GetProcessId(handle)));
+-  Nan::Set(marshal, Nan::New<v8::String>("innerPidHandle").ToLocalChecked(), Nan::New<v8::Number>((int)handle));
+-  Nan::Set(marshal, Nan::New<v8::String>("pid").ToLocalChecked(), Nan::New<v8::Number>((int)winpty_agent_process(pc)));
++  Nan::Set(marshal, Nan::New<v8::String>("innerPidHandle").ToLocalChecked(), Nan::New<v8::Number>((intptr_t)handle));
++  Nan::Set(marshal, Nan::New<v8::String>("pid").ToLocalChecked(), Nan::New<v8::Number>((intptr_t)winpty_agent_process(pc)));
+   Nan::Set(marshal, Nan::New<v8::String>("pty").ToLocalChecked(), Nan::New<v8::Number>(InterlockedIncrement(&ptyCounter)));
+   Nan::Set(marshal, Nan::New<v8::String>("fd").ToLocalChecked(), Nan::New<v8::Number>(-1));
+   {
+@@ -281,8 +286,8 @@ static NAN_METHOD(PtyKill) {
+     return;
+   }
+ 
+-  int handle = info[0]->Int32Value(Nan::GetCurrentContext()).FromJust();
+-  HANDLE innerPidHandle = (HANDLE)info[1]->Int32Value(Nan::GetCurrentContext()).FromJust();
++  intptr_t handle = (intptr_t)info[0]->NumberValue(Nan::GetCurrentContext()).FromJust();
++  HANDLE innerPidHandle = (HANDLE)(intptr_t)info[1]->NumberValue(Nan::GetCurrentContext()).FromJust();
+ 
+   winpty_t *pc = get_pipe_handle(handle);
+   if (pc == nullptr) {

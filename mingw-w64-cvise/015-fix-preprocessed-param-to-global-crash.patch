@@ -1,0 +1,121 @@
+--- a/clang_delta/CommonParameterRewriteVisitor.h
++++ b/clang_delta/CommonParameterRewriteVisitor.h
+@@ -48,6 +48,9 @@
+ bool CommonParameterRewriteVisitor<T, Trans>::VisitCXXConstructExpr(
+        clang::CXXConstructExpr *CE)
+ {
++  if (ConsumerInstance->isInIncludedFile(CE))
++    return true;
++
+   const clang::CXXConstructorDecl *CtorD = CE->getConstructor();
+   if (CtorD->getCanonicalDecl() == ConsumerInstance->TheFuncDecl)
+     AllConstructExprs.push_back(CE);
+@@ -94,6 +97,9 @@
+ bool CommonParameterRewriteVisitor<T, Trans>::VisitCallExpr(
+        clang::CallExpr *CallE)
+ {
++  if (ConsumerInstance->isInIncludedFile(CallE))
++    return true;
++
+   const clang::FunctionDecl *CalleeDecl = NULL;
+   const clang::Expr *E = CallE->getCallee();
+   if (const clang::UnresolvedLookupExpr *UE =
+--- a/clang_delta/Transformation.cpp
++++ b/clang_delta/Transformation.cpp
+@@ -84,6 +84,14 @@
+ {
+   Context = &context;
+   SrcManager = &Context->getSourceManager();
++  SourceLocation MainFileLoc =
++      SrcManager->getLocForStartOfFile(SrcManager->getMainFileID());
++  PresumedLoc MainPresumedLoc = SrcManager->getPresumedLoc(MainFileLoc);
++  if (MainPresumedLoc.isValid()) {
++    MainFileName = MainPresumedLoc.getFilename();
++  } else {
++    MainFileName.clear();
++  }
+   TheRewriter.setSourceMgr(Context->getSourceManager(),
+                            Context->getLangOpts());
+   Hints = std::make_unique<HintsBuilder>(Context->getSourceManager(), Context->getLangOpts());
+@@ -1191,7 +1198,23 @@
+ bool Transformation::isInIncludedFile(SourceLocation Loc) const
+ {
+   Loc = getRealLocation(Loc);
+-  return SrcManager->getFileID(Loc) != SrcManager->getMainFileID();
++  if (Loc.isInvalid())
++    return true;
++
++  if (SrcManager->isInSystemHeader(Loc) ||
++      SrcManager->isInExternCSystemHeader(Loc))
++    return true;
++
++  if (SrcManager->getFileID(Loc) != SrcManager->getMainFileID())
++    return true;
++
++  if (!MainFileName.empty()) {
++    PresumedLoc Presumed = SrcManager->getPresumedLoc(Loc);
++    if (Presumed.isValid() && (MainFileName != Presumed.getFilename()))
++      return true;
++  }
++
++  return false;
+ }
+ 
+ bool Transformation::isInIncludedFile(const Decl *D) const
+--- a/clang_delta/Transformation.h
++++ b/clang_delta/Transformation.h
+@@ -381,6 +381,8 @@
+   std::string ReferenceValue;
+ 
+   bool WarnOnCounterOutOfBounds;
++
++  std::string MainFileName;
+ };
+ 
+ class TransNameQueryVisitor;
+--- a/clang_delta/tests/param-to-global/preprocessed.ii
++++ b/clang_delta/tests/param-to-global/preprocessed.ii
+@@ -0,0 +1,9 @@
++# 1 "header.hpp" 1 3
++int ignored(int x);
++# 1 "main.cc" 2
++struct S {
++  bool f(int a, int b) {
++    return a + b;
++  }
++};
++bool g(S* s, int x, int y) { return s->f(x, y); }
+--- a/clang_delta/tests/param-to-global/preprocessed.output
++++ b/clang_delta/tests/param-to-global/preprocessed.output
+@@ -0,0 +1,10 @@
++# 1 "header.hpp" 1 3
++int ignored(int x);
++# 1 "main.cc" 2
++struct S {
++  int f_a;
++bool f( int b) {
++    return f_a + b;
++  }
++};
++bool g(S* s, int x, int y) { return s->f( y); }
+--- a/clang_delta/tests/test_clang_delta.py
++++ b/clang_delta/tests/test_clang_delta.py
+@@ -377,6 +377,18 @@
+     def test_param_to_global_macro(self):
+         self.check_clang_delta('param-to-global/macro.c', '--transformation=param-to-global --counter=1')
+ 
++    def test_param_to_global_preprocessed(self):
++        self.check_query_instances(
++            'param-to-global/preprocessed.ii',
++            '--query-instances=param-to-global',
++            'Available transformation instances: 5',
++        )
++        self.check_clang_delta(
++            'param-to-global/preprocessed.ii',
++            '--transformation=param-to-global --counter=1',
++            'param-to-global/preprocessed.output',
++        )
++
+     def test_reduce_array_dim_non_type_temp_arg(self):
+         self.check_clang_delta(
+             'reduce-array-dim/non-type-temp-arg.cpp',

@@ -7,7 +7,7 @@ pkgver=1.0.0
 pkgrel=1
 pkgdesc="Some package (mingw-w64)"
 arch=('any')
-mingw_arch=('mingw64' 'ucrt64' 'clang64' 'clangarm64')
+mingw_arch=('ucrt64' 'clang64' 'clangarm64')
 url='https://www.somepackage.org/'
 license=('LICENSE')
 depends=("${MINGW_PACKAGE_PREFIX}-python")
@@ -24,8 +24,8 @@ sha256sums=('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 prepare() {
   cd "${_realname}-${pkgver}"
 
-  patch -Np1 -i "${srcdir}/0001-A-really-important-fix.patch"
-  patch -Np1 -i "${srcdir}/0002-A-less-important-fix.patch"
+  patch -Np1 -i ../0001-A-really-important-fix.patch
+  patch -Np1 -i ../0002-A-less-important-fix.patch
 
   ## (OPTIONAL) Only if setuptools-scm is used
   # Set version for setuptools_scm

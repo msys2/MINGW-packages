@@ -1,0 +1,104 @@
+From 61b8977de6afdfc10fda1c3e170072307d4ac2ec Mon Sep 17 00:00:00 2001
+From: Johannes Schindelin <johannes.schindelin@gmx.de>
+Date: Tue, 14 Apr 2026 12:45:19 +0200
+Subject: [PATCH 01/N] adapt precompiled header and config for MinGW
+
+AutoHotkey's stdafx.h precompiled header is gated on _MSC_VER, locking
+out any non-MSVC compiler. Open the include guard so that MinGW GCC can
+use the same header.
+
+GCC's c++config.h does `#undef min` which destroys any min/max macros
+defined before the C++ standard headers are included. The fix is to
+include <algorithm>, <cmath>, <new>, and <limits> first, then define
+the min/max macros afterwards.
+
+In config.h, the ENABLE_DLLCALL and ENABLE_REGISTERCALLBACK feature
+gates are conditional on _MSC_VER, preventing DllCall and
+RegisterCallback from being compiled under MinGW. These features work
+fine with GCC and the GAS assembly translation of x64call, so enable
+them unconditionally. Also provide _MAX_ULTOSTR_BASE10_COUNT which is
+an MSVC CRT macro absent from MinGW's headers.
+
+The UTF-8 BOM on script_object.cpp is stripped as a minor cleanup.
+---
+ source/config.h          | 10 +++++++++-
+ source/script_object.cpp |  2 +-
+ source/stdafx.h          | 21 ++++++++++++++++++++-
+ 3 files changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/source/config.h b/source/config.h
+index 5ca6393..1171223 100644
+--- a/source/config.h
++++ b/source/config.h
+@@ -6,13 +6,21 @@
+ #define WIN32_PLATFORM
+ #endif
+ 
+-#ifdef _MSC_VER
++#if defined(_MSC_VER) || defined(__MINGW32__)
+ 	#if defined(WIN32_PLATFORM) || defined(_WIN64)
+ 	#define ENABLE_DLLCALL
+ 	#define ENABLE_REGISTERCALLBACK
+ 	#endif
+ #endif
+ 
++// MinGW/GCC compatibility: MSVC-specific constants and macros.
++#ifdef __MINGW32__
++// _MAX_ULTOSTR_BASE10_COUNT is MSVC CRT-specific (max chars for _ultoa).
++#ifndef _MAX_ULTOSTR_BASE10_COUNT
++#define _MAX_ULTOSTR_BASE10_COUNT 22
++#endif
++#endif
++
+ #if !defined(_MBCS) && !defined(_UNICODE) && !defined(UNICODE) // If not set in project settings...
+ 
+ // L: Comment out the next line to enable UNICODE:
+diff --git a/source/script_object.cpp b/source/script_object.cpp
+index adcfe6b..9c0b43f 100644
+--- a/source/script_object.cpp
++++ b/source/script_object.cpp
+@@ -1,4 +1,4 @@
+-﻿#include "stdafx.h" // pre-compiled headers
++#include "stdafx.h" // pre-compiled headers
+ #include "defines.h"
+ #include "globaldata.h"
+ #include "script.h"
+diff --git a/source/stdafx.h b/source/stdafx.h
+index ab8f560..dbdecf7 100644
+--- a/source/stdafx.h
++++ b/source/stdafx.h
+@@ -32,7 +32,7 @@ GNU General Public License for more details.
+ #define _WIN32_WINNT 0x0600
+ #define _WIN32_IE _WIN32_IE_IE70  // Added for TVN_ITEMCHANGED, which most likely requires Vista.
+ 
+-#ifdef _MSC_VER
++#if defined(_MSC_VER) || defined(__MINGW32__)
+ 	#include "config.h" // compile-time configurations
+ 	#include "debug.h"
+ 
+@@ -66,6 +66,25 @@ GNU General Public License for more details.
+ 	//#include "window.h"  // Not to be confused with "windows.h"
+ 	//#include "util.h"
+ 	//#include "SimpleHeap.h"
++
++	// MinGW/GCC: pull in <algorithm> early (for std::min/std::max) and then
++	// define the min/max macros that MSVC's <windef.h> provides in C++ mode.
++	// This must happen after all system headers so that <c++config.h>'s
++	// #undef min/max has already fired and <algorithm>'s templates are parsed
++	// without macro interference.
++	#ifdef __MINGW32__
++	#include <algorithm>
++	#include <new>
++	#include <cmath>
++	#include <limits>
++	#ifndef min
++	#define min(a,b) (((a) < (b)) ? (a) : (b))
++	#endif
++	#ifndef max
++	#define max(a,b) (((a) > (b)) ? (a) : (b))
++	#endif
++	#endif
++
+ #endif
+ 
+ // Lexikos: Defining _WIN32_WINNT 0x0600 seems to break TrayTip in non-English Windows,
