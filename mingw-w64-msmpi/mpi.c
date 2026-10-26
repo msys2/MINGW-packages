@@ -1,52 +1,141 @@
-#include <stdio.h>
-#include <process.h>
+#include <winsock2.h>
 #include <windows.h>
+#include <stdarg.h>
+#include <uv.h>
 
-#if defined(CC)
-	#define C "cc.exe"
-	#define E "MPICC"
-#elif defined(CXX)
-	#define C "c++.exe"
-	#define E "MPICXX"
-#elif defined(FC)
-	#define C "gfortran.exe"
-	#define E "MPIFORT"
-#else
-	#error
+
+static char* printf_new(char* format, ...) {
+  va_list vas;
+  size_t size = 1<<16;
+  char* buffer;
+  while(1) {
+    buffer = malloc(size*sizeof(char)); if(!buffer) abort();
+    va_start(vas, format);
+    int r = vsnprintf(buffer, size, format, vas);
+    va_end(vas);
+    if(r < 0) abort();
+    if(r < size) break;
+    size *= 2;
+    free(buffer);
+  }
+  return buffer;
+}
+
+
+static int result = 1;
+static void on_exit(uv_process_t *request, int64_t status, int signal) {
+  result = signal != 0 ? 128 + signal : status;
+  uv_close((uv_handle_t*)request, NULL);
+}
+
+
+int main(int argc, char **argv) {
+
+  char* root; // mingw prefix directory
+  char* bin; // module's directory
+
+  {
+    size_t size;
+    char* buffer;
+    size = 1<<16;
+    while(1) {
+      root = malloc(size*sizeof(char)); if (!root) abort();
+      size_t r = GetModuleFileName(NULL, root, size);
+      if(r == 0) abort();
+      if(r < size) {
+        char* c = root;
+        // forward sweep: replace all backward slashes with forwards
+        while(*c) {
+          if(*c == '\\') *c = '/';
+          ++c;
+        }
+        // *c == 0
+        // backward sweep: chop trailing segments
+        while(c >= root && *c != '/') --c; *c = '\0'; // chop module name
+        bin = strdup(root); // look for the compiler in this wrapper's directory
+        while(c >= root && *c != '/') --c; // chop module's immediate directory
+        if(c > root) {
+          *c = '\0';
+          break;
+        }
+        abort(); // module is in a disk's root directory or malformed module's path
+      }
+      size *= 2;
+      free(root);
+    }
+  }
+
+  #define ARGV_SIZE 1024
+
+  size_t s = 0;
+  char* args[ARGV_SIZE];
+
+  int show = (argc == 2 && strcmp(argv[1], "-show") == 0);
+  
+  {
+	  char* buffer = malloc(MAX_PATH*sizeof(char)); if(!buffer) abort();
+    args[s++] = GetEnvironmentVariable(ENV, buffer, MAX_PATH) > 0 ? buffer : printf_new("%s/%s", bin, DRV);
+  }
+  
+  args[s++] = printf_new("-I%s/include", root);
+
+  // inject wrapper's arguments
+  if(!show) for(size_t v = 1; v < argc; ++v) args[s++] = argv[v];
+
+  args[s++] = printf_new("-L%s/lib", root);
+
+	args[s++] = "-l:libmsmpi.dll.a";
+
+#ifdef FC
+	args[s++] = "-l:libmsmpifec.dll.a";
 #endif
 
-int main(int argc, char** argv) {
-	int s = strlen(argv[0]);
-	while(argv[0][s] != '\\' && argv[0][s] != '/') --s; --s;
-	while(argv[0][s] != '\\' && argv[0][s] != '/') --s;
-	argv[0][s] = '\0';
-        // Force forward slash as a file name separator
-        s = strlen(argv[0]);
-        while(s >= 0) if(argv[0][s--] == '\\') argv[0][s+1] = '/';
-#define SZ 32767
-	char* lpath = malloc(SZ*sizeof(char));
-	snprintf(lpath, SZ, "-L%s/lib", argv[0]);
-	char* ipath = malloc(SZ*sizeof(char));
-	snprintf(ipath, SZ, "-I%s/include", argv[0]);
-	char* comp = malloc(SZ*sizeof(char));
-	char** args = malloc(SZ*sizeof(char*));
-	int show = (argc == 2 && strcmp(argv[1], "-show") == 0);
-	int i = 0;
-	args[i++] = GetEnvironmentVariable(E, comp, SZ) > 0 ? comp : C;
-	args[i++] = ipath;
-	if(!show) for(int x = 1; x < argc; ++x) args[i++] = argv[x];
-	args[i++] = lpath;
-	args[i++] = "-l:libmsmpi.dll.a";
-#if defined(FC)
-	args[i++] = "-lmsmpifec";
+  args[s++] = NULL;
+
+  if(s > ARGV_SIZE) abort();
+
+  if(show) {
+    for(char** p = args; *p; ++p) {
+      fprintf(stdout, "'%s' ", *p); // TODO
+    }
+    fputs("\n", stdout);
+    return 0;
+  }
+
+#ifndef NDEBUG
+    for(char** p = args; *p; ++p) {
+      fprintf(stderr, "'%s' ", *p); // TODO
+    }
+    fputs("\n", stderr);
 #endif
-	args[i] = NULL;
-	if(show) {
-		for(int x = 0; args[x]; ++x) printf("%s ", args[x]);
-		printf("\n");
-		fflush(stdout);
-		return 0;
-	} else {
-		return _spawnvp(_P_WAIT, args[0], (const char* const*)args);
-	}
-};
+
+  uv_loop_t* loop = uv_default_loop();
+
+  uv_process_t spawned;
+  uv_process_options_t options = {0};
+
+  options.args = args;
+  options.file = args[0];
+
+  options.exit_cb = on_exit;
+
+  uv_stdio_container_t stdio[3];
+  for(int i = 0; i < 3; ++i) {
+    stdio[i].flags = UV_INHERIT_FD;
+    stdio[i].data.fd = i;
+  }
+  options.stdio = stdio;
+  options.stdio_count = 3;
+
+  int r;
+  if ((r = uv_spawn(loop, &spawned, &options))) {
+      fprintf(stderr, "process spawn error: %s\n", uv_strerror(r));
+      return 1;
+  }
+
+  uv_run(loop, UV_RUN_DEFAULT);
+
+  return result;
+}
+
+

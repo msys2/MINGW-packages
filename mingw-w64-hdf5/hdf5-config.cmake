@@ -1,6 +1,6 @@
 include(CMakeFindDependencyMacro)
 
-find_dependency(aws-c-s3)
+#find_dependency(aws-c-s3)
 
 macro(dispatch type)
     include(${CMAKE_CURRENT_LIST_DIR}/${type}/hdf5-config.cmake)
