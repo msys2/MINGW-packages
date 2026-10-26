@@ -17,7 +17,7 @@ pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}"
 	 "${MINGW_PACKAGE_PREFIX}-gitk"
 	 "${MINGW_PACKAGE_PREFIX}-${_realname}-gui"
 	 "${MINGW_PACKAGE_PREFIX}-${_realname}-for-windows-addons")
-tag=2.56.0.windows.3
+tag=2.56.0.windows.4
 pkgver=${tag/.windows./.}
 pkgrel=1
 pkgdesc="The fast distributed version control system (mingw-w64)"
@@ -62,7 +62,7 @@ source=("${_realname}"::"git+https://github.com/git-for-windows/git.git#tag=v$ta
 # resulting in different sha256sums.
 export GIT_CONFIG_PARAMETERS="${GIT_CONFIG_PARAMETERS:+$GIT_CONFIG_PARAMETERS }'core.autocrlf=false' 'core.eol=lf'"
 
-sha256sums=('84939c3a09fe9cfffad079359475b8338e58f1daeb815b503f57fc94aaebae51'
+sha256sums=('f694b18d3ac535e8ec58af7aa07363cfe1bcd958453e47a5dacb19acb35ab717'
             'a9dcba5aebc93ae7aacdee03275780fc6c0f15e88fda30c93041e75851e75090'
             '7e6c5f3dc6a4209dca0e1f38880b2978500a5c745c04bc60dbeda5fc48e8d3cb'
             '80b0b11efe5a2f9b4cd92f28c260d0b3aad8b809c34ed95237c59b73e08ade0b'
@@ -115,16 +115,24 @@ then
   makedepends+=("${MINGW_PACKAGE_PREFIX}-rust")
 fi
 
+# i686 builds do not produce PDBs, even when requested.
 if test -z "$WITH_PDBS" || test i686 = "$CARCH"
 then
-  options+=('strip')
+  if test -n "${SIGNTOOL:-}"
+  then
+    # makepkg strips after build(), which would invalidate our signatures.
+    options+=('!strip')
+  else
+    options+=('strip')
+  fi
 elif [[ "$MSYSTEM" == CLANG* ]]
 then
   pkgname+=("${MINGW_PACKAGE_PREFIX}-${_realname}-pdb")
-  options+=('!strip')
+  options+=('debug' '!strip')
+  COMPAT_CFLAGS="-gcodeview -fdebug-compilation-dir=."
   STRIP=llvm-strip
   STRIP_OPTS=--strip-debug
-  LDFLAGS="-Wl,-pdb=" # Ensures that Clang generates PDB files
+  LDFLAGS="-Wl,-pdb=,-Xlink=-pdbsourcepath:." # Ensures that Clang generates PDB files
 else
   pkgname+=("${MINGW_PACKAGE_PREFIX}-${_realname}-pdb")
   makedepends+=("${MINGW_PACKAGE_PREFIX}-cv2pdb")
@@ -197,6 +205,14 @@ build() {
   esac &&
   case " $targets " in
   *" all "*)
+    if test -n "${SIGNTOOL:-}" && [[ "${pkgname[*]}" != *-pdb* ]]
+    then
+      # Strip non-PDB executables before signing. PDB builds already ran
+      # strip-all above, using cv2pdb-strip or llvm-strip --strip-debug.
+      make -f ../mingw-w64-git.mak strip-all &&
+      strip edit-git-bash.exe ||
+      return 1
+    fi &&
     make -f ../mingw-w64-git.mak sign-executables &&
     make -f ../mingw-w64-git.mak print-builtins | tr ' ' '\n' > builtins.txt
     ;;
@@ -654,6 +670,34 @@ package_git-pdb () {
 
   make -f ../mingw-w64-git.mak DESTDIR="$pkgdir" install-pdbs
 }
+
+verify_authenticode_signatures () {
+  test -n "${SIGNTOOL:-}" || return 0
+
+  (
+    cd "$pkgdir" &&
+    powershell.exe -NoProfile -Command '
+      $ErrorActionPreference = "Stop"
+      $invalid = @(Get-ChildItem `
+        -LiteralPath ([Environment]::CurrentDirectory) `
+        -Recurse -File -Filter *.exe |
+        ForEach-Object {
+          Get-AuthenticodeSignature -LiteralPath $_.FullName
+        } | Where-Object Status -ne "Valid")
+      if ($invalid.Count -gt 0) {
+        $invalid | Format-List Path, Status
+        exit 1
+      }
+    '
+  )
+}
+
+# makepkg strips after package_*() returns, before lint_package().
+if _func="$(declare -f lint_package)"
+then
+  _func="${_func/\{/$'{\n    verify_authenticode_signatures || return 1\n'}"
+  eval "$_func"
+fi
 
 # template start; name=mingw-w64-splitpkg-wrappers; version=1.0;
 # vim: set ft=bash :
