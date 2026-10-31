@@ -1,0 +1,182 @@
+From 674b607b560e29f39b647eeea62198a48c26331d Mon Sep 17 00:00:00 2001
+From: Iain Sandoe <iain@sandoe.co.uk>
+Date: Wed, 9 Sep 2026 10:11:32 +0100
+Subject: [PATCH] libstc++, configure: Check for timing APIs even if
+ _POSIX_TIMERS is -1.
+
+When _POSIX_TIMERS (and _POSIX_MONOTONIC_CLOCK) are set to -1 that indicates
+the implementation is not claiming POSIX compliance; it does not indicate
+that either timespec or any specific APIs are actually absent.  We have been
+gating the configure tests on _POSIX_TIMERS/_POSIX_MONOTONIC_CLOCK which is
+preventing the discovery of nanosleep/clock_gettime on Darwin where these
+have been present for quite some time (nanosleep since at least Darwin8
+and clock_gettime since Darwin12).
+
+The proposal here is that we should test for the APIs and not guard the
+use of timespec - if the implementation does not have timespec that will
+be correctly reflected in the config tests failing.  There is some small
+risk that an implementation could define timespec, clock_gettime and the
+CLOCK_MONOTONIC and CLOCK_REALTIME while in some way meaning something
+radically different from the POSIX intent.  Howeever, this seems like an
+unlikely edge-case that should be handled by that platform and does not
+warrant avoiding the tests for the APIs.  On modern Darwin these tests are
+all positive with the changes here.
+
+libstdc++-v3/ChangeLog:
+
+	* acinclude.m4: Do not gate the use of 'timespec' with
+	_POSIX_TIMERS > 0.  For the auto case, set ac_has_clock_monotonic
+	and ac_has_clock_realtime for Darwin versions that implement them.
+	* configure: Regenerate.
+
+Signed-off-by: Iain Sandoe <iain@sandoe.co.uk>
+---
+ libstdc++-v3/acinclude.m4 | 30 ++++++++++++++++++------------
+ libstdc++-v3/configure    | 23 +++++++++++++----------
+ 2 files changed, 31 insertions(+), 22 deletions(-)
+
+diff --git a/libstdc++-v3/acinclude.m4 b/libstdc++-v3/acinclude.m4
+index a615692e7be..9dc0b6b4b74 100644
+--- a/libstdc++-v3/acinclude.m4
++++ b/libstdc++-v3/acinclude.m4
+@@ -1747,9 +1747,12 @@ dnl --disable-libstdcxx-time
+ dnl        disables the checks completely
+ dnl
+ dnl N.B. Darwin provides nanosleep but doesn't support the whole POSIX
+-dnl Timers option, so doesn't define _POSIX_TIMERS. Because the test
+-dnl below fails Darwin unconditionally defines _GLIBCXX_USE_NANOSLEEP in
+-dnl os_defines.h and also defines _GLIBCXX_USE_SCHED_YIELD.
++dnl Timers option, so defines _POSIX_TIMERS (and _POSIX_MONOTONIC_CLOCK)
++dnl to -1 (indicating no claim to POSIX compliance).  Nevertheless, the OS
++dnl has reliable mechanisms and exports those via the nanosleep (and other
++dnl clock_gettime() APIs).  To handle this, we check the APIs directly here
++dnl and  Darwin unconditionally defines _GLIBCXX_USE_NANOSLEEP and
++dnl _GLIBCXX_USE_SCHED_YIELD in os_defines.h.
+ dnl
+ AC_DEFUN([GLIBCXX_ENABLE_LIBSTDCXX_TIME], [
+ 
+@@ -1781,6 +1784,13 @@ AC_DEFUN([GLIBCXX_ENABLE_LIBSTDCXX_TIME], [
+       darwin*)
+         ac_has_nanosleep=yes
+         ac_has_sched_yield=yes
++        case "${target_os}" in
++          darwin1[[6-9]]* | darwin2*)
++            # clock_gettime() is available from Darwin12.
++            ac_has_clock_monotonic=yes
++            ac_has_clock_realtime=yes
++            ;;
++        esac
+         ;;
+       # VxWorks has nanosleep as soon as the kernel is configured with
+       # INCLUDE_POSIX_TIMERS, which is normally/most-often the case.
+@@ -1863,9 +1873,8 @@ AC_DEFUN([GLIBCXX_ENABLE_LIBSTDCXX_TIME], [
+ 	[#include <unistd.h>
+ 	 #include <time.h>
+ 	],
+-	[#if _POSIX_TIMERS > 0 && defined(_POSIX_MONOTONIC_CLOCK)
++	[
+ 	  timespec tp;
+-	 #endif
+ 	  clock_gettime(CLOCK_MONOTONIC, &tp);
+ 	], [ac_has_clock_monotonic=yes], [ac_has_clock_monotonic=no])
+ 
+@@ -1876,9 +1885,8 @@ AC_DEFUN([GLIBCXX_ENABLE_LIBSTDCXX_TIME], [
+ 	[#include <unistd.h>
+ 	 #include <time.h>
+ 	],
+-	[#if _POSIX_TIMERS > 0
++	[
+ 	  timespec tp;
+-	 #endif
+ 	  clock_gettime(CLOCK_REALTIME, &tp);
+ 	], [ac_has_clock_realtime=yes], [ac_has_clock_realtime=no])
+ 
+@@ -1889,9 +1897,8 @@ AC_DEFUN([GLIBCXX_ENABLE_LIBSTDCXX_TIME], [
+ 	[#include <unistd.h>
+ 	 #include <time.h>
+ 	],
+-	[#if _POSIX_TIMERS > 0
++	[
+ 	  timespec tp;
+-	 #endif
+ 	  nanosleep(&tp, 0);
+ 	], [ac_has_nanosleep=yes], [ac_has_nanosleep=no])
+ 
+@@ -1908,9 +1915,8 @@ AC_DEFUN([GLIBCXX_ENABLE_LIBSTDCXX_TIME], [
+ 	   #include <time.h>
+ 	   #include <sys/syscall.h>
+ 	  ],
+-	  [#if _POSIX_TIMERS > 0 && defined(_POSIX_MONOTONIC_CLOCK)
+-	    timespec tp;
+-	   #endif
++	  [
++	   timespec tp;
+ 	   syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &tp);
+ 	   syscall(SYS_clock_gettime, CLOCK_REALTIME, &tp);
+ 	  ], [ac_has_clock_gettime_syscall=yes], [ac_has_clock_gettime_syscall=no])
+diff --git a/libstdc++-v3/configure b/libstdc++-v3/configure
+index bc9dce5e288..cc1f71be235 100755
+--- a/libstdc++-v3/configure
++++ b/libstdc++-v3/configure
+@@ -21480,6 +21480,13 @@ ac_compiler_gnu=$ac_cv_cxx_compiler_gnu
+       darwin*)
+         ac_has_nanosleep=yes
+         ac_has_sched_yield=yes
++        case "${target_os}" in
++          darwin1[6-9]* | darwin2*)
++            # clock_gettime() is available from Darwin12.
++            ac_has_clock_monotonic=yes
++            ac_has_clock_realtime=yes
++            ;;
++        esac
+         ;;
+       # VxWorks has nanosleep as soon as the kernel is configured with
+       # INCLUDE_POSIX_TIMERS, which is normally/most-often the case.
+@@ -21823,9 +21830,8 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ int
+ main ()
+ {
+-#if _POSIX_TIMERS > 0 && defined(_POSIX_MONOTONIC_CLOCK)
++
+ 	  timespec tp;
+-	 #endif
+ 	  clock_gettime(CLOCK_MONOTONIC, &tp);
+ 
+   ;
+@@ -21856,9 +21862,8 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ int
+ main ()
+ {
+-#if _POSIX_TIMERS > 0
++
+ 	  timespec tp;
+-	 #endif
+ 	  clock_gettime(CLOCK_REALTIME, &tp);
+ 
+   ;
+@@ -21889,9 +21894,8 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ int
+ main ()
+ {
+-#if _POSIX_TIMERS > 0
++
+ 	  timespec tp;
+-	 #endif
+ 	  nanosleep(&tp, 0);
+ 
+   ;
+@@ -21925,9 +21929,8 @@ $as_echo_n "checking for clock_gettime syscall... " >&6; }
+ int
+ main ()
+ {
+-#if _POSIX_TIMERS > 0 && defined(_POSIX_MONOTONIC_CLOCK)
+-	    timespec tp;
+-	   #endif
++
++	   timespec tp;
+ 	   syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &tp);
+ 	   syscall(SYS_clock_gettime, CLOCK_REALTIME, &tp);
+ 
+-- 
+2.56.0.windows.3
+
