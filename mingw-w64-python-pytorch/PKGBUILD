@@ -3,8 +3,8 @@
 _realname=pytorch
 pkgbase="mingw-w64-python-${_realname}"
 pkgname=("${MINGW_PACKAGE_PREFIX}-python-${_realname}")
-pkgver=2.12.0
-pkgrel=5
+pkgver=2.15.0
+pkgrel=1
 _srcdir="${_realname}-v${pkgver}"
 pkgdesc='Tensors and dynamic neural networks in Python (mingw-w64)'
 arch=('any')
@@ -30,6 +30,7 @@ depends=(
   "${MINGW_PACKAGE_PREFIX}-python-networkx"
   "${MINGW_PACKAGE_PREFIX}-python-numpy"
   "${MINGW_PACKAGE_PREFIX}-python-optree"
+  "${MINGW_PACKAGE_PREFIX}-python-setuptools"
   "${MINGW_PACKAGE_PREFIX}-python-sympy"
   "${MINGW_PACKAGE_PREFIX}-python-typing_extensions"
   "${MINGW_PACKAGE_PREFIX}-sleef"
@@ -49,9 +50,8 @@ makedepends=(
   "${MINGW_PACKAGE_PREFIX}-python-installer"
   "${MINGW_PACKAGE_PREFIX}-python-packaging"
   "${MINGW_PACKAGE_PREFIX}-python-protobuf"
-  # "${MINGW_PACKAGE_PREFIX}-python-scikit-build-core" use from 2.14
-  "${MINGW_PACKAGE_PREFIX}-python-setuptools"
-  "${MINGW_PACKAGE_PREFIX}-python-wheel"
+  "${MINGW_PACKAGE_PREFIX}-python-scikit-build-core"
+  "${MINGW_PACKAGE_PREFIX}-python-six"
   "${MINGW_PACKAGE_PREFIX}-python-yaml"
   "${MINGW_PACKAGE_PREFIX}-shaderc"
   "${MINGW_PACKAGE_PREFIX}-vulkan-headers"
@@ -60,22 +60,26 @@ options=('!strip')
 source=(
   "https://github.com/pytorch/pytorch/releases/download/v${pkgver}/pytorch-v${pkgver}.tar.gz"
   '0001-pytorch-use-system-libraries.patch'
-  '0002-pytorch-find-eigen3-config.patch'
   '0003-pytorch-mingw-port.patch'
   '0004-third_party-onnx-optional-macro.patch'
   '0005-fix-build-with-glog-0.7.patch'
   '0006-define-uint-for-aarch64.patch'
   '0007-add-missing-includes.patch'
+  '0008-mingw-fix-cpp-extensions.patch'
+  '0009-mingw-leak-pthreadpool-at-process-exit.patch'
+  '0010-mingw-export-aoti-stable-abi-shim.patch'
 )
 noextract=("pytorch-v${pkgver}.tar.gz")
-sha256sums=('7cc1deb309f402ad67e9f45bbe311a40def4db19d66fddb9b01950f9bfc5ccb1'
-            'ee509420cada0283dc0a5ad2a6c0128e9482e253f98666329d87526a1b4db150'
-            '80ea46b21ddf7fc841222a2e4753206d192a025242e33c17163dfced27b8468c'
-            'd61948f4b0dbffc962e919dad264d98074d20c6925c4fe91775ad176f238c79a'
+sha256sums=('d0688c9feb1139c6304675c41f4c5fbb8e5b084f19a83d9f95ddcb10ced9e3e7'
+            '84482c7de408892f446ef5312106d12f00f7930c7bf66710abec8f594d4c73e2'
+            '591897046fac45c3fe0441be39759d3a3f0447c850c2e2fc9edbb887dc69e1fe'
             'ab4972112b3f3791d113a884ece1ddd1f81a63ac6970df044d0867aa75df2eb4'
-            'a4be93a18407e794cce2b1185476f7d31db42fb3a974a2c3b66f7bfe2f6365d3'
+            '3a7d7c0de07cada469abf724ad66bcde60f233e773ae09be877eb13c5014b3b1'
             'a09716dee7ed8a532c33208291bc4c71885a1b48f4ce075628ccd2993bf4d7b3'
-            'b974b9018fe5a6a99279b379c587ca6db254bebe8a242b4fae1cd37a41af1fee')
+            'b974b9018fe5a6a99279b379c587ca6db254bebe8a242b4fae1cd37a41af1fee'
+            '937789c28a898b14b71d986191d612b75c147908707d0f71d676de9d884ebecc'
+            'a21b002089435cc71f70cf0cddd1a98ebc07f4d7ccd96778298854a2e3257479'
+            'e066f1b2aea3e2109bbe72045791485b9a6e405329ef88c0ec86591676a2ff07')
 
 apply_patch_with_msg() {
   for _patch in "$@"; do
@@ -92,20 +96,15 @@ prepare() {
 
   apply_patch_with_msg \
     '0001-pytorch-use-system-libraries.patch' \
-    '0002-pytorch-find-eigen3-config.patch' \
     '0003-pytorch-mingw-port.patch' \
     '0005-fix-build-with-glog-0.7.patch' \
     '0006-define-uint-for-aarch64.patch' \
-    '0007-add-missing-includes.patch'
+    '0007-add-missing-includes.patch' \
+    '0008-mingw-fix-cpp-extensions.patch' \
+    '0009-mingw-leak-pthreadpool-at-process-exit.patch' \
+    '0010-mingw-export-aoti-stable-abi-shim.patch'
 
   patch -Nbp1 -d third_party/onnx -i "${srcdir}/0004-third_party-onnx-optional-macro.patch"
-
-  # Strip upper setuptools version limits explicitly
-  # Remove at 2.14+ as setuptools is no longer used
-  sed -i -E \
-    -e 's/(setuptools>=[0-9.]+),<[0-9.]+/\1/g' \
-    -e 's/setuptools<[0-9.]+/setuptools/g' \
-    requirements-build.txt pyproject.toml setup.py
 }
 
 build() {
@@ -113,7 +112,6 @@ build() {
 
   export PYTORCH_BUILD_VERSION="${pkgver}"
   export PYTORCH_BUILD_NUMBER=1
-  export PYTORCH_PACKAGE_USE_DECLARED_SUBMODULES=1
   export BUILD_TEST=0
   export USE_CUDA=0
   export USE_ROCM=0
@@ -151,7 +149,16 @@ build() {
   CFLAGS+=" -w"
   CXXFLAGS+=" -w"
 
-  python setup.py build bdist_wheel
+  # pyproject.toml defaults CC/CXX to cl on win32
+  if [[ ${MINGW_PACKAGE_PREFIX} == *-clang-* ]]; then
+    export CC='clang' CXX='clang++'
+  else
+    export CC='gcc' CXX='g++'
+    # FindOpenMP would otherwise pick up llvm-openmp's libomp if installed
+    export CMAKE_ARGS="-DOpenMP_libomp_LIBRARY=$(cygpath -m "${MINGW_PREFIX}")/lib/libgomp.dll.a"
+  fi
+
+  python -m build --wheel --skip-dependency-check --no-isolation
 }
 
 package() {
