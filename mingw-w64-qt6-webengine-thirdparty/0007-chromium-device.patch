@@ -1,0 +1,355 @@
+diff --git a/src/3rdparty/chromium/device/base/BUILD.gn b/src/3rdparty/chromium/device/base/BUILD.gn
+index cbd3ac8..0aee94c 100644
+--- a/src/3rdparty/chromium/device/base/BUILD.gn
++++ b/src/3rdparty/chromium/device/base/BUILD.gn
+@@ -31,6 +31,10 @@ component("base") {
+       "event_utils_winrt.h",
+     ]
+     public_deps += [ "//third_party/abseil-cpp:absl" ]
+-    libs = [ "setupapi.lib" ]
++    if (is_msvc) {
++      libs = [ "setupapi.lib" ]
++    } else {
++      libs = [ "setupapi" ]
++    }
+   }
+ }
+diff --git a/src/3rdparty/chromium/device/base/device_base_export.h b/src/3rdparty/chromium/device/base/device_base_export.h
+index 8672b65..65f6608 100644
+--- a/src/3rdparty/chromium/device/base/device_base_export.h
++++ b/src/3rdparty/chromium/device/base/device_base_export.h
+@@ -5,7 +5,8 @@
+ #ifndef DEVICE_BASE_DEVICE_BASE_EXPORT_H_
+ #define DEVICE_BASE_DEVICE_BASE_EXPORT_H_
+ 
+-#if defined(COMPONENT_BUILD) && defined(WIN32)
++#if defined(COMPONENT_BUILD)
++#if defined(WIN32)
+ 
+ #if defined(DEVICE_BASE_IMPLEMENTATION)
+ #define DEVICE_BASE_EXPORT __declspec(dllexport)
+@@ -13,12 +14,14 @@
+ #define DEVICE_BASE_EXPORT __declspec(dllimport)
+ #endif
+ 
+-#elif defined(COMPONENT_BUILD) && !defined(WIN32)
++#else // !defined(WIN32)
+ 
+ #define DEVICE_BASE_EXPORT __attribute__((visibility("default")))
+ 
++#endif  // defined(WIN32)
++
+ #else
+ #define DEVICE_BASE_EXPORT
+ #endif
+ 
+ #endif  // DEVICE_BASE_DEVICE_BASE_EXPORT_H_
+
+diff --git a/src/3rdparty/chromium/device/base/device_info_query_win.cc b/src/3rdparty/chromium/device/base/device_info_query_win.cc
+index f99c605..8c279f6 100644
+--- a/src/3rdparty/chromium/device/base/device_info_query_win.cc
++++ b/src/3rdparty/chromium/device/base/device_info_query_win.cc
+@@ -46,7 +46,7 @@ bool DeviceInfoQueryWin::GetDeviceStringProperty(const DEVPROPKEY& property,
+                                                  std::string* property_buffer) {
+   DEVPROPTYPE property_type;
+   DWORD required_size;
+-  if (SetupDiGetDeviceProperty(device_info_list_, &device_info_data_, &property,
++  if (SetupDiGetDevicePropertyW(device_info_list_, &device_info_data_, &property,
+                                &property_type, nullptr, 0, &required_size, 0) ||
+       GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+       property_type != DEVPROP_TYPE_STRING) {
+@@ -54,7 +54,7 @@ bool DeviceInfoQueryWin::GetDeviceStringProperty(const DEVPROPKEY& property,
+   }
+ 
+   std::u16string buffer;
+-  if (!SetupDiGetDeviceProperty(
++  if (!SetupDiGetDevicePropertyW(
+           device_info_list_, &device_info_data_, &property, &property_type,
+           reinterpret_cast<PBYTE>(base::WriteInto(&buffer, required_size)),
+           required_size, nullptr, 0)) {
+diff --git a/src/3rdparty/chromium/device/bluetooth/BUILD.gn b/src/3rdparty/chromium/device/bluetooth/BUILD.gn
+index af32815..a0cfec4 100644
+--- a/src/3rdparty/chromium/device/bluetooth/BUILD.gn
++++ b/src/3rdparty/chromium/device/bluetooth/BUILD.gn
+@@ -13,7 +13,7 @@ if (is_android) {
+ }
+ 
+ config("bluetooth_config") {
+-  if (is_win) {
++  if (is_win && !is_mingw) {
+     ldflags = [
+       "/DELAYLOAD:BluetoothApis.dll",
+ 
+@@ -321,13 +321,33 @@ component("bluetooth") {
+       "bluetooth_task_manager_win.h",
+       "event_utils_winrt.h",
+     ]
++    if (is_mingw) {
++      sources -= [
++        "bluetooth_adapter_winrt.cc",
++        "bluetooth_adapter_winrt.h",
++        "bluetooth_advertisement_winrt.cc",
++        "bluetooth_advertisement_winrt.h",
++        "bluetooth_device_winrt.cc",
++        "bluetooth_device_winrt.h",
++        "bluetooth_gatt_discoverer_winrt.cc",
++        "bluetooth_gatt_discoverer_winrt.h",
++        "bluetooth_pairing_winrt.cc",
++        "bluetooth_pairing_winrt.h",
++        "bluetooth_remote_gatt_characteristic_winrt.cc",
++        "bluetooth_remote_gatt_characteristic_winrt.h",
++        "bluetooth_remote_gatt_descriptor_winrt.cc",
++        "bluetooth_remote_gatt_descriptor_winrt.h",
++        "bluetooth_remote_gatt_service_winrt.cc",
++        "bluetooth_remote_gatt_service_winrt.h",
++      ]
++    }
+ 
+     libs = [
+       # Bthprops must be listed before BluetoothApis or else delay loading
+       # crashes.
+-      "Bthprops.lib",
+-      "BluetoothApis.lib",
+-      "setupapi.lib",
++      "bthprops",
++      "bluetoothapis",
++      "setupapi",
+     ]
+   }
+ 
+diff --git a/src/3rdparty/chromium/device/bluetooth/bluetooth_adapter_win.cc b/src/3rdparty/chromium/device/bluetooth/bluetooth_adapter_win.cc
+index b37b0ae..8d8085f 100644
+--- a/src/3rdparty/chromium/device/bluetooth/bluetooth_adapter_win.cc
++++ b/src/3rdparty/chromium/device/bluetooth/bluetooth_adapter_win.cc
+@@ -20,7 +20,9 @@
+ #include "base/task/sequenced_task_runner.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "device/base/features.h"
++#if defined(COMPILER_MSVC)
+ #include "device/bluetooth/bluetooth_adapter_winrt.h"
++#endif
+ #include "device/bluetooth/bluetooth_classic_win.h"
+ #include "device/bluetooth/bluetooth_device_win.h"
+ #include "device/bluetooth/bluetooth_discovery_session_outcome.h"
+@@ -39,7 +41,9 @@ scoped_refptr<BluetoothAdapter> BluetoothAdapter::CreateAdapter() {
+ 
+ // static
+ scoped_refptr<BluetoothAdapter> BluetoothAdapterWin::CreateAdapter() {
++#if defined(COMPILER_MSVC)
+   return base::WrapRefCounted(new BluetoothAdapterWinrt());
++#endif
+ }
+ 
+ // static
+diff --git a/src/3rdparty/chromium/device/bluetooth/bluetooth_export.h b/src/3rdparty/chromium/device/bluetooth/bluetooth_export.h
+index 7b82a39..3e99299 100644
+--- a/src/3rdparty/chromium/device/bluetooth/bluetooth_export.h
++++ b/src/3rdparty/chromium/device/bluetooth/bluetooth_export.h
+@@ -5,7 +5,8 @@
+ #ifndef DEVICE_BLUETOOTH_BLUETOOTH_EXPORT_H_
+ #define DEVICE_BLUETOOTH_BLUETOOTH_EXPORT_H_
+ 
+-#if defined(COMPONENT_BUILD) && defined(WIN32)
++#if defined(COMPONENT_BUILD)
++#if defined(WIN32)
+ 
+ #if defined(DEVICE_BLUETOOTH_IMPLEMENTATION)
+ #define DEVICE_BLUETOOTH_EXPORT __declspec(dllexport)
+@@ -13,12 +14,14 @@
+ #define DEVICE_BLUETOOTH_EXPORT __declspec(dllimport)
+ #endif
+ 
+-#elif defined(COMPONENT_BUILD) && !defined(WIN32)
++#else // !defined(WIN32)
+ 
+ #define DEVICE_BLUETOOTH_EXPORT __attribute__((visibility("default")))
+ 
++#endif  // defined(WIN32)
++
+ #else
+ #define DEVICE_BLUETOOTH_EXPORT
+ #endif
+ 
+ #endif  // DEVICE_BLUETOOTH_BLUETOOTH_EXPORT_H_
+ 
+diff --git a/src/3rdparty/chromium/device/bluetooth/bluetooth_init_win.cc b/src/3rdparty/chromium/device/bluetooth/bluetooth_init_win.cc
+index 6dfae97..2ea4fa0 100644
+--- a/src/3rdparty/chromium/device/bluetooth/bluetooth_init_win.cc
++++ b/src/3rdparty/chromium/device/bluetooth/bluetooth_init_win.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "base/threading/scoped_thread_priority.h"
+ 
++#if defined(COMPILER_MSVC)
+ namespace {
+ 
+ // A frame-based exception handler filter function for a handler for exceptions
+@@ -16,6 +17,7 @@ int FilterVisualCPPExceptions(DWORD exception_code) {
+ }
+ 
+ }  // namespace
++#endif
+ 
+ namespace device {
+ namespace bluetooth_init_win {
+diff --git a/src/3rdparty/chromium/device/fido/virtual_ctap2_device.cc b/src/3rdparty/chromium/device/fido/virtual_ctap2_device.cc
+index fb4c5c8..bc52403 100644
+--- a/src/3rdparty/chromium/device/fido/virtual_ctap2_device.cc
++++ b/src/3rdparty/chromium/device/fido/virtual_ctap2_device.cc
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <cstring>
+ #include <memory>
+ #include <set>
+ #include <string>
+diff --git a/src/3rdparty/chromium/device/fido/win/util.cc b/src/3rdparty/chromium/device/fido/win/util.cc
+index f00190a..e52d476 100644
+--- a/src/3rdparty/chromium/device/fido/win/util.cc
++++ b/src/3rdparty/chromium/device/fido/win/util.cc
+@@ -38,5 +38,9 @@ enum BiometricAvailability {
+ void DeviceHasBiometricsAvailableInternal(
+     base::OnceCallback<void(bool)> callback) {
++#if defined(__MINGW32__)
++  std::move(callback).Run(false);
++  return;
++#else
+   SCOPED_MAY_LOAD_LIBRARY_AT_BACKGROUND_PRIORITY();
+   // Lookup requires an asynchronous system API call, so cache the value.
+   static std::atomic<BiometricAvailability> availability =
+@@ -93,5 +97,6 @@ void DeviceHasBiometricsAvailableInternal(
+     std::move(second_split.second).Run(false);
+     return;
+   }
++#endif
+ }
+ std::optional<bool>& GetBiometricOverride() {
+diff --git a/src/3rdparty/chromium/device/gamepad/BUILD.gn b/src/3rdparty/chromium/device/gamepad/BUILD.gn
+index eaf1dc3..e8699fb 100644
+--- a/src/3rdparty/chromium/device/gamepad/BUILD.gn
++++ b/src/3rdparty/chromium/device/gamepad/BUILD.gn
+@@ -89,8 +89,18 @@ component("gamepad") {
+       "xinput_haptic_gamepad_win.cc",
+       "xinput_haptic_gamepad_win.h",
+     ]
++    if (is_mingw) {
++      sources -= [
++        "wgi_data_fetcher_win.cc",
++        "wgi_data_fetcher_win.h",
++        "wgi_gamepad_device.cc",
++        "wgi_gamepad_device.h",
++      ]
++      libs = [ "hid" ]
++    } else {
++      libs = [ "hid.lib" ]
++    }
+     deps += [ "//device/base" ]
+-    libs = [ "hid.lib" ]
+   }
+ 
+   if (is_linux || is_chromeos) {
+diff --git a/src/3rdparty/chromium/device/gamepad/gamepad_export.h b/src/3rdparty/chromium/device/gamepad/gamepad_export.h
+index 3479e78..d663a45 100644
+--- a/src/3rdparty/chromium/device/gamepad/gamepad_export.h
++++ b/src/3rdparty/chromium/device/gamepad/gamepad_export.h
+@@ -5,7 +5,8 @@
+ #ifndef DEVICE_GAMEPAD_GAMEPAD_EXPORT_H_
+ #define DEVICE_GAMEPAD_GAMEPAD_EXPORT_H_
+ 
+-#if defined(COMPONENT_BUILD) && defined(WIN32)
++#if defined(COMPONENT_BUILD)
++#if defined(WIN32)
+ 
+ #if defined(DEVICE_GAMEPAD_IMPLEMENTATION)
+ #define DEVICE_GAMEPAD_EXPORT __declspec(dllexport)
+@@ -13,12 +14,14 @@
+ #define DEVICE_GAMEPAD_EXPORT __declspec(dllimport)
+ #endif
+ 
+-#elif defined(COMPONENT_BUILD) && !defined(WIN32)
++#else // !defined(WIN32)
+ 
+ #define DEVICE_GAMEPAD_EXPORT __attribute__((visibility("default")))
+ 
++#endif  // defined(WIN32)
++
+ #else
+ #define DEVICE_GAMEPAD_EXPORT
+ #endif
+ 
+ #endif  // DEVICE_GAMEPAD_GAMEPAD_EXPORT_H_
+ 
+diff --git a/src/3rdparty/chromium/device/gamepad/gamepad_platform_data_fetcher.h b/src/3rdparty/chromium/device/gamepad/gamepad_platform_data_fetcher.h
+index e1039f5..8066f81 100644
+--- a/src/3rdparty/chromium/device/gamepad/gamepad_platform_data_fetcher.h
++++ b/src/3rdparty/chromium/device/gamepad/gamepad_platform_data_fetcher.h
+@@ -43,6 +43,7 @@ void AddGamepadPlatformDataFetchers(GamepadDataFetcherManager* manager) {
+ 
+ #elif BUILDFLAG(IS_WIN)
+ 
++#if defined(COMPILER_MSVC)
+   // Windows.Gaming.Input is available in Windows 10.0.10240.0 and later.
+   if (base::FeatureList::IsEnabled(
+           features::kEnableWindowsGamingInputDataFetcher)) {
+@@ -50,6 +51,9 @@ void AddGamepadPlatformDataFetchers(GamepadDataFetcherManager* manager) {
+   } else {
+     manager->AddFactory(new XInputDataFetcherWin::Factory());
+   }
++#else
++  manager->AddFactory(new XInputDataFetcherWin::Factory());
++#endif
+   manager->AddFactory(new NintendoDataFetcher::Factory());
+   manager->AddFactory(new RawInputDataFetcher::Factory());
+ 
+diff --git a/src/3rdparty/chromium/device/gamepad/wgi_data_fetcher_win.h b/src/3rdparty/chromium/device/gamepad/wgi_data_fetcher_win.h
+index ef51baa..0fbb879 100644
+--- a/src/3rdparty/chromium/device/gamepad/wgi_data_fetcher_win.h
++++ b/src/3rdparty/chromium/device/gamepad/wgi_data_fetcher_win.h
+@@ -5,6 +5,8 @@
+ #ifndef DEVICE_GAMEPAD_WGI_DATA_FETCHER_WIN_H_
+ #define DEVICE_GAMEPAD_WGI_DATA_FETCHER_WIN_H_
+ 
++#if defined(COMPILER_MSVC)
++
+ #include <Windows.Gaming.Input.h>
+ #include <wrl/event.h>
+ 
+@@ -130,4 +132,6 @@ class DEVICE_GAMEPAD_EXPORT WgiDataFetcherWin final
+ 
+ }  // namespace device
+ 
++#endif
++
+ #endif  // DEVICE_GAMEPAD_WGI_DATA_FETCHER_WIN_H_
+diff --git a/src/3rdparty/chromium/device/vr/vr_export.h b/src/3rdparty/chromium/device/vr/vr_export.h
+index 43390e1..1674243 100644
+--- a/src/3rdparty/chromium/device/vr/vr_export.h
++++ b/src/3rdparty/chromium/device/vr/vr_export.h
+@@ -5,7 +5,8 @@
+ #ifndef DEVICE_VR_VR_EXPORT_H_
+ #define DEVICE_VR_VR_EXPORT_H_
+ 
+-#if defined(COMPONENT_BUILD) && defined(WIN32)
++#if defined(COMPONENT_BUILD)
++#if defined(COMPILER_MSVC)
+ 
+ #if defined(DEVICE_VR_IMPLEMENTATION)
+ #define DEVICE_VR_EXPORT __declspec(dllexport)
+@@ -13,12 +14,14 @@
+ #define DEVICE_VR_EXPORT __declspec(dllimport)
+ #endif
+ 
+-#elif defined(COMPONENT_BUILD) && !defined(WIN32)
++#else // !defined(COMPILER_MSVC)
+ 
+ #define DEVICE_VR_EXPORT __attribute__((visibility("default")))
+ 
++#endif  // defined(COMPILER_MSVC)
++
+ #else
+ #define DEVICE_VR_EXPORT
+ #endif
+ 
+ #endif  // DEVICE_VR_VR_EXPORT_H_
+ 
