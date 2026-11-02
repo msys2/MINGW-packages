@@ -1,10 +1,118 @@
---- libsecret-0.21.2/libsecret/secret-file-backend.c.orig	2023-12-08 11:18:34.000000000 +0100
-+++ libsecret-0.21.2/libsecret/secret-file-backend.c	2024-01-20 12:31:47.791819300 +0100
-@@ -26,9 +26,11 @@
+diff --git a/libsecret/secret-backend.c b/libsecret/secret-backend.c
+index 75c42da..1dd1f44 100644
+--- a/libsecret/secret-backend.c
++++ b/libsecret/secret-backend.c
+@@ -161,7 +161,11 @@ backend_get_impl_type (void)
+ 	{
+ 		envvar = g_getenv ("SECRET_BACKEND");
+ 		if (envvar == NULL || *envvar == '\0')
++#if defined(_WIN32) && defined(WITH_CRYPTO)
++			extension_name = "file";
++#else
+ 			extension_name = "service";
++#endif
+ 		else
+ 			extension_name = envvar;
+ 	}
+diff --git a/libsecret/secret-file-collection.c b/libsecret/secret-file-collection.c
+index d528023..5b4d6f0 100644
+--- a/libsecret/secret-file-collection.c
++++ b/libsecret/secret-file-collection.c
+@@ -21,8 +21,14 @@
+ 
+ #include <glib/gstdio.h>
+ 
++#ifndef _WIN32
+ #include <sys/file.h>
++#else
++#include <windows.h>
++#include <io.h>
++#endif
+ #include <errno.h>
++#include <fcntl.h>
+ 
+ EGG_SECURE_DECLARE (secret_file_collection);
+ 
+@@ -833,7 +839,11 @@ secret_file_collection_lock (SecretFileCollection *self,
+ 	path = g_file_peek_path (self->file);
+ 	lock_path = g_strdup_printf ("%s.lock", path);
+ 
++#ifdef _WIN32
++	fd = g_open (lock_path, O_CREAT | O_RDWR | _O_BINARY | _O_NOINHERIT, 0600);
++#else
+ 	fd = g_open (lock_path, O_CREAT | O_RDWR, 0600);
++#endif
+ 	if (fd < 0) {
+ 		errsv = errno;
+ 		g_set_error (error, G_IO_ERROR,
+@@ -843,6 +853,25 @@ secret_file_collection_lock (SecretFileCollection *self,
+ 		g_free (lock_path);
+ 		return -1;
+ 	}
++#ifdef _WIN32
++	{
++		HANDLE h = (HANDLE) _get_osfhandle (fd);
++		OVERLAPPED ov;
++
++		memset (&ov, 0, sizeof ov);
++		if (h == INVALID_HANDLE_VALUE ||
++		    !LockFileEx (h, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &ov)) {
++			gchar *msg = g_win32_error_message (GetLastError ());
++			g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++			             "couldn't lock keyring file %s: %s",
++			             lock_path, msg);
++			g_free (msg);
++			g_free (lock_path);
++			close (fd);
++			return -1;
++		}
++	}
++#else
+ 	do {
+ 		ret = flock (fd, LOCK_EX);
+ 	} while (ret < 0 && errno == EINTR);
+@@ -857,6 +886,7 @@ secret_file_collection_lock (SecretFileCollection *self,
+ 		close (fd);
+ 		return -1;
+ 	}
++#endif
+ 	g_free (lock_path);
+ 
+ 	/* Force reload regardless of mtime, since mtime has only
+@@ -872,5 +902,15 @@ void
+ secret_file_collection_unlock (int lock_fd)
+ {
+ 	if (lock_fd >= 0)
+-		close (lock_fd);
++		return;
++#ifdef _WIN32
++	{
++		HANDLE h = (HANDLE) _get_osfhandle (lock_fd);
++		OVERLAPPED ov;
++		memset (&ov, 0, sizeof ov);
++		if (h != INVALID_HANDLE_VALUE)
++			UnlockFileEx (h, 0, 1, 0, &ov);
++	}
++#endif
++	close (lock_fd);
+ }
+diff --git a/libsecret/secret-file-backend.c b/libsecret/secret-file-backend.c
+index 5436149..5d1e8e6 100644
+--- a/libsecret/secret-file-backend.c
++++ b/libsecret/secret-file-backend.c
+@@ -22,13 +22,19 @@
+ #include "secret-retrievable.h"
+ 
+ #include "egg/egg-secure-memory.h"
++#ifdef WITH_TPM
+ #include "egg/egg-tpm2.h"
++#endif
  
  EGG_SECURE_DECLARE (secret_file_backend);
  
-+#ifndef _WIN32
++#ifdef _WIN32
++#include <io.h>
++#else
  #include <gio/gunixfdlist.h>
  #include <gio/gunixinputstream.h>
  #include <glib-unix.h>
@@ -12,7 +120,7 @@
  
  #define PORTAL_BUS_NAME "org.freedesktop.portal.Desktop"
  #define PORTAL_OBJECT_PATH "/org/freedesktop/portal/desktop"
-@@ -197,7 +199,7 @@
+@@ -201,7 +207,7 @@ on_collection_new_async (GObject *source_object,
  	g_task_return_boolean (task, TRUE);
  	g_object_unref (task);
  }
@@ -21,15 +129,15 @@
  typedef struct {
  	gint io_priority;
  	GFile *file;
-@@ -469,6 +471,7 @@
- 						  task);
+@@ -488,6 +494,7 @@ on_bus_get (GObject *source_object,
  	g_object_unref (fd_list);
+ 	g_free (token);
  }
 +#endif
  
  #ifdef WITH_TPM
  static GBytes *
-@@ -553,7 +556,9 @@
+@@ -572,7 +579,9 @@ secret_file_backend_real_init_async (GAsyncInitable *initable,
  	SecretValue *password;
  	GTask *task;
  	GError *error = NULL;
@@ -39,7 +147,7 @@
  
  	task = g_task_new (initable, cancellable, callback, user_data);
  
-@@ -577,6 +582,7 @@
+@@ -596,6 +605,7 @@ secret_file_backend_real_init_async (GAsyncInitable *initable,
  					    NULL);
  		g_object_unref (file);
  		secret_value_unref (password);
@@ -47,7 +155,7 @@
  	} else if (g_file_test ("/.flatpak-info", G_FILE_TEST_EXISTS) || g_getenv ("SNAP_NAME") != NULL) {
  		init = g_new0 (InitClosure, 1);
  		init->io_priority = io_priority;
-@@ -585,6 +591,7 @@
+@@ -604,6 +614,7 @@ secret_file_backend_real_init_async (GAsyncInitable *initable,
  			init->cancellable = g_object_ref (cancellable);
  		g_task_set_task_data (task, init, init_closure_free);
  		g_bus_get (G_BUS_TYPE_SESSION, cancellable, on_bus_get, task);
@@ -55,3 +163,36 @@
  	} else {
  #ifdef WITH_TPM
  		GBytes *decrypted = NULL;
+@@ -776,7 +787,7 @@ on_retrieve_secret (GObject *source_object,
+ 	SecretRetrievable *retrievable = SECRET_RETRIEVABLE (source_object);
+ 	GTask *task = G_TASK (user_data);
+ 	SecretValue *value;
+-	GError *error;
++	GError *error = NULL;
+ 
+ 	value = secret_retrievable_retrieve_secret_finish (retrievable,
+ 							   result,
+@@ -785,6 +796,7 @@ on_retrieve_secret (GObject *source_object,
+ 	if (value == NULL) {
+ 		g_task_return_error (task, error);
+ 		g_object_unref (task);
++		return;
+ 	}
+ 	g_task_return_pointer (task, value, secret_value_unref);
+ 	g_object_unref (task);
+@@ -1003,6 +1015,9 @@ secret_file_backend_backend_iface (SecretBackendInterface *iface)
+ gboolean
+ _secret_file_backend_check_portal_version (void)
+ {
++#ifdef _WIN32
++	return FALSE;
++#else
+ 	GDBusConnection *connection;
+ 	GVariant *ret;
+ 	GVariant *value;
+@@ -1043,4 +1058,5 @@ _secret_file_backend_check_portal_version (void)
+ 	}
+ 
+ 	return TRUE;
++#endif
+ }
