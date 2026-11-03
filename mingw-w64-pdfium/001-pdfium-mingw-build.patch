@@ -1,0 +1,140 @@
+diff --git a/.gn b/.gn
+index 3317912..bcae8ea 100644
+--- a/.gn
++++ b/.gn
+@@ -8,7 +8,7 @@ buildconfig = "//build/config/BUILDCONFIG.gn"
+ 
+ # The python interpreter to use by default. On Windows, this will look
+ # for python3.exe and python3.bat.
+-script_executable = "//third_party/cpython3/host/bin/python3"
++script_executable = "python3"
+ 
+ default_args = {
+   # Use a production-performant allocator.
+diff --git a/BUILD.gn b/BUILD.gn
+index ae553d2..a561bf4 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -59,7 +59,7 @@ config("pdfium_common_config") {
+     defines += [ "PDF_USE_LIBYUV" ]
+   }
+ 
+-  if (is_win) {
++  if (is_win && !is_mingw) {
+     # Assume UTF-8 by default to avoid code page dependencies.
+     cflags += [ "/utf-8" ]
+   }
+@@ -228,7 +228,10 @@ group("pdfium_public_headers") {
+   ]
+ }
+ 
+-component("pdfium") {
++# Build as a standalone shared library. Upstream declares this as a
++# "component", which only produces a real artifact in component builds; MSYS2
++# packages always need a DLL.
++shared_library("pdfium") {
+   output_name = "pdfium"
+   libs = []
+   configs += [ ":pdfium_strict_config" ]
+@@ -260,12 +263,19 @@ component("pdfium") {
+     ]
+   }
+ 
+-  if (is_win) {
++  if (is_win && !is_mingw) {
+     libs += [
+       "advapi32.lib",
+       "gdi32.lib",
+       "user32.lib",
+     ]
++  } else if (is_mingw) {
++    # MinGW linkers use GCC-style library names.
++    libs += [
++      "advapi32",
++      "gdi32",
++      "user32",
++    ]
+   }
+ 
+   if (is_mac) {
+diff --git a/core/fxcrt/fx_memory.cpp b/core/fxcrt/fx_memory.cpp
+index 89170ea..52f91e9 100644
+--- a/core/fxcrt/fx_memory.cpp
++++ b/core/fxcrt/fx_memory.cpp
+@@ -90,7 +90,7 @@ void* FX_AlignedAlloc(size_t size, size_t alignment) {
+   DCHECK(std::has_single_bit(alignment));
+   DCHECK_EQ(alignment % sizeof(void*), 0u);
+   void* ptr = nullptr;
+-#if defined(COMPILER_MSVC)
++#if defined(COMPILER_MSVC) || defined(__MINGW32__)
+   ptr = _aligned_malloc(size, alignment);
+ #elif BUILDFLAG(IS_ANDROID)
+   // Android technically supports posix_memalign(), but does not expose it in
+diff --git a/core/fxcrt/fx_memory.h b/core/fxcrt/fx_memory.h
+index 9191dc8..b8119a1 100644
+--- a/core/fxcrt/fx_memory.h
++++ b/core/fxcrt/fx_memory.h
+@@ -80,7 +80,7 @@ NOINLINE void FX_OutOfMemoryTerminate(size_t size);
+ void* FX_AlignedAlloc(size_t size, size_t alignment);
+ 
+ inline void FX_AlignedFree(void* ptr) {
+-#if defined(COMPILER_MSVC)
++#if defined(COMPILER_MSVC) || defined(__MINGW32__)
+   _aligned_free(ptr);
+ #else
+   free(ptr);
+diff --git a/core/fxge/win32/cgdi_display_driver.h b/core/fxge/win32/cgdi_display_driver.h
+index 9841500..7565b0b 100644
+--- a/core/fxge/win32/cgdi_display_driver.h
++++ b/core/fxge/win32/cgdi_display_driver.h
+@@ -13,10 +13,10 @@
+ #include <memory>
+ 
+ #include "core/fxcrt/retain_ptr.h"
++#include "core/fxge/dib/fx_dib.h"
+ #include "core/fxge/win32/cgdi_device_driver.h"
+ 
+ class CFX_DIBBase;
+-struct FXDIB_ResampleOptions;
+ struct FX_RECT;
+ 
+ class CGdiDisplayDriver final : public CGdiDeviceDriver {
+diff --git a/public/fpdfview.h b/public/fpdfview.h
+index fdf2ec4..115a62f 100644
+--- a/public/fpdfview.h
++++ b/public/fpdfview.h
+@@ -197,9 +197,10 @@ typedef int FPDF_ANNOT_APPEARANCEMODE;
+ // Dictionary value types.
+ typedef int FPDF_OBJECT_TYPE;
+ 
+-#if defined(COMPONENT_BUILD)
+ // FPDF_EXPORT should be consistent with |export| in the pdfium_fuzzer
+ // template in testing/fuzzers/BUILD.gn.
++// NOTE: The COMPONENT_BUILD guard upstream is removed so that standalone
++// shared-library builds (is_component_build=false) still export the API.
+ #if defined(WIN32)
+ #if defined(FPDF_IMPLEMENTATION)
+ #define FPDF_EXPORT __declspec(dllexport)
+@@ -213,9 +214,6 @@ typedef int FPDF_OBJECT_TYPE;
+ #define FPDF_EXPORT
+ #endif  // defined(FPDF_IMPLEMENTATION)
+ #endif  // defined(WIN32)
+-#else
+-#define FPDF_EXPORT
+-#endif  // defined(COMPONENT_BUILD)
+ 
+ #if defined(WIN32) && defined(FPDFSDK_EXPORTS)
+ #define FPDF_CALLCONV __stdcall
+diff --git a/third_party/harfbuzz/BUILD.gn b/third_party/harfbuzz/BUILD.gn
+index a7aea21..672a8c8 100644
+--- a/third_party/harfbuzz/BUILD.gn
++++ b/third_party/harfbuzz/BUILD.gn
+@@ -34,7 +34,7 @@ if (use_system_harfbuzz) {
+   config("harfbuzz_warnings") {
+     cflags = []
+ 
+-    if (is_win) {
++    if (is_win && !is_mingw) {
+       # Result of 32-bit shift implicitly converted to 64 bits.
+       cflags += [ "/wd4334" ]
+     }
