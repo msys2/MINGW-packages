@@ -1,0 +1,146 @@
+From 09fdd2ad66cd22685d7bd78aa7edf7bea928689b Mon Sep 17 00:00:00 2001
+From: Federico Perini <federico.perini@gmail.com>
+Date: Thu, 5 Nov 2026 13:34:54 -0600
+Subject: [PATCH] libgfortran: Never pass a negative fd to the C library
+
+When a standard descriptor is not open at startup (a process started
+without standard handles, such as pythonw.exe), fd_to_stream stores
+fd -1 in the stream of the preconnected unit.  Later operations pass
+that -1 to the C library: id_from_fd calls _get_osfhandle (-1) from
+find_file0 on an INQUIRE (FILE=) or an OPEN of an existing file, and
+raw_write calls write (-1, ...) for a PRINT.  POSIX and msvcrt.dll fail
+these calls with EBADF.  The UCRT treats a negative descriptor as an
+invalid parameter and terminates with 0xC0000409 a process that has
+installed no invalid parameter handler, such as python.exe or
+pythonw.exe loading a DLL that links libgfortran.
+
+Return 0 from id_from_fd, and fail the raw I/O functions and
+stream_isatty with EBADF, for a negative descriptor.
+
+Upstream: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=128486
+---
+ libgfortran/io/unix.c | 52 ++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 51 insertions(+), 1 deletion(-)
+
+diff --git a/libgfortran/io/unix.c b/libgfortran/io/unix.c
+index 2a115dc..b79a467 100644
+--- a/libgfortran/io/unix.c
++++ b/libgfortran/io/unix.c
+@@ -96,6 +96,10 @@ id_from_path (const char *path)
+ static uint64_t
+ id_from_fd (const int fd)
+ {
++  /* A preconnected unit without a standard handle has fd -1 (see
++     fd_to_stream); the Universal CRT can abort the process on it.  */
++  if (fd < 0)
++    return 0;
+   return id_from_handle ((HANDLE) _get_osfhandle (fd));
+ }
+ 
+@@ -295,6 +299,11 @@ functions take the unix_stream struct rather than an integer file
+ descriptor. Also, for POSIX read() and write() a nbyte argument larger
+ than SSIZE_MAX is undefined; here the type of nbyte is ssize_t rather
+ than size_t as for POSIX read/write.
++
++A stream whose file descriptor is negative (a preconnected unit whose
++standard descriptor is not open, see fd_to_stream) fails with EBADF,
++as POSIX specifies, without passing the descriptor to the C library:
++the Universal CRT on Windows can abort the process on a negative one.
+ *********************************************************************/
+ 
+ static int
+@@ -311,6 +320,12 @@ raw_flush (unix_stream *s  __attribute__ ((unused)))
+ static ssize_t
+ raw_read (unix_stream *s, void *buf, ssize_t nbyte)
+ {
++  if (s->fd < 0)
++    {
++      errno = EBADF;
++      return -1;
++    }
++
+   /* For read we can't do I/O in a loop like raw_write does, because
+      that will break applications that wait for interactive I/O.  We
+      still can loop around EINTR, though.  This however causes a
+@@ -355,6 +370,12 @@ raw_write (unix_stream *s, const void *buf, ssize_t nbyte)
+   ssize_t trans, bytes_left;
+   char *buf_st;
+ 
++  if (s->fd < 0)
++    {
++      errno = EBADF;
++      return -1;
++    }
++
+   bytes_left = nbyte;
+   buf_st = (char *) buf;
+ 
+@@ -383,6 +404,11 @@ raw_write (unix_stream *s, const void *buf, ssize_t nbyte)
+ static gfc_offset
+ raw_seek (unix_stream *s, gfc_offset offset, int whence)
+ {
++  if (s->fd < 0)
++    {
++      errno = EBADF;
++      return -1;
++    }
+   while (true)
+     {
+       gfc_offset off = lseek (s->fd, offset, whence);
+@@ -395,6 +421,11 @@ raw_seek (unix_stream *s, gfc_offset offset, int whence)
+ static gfc_offset
+ raw_tell (unix_stream *s)
+ {
++  if (s->fd < 0)
++    {
++      errno = EBADF;
++      return -1;
++    }
+   while (true)
+     {
+       gfc_offset off = lseek (s->fd, 0, SEEK_CUR);
+@@ -408,6 +439,11 @@ static gfc_offset
+ raw_size (unix_stream *s)
+ {
+   struct stat statbuf;
++  if (s->fd < 0)
++    {
++      errno = EBADF;
++      return -1;
++    }
+   if (TEMP_FAILURE_RETRY (fstat (s->fd, &statbuf)) == -1)
+     return -1;
+   if (S_ISREG (statbuf.st_mode))
+@@ -423,6 +459,11 @@ raw_truncate (unix_stream *s, gfc_offset length)
+   HANDLE h;
+   gfc_offset cur;
+ 
++  if (s->fd < 0)
++    {
++      errno = EBADF;
++      return -1;
++    }
+   if (isatty (s->fd))
+     {
+       errno = EBADF;
+@@ -2085,7 +2126,16 @@ inquire_readwrite (const char *string, gfc_charlen_type len)
+ int
+ stream_isatty (stream *s)
+ {
+-  return isatty (((unix_stream *) s)->fd);
++  int fd = ((unix_stream *) s)->fd;
++
++  /* As in the raw I/O functions, a negative fd fails with EBADF instead
++     of reaching the C library.  */
++  if (fd < 0)
++    {
++      errno = EBADF;
++      return 0;
++    }
++  return isatty (fd);
+ }
+ 
+ int
+-- 
+2.31.1.windows.1
+
