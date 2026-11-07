@@ -1,0 +1,50 @@
+Fix &std::unique_ptr<T>::operator* projections with newer libc++.
+
+QtWebEngine builds Chromium against the system libc++ (use_custom_libcxx is
+false). Since LLVM 23, libc++ declares unique_ptr::operator* as a template:
+
+  template <class _Ptr = pointer, __enable_if_t<__can_dereference<_Ptr>, int> = 0>
+  ... operator*() const
+
+so &std::unique_ptr<T>::operator* no longer names a single function, the
+projection can't be deduced, and std::ranges::find / count_if fail with
+"no matching function for call to object of type 'const __find'". Taking the
+address of a standard library member function is unspecified anyway, so
+use equivalent lambdas.
+
+diff --git a/src/3rdparty/chromium/content/browser/cookie_store/cookie_store_manager.cc b/src/3rdparty/chromium/content/browser/cookie_store/cookie_store_manager.cc
+--- a/src/3rdparty/chromium/content/browser/cookie_store/cookie_store_manager.cc
++++ b/src/3rdparty/chromium/content/browser/cookie_store/cookie_store_manager.cc
+@@ -233,7 +233,8 @@
+ 
+     auto existing_subscription_it = std::ranges::find(
+         subscriptions, *new_subscription,
+-        &std::unique_ptr<CookieChangeSubscription>::operator*);
++        [](const std::unique_ptr<CookieChangeSubscription>& subscription)
++            -> const CookieChangeSubscription& { return *subscription; });
+     if (existing_subscription_it == subscriptions.end())
+       subscriptions.push_back(std::move(new_subscription));
+   }
+@@ -331,7 +332,8 @@
+   for (auto& subscription : all_subscriptions) {
+     auto target_subscription_it = std::ranges::find(
+         target_subscriptions, *subscription,
+-        &std::unique_ptr<CookieChangeSubscription>::operator*);
++        [](const std::unique_ptr<CookieChangeSubscription>& target)
++            -> const CookieChangeSubscription& { return *target; });
+     if (target_subscription_it == target_subscriptions.end()) {
+       // The subscription is not marked for deletion.
+       live_subscriptions.push_back(std::move(subscription));
+diff --git a/src/3rdparty/chromium/components/autofill/core/browser/metrics/quality_metrics.cc b/src/3rdparty/chromium/components/autofill/core/browser/metrics/quality_metrics.cc
+--- a/src/3rdparty/chromium/components/autofill/core/browser/metrics/quality_metrics.cc
++++ b/src/3rdparty/chromium/components/autofill/core/browser/metrics/quality_metrics.cc
+@@ -78,7 +78,8 @@
+                         base::TimeTicks submission_time) {
+   size_t num_detected_field_types =
+       std::ranges::count_if(form, &FieldHasMeaningfulPossibleFieldTypes,
+-                            &std::unique_ptr<AutofillField>::operator*);
++                            [](const std::unique_ptr<AutofillField>& field)
++                                -> const AutofillField& { return *field; });
+   bool form_has_autofilled_fields = std::ranges::any_of(
+       form, [](const auto& field) { return field->is_autofilled(); });
+   bool has_observed_one_time_code_field =

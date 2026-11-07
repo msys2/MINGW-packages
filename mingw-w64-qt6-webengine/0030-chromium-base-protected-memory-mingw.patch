@@ -1,0 +1,63 @@
+Make PROTECTED_MEMORY_ENABLED work on mingw clang.
+
+On Windows, base/memory/protected_memory.h places protected variables in a
+"prot" section with __declspec(allocate(...)), and makes that section
+read-only at link time with
+
+  #pragma comment(linker, "/SECTION:prot,R")
+
+Chromium's MinGW build does not pass -fms-extensions, so clang silently
+drops both: the variables land in .data, and internal::CheckMemoryReadOnly
+then fails its CHECK(info.Protect == PAGE_READONLY), aborting
+v8_context_snapshot_generator.exe with STATUS_BREAKPOINT.
+
+On MinGW, place the variables with __attribute__((section(...))) instead,
+and use the same runtime model as Linux: the first
+AutoWritableMemoryInitializer resets the writers count and makes the whole
+section read-only with VirtualProtect. This doesn't depend on the linker
+setting section permissions, so it works with both GNU ld and lld (tested:
+the section is page-aligned and ordered prot$a < prot$mem < prot$z with
+both). The upstream is_clang gate is kept, because GCC rejects the
+inline/non-inline variable mix in one section ("section type conflict").
+
+diff --git a/src/3rdparty/chromium/base/memory/protected_memory.h b/src/3rdparty/chromium/base/memory/protected_memory.h
+--- a/src/3rdparty/chromium/base/memory/protected_memory.h
++++ b/src/3rdparty/chromium/base/memory/protected_memory.h
+@@ -111,15 +111,25 @@
+ // at link time instead of compile time, because defining the prot section
+ // read-only would cause mis-compiles due to optimizations assuming that the
+ // section contents are constant.
++#if defined(__MINGW32__)
++// MinGW builds without MS extensions, so #pragma comment(linker) and
++// __declspec(allocate) are silently dropped, and GNU ld has no way to preset
++// section permissions anyway. Use the section attribute and let
++// AutoWritableMemoryInitializer make the section read-only at runtime, as on
++// Linux.
++#define PROTECTED_MEMORY_ALLOCATE(name) __attribute__((section(name)))
++#else
+ #pragma comment(linker, "/SECTION:prot,R")
++#define PROTECTED_MEMORY_ALLOCATE(name) __declspec(allocate(name))
++#endif
+ 
+-__declspec(allocate("prot$a"))
++PROTECTED_MEMORY_ALLOCATE("prot$a")
+ __declspec(selectany) char __start_protected_memory;
+-__declspec(allocate("prot$z"))
++PROTECTED_MEMORY_ALLOCATE("prot$z")
+ __declspec(selectany) char __stop_protected_memory;
+ 
+ #define DECLARE_PROTECTED_DATA constinit
+-#define DEFINE_PROTECTED_DATA constinit __declspec(allocate("prot$mem"))
++#define DEFINE_PROTECTED_DATA constinit PROTECTED_MEMORY_ALLOCATE("prot$mem")
+ #elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_ANDROID)
+ // This value is used to align the writers variable. That variable needs to be
+ // aligned to ensure that the protected memory section starts on a page
+@@ -400,7 +410,7 @@
+ class BASE_EXPORT AutoWritableMemoryInitializer
+     : public AutoWritableMemoryBase {
+  public:
+-#if BUILDFLAG(IS_WIN)
++#if BUILDFLAG(IS_WIN) && !defined(__MINGW32__)
+   AutoWritableMemoryInitializer() { CHECK(IsSectionStartPageAligned()); }
+ #else
+   AutoWritableMemoryInitializer() LOCKS_EXCLUDED(WriterData::writers_lock()) {
