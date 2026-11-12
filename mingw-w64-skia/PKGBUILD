@@ -56,7 +56,7 @@ sha256sums=('63eee9235414e0171dec6b47d54a5b55057c4b38fce4514bdfc8003b5713a761'
             '995352c9149e6578d07f8a82d472b29df51ea927545e77ee1a2b81bdcfaddb02'
             '70cbe7b0cec3ae08a6ff74a738953ad09119c6227b272d7198f56a5f45740fd5'
             '830e62231ca3c17053e928e2ea7a03944ac3b3cb929bd17532abf4a80f7207e5'
-            '2afad6aaa3b6a858c8ef77fb02660d98dce9d42200386a07c0557b5f56c12d8e'
+            '24b8815c1617876aa7cb08990dd4941c6308e98bbd9aff8c1a01d31f78000151'
             '1a617adf0e442014251938888b13fc4282788e654cbefb0ef3b6a4c253b8375f'
             '30b3f09947a09bc3f2e1d2aeca2cb1e0f6246c4ee3acca873420b08d5a5c1a0c'
             'f0b20d04cee41207a6f974d468e05be63dc3f7ed02992e118660b5bf279e757b')
@@ -76,10 +76,16 @@ pkgver() {
   cd ..
   rm -Rf skia_temp
 }
-
+fetch_dep() {                                     
+  [ -d "$1/.git" ] && return 0             
+  git init -q "$1" &&
+  git -C "$1" remote add origin "$2" &&
+  git -C "$1" fetch -q --depth 1 origin "$3" &&
+  git -C "$1" checkout -q FETCH_HEAD
+}
 prepare() {
   mv "${_realname}-${_commit}" "${_realname}"
-  cd ${_realname}
+  cd "${srcdir}/${_realname}"
   apply_patch_with_msg \
     0001-add-pkgconfig-support.patch \
     0002-add-mingw-toolchain-skia.patch \
@@ -94,19 +100,31 @@ prepare() {
 
   patch -R -Nbp1 -i "${srcdir}/0007-Reland-Make-SkPath-immutable-on-GN-build.patch"
 
-  # gn is expected to be in skia/bin
+  
   cp ${MINGW_PREFIX}/bin/gn.exe bin/gn.exe
 
-  # MSVC-style /w flag is not valid for g++
+  
   sed -i 's|"/w"|"-w"|' \
       src/gpu/vk/vulkanmemoryallocator/BUILD.gn \
       third_party/third_party.gni
 
-  echo -e "\033[1;32m -> running sync-deps.py\033[0m"
-  python3 sync-deps.py
+  
+  local -A _url=(
+    [dawn]=https://dawn.googlesource.com/dawn.git
+    [freetype]=https://chromium.googlesource.com/chromium/src/third_party/freetype2.git
+    [zlib]=https://chromium.googlesource.com/chromium/src/third_party/zlib
+  )
+  local _d _dep_commit
+  for _d in dawn freetype zlib; do
+    _dep_commit=$(grep -m1 "externals/${_d}\"" DEPS | grep -o '@[0-9a-f]\{40\}' | tr -d @)
+    [ -n "${_dep_commit}" ] || { error "no pinned commit for ${_d} in DEPS"; return 1; }
+    fetch_dep "third_party/externals/${_d}" "${_url[${_d}]}" "${_dep_commit}" || return 1
+  done
 
-  # changes inside Dawn's own source (D3DError.h, QueueD3D11.cpp): applied after sync-deps.py fetched it
-  msg2 "Applying 0011-dawn-source-mingw.patch"
+  
+  python3 third_party/externals/dawn/tools/fetch_dawn_dependencies.py \
+    --directory third_party/externals/dawn || return 1
+
   patch -Np1 -d third_party/externals/dawn -i "${srcdir}/0011-dawn-source-mingw.patch"
 
   sed -e "s|@PREFIX@|${MINGW_PREFIX}|g" \
@@ -131,22 +149,19 @@ build() {
   cd ${_realname}
 
 
-
-  # --- 1. BUILD STATIC VERSION ---
-  msg2 "Building Static Library..."
-  gn gen out/static-${_buildtype}-${MSYSTEM} --args="
+  local _gn_common="
     target_cpu=\"${_arch}\"
     cc=\"${CC}\"
     cxx=\"${CXX}\"
     is_debug=${_debug}
     is_official_build=${_official}
-    is_component_build=false
     skia_enable_tools=false
     skia_use_dng_sdk=false
     skia_use_wuffs=false
     skia_use_xps=false
     skia_enable_graphite=true
     skia_use_dawn=true
+    skia_use_webgpu=true
     skia_use_expat=true
     skia_use_system_expat=true
     skia_use_system_harfbuzz=true
@@ -155,7 +170,6 @@ build() {
     skia_use_system_libpng=true
     skia_use_system_libwebp=true
     skia_use_system_zlib=true
-    skia_use_webgpu=true
     dawn_enable_d3d12=true
     dawn_enable_d3d11=true
     dawn_enable_vulkan=true
@@ -163,41 +177,17 @@ build() {
     dawn_enable_opengles=true
     extra_cflags=[\"-w\"]"
 
+  msg2 "Building Static Library..."
+  gn gen out/static-${_buildtype}-${MSYSTEM} --args="${_gn_common}
+    is_component_build=false"
   ninja -C out/static-${_buildtype}-${MSYSTEM}
 
-  # --- 2. BUILD SHARED/DYNAMIC VERSION ---
   msg2 "Building Shared/Dynamic Library..."
-  gn gen out/shared-${_buildtype}-${MSYSTEM} --args="
-    target_cpu=\"${_arch}\"
-    cc=\"${CC}\"
-    cxx=\"${CXX}\"
-    is_debug=${_debug}
-    is_official_build=${_official}
+  gn gen out/shared-${_buildtype}-${MSYSTEM} --args="${_gn_common}
     is_component_build=true
-    skia_enable_tools=false
-    skia_use_dng_sdk=false
-    skia_use_wuffs=false
-    skia_use_xps=false
-    skia_enable_graphite=true
-    skia_use_dawn=true
-    skia_use_expat=true
-    skia_use_system_expat=true
-    skia_use_system_harfbuzz=true
-    skia_use_system_icu=true
-    skia_use_system_libjpeg_turbo=true
-    skia_use_system_libpng=true
-    skia_use_system_libwebp=true
-    skia_use_system_zlib=true
-    skia_use_webgpu=true
-    dawn_enable_d3d12=true
-    dawn_enable_d3d11=true
-    dawn_enable_vulkan=true
-    dawn_enable_desktop_gl=true
-    dawn_enable_opengles=true
-    extra_ldflags=[\"-Wl,--export-all-symbols\"]
-    extra_cflags=[\"-w\"]"
-
+    extra_ldflags=[\"-Wl,--export-all-symbols\"]"
   ninja -C out/shared-${_buildtype}-${MSYSTEM}
+
 }
 
 package() {

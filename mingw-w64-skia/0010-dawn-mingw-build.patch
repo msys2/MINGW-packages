@@ -1,111 +1,6 @@
-diff -urN -x __pycache__ -x '*.orig' a/sync-deps.py b/sync-deps.py
---- a/sync-deps.py	1970-01-01 03:00:00.000000000 +0300
-+++ b/sync-deps.py	2026-11-11 20:51:12.875804400 +0300
-@@ -0,0 +1,100 @@
-+import os, subprocess, sys
-+
-+os.chdir(os.path.dirname(os.path.abspath(__file__)))
-+ROOT = os.getcwd()
-+E = "third_party/externals/"
-+
-+# ---- Skia's own DEPS: only what your gn args need -----------------------
-+# System libs (expat, harfbuzz, icu, libpng, libjpeg-turbo, libwebp, zlib)
-+# are NOT fetched. dng_sdk/wuffs/xps are off. Tools/tests are off.
-+SKIA_ALLOW = {E + n for n in [
-+    "dawn",
-+    "freetype",     # cheap; remove if gn gen never asks for it
-+    "zlib",
-+]}
-+
-+# ---- Dawn's DEPS: D3D12 + Null backend, Tint WGSL, no tests/samples -----
-+DAWN_ALLOW = {
-+    "third_party/abseil-cpp",
-+    "third_party/dxheaders",             # D3D12 headers
-+    "third_party/dxc",                   # large; try removing, add back if configure/compile asks
-+    "third_party/glfw",                  # configure needs it unless DAWN_USE_GLFW=OFF
-+    "third_party/jinja2",                # code generators
-+    "third_party/markupsafe",
-+    "third_party/protobuf",              # TINT_BUILD_IR_BINARY
-+    "third_party/libprotobuf-mutator/src",
-+    "third_party/glslang/src",           # TINT_BUILD_GLSL_VALIDATOR
-+    "third_party/spirv-headers/src",
-+    "third_party/webgpu-headers/src",
-+    "third_party/vulkan-headers/src",               # Vulkan backend
-+    "third_party/vulkan-utility-libraries/src",     # Vulkan backend
-+    "third_party/spirv-tools/src",                  # Tint's SPIR-V writer
-+    "third_party/khronos/EGL-Registry",             # OpenGLES backend
-+    "third_party/khronos/OpenGL-Registry",          # OpenGLES backend
-+}
-+# Deliberately skipped: vulkan-*, khronos/*, spirv-tools, google_benchmark,
-+# googletest, swiftshader, node-*, gpuweb, webgpu-cts.
-+
-+def load_deps(path):
-+    ns = {"Str": str}
-+    ns["Var"] = lambda n: ns["vars"][n]
-+    exec(open(path).read(), ns)
-+    v = ns.get("vars", {})
-+    out = {}
-+    for p, ent in ns["deps"].items():
-+        url = ent.get("url") if isinstance(ent, dict) else ent
-+        if not isinstance(url, str):
-+            continue                      # cipd etc.
-+        if "{" in url:
-+            try: url = url.format(**v)
-+            except KeyError: continue
-+        if "@" in url:
-+            out[p] = url
-+    return out
-+
-+def git(*a, cwd=None, check=True):
-+    return subprocess.run(["git", *a], cwd=cwd, check=check,
-+                          capture_output=True, text=True)
-+
-+def fetch(dest, url):
-+    repo, commit = url.rsplit("@", 1)
-+    os.makedirs(dest, exist_ok=True)
-+    if os.path.isdir(os.path.join(dest, ".git")):
-+        head = git("rev-parse", "HEAD", cwd=dest, check=False).stdout.strip()
-+        if head == commit:
-+            print("have    ", os.path.relpath(dest, ROOT)); return
-+    else:
-+        git("init", "-q", cwd=dest)
-+    print("fetching", os.path.relpath(dest, ROOT), commit[:8], flush=True)
-+    for attempt in range(1, 6):
-+        try:
-+            git("remote", "remove", "origin", cwd=dest, check=False)
-+            git("remote", "add", "origin", repo, cwd=dest)
-+            git("fetch", "-q", "--depth", "1", "origin", commit, cwd=dest)
-+            git("checkout", "-q", "-f", "FETCH_HEAD", cwd=dest)
-+            break
-+        except subprocess.CalledProcessError as e:
-+            msg = (e.stderr or "").strip().splitlines()
-+            if attempt == 5:
-+                sys.exit("FAILED %s\n%s" % (dest, e.stderr))
-+            print("retry %d/5 for %s: %s" % (attempt, os.path.relpath(dest, ROOT), msg[-1] if msg else "?"), flush=True)
-+            time.sleep(10 * attempt)
-+
-+def sync(deps, allow, base):
-+    missing = [a for a in allow if a not in deps]
-+    if missing:
-+        print("WARNING not in DEPS:", missing)
-+    for p in sorted(allow):
-+        if p in deps:
-+            fetch(os.path.join(base, p), deps[p])
-+
-+# extra args: "freetype" -> Skia dep, "dawn:third_party/khronos/EGL-Registry" -> Dawn dep
-+for a in sys.argv[1:]:
-+    if a.startswith("dawn:"):
-+        DAWN_ALLOW.add(a[5:])
-+    else:
-+        SKIA_ALLOW.add(a if "/" in a else E + a)
-+
-+sync(load_deps("DEPS"), SKIA_ALLOW, ROOT)
-+dawn = os.path.join(ROOT, E + "dawn")
-+sync(load_deps(os.path.join(dawn, "DEPS")), DAWN_ALLOW, dawn)
-\ No newline at end of file
 diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/BUILD.gn b/third_party/dawn/BUILD.gn
 --- a/third_party/dawn/BUILD.gn	2025-10-28 18:43:28.000000000 +0300
-+++ b/third_party/dawn/BUILD.gn	2026-11-11 20:32:14.935052200 +0300
++++ b/third_party/dawn/BUILD.gn	2026-11-13 00:43:41.044262900 +0300
 @@ -9,7 +9,7 @@
  
  import("//third_party/dawn/args.gni")
@@ -142,22 +37,20 @@ diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/BUILD.gn b/third_party/d
      ldflags = [ "/WHOLEARCHIVE:dawn_combined.lib" ]
      libs = [
        "dawn_combined.lib",
-@@ -148,7 +148,13 @@
+@@ -148,7 +148,11 @@
        "libcpmt.lib",
      ]
    } else {
 -    libs = [ "dawn_combined" ]
 +     if (is_mingw) {
-+        #ldflags = [ "-Wl,--whole-archive", "-ldawn_combined", "-Wl,--no-whole-archive" ]
-+        libs = [ "dawn_combined","d3d12", "dxgi", "dxguid", "user32", "gdi32", "ole32", "uuid",
-+               "advapi32", "shell32", "dbghelp", "synchronization", "bcrypt" ]   # add more if the linker asks
++        libs = ["dawn_combined", "dbghelp"]
 +     } else {
 +        libs = [ "dawn_combined" ]
 +     }
    }
  
    # https://dawn.googlesource.com/dawn/+/647c352f57aa8a4c2666258455158a36c0c385af/src/dawn/native/BUILD.gn#645
-@@ -241,7 +247,7 @@
+@@ -241,7 +245,7 @@
    } else {
      args += [ "--build_type=Release" ]
    }
@@ -166,7 +59,7 @@ diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/BUILD.gn b/third_party/d
      args += [
        "--win_sdk=" + win_sdk,
        "--win_sdk_version=" + win_sdk_version,
-@@ -266,6 +272,11 @@
+@@ -266,6 +270,11 @@
    } else {
      args += [ "--dawn_enable_d3d12=false" ]
    }
@@ -180,7 +73,7 @@ diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/BUILD.gn b/third_party/d
    } else {
 diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/build_dawn.py b/third_party/dawn/build_dawn.py
 --- a/third_party/dawn/build_dawn.py	2025-10-28 18:43:28.000000000 +0300
-+++ b/third_party/dawn/build_dawn.py	2026-11-11 20:32:14.978121400 +0300
++++ b/third_party/dawn/build_dawn.py	2026-11-13 00:34:07.809145200 +0300
 @@ -48,6 +48,8 @@
    parser.add_argument(
        "--dawn_enable_d3d12", default="false", help="Enable D3D12 backend.")
@@ -199,7 +92,7 @@ diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/build_dawn.py b/third_pa
        "-DDAWN_BUILD_MONOLITHIC_LIBRARY=OFF",
        f"-DCMAKE_BUILD_TYPE={args.build_type}",
        # Explicitly set the C++ standard to avoid issues with CMake's feature
-@@ -111,24 +113,44 @@
+@@ -111,24 +113,25 @@
        f"-DDAWN_ENABLE_OPENGLES={gn_bool_to_cmake(args.dawn_enable_opengles)}",
        f"-DDAWN_ENABLE_METAL={gn_bool_to_cmake(args.dawn_enable_metal)}",
        f"-DDAWN_ENABLE_VULKAN={gn_bool_to_cmake(args.dawn_enable_vulkan)}",
@@ -224,46 +117,20 @@ diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/build_dawn.py b/third_pa
 -
 -    # The D3D backend requires the HLSL writer.
 -    configure_cmd.append("-DTINT_BUILD_HLSL_WRITER=ON")
-+    # Check if we are using MinGW vs MSVC
-+    use_mingw = True # Set to False if you want to fallback to MSVC
-+    
-+    if use_mingw:
-+            # D3D12 needs Tint's HLSL writer (WGSL -> HLSL), so it must be ON
+-  else:
+-    configure_cmd.append("-DTINT_BUILD_HLSL_WRITER=OFF")
+-    cxx_flags.append("-w") # Silence warnings
 +      configure_cmd.append("-DTINT_BUILD_HLSL_WRITER=ON")
-+      # UWP/CoreWindow swapchains need WinRT headers MinGW lacks
 +      configure_cmd.append("-DDAWN_USE_WINDOWS_UI=OFF")
-+      # stub headers for things MinGW doesn't ship
 +      cxx_flags.append("-I" + os.path.join(script_dir, "mingw_compat").replace("\\", "/"))
-+      # silence warnings: GCC only complains about Clang-specific flags and MSVC-isms here
 +      cxx_flags.append("-w")
 +      cxx_flags.append("-Wno-invalid-constexpr")
-+    else:
-+      # Original MSVC settings
-+      win_cfgs, win_cxx, win_ld = get_windows_settings(args)
-+      configure_cmd += win_cfgs
-+      cxx_flags += win_cxx
-+      ld_flags += win_ld
-+      configure_cmd.append("-DTINT_BUILD_HLSL_WRITER=ON")
-   else:
-     configure_cmd.append("-DTINT_BUILD_HLSL_WRITER=OFF")
--    cxx_flags.append("-w") # Silence warnings
-+    cxx_flags.append("-w")  # Silence warnings
-+    cxx_flags.append("-Wno-invalid-constexpr")
  
    if cxx_flags:
      c_cxx_flags_str = " ".join(cxx_flags)
-@@ -179,7 +201,7 @@
-   print("with environment", env)
-   subprocess.run(configure_cmd, check=True, env=env)
- 
--  build_cmd = [ninja_exe, "-C", build_dir, "-dkeepdepfile"] + build_targets
-+  build_cmd = [ninja_exe, "-C", build_dir, "-k", "0", "-dkeepdepfile"] + build_targets
-   subprocess.run(build_cmd, check=True, env=env)
- 
-   # The install target is broken, so we manually copy the headers.
 diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/build_tint.py b/third_party/dawn/build_tint.py
 --- a/third_party/dawn/build_tint.py	2025-10-28 18:43:28.000000000 +0300
-+++ b/third_party/dawn/build_tint.py	2026-11-11 20:32:15.041688800 +0300
++++ b/third_party/dawn/build_tint.py	2026-11-13 00:41:09.599729500 +0300
 @@ -62,7 +62,7 @@
        f"-DCMAKE_SYSTEM_NAME={target_os}",
        f"-DCMAKE_SYSTEM_PROCESSOR={target_cpu}",
@@ -273,7 +140,7 @@ diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/build_tint.py b/third_pa
        "-DDAWN_ENABLE_INSTALL=OFF",
        f"-DCMAKE_BUILD_TYPE={args.build_type}",
        "-DDAWN_USE_X11=OFF",
-@@ -92,10 +92,20 @@
+@@ -92,11 +92,14 @@
    ld_flags = args.ld_flags or []
  
    if target_os == "Windows":
@@ -281,35 +148,21 @@ diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/build_tint.py b/third_pa
 -    configure_cmd += win_cfgs
 -    cxx_flags += win_cxx
 -    ld_flags += win_ld
-+    if getattr(args, "win_vc", False):
-+      win_cfgs, win_cxx, win_ld = get_windows_settings(args)
-+      configure_cmd += win_cfgs
-+      cxx_flags += win_cxx
-+      ld_flags += win_ld
-+    else:
-+      # MinGW / GCC settings on Windows
-+      cxx_flags.extend([
+-
++    cxx_flags.extend([
 +          "-Wno-format",
 +          "-Wno-format-extra-args",
 +          "-Wno-unknown-pragmas",
 +          "-Wno-invalid-constexpr",
 +          "-w",
 +      ])
- 
++      
    if cxx_flags:
      c_cxx_flags_str = " ".join(cxx_flags)
-@@ -121,7 +131,7 @@
-   # These tint targets (and their deps) are what Skia needs to build
-   tint_targets = ["tint_api", "tint_lang_wgsl_reader", "tint_lang_wgsl_writer"]
- 
--  build_cmd = [ninja_exe, "-C", build_dir, "-dkeepdepfile"] + tint_targets
-+  build_cmd = [ninja_exe, "-C", build_dir, "-k", "0", "-dkeepdepfile"] + tint_targets
-   subprocess.run(build_cmd, check=True, env=env)
- 
-   dependencies, object_files = discover_dependencies(build_dir, tint_targets)
+     configure_cmd.append(f"-DCMAKE_CXX_FLAGS={c_cxx_flags_str}")
 diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/cmake_utils.py b/third_party/dawn/cmake_utils.py
 --- a/third_party/dawn/cmake_utils.py	2025-10-28 18:43:28.000000000 +0300
-+++ b/third_party/dawn/cmake_utils.py	2026-11-11 20:32:15.087745700 +0300
++++ b/third_party/dawn/cmake_utils.py	2026-11-13 00:34:34.781353500 +0300
 @@ -314,6 +314,16 @@
      os.remove(gen_library_path)
  
@@ -329,7 +182,7 @@ diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/cmake_utils.py b/third_p
    if target_os == "Windows":
 diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/mingw_compat/DXProgrammableCapture.h b/third_party/dawn/mingw_compat/DXProgrammableCapture.h
 --- a/third_party/dawn/mingw_compat/DXProgrammableCapture.h	1970-01-01 03:00:00.000000000 +0300
-+++ b/third_party/dawn/mingw_compat/DXProgrammableCapture.h	2026-11-11 20:32:15.129841600 +0300
++++ b/third_party/dawn/mingw_compat/DXProgrammableCapture.h	2026-11-13 00:06:27.053533900 +0300
 @@ -0,0 +1,20 @@
 +#pragma once
 +#include <windows.h>
@@ -353,7 +206,7 @@ diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/mingw_compat/DXProgramma
 +#endif
 diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/mingw_compat/mingw_uuidof_fix.h b/third_party/dawn/mingw_compat/mingw_uuidof_fix.h
 --- a/third_party/dawn/mingw_compat/mingw_uuidof_fix.h	1970-01-01 03:00:00.000000000 +0300
-+++ b/third_party/dawn/mingw_compat/mingw_uuidof_fix.h	2026-11-11 20:32:15.197258300 +0300
++++ b/third_party/dawn/mingw_compat/mingw_uuidof_fix.h	2026-11-13 00:06:27.071695100 +0300
 @@ -0,0 +1,12 @@
 +#pragma once
 +#include <windows.h>
@@ -369,7 +222,7 @@ diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/mingw_compat/mingw_uuido
 +inline constexpr const GUID& __mingw_uuidof() { return dawn_mingw_compat::ComUuid<T>::Get(); }
 diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/mingw_compat/windows.h b/third_party/dawn/mingw_compat/windows.h
 --- a/third_party/dawn/mingw_compat/windows.h	1970-01-01 03:00:00.000000000 +0300
-+++ b/third_party/dawn/mingw_compat/windows.h	2026-11-11 20:32:15.223308800 +0300
++++ b/third_party/dawn/mingw_compat/windows.h	2026-11-13 00:06:27.082049300 +0300
 @@ -0,0 +1,17 @@
 +#pragma GCC system_header
 +#pragma once
