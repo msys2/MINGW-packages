@@ -393,6 +393,10 @@ if(WITH_CYCLES AND WITH_CYCLES_PATH_GUIDING)
   endif()
 endif()
 
+if(WITH_OPENTIMELINEIO)
+  find_package(OpenTimelineIO REQUIRED CONFIG)
+endif()
+
 # ----------------------------------------------------------------------------
 # Build and Link Flags
 
