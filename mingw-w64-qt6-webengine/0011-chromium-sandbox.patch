@@ -1,0 +1,283 @@
+diff --git a/src/3rdparty/chromium/sandbox/win/BUILD.gn b/src/3rdparty/chromium/sandbox/win/BUILD.gn
+index 5c47439697..4a3da815ed 100644
+--- a/src/3rdparty/chromium/sandbox/win/BUILD.gn
++++ b/src/3rdparty/chromium/sandbox/win/BUILD.gn
+@@ -188,10 +188,17 @@ static_library("sandbox") {
+     "//build/config/win:maybe_set_appcontainer_acls",
+   ]
+ 
+-  libs = [
+-    "ntdll.lib",
+-    "userenv.lib",
+-  ]
++  if (is_msvc) {
++    libs = [
++      "ntdll.lib",
++      "userenv.lib",
++    ]
++  } else {
++    libs = [
++      "ntdll",
++      "userenv",
++    ]
++  }
+ }
+ 
+ test("sbox_integration_tests") {
+diff --git a/src/3rdparty/chromium/sandbox/win/src/nt_internals.h b/src/3rdparty/chromium/sandbox/win/src/nt_internals.h
+index 8df2c686ea..4844504975 100644
+--- a/src/3rdparty/chromium/sandbox/win/src/nt_internals.h
++++ b/src/3rdparty/chromium/sandbox/win/src/nt_internals.h
+@@ -40,12 +40,14 @@ typedef NTSTATUS(WINAPI* NtOpenFileFunction)(OUT PHANDLE FileHandle,
+ 
+ typedef NTSTATUS(WINAPI* NtCloseFunction)(IN HANDLE Handle);
+ 
++#ifdef _MSC_VER
+ typedef struct _FILE_RENAME_INFORMATION {
+   BOOLEAN ReplaceIfExists;
+   HANDLE RootDirectory;
+   ULONG FileNameLength;
+   WCHAR FileName[1];
+ } FILE_RENAME_INFORMATION, *PFILE_RENAME_INFORMATION;
++#endif
+ 
+ typedef NTSTATUS(WINAPI* NtSetInformationFileFunction)(
+     IN HANDLE FileHandle,
+@@ -54,6 +56,7 @@ typedef NTSTATUS(WINAPI* NtSetInformationFileFunction)(
+     IN ULONG Length,
+     IN FILE_INFORMATION_CLASS FileInformationClass);
+ 
++#ifdef _MSC_VER
+ typedef struct FILE_BASIC_INFORMATION {
+   LARGE_INTEGER CreationTime;
+   LARGE_INTEGER LastAccessTime;
+@@ -61,11 +64,13 @@ typedef struct FILE_BASIC_INFORMATION {
+   LARGE_INTEGER ChangeTime;
+   ULONG FileAttributes;
+ } FILE_BASIC_INFORMATION, *PFILE_BASIC_INFORMATION;
++#endif
+ 
+ typedef NTSTATUS(WINAPI* NtQueryAttributesFileFunction)(
+     IN POBJECT_ATTRIBUTES ObjectAttributes,
+     OUT PFILE_BASIC_INFORMATION FileAttributes);
+ 
++#ifdef _MSC_VER
+ typedef struct _FILE_NETWORK_OPEN_INFORMATION {
+   LARGE_INTEGER CreationTime;
+   LARGE_INTEGER LastAccessTime;
+@@ -75,6 +80,7 @@ typedef struct _FILE_NETWORK_OPEN_INFORMATION {
+   LARGE_INTEGER EndOfFile;
+   ULONG FileAttributes;
+ } FILE_NETWORK_OPEN_INFORMATION, *PFILE_NETWORK_OPEN_INFORMATION;
++#endif
+ 
+ typedef NTSTATUS(WINAPI* NtQueryFullAttributesFileFunction)(
+     IN POBJECT_ATTRIBUTES ObjectAttributes,
+@@ -147,8 +153,10 @@ typedef NTSTATUS(WINAPI* NtOpenProcessFunction)(OUT PHANDLE ProcessHandle,
+                                                     ObjectAttributes,
+                                                 IN PCLIENT_ID ClientId);
+ 
++#ifdef _MSC_VER
+ // Provide ThreadImpersonationToken which is not in THREADINFOCLASS.
+ constexpr auto ThreadImpersonationToken = static_cast<THREADINFOCLASS>(5);
++#endif
+ 
+ typedef NTSTATUS(WINAPI* NtSetInformationThreadFunction)(
+     IN HANDLE ThreadHandle,
+@@ -208,8 +216,10 @@ typedef NTSTATUS(WINAPI* NtOpenProcessTokenExFunction)(
+ // -----------------------------------------------------------------------
+ // Memory
+ 
++#ifdef _MSC_VER
+ // Don't really need this structure right now.
+ typedef PVOID PRTL_HEAP_PARAMETERS;
++#endif
+ 
+ typedef PVOID(WINAPI* RtlCreateHeapFunction)(IN ULONG Flags,
+                                              IN PVOID HeapBase OPTIONAL,
+@@ -271,8 +281,10 @@ typedef NTSTATUS(WINAPI* NtProtectVirtualMemoryFunction)(
+ // -----------------------------------------------------------------------
+ // Objects
+ 
++#ifdef _MSC_VER
+ // Add some field not in OBJECT_INFORMATION_CLASS.
+ constexpr auto ObjectNameInformation = static_cast<OBJECT_INFORMATION_CLASS>(1);
++#endif
+ 
+ typedef enum _POOL_TYPE {
+   NonPagedPool,
+@@ -284,6 +296,7 @@ typedef enum _POOL_TYPE {
+   NonPagedPoolCacheAlignedMustS
+ } POOL_TYPE;
+ 
++#ifdef _MSC_VER
+ typedef struct _OBJECT_BASIC_INFORMATION {
+   ULONG Attributes;
+   ACCESS_MASK GrantedAccess;
+@@ -326,6 +339,7 @@ typedef struct _OBJECT_TYPE_INFORMATION {
+ typedef struct _OBJECT_NAME_INFORMATION {
+   UNICODE_STRING ObjectName;
+ } OBJECT_NAME_INFORMATION, *POBJECT_NAME_INFORMATION;
++#endif
+ 
+ typedef NTSTATUS(WINAPI* NtQueryObjectFunction)(
+     IN HANDLE Handle,
+diff --git a/src/3rdparty/chromium/sandbox/win/src/sandbox_nt_util.h b/src/3rdparty/chromium/sandbox/win/src/sandbox_nt_util.h
+--- a/src/3rdparty/chromium/sandbox/win/src/sandbox_nt_util.h
++++ b/src/3rdparty/chromium/sandbox/win/src/sandbox_nt_util.h
+@@ -41,6 +41,24 @@ void* __cdecl operator new(size_t size,
+ void __cdecl operator delete(void* memory,
+                              void* buffer,
+                              sandbox::AllocationType type);
++
++// Array forms. Required so MinGW/clang can compile placement
++// `new (NT_ALLOC) T[N]` / `new (NT_PAGE, base) T[N]`. Without these,
++// `T[N]` resolves to libstdc++'s ::operator new[] which is unsafe inside
++// the early NtMapViewOfSection interceptor (target's CRT/IAT not ready).
++void* __cdecl operator new[](size_t size,
++                             sandbox::AllocationType type,
++                             void* near_to = nullptr);
++void __cdecl operator delete[](void* memory, sandbox::AllocationType type);
++void __cdecl operator delete[](void* memory,
++                               sandbox::AllocationType type,
++                               void* near_to);
++void* __cdecl operator new[](size_t size,
++                             void* buffer,
++                             sandbox::AllocationType type);
++void __cdecl operator delete[](void* memory,
++                               void* buffer,
++                               sandbox::AllocationType type);
+ 
+ // DCHECK_NT is defined to be pretty much an assert at this time because we
+ // don't have logging from the ntdll layer on the child.
+diff --git a/src/3rdparty/chromium/sandbox/win/src/sandbox_nt_util.cc b/src/3rdparty/chromium/sandbox/win/src/sandbox_nt_util.cc
+index 26158cc3d9..f38bcd19eb 100644
+--- a/src/3rdparty/chromium/sandbox/win/src/sandbox_nt_util.cc
++++ b/src/3rdparty/chromium/sandbox/win/src/sandbox_nt_util.cc
+@@ -19,6 +19,7 @@
+ #include "base/compiler_specific.h"
+ #include "base/containers/span.h"
+ #include "base/win/pe_image.h"
++#include "build/build_config.h"
+ #include "sandbox/win/src/internal_types.h"
+ #include "sandbox/win/src/nt_internals.h"
+ #include "sandbox/win/src/sandbox_factory.h"
+@@ -35,7 +36,9 @@ namespace {
+ 
+ // Uses value of FILE_INFORMATION_CLASS defined in Wdm.h but not in user-mode.
+ // https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/ne-wdm-_file_information_class
++#if !defined(__MINGW32__)
+ constexpr uint32_t FileRenameInformation = 10;
++#endif
+ 
+ #if defined(_WIN64)
+ // Align a pointer to the next allocation granularity boundary.
+@@ -326,7 +329,9 @@ NTSTATUS CopyData(void* destination, const void* source, size_t bytes) {
+   __try {
+     GetNtExports()->memcpy(destination, source, bytes);
+   } __except (EXCEPTION_EXECUTE_HANDLER) {
++#ifdef _MSC_VER
+     ret = (NTSTATUS)GetExceptionCode();
++#endif
+   }
+   return ret;
+ }
+@@ -369,7 +374,9 @@ NTSTATUS CopyNameAndAttributes(
+       ret = STATUS_SUCCESS;
+     } while (false);
+   } __except (EXCEPTION_EXECUTE_HANDLER) {
++#ifdef _MSC_VER
+     ret = (NTSTATUS)GetExceptionCode();
++#endif
+   }
+ 
+   if (!NT_SUCCESS(ret) && *out_name)
+@@ -763,3 +770,33 @@ void* __cdecl operator new(size_t size,
+ void __cdecl operator delete(void* memory,
+                              void* buffer,
+                              sandbox::AllocationType type) {}
++
++// Array forms route to the singular forms above. Required by MinGW so
++// placement new (NT_ALLOC)/(NT_PAGE) array-new resolves to the
++// sandbox-private NT heap, not libstdc++ ::operator new[].
++void* __cdecl operator new[](size_t size,
++                             sandbox::AllocationType type,
++                             void* near_to) {
++  return ::operator new(size, type, near_to);
++}
++
++void __cdecl operator delete[](void* memory,
++                               sandbox::AllocationType type) {
++  ::operator delete(memory, type);
++}
++
++void __cdecl operator delete[](void* memory,
++                               sandbox::AllocationType type,
++                               void* near_to) {
++  ::operator delete(memory, type);
++}
++
++void* __cdecl operator new[](size_t size,
++                             void* buffer,
++                             sandbox::AllocationType type) {
++  return buffer;
++}
++
++void __cdecl operator delete[](void* memory,
++                               void* buffer,
++                               sandbox::AllocationType type) {}
+diff --git a/src/3rdparty/chromium/sandbox/win/src/signed_interception.cc b/src/3rdparty/chromium/sandbox/win/src/signed_interception.cc
+index 05581224d3..ef7b5e6193 100644
+--- a/src/3rdparty/chromium/sandbox/win/src/signed_interception.cc
++++ b/src/3rdparty/chromium/sandbox/win/src/signed_interception.cc
+@@ -69,7 +69,11 @@ TargetNtCreateSection(NtCreateSectionFunction orig_CreateSection,
+     }
+ 
+     CountedParameterSet<NameBased> params;
++#if defined(__MINGW32__) // is named Name instead of ObjectName in msys2/ucrt64
++    params[NameBased::NAME] = ParamPickerMake(path->Name.Buffer);
++#else
+     params[NameBased::NAME] = ParamPickerMake(path->ObjectName.Buffer);
++#endif
+ 
+     // Check if this will be sent to the broker.
+     if (!QueryBroker(IpcTag::NTCREATESECTION, params.GetBase()))
+diff --git a/src/3rdparty/chromium/sandbox/win/src/target_process.cc b/src/3rdparty/chromium/sandbox/win/src/target_process.cc
+index df0be21c8b..4c963d8a55 100644
+--- a/src/3rdparty/chromium/sandbox/win/src/target_process.cc
++++ b/src/3rdparty/chromium/sandbox/win/src/target_process.cc
+@@ -249,7 +249,7 @@ ResultCode TargetProcess::TransferVariable(const char* name,
+   if (!module)
+     return SBOX_ERROR_CANNOT_LOADLIBRARY_EXECUTABLE;
+ 
+-  target_address = ::GetProcAddress(module, name);
++  target_address = reinterpret_cast<void*>(::GetProcAddress(module, name));
+   ::FreeLibrary(module);
+ 
+   if (!target_address)
+diff --git a/src/3rdparty/chromium/sandbox/win/src/win_utils.cc b/src/3rdparty/chromium/sandbox/win/src/win_utils.cc
+index 6ebaf2c83d..0ef44a91f1 100644
+--- a/src/3rdparty/chromium/sandbox/win/src/win_utils.cc
++++ b/src/3rdparty/chromium/sandbox/win/src/win_utils.cc
+@@ -98,8 +98,8 @@ std::optional<std::wstring> GetPathFromHandle(HANDLE handle) {
+   OBJECT_NAME_INFORMATION* name =
+       reinterpret_cast<OBJECT_NAME_INFORMATION*>(buffer->data());
+   return std::wstring(
+-      name->ObjectName.Buffer,
+-      name->ObjectName.Length / sizeof(name->ObjectName.Buffer[0]));
++      name->Name.Buffer,
++      name->Name.Length / sizeof(name->Name.Buffer[0]));
+ }
+ 
+ std::optional<std::wstring> GetTypeNameFromHandle(HANDLE handle) {
+@@ -110,8 +110,8 @@ std::optional<std::wstring> GetTypeNameFromHandle(HANDLE handle) {
+     return std::nullopt;
+   OBJECT_TYPE_INFORMATION* name =
+       reinterpret_cast<OBJECT_TYPE_INFORMATION*>(buffer->data());
+-  return std::wstring(name->Name.Buffer,
+-                      name->Name.Length / sizeof(name->Name.Buffer[0]));
++  return std::wstring(name->TypeName.Buffer,
++                      name->TypeName.Length / sizeof(name->TypeName.Buffer[0]));
+ }
+ 
+ bool CopyToChildMemory(HANDLE child,

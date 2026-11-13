@@ -1,0 +1,46 @@
+Avoid use-after-free of BeginFrameSource in ~CompositorFrameSinkSupport.
+
+When CreateRootCompositorFrameSink replaces an existing entry in
+root_sink_map_ (a misuse the upstream DCHECK at frame_sink_manager_impl.cc
+line 217 doesn't catch in release builds), the old RootCompositorFrameSinkImpl
+is destroyed by unique_ptr operator=. Its destructor body calls
+UnregisterBeginFrameSource(), which usually clears support_'s borrowed
+begin_frame_source_ via RecursivelyDetachBeginFrameSource ->
+SetBeginFrameSource(nullptr). However the UnregisterBeginFrameSource
+early-return path (no entry in frame_sink_source_map_) leaves that
+borrowed pointer dangling.
+
+The BFS unique_ptr members (synthetic_/external_begin_frame_source_) are
+declared after support_ in RootCompositorFrameSinkImpl, so by reverse
+member-destruction order they are freed first. Then ~CompositorFrameSinkSupport
+runs SetNeedsBeginFrame(false) -> UpdateNeedsBeginFramesInternal ->
+StopObservingBeginFrameSource, which dereferences the (non-null but stale)
+begin_frame_source_ and crashes:
+
+    Thread NN "VizCompositorThread" received signal SIGSEGV
+    #0 viz::CompositorFrameSinkSupport::StopObservingBeginFrameSource
+       at compositor_frame_sink_support.cc:1354 (begin_frame_source_->RemoveObserver(this))
+    #3 ~CompositorFrameSinkSupport at line 141 (SetNeedsBeginFrame(false))
+    #7 ~RootCompositorFrameSinkImpl at line 291 (member destruction)
+    #14 FrameSinkManagerImpl::CreateRootCompositorFrameSink at line 240
+
+Clear the borrowed pointer in ~RootCompositorFrameSinkImpl while the BFS
+is still alive. SetBeginFrameSource(nullptr) is a no-op when
+begin_frame_source_ is already null, so this is safe in the common path.
+
+diff --git a/src/3rdparty/chromium/components/viz/service/frame_sinks/root_compositor_frame_sink_impl.cc b/src/3rdparty/chromium/components/viz/service/frame_sinks/root_compositor_frame_sink_impl.cc
+--- a/src/3rdparty/chromium/components/viz/service/frame_sinks/root_compositor_frame_sink_impl.cc
++++ b/src/3rdparty/chromium/components/viz/service/frame_sinks/root_compositor_frame_sink_impl.cc
+@@ -288,6 +288,12 @@ RootCompositorFrameSinkImpl::Create(
+ RootCompositorFrameSinkImpl::~RootCompositorFrameSinkImpl() {
+   support_->frame_sink_manager()->UnregisterBeginFrameSource(
+       begin_frame_source());
++  // UnregisterBeginFrameSource() clears support_'s borrowed BFS pointer in
++  // the common path, but its early-return path (no entry in
++  // frame_sink_source_map_) leaves it dangling. The BFS members below are
++  // destroyed before support_; clear the pointer now so the upcoming
++  // ~CompositorFrameSinkSupport() does not dereference freed memory.
++  support_->SetBeginFrameSource(nullptr);
+ }
+
+ bool RootCompositorFrameSinkImpl::WillEvictSurface(

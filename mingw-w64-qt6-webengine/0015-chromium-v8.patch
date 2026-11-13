@@ -1,0 +1,498 @@
+diff --git a/src/3rdparty/chromium/v8/BUILD.gn b/src/3rdparty/chromium/v8/BUILD.gn
+index 2a367403ec..51fb8c329a 100644
+--- a/src/3rdparty/chromium/v8/BUILD.gn
++++ b/src/3rdparty/chromium/v8/BUILD.gn
+@@ -37,7 +37,7 @@ declare_args() {
+   v8_enable_future = false
+ 
+   # Sets -DENABLE_SYSTEM_INSTRUMENTATION. Enables OS-dependent event tracing
+-  v8_enable_system_instrumentation = (is_win || is_mac) && !v8_use_perfetto
++  v8_enable_system_instrumentation = (is_msvc || is_mac) && !v8_use_perfetto
+ 
+   # Sets the GUID for the ETW provider
+   v8_etw_guid = ""
+@@ -1559,14 +1559,14 @@ config("toolchain") {
+ 
+   if (v8_current_cpu == "x86") {
+     defines += [ "V8_TARGET_ARCH_IA32" ]
+-    if (is_win) {
++    if (is_msvc) {
+       # Ensure no surprising artifacts from 80bit double math with x86.
+       cflags += [ "/arch:SSE2" ]
+     }
+   }
+   if (v8_current_cpu == "x64") {
+     defines += [ "V8_TARGET_ARCH_X64" ]
+-    if (is_win) {
++    if (is_msvc) {
+       # Increase the initial stack size. The default is 1MB, this is 2MB. This
+       # applies only to executables and shared libraries produced by V8 since
+       # ldflags are not pushed to dependants.
+@@ -1598,7 +1598,7 @@ config("toolchain") {
+   }
+ 
+   if (v8_no_inline) {
+-    if (is_win) {
++    if (is_msvc) {
+       cflags += [ "/Ob0" ]
+     } else {
+       cflags += [
+@@ -1643,7 +1643,7 @@ config("toolchain") {
+     ]
+   }
+ 
+-  if (!is_clang && !is_win) {
++  if (!is_clang && !is_msvc) {
+     cflags += [
+       # Disable gcc warnings for optimizations based on the assumption that
+       # signed overflow does not occur. Generates false positives (see
+@@ -6284,7 +6284,7 @@ v8_source_set("v8_base_without_compiler") {
+   if (v8_enable_i18n_support) {
+     deps += [ ":run_gen-regexp-special-case" ]
+     sources += [ "$target_gen_dir/src/regexp/special-case.cc" ]
+-    if (is_win) {
++    if (is_msvc) {
+       deps += [ "$v8_icu_path:icudata" ]
+     }
+   } else {
+@@ -6710,11 +6710,19 @@ v8_component("v8_libbase") {
+ 
+     defines += [ "_CRT_RAND_S" ]  # for rand_s()
+ 
+-    libs = [
+-      "dbghelp.lib",
+-      "winmm.lib",
+-      "ws2_32.lib",
+-    ]
++    if (is_mingw) {
++      libs = [
++        "dbghelp",
++        "winmm",
++        "ws2_32",
++      ]
++    } else {
++      libs = [
++        "dbghelp.lib",
++        "winmm.lib",
++        "ws2_32.lib",
++      ]
++    }
+ 
+     if (v8_enable_etw_stack_walking) {
+       libs += [ "advapi32.lib" ]  # Needed for TraceLoggingProvider.h
+@@ -6936,7 +6944,7 @@ v8_source_set("v8_heap_base") {
+   ]
+ 
+   if (current_cpu == "x64") {
+-    if (is_win) {
++    if (is_msvc) {
+       # Prefer a masm version with unwind directives.
+       sources += [ "src/heap/base/asm/x64/push_registers_masm.asm" ]
+     } else {
+@@ -7342,7 +7350,7 @@ if (current_toolchain == v8_snapshot_toolchain) {
+   # disable it while taking a V8 snapshot.
+   config("disable_icf") {
+     visibility = [ ":*" ]  # Only targets in this file can depend on this.
+-    if (is_win) {
++    if (is_msvc) {
+       ldflags = [ "/OPT:NOICF" ]  # link.exe, but also lld-link.exe.
+     } else if (is_apple && !use_lld) {
+       ldflags = [ "-Wl,-no_deduplicate" ]  # ld64.
+diff --git a/src/3rdparty/chromium/v8/BUILD.bazel b/src/3rdparty/chromium/v8/BUILD.bazel
+index 967f7bbfb2..b47f8655c6 100644
+--- a/src/3rdparty/chromium/v8/BUILD.bazel
++++ b/src/3rdparty/chromium/v8/BUILD.bazel
+@@ -3825,6 +3825,7 @@ filegroup(
+         # Note these cannot be v8_target_is_* selects because these contain
+         # inline assembly that runs inside the executable. Since these are
+         # linked directly into mksnapshot, they must use the actual target cpu.
++        "@v8//bazel/config:is_mingw_asm_x64": ["src/heap/base/asm/x64/push_registers_asm.cc"],
+         "@v8//bazel/config:is_inline_asm_ia32": ["src/heap/base/asm/ia32/push_registers_asm.cc"],
+         "@v8//bazel/config:is_inline_asm_x64": ["src/heap/base/asm/x64/push_registers_asm.cc"],
+         "@v8//bazel/config:is_inline_asm_arm": ["src/heap/base/asm/arm/push_registers_asm.cc"],
+
+diff --git a/src/3rdparty/chromium/v8/include/v8config.h b/src/3rdparty/chromium/v8/include/v8config.h
+index e8bb19d545..bdabd40fe0 100644
+--- a/src/3rdparty/chromium/v8/include/v8config.h
++++ b/src/3rdparty/chromium/v8/include/v8config.h
+@@ -360,6 +360,13 @@ path. Add it with -I<path> to the command line
+ 
+ #if defined(__GNUC__)  // Clang in gcc mode.
+ # define V8_CC_GNU 1
++# if defined(__MINGW32__)
++#  define V8_CC_MINGW32 1
++# endif
++# if defined(__MINGW64__)
++#  define V8_CC_MINGW64 1
++# endif
++# define V8_CC_MINGW (V8_CC_MINGW32 || V8_CC_MINGW64)
+ #endif
+ 
+ # define V8_HAS_ATTRIBUTE_ALWAYS_INLINE (__has_attribute(always_inline))
+@@ -824,7 +831,7 @@ V8 shared library set USING_V8_SHARED.
+ #elif defined(_M_IX86) || defined(__i386__)
+ #define V8_HOST_ARCH_IA32 1
+ #define V8_HOST_ARCH_32_BIT 1
+-#elif defined(__AARCH64EL__) || defined(_M_ARM64)
++#elif defined(__AARCH64EL__) || defined(_M_ARM64) || defined(__aarch64__)
+ #define V8_HOST_ARCH_ARM64 1
+ #define V8_HOST_ARCH_64_BIT 1
+ #elif defined(__ARMEL__)
+@@ -870,7 +877,7 @@ V8 shared library set USING_V8_SHARED.
+ #define V8_TARGET_ARCH_X64 1
+ #elif defined(_M_IX86) || defined(__i386__)
+ #define V8_TARGET_ARCH_IA32 1
+-#elif defined(__AARCH64EL__) || defined(_M_ARM64)
++#elif defined(__AARCH64EL__) || defined(_M_ARM64) || defined(__aarch64__)
+ #define V8_TARGET_ARCH_ARM64 1
+ #elif defined(__ARMEL__)
+ #define V8_TARGET_ARCH_ARM 1
+diff --git a/src/3rdparty/chromium/v8/src/base/bits.h b/src/3rdparty/chromium/v8/src/base/bits.h
+index 7d7b2320fa..ef5a279e57 100644
+--- a/src/3rdparty/chromium/v8/src/base/bits.h
++++ b/src/3rdparty/chromium/v8/src/base/bits.h
+@@ -10,13 +10,18 @@
+ 
+ #include "src/base/base-export.h"
+ #include "src/base/macros.h"
+-#if V8_CC_MSVC
++#if V8_OS_WIN
+ #include <intrin.h>
+-#endif
+-#if V8_OS_WIN32
+ #include "src/base/win32-headers.h"
+ #endif
+ 
++#if V8_CC_MINGW
++#undef RotateLeft32
++#undef RotateLeft64
++#undef RotateRight32
++#undef RotateRight64
++#endif
++
+ namespace v8 {
+ namespace base {
+ namespace bits {
+diff --git a/src/3rdparty/chromium/v8/src/base/debug/stack_trace_win.cc b/src/3rdparty/chromium/v8/src/base/debug/stack_trace_win.cc
+index f981bec610..16655d51f0 100644
+--- a/src/3rdparty/chromium/v8/src/base/debug/stack_trace_win.cc
++++ b/src/3rdparty/chromium/v8/src/base/debug/stack_trace_win.cc
+@@ -81,7 +81,7 @@ bool InitializeSymbols() {
+   }
+ 
+   wchar_t exe_path[MAX_PATH];
+-  GetModuleFileName(nullptr, exe_path, MAX_PATH);
++  GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+   std::wstring exe_path_wstring(exe_path);
+   // To get the path without the filename, we just need to remove the final
+   // slash and everything after it.
+diff --git a/src/3rdparty/chromium/v8/src/base/export-template.h b/src/3rdparty/chromium/v8/src/base/export-template.h
+index 861cfe4027..810767221c 100644
+--- a/src/3rdparty/chromium/v8/src/base/export-template.h
++++ b/src/3rdparty/chromium/v8/src/base/export-template.h
+@@ -153,8 +153,10 @@
+ 
+ EXPORT_TEMPLATE_TEST(DEFAULT, );
+ EXPORT_TEMPLATE_TEST(DEFAULT, __attribute__((visibility("default"))));
++#ifdef _MSC_VER
+ EXPORT_TEMPLATE_TEST(MSVC_HACK, __declspec(dllexport));
+ EXPORT_TEMPLATE_TEST(DEFAULT, __declspec(dllimport));
++#endif
+ 
+ #undef EXPORT_TEMPLATE_TEST
+ #undef EXPORT_TEMPLATE_TEST_DEFAULT_DEFAULT
+diff --git a/src/3rdparty/chromium/v8/src/base/macros.h b/src/3rdparty/chromium/v8/src/base/macros.h
+index 4684adeeae..cfe7dee6aa 100644
+--- a/src/3rdparty/chromium/v8/src/base/macros.h
++++ b/src/3rdparty/chromium/v8/src/base/macros.h
+@@ -304,8 +304,12 @@ V8_INLINE A implicit_cast(A x) {
+ # else
+ #  define V8_PTR_PREFIX   ""
+ # endif  // V8_HOST_ARCH_64_BIT
+-#elif V8_CC_MINGW64
+-# define V8_PTR_PREFIX    "I64"
++#elif V8_CC_MINGW
++# if V8_TARGET_ARCH_X64
++#  define V8_PTR_PREFIX   "I64"
++# else
++#  define V8_PTR_PREFIX   ""
++# endif
+ #elif V8_HOST_ARCH_64_BIT
+ # define V8_PTR_PREFIX    "l"
+ #else
+diff --git a/src/3rdparty/chromium/v8/src/base/platform/platform-win32.cc b/src/3rdparty/chromium/v8/src/base/platform/platform-win32.cc
+index 95805a88e4..0b5b21431f 100644
+--- a/src/3rdparty/chromium/v8/src/base/platform/platform-win32.cc
++++ b/src/3rdparty/chromium/v8/src/base/platform/platform-win32.cc
+@@ -80,7 +80,6 @@ inline void MemoryFence() {
+   __asm__ __volatile__("xchgl %%eax,%0 ":"=r" (barrier));
+ }
+ 
+-#endif  // __MINGW64_VERSION_MAJOR
+ 
+ 
+ int localtime_s(tm* out_tm, const time_t* time) {
+@@ -133,6 +132,7 @@ int strncpy_s(char* dest, size_t dest_size, const char* source, size_t count) {
+   return 0;
+ }
+ 
++#endif  // __MINGW64_VERSION_MAJOR
+ #endif  // __MINGW32__
+ 
+ namespace v8 {
+@@ -802,13 +802,13 @@ void OS::EnsureWin32MemoryAPILoaded() {
+   static bool loaded = false;
+   if (!loaded) {
+     VirtualAlloc2 = (VirtualAlloc2_t)GetProcAddress(
+-        GetModuleHandle(L"kernelbase.dll"), "VirtualAlloc2");
++        GetModuleHandleW(L"kernelbase.dll"), "VirtualAlloc2");
+ 
+     MapViewOfFile3 = (MapViewOfFile3_t)GetProcAddress(
+-        GetModuleHandle(L"kernelbase.dll"), "MapViewOfFile3");
++        GetModuleHandleW(L"kernelbase.dll"), "MapViewOfFile3");
+ 
+     UnmapViewOfFile2 = (UnmapViewOfFile2_t)GetProcAddress(
+-        GetModuleHandle(L"kernelbase.dll"), "UnmapViewOfFile2");
++        GetModuleHandleW(L"kernelbase.dll"), "UnmapViewOfFile2");
+ 
+     loaded = true;
+   }
+@@ -1091,7 +1091,7 @@ bool OS::DiscardSystemPages(void* address, size_t size) {
+       reinterpret_cast<DiscardVirtualMemoryFunction>(-1))
+     discard_virtual_memory =
+         reinterpret_cast<DiscardVirtualMemoryFunction>(GetProcAddress(
+-            GetModuleHandle(L"Kernel32.dll"), "DiscardVirtualMemory"));
++            GetModuleHandleW(L"Kernel32.dll"), "DiscardVirtualMemory"));
+   // Use DiscardVirtualMemory when available because it releases faster than
+   // MEM_RESET.
+   DiscardVirtualMemoryFunction discard_function = discard_virtual_memory.load();
+diff --git a/src/3rdparty/chromium/v8/src/base/platform/time.cc b/src/3rdparty/chromium/v8/src/base/platform/time.cc
+index 4bede53691..482aca26f1 100644
+--- a/src/3rdparty/chromium/v8/src/base/platform/time.cc
++++ b/src/3rdparty/chromium/v8/src/base/platform/time.cc
+@@ -799,6 +799,8 @@ ThreadTicks ThreadTicks::Now() {
+   if (now != 0)
+     return ThreadTicks(now);
+   UNREACHABLE();
++#elif V8_OS_WIN
++  return ThreadTicks::GetForThread(::GetCurrentThread());
+ #elif V8_OS_DARWIN
+   return ThreadTicks(ComputeThreadTicks());
+ #elif V8_OS_FUCHSIA
+@@ -808,8 +810,6 @@ ThreadTicks ThreadTicks::Now() {
+   return ThreadTicks(ClockNow(CLOCK_THREAD_CPUTIME_ID));
+ #elif V8_OS_SOLARIS
+   return ThreadTicks(gethrvtime() / Time::kNanosecondsPerMicrosecond);
+-#elif V8_OS_WIN
+-  return ThreadTicks::GetForThread(::GetCurrentThread());
+ #else
+   UNREACHABLE();
+ #endif
+diff --git a/src/3rdparty/chromium/v8/src/common/assert-scope.h b/src/3rdparty/chromium/v8/src/common/assert-scope.h
+index f9e8542408..123b693be3 100644
+--- a/src/3rdparty/chromium/v8/src/common/assert-scope.h
++++ b/src/3rdparty/chromium/v8/src/common/assert-scope.h
+@@ -65,7 +65,7 @@ class V8_NODISCARD PerThreadAssertScope
+   PerThreadAssertScope(const PerThreadAssertScope&) = delete;
+   PerThreadAssertScope& operator=(const PerThreadAssertScope&) = delete;
+ 
+-  V8_EXPORT_PRIVATE static bool IsAllowed();
++  static bool IsAllowed();
+ 
+   void Release();
+ 
+diff --git a/src/3rdparty/chromium/v8/src/diagnostics/unwinding-info-win64.cc b/src/3rdparty/chromium/v8/src/diagnostics/unwinding-info-win64.cc
+index 1312609e5b..0290c5a0fa 100644
+--- a/src/3rdparty/chromium/v8/src/diagnostics/unwinding-info-win64.cc
++++ b/src/3rdparty/chromium/v8/src/diagnostics/unwinding-info-win64.cc
+@@ -473,7 +473,7 @@ static decltype(
+ void LoadNtdllUnwindingFunctionsOnce() {
+   // Load functions from the ntdll.dll module.
+   HMODULE ntdll_module =
+-      LoadLibraryEx(L"ntdll.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
++      LoadLibraryExW(L"ntdll.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+   DCHECK_NOT_NULL(ntdll_module);
+ 
+   // This fails on Windows 7.
+diff --git a/src/3rdparty/chromium/v8/src/heap/base/asm/x64/push_registers_asm.cc b/src/3rdparty/chromium/v8/src/heap/base/asm/x64/push_registers_asm.cc
+index 554caddfa7..07b107e889 100644
+--- a/src/3rdparty/chromium/v8/src/heap/base/asm/x64/push_registers_asm.cc
++++ b/src/3rdparty/chromium/v8/src/heap/base/asm/x64/push_registers_asm.cc
+@@ -1,4 +1,4 @@
+-// Copyright 2020 the V8 project authors. All rights reserved.
++// Copyright 2021 The Chromium Authors
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+@@ -6,24 +6,55 @@
+ // stack scanning.
+ //
+ // We cannot rely on clang generating the function and right symbol mangling
+-// as `__attribute__((naked))` does not prevent clang from generating TSAN
++// as `__attribite__((naked))` does not prevent clang from generating TSAN
+ // function entry stubs (`__tsan_func_entry`). Even with
+ // `__attribute__((no_sanitize_thread)` annotation clang generates the entry
+ // stub.
+ // See https://bugs.llvm.org/show_bug.cgi?id=45400.
+ 
+-// Do not depend on V8_TARGET_OS_* defines as some embedders may override the
+-// GN toolchain (e.g. ChromeOS) and not provide them.
++// _WIN64 Defined as 1 when the compilation target is 64-bit ARM or x64.
++// Otherwise, undefined.
++#if defined(_WIN64)
++#if defined(__clang__) || defined(__MINGW64__)
++// We maintain 16-byte alignment at calls. There is an 8-byte return address
++// on the stack and we push 72 bytes which maintains 16-byte stack alignment
++// at the call.
++// Source: https://docs.microsoft.com/en-us/cpp/build/x64-calling-convention
++asm(".att_syntax                                          \n"
++    ".globl PushAllRegistersAndIterateStack               \n"
++    "PushAllRegistersAndIterateStack:                     \n"
++    // rbp is callee-saved. Maintain proper frame pointer for debugging.
++    "  push %rbp                                          \n"
++    "  mov %rsp, %rbp                                     \n"
++    // Dummy for alignment.
++    "  push $0xCDCDCD                                     \n"
++    "  push %rsi                                          \n"
++    "  push %rdi                                          \n"
++    "  push %rbx                                          \n"
++    "  push %r12                                          \n"
++    "  push %r13                                          \n"
++    "  push %r14                                          \n"
++    "  push %r15                                          \n"
++    // Pass 1st parameter (rcx) unchanged (Stack*).
++    // Pass 2nd parameter (rdx) unchanged (StackVisitor*).
++    // Save 3rd parameter (r8; IterateStackCallback)
++    "  mov %r8, %r9                                       \n"
++    // Pass 3rd parameter as rsp (stack pointer).
++    "  mov %rsp, %r8                                      \n"
++    // Call the callback.
++    "  call *%r9                                          \n"
++    // Pop the callee-saved registers.
++    "  add $64, %rsp                                      \n"
++    // Restore rbp as it was used as frame pointer.
++    "  pop %rbp                                           \n"
++    "  ret                                                \n");
++#endif
++#else  // !_WIN64
+ 
+ // We maintain 16-byte alignment at calls. There is an 8-byte return address
+ // on the stack and we push 56 bytes which maintains 16-byte stack alignment
+ // at the call.
+ // Source: https://github.com/hjl-tools/x86-psABI/wiki/x86-64-psABI-1.0.pdf
+-
+-#ifdef _WIN64
+-#error "The masm based version must be used for Windows"
+-#endif
+-
+ asm(
+ #ifdef __APPLE__
+     ".globl _PushAllRegistersAndIterateStack            \n"
+@@ -36,31 +67,27 @@ asm(
+     "PushAllRegistersAndIterateStack:                   \n"
+ #endif  // !__APPLE__
+     // rbp is callee-saved. Maintain proper frame pointer for debugging.
+-    "  push %rbp                                        \n"
+-    "  mov %rsp, %rbp                                   \n"
++    "  push %rbp                                          \n"
++    "  mov %rsp, %rbp                                     \n"
+     // Dummy for alignment.
+-    "  push $0xCDCDCD                                   \n"
+-    "  push %rbx                                        \n"
+-    "  push %r12                                        \n"
+-    "  push %r13                                        \n"
+-    "  push %r14                                        \n"
+-    "  push %r15                                        \n"
++    "  push $0xCDCDCD                                     \n"
++    "  push %rbx                                          \n"
++    "  push %r12                                          \n"
++    "  push %r13                                          \n"
++    "  push %r14                                          \n"
++    "  push %r15                                          \n"
+     // Pass 1st parameter (rdi) unchanged (Stack*).
+     // Pass 2nd parameter (rsi) unchanged (StackVisitor*).
+     // Save 3rd parameter (rdx; IterateStackCallback)
+-    "  mov %rdx, %r8                                    \n"
++    "  mov %rdx, %r8                                      \n"
+     // Pass 3rd parameter as rsp (stack pointer).
+-    "  mov %rsp, %rdx                                   \n"
++    "  mov %rsp, %rdx                                     \n"
+     // Call the callback.
+-    "  call *%r8                                        \n"
++    "  call *%r8                                          \n"
+     // Pop the callee-saved registers.
+-    "  add $48, %rsp                                    \n"
++    "  add $48, %rsp                                      \n"
+     // Restore rbp as it was used as frame pointer.
+-    "  pop %rbp                                         \n"
+-    "  ret                                              \n"
+-#if !defined(__APPLE__)
+-    ".Lfunc_end0:                                       \n"
+-    ".size PushAllRegistersAndIterateStack, "
+-    ".Lfunc_end0-PushAllRegistersAndIterateStack        \n"
+-#endif  // !defined(__APPLE__)
+-    );
++    "  pop %rbp                                           \n"
++    "  ret                                                \n");
++
++#endif  // !_WIN64
+diff --git a/src/3rdparty/chromium/v8/src/profiler/heap-snapshot-generator.cc b/src/3rdparty/chromium/v8/src/profiler/heap-snapshot-generator.cc
+index 53bdb78a74..16354fb04c 100644
+--- a/src/3rdparty/chromium/v8/src/profiler/heap-snapshot-generator.cc
++++ b/src/3rdparty/chromium/v8/src/profiler/heap-snapshot-generator.cc
+@@ -426,11 +426,11 @@ HeapSnapshot::HeapSnapshot(HeapProfiler* profiler,
+   static_assert(kSystemPointerSize != 4 || sizeof(HeapGraphEdge) == 12);
+   static_assert(kSystemPointerSize != 8 || sizeof(HeapGraphEdge) == 24);
+   static_assert(kSystemPointerSize != 4 || sizeof(HeapEntry) == 32);
+-#if V8_CC_MSVC
++#if V8_OS_WIN
+   static_assert(kSystemPointerSize != 8 || sizeof(HeapEntry) == 48);
+-#else   // !V8_CC_MSVC
++#else   // !V8_OS_WIN
+   static_assert(kSystemPointerSize != 8 || sizeof(HeapEntry) == 40);
+-#endif  // !V8_CC_MSVC
++#endif  // !V8_OS_WIN
+   memset(&gc_subroot_entries_, 0, sizeof(gc_subroot_entries_));
+ }
+ 
+diff --git a/src/3rdparty/chromium/v8/src/snapshot/snapshot-utils.cc b/src/3rdparty/chromium/v8/src/snapshot/snapshot-utils.cc
+index ea04fcec0e..e67eb478a0 100644
+--- a/src/3rdparty/chromium/v8/src/snapshot/snapshot-utils.cc
++++ b/src/3rdparty/chromium/v8/src/snapshot/snapshot-utils.cc
+@@ -7,7 +7,7 @@
+ #include "src/base/sanitizer/msan.h"
+ 
+ #ifdef V8_USE_ZLIB
+-#include "third_party/zlib/zlib.h"
++#include <zlib.h>
+ #endif
+ 
+ namespace v8 {
+diff --git a/src/3rdparty/chromium/v8/bazel/config/BUILD.bazel b/src/3rdparty/chromium/v8/bazel/config/BUILD.bazel
+index c81f278203..7aeea5224b 100644
+--- a/src/3rdparty/chromium/v8/bazel/config/BUILD.bazel
++++ b/src/3rdparty/chromium/v8/bazel/config/BUILD.bazel
+@@ -273,6 +273,23 @@ selects.config_setting_group(
+     ],
+ )
+ 
++selects.config_setting_group(
++    name = "is_clang_or_gcc",
++    match_any = [
++        ":is_compiler_gcc",
++        ":is_compiler_clang",
++    ],
++)
++
++selects.config_setting_group(
++    name = "is_mingw_asm_x64",
++    match_all = [
++        ":is_windows",
++        ":is_x64",
++        ":is_clang_or_gcc",
++    ],
++)
++
+ selects.config_setting_group(
+     name = "is_msvc_asm_ia32",
+     match_all = [

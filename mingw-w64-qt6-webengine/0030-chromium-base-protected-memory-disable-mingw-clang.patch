@@ -1,0 +1,46 @@
+Disable PROTECTED_MEMORY_ENABLED for mingw clang builds.
+
+Chromium's base/BUILD.gn enables PROTECTED_MEMORY_ENABLED when
+is_clang is true on Windows. The Windows code path in
+base/memory/protected_memory.h relies on:
+
+  #pragma comment(linker, "/SECTION:prot,R")
+
+to mark the `prot` PE section read-only at link time. This pragma is
+an MSVC linker directive; mingw ld ignores it. As a result the prot
+section keeps its default read-write attributes, and
+internal::CheckMemoryReadOnly later fails its
+
+  CHECK((result > 0U) && (info.Protect == PAGE_READONLY));
+
+assertion, abort()ing v8_context_snapshot_generator.exe with
+STATUS_BREAKPOINT (0x80000003 / exit 2147483651) during
+
+  blink::V8ContextSnapshotImpl::TakeSnapshot ->
+  blink::RuntimeEnabledFeaturesBase::SetTestFeaturesEnabled ->
+  base::ProtectedMemoryInitializer
+
+The whole feature is a no-op on mingw GCC because is_clang is false
+there, so the GCC build never hit this CHECK. Match that behaviour
+for mingw clang by adding !is_mingw to the gate -- the read-only
+guarantee is unreachable until either mingw ld learns the MSVC
+pragma or chromium grows a portable alternative (e.g. an explicit
+VirtualProtect on the section at startup).
+
+--- a/src/3rdparty/chromium/base/BUILD.gn
++++ b/src/3rdparty/chromium/base/BUILD.gn
+@@ -2670,7 +2670,13 @@ buildflag_header("protected_memory_buildflags") {
+   header = "protected_memory_buildflags.h"
+   header_dir = "base/memory"
+ 
+-  protected_memory_enabled = !is_component_build && is_clang &&
++  # The Windows path relies on `#pragma comment(linker, "/SECTION:prot,R")`
++  # to make the prot section read-only at link time. mingw ld ignores that
++  # MSVC pragma, so the section stays writable and CheckMemoryReadOnly's
++  # CHECK fires at runtime (STATUS_BREAKPOINT in v8_context_snapshot_gen).
++  # Mingw GCC sidesteps this because is_clang is false; mingw clang has to
++  # opt out explicitly.
++  protected_memory_enabled = !is_component_build && is_clang && !is_mingw &&
+                              (is_win || is_linux || is_android || is_mac)
+ 
+   flags = [ "PROTECTED_MEMORY_ENABLED=$protected_memory_enabled" ]
