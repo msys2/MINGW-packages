@@ -291,6 +291,10 @@ if(WITH_EMBREE)
 endif()
 add_bundled_libraries(embree/lib)
 
+if(WITH_KTX)
+  find_package(Ktx REQUIRED CONFIG)
+endif()
+
 if(WITH_OPENIMAGEDENOISE)
   find_package_wrapper(OpenImageDenoise)
   set_and_warn_library_found("OpenImageDenoise" OPENIMAGEDENOISE_FOUND WITH_OPENIMAGEDENOISE)
