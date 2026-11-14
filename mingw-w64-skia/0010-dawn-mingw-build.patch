@@ -1,0 +1,243 @@
+diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/BUILD.gn b/third_party/dawn/BUILD.gn
+--- a/third_party/dawn/BUILD.gn	2025-10-28 18:43:28.000000000 +0300
++++ b/third_party/dawn/BUILD.gn	2026-11-13 00:43:41.044262900 +0300
+@@ -9,7 +9,7 @@
+ 
+ import("//third_party/dawn/args.gni")
+ 
+-if (is_win) {
++if (is_win && !is_mingw) {
+   # On Windows, the normal cc/cxx variables are just "clang" and "clang++"
+   # which are not found in the path. CMake needs the full path.
+   if (is_clang) {
+@@ -43,7 +43,7 @@
+ 
+   # The build script produces a static library for tint in the root output directory.
+   lib_dirs = [ root_out_dir ]
+-  if (is_win) {
++  if (is_win && !is_mingw) {
+     libs = [ "tint_combined.lib" ]
+   } else {
+     libs = [ "tint_combined" ]
+@@ -99,7 +99,7 @@
+   } else {
+     args += [ "--build_type=Release" ]
+   }
+-  if (is_win) {
++  if (is_win  && !is_mingw) {
+     args += [
+       "--win_sdk=" + win_sdk,
+       "--win_sdk_version=" + win_sdk_version,
+@@ -137,7 +137,7 @@
+     "$target_gen_dir/include",
+   ]
+   lib_dirs = [ root_out_dir ]
+-  if (is_win) {
++  if (is_win && !is_mingw) {
+     ldflags = [ "/WHOLEARCHIVE:dawn_combined.lib" ]
+     libs = [
+       "dawn_combined.lib",
+@@ -148,7 +148,11 @@
+       "libcpmt.lib",
+     ]
+   } else {
+-    libs = [ "dawn_combined" ]
++     if (is_mingw) {
++        libs = ["dawn_combined", "dbghelp"]
++     } else {
++        libs = [ "dawn_combined" ]
++     }
+   }
+ 
+   # https://dawn.googlesource.com/dawn/+/647c352f57aa8a4c2666258455158a36c0c385af/src/dawn/native/BUILD.gn#645
+@@ -241,7 +245,7 @@
+   } else {
+     args += [ "--build_type=Release" ]
+   }
+-  if (is_win) {
++  if (is_win && !is_mingw) {
+     args += [
+       "--win_sdk=" + win_sdk,
+       "--win_sdk_version=" + win_sdk_version,
+@@ -266,6 +270,11 @@
+   } else {
+     args += [ "--dawn_enable_d3d12=false" ]
+   }
++  if (dawn_enable_desktop_gl) {
++    args += [ "--dawn_enable_desktop_gl=true" ]
++  } else {
++    args += [ "--dawn_enable_desktop_gl=false" ]
++  }
+   if (dawn_enable_opengles) {
+     args += [ "--dawn_enable_opengles=true" ]
+   } else {
+diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/build_dawn.py b/third_party/dawn/build_dawn.py
+--- a/third_party/dawn/build_dawn.py	2025-10-28 18:43:28.000000000 +0300
++++ b/third_party/dawn/build_dawn.py	2026-11-13 00:34:07.809145200 +0300
+@@ -48,6 +48,8 @@
+   parser.add_argument(
+       "--dawn_enable_d3d12", default="false", help="Enable D3D12 backend.")
+   parser.add_argument(
++      "--dawn_enable_desktop_gl", default="false", help="Enable desktop OpenGL backend.")
++  parser.add_argument(
+       "--dawn_enable_opengles", default="false", help="Enable GLES backend.")
+   parser.add_argument(
+       "--dawn_enable_metal", default="false", help="Enable Metal backend.")
+@@ -91,7 +93,7 @@
+       f"--install-prefix={os.path.abspath(gen_dir)}",
+       f"-DCMAKE_SYSTEM_NAME={target_os}",
+       f"-DCMAKE_SYSTEM_PROCESSOR={target_cpu}",
+-      "-DDAWN_FETCH_DEPENDENCIES=ON",
++      "-DDAWN_FETCH_DEPENDENCIES=OFF",
+       "-DDAWN_BUILD_MONOLITHIC_LIBRARY=OFF",
+       f"-DCMAKE_BUILD_TYPE={args.build_type}",
+       # Explicitly set the C++ standard to avoid issues with CMake's feature
+@@ -111,24 +113,25 @@
+       f"-DDAWN_ENABLE_OPENGLES={gn_bool_to_cmake(args.dawn_enable_opengles)}",
+       f"-DDAWN_ENABLE_METAL={gn_bool_to_cmake(args.dawn_enable_metal)}",
+       f"-DDAWN_ENABLE_VULKAN={gn_bool_to_cmake(args.dawn_enable_vulkan)}",
++      f"-DDAWN_ENABLE_DESKTOP_GL={gn_bool_to_cmake(args.dawn_enable_desktop_gl)}",
+   ]
+   if args.enable_rtti:
+     configure_cmd.append("-DDAWN_ENABLE_RTTI=ON")
+ 
++  if args.dawn_enable_vulkan.lower() == "true":
++    configure_cmd.append("-DTINT_BUILD_SPV_WRITER=ON")
++  if args.dawn_enable_opengles.lower() == "true":
++    configure_cmd.append("-DTINT_BUILD_GLSL_WRITER=ON")
++
+   cxx_flags = args.cxx_flags or []
+   ld_flags = args.ld_flags or []
+ 
+   if target_os == "Windows":
+-    win_cfgs, win_cxx, win_ld = get_windows_settings(args)
+-    configure_cmd += win_cfgs
+-    cxx_flags += win_cxx
+-    ld_flags += win_ld
+-
+-    # The D3D backend requires the HLSL writer.
+-    configure_cmd.append("-DTINT_BUILD_HLSL_WRITER=ON")
+-  else:
+-    configure_cmd.append("-DTINT_BUILD_HLSL_WRITER=OFF")
+-    cxx_flags.append("-w") # Silence warnings
++      configure_cmd.append("-DTINT_BUILD_HLSL_WRITER=ON")
++      configure_cmd.append("-DDAWN_USE_WINDOWS_UI=OFF")
++      cxx_flags.append("-I" + os.path.join(script_dir, "mingw_compat").replace("\\", "/"))
++      cxx_flags.append("-w")
++      cxx_flags.append("-Wno-invalid-constexpr")
+ 
+   if cxx_flags:
+     c_cxx_flags_str = " ".join(cxx_flags)
+diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/build_tint.py b/third_party/dawn/build_tint.py
+--- a/third_party/dawn/build_tint.py	2025-10-28 18:43:28.000000000 +0300
++++ b/third_party/dawn/build_tint.py	2026-11-13 00:41:09.599729500 +0300
+@@ -62,7 +62,7 @@
+       f"-DCMAKE_SYSTEM_NAME={target_os}",
+       f"-DCMAKE_SYSTEM_PROCESSOR={target_cpu}",
+       # Fetch dependencies using DEPS, which is required for stand-alone builds.
+-      "-DDAWN_FETCH_DEPENDENCIES=ON",
++      "-DDAWN_FETCH_DEPENDENCIES=OFF",
+       "-DDAWN_ENABLE_INSTALL=OFF",
+       f"-DCMAKE_BUILD_TYPE={args.build_type}",
+       "-DDAWN_USE_X11=OFF",
+@@ -92,11 +92,14 @@
+   ld_flags = args.ld_flags or []
+ 
+   if target_os == "Windows":
+-    win_cfgs, win_cxx, win_ld = get_windows_settings(args)
+-    configure_cmd += win_cfgs
+-    cxx_flags += win_cxx
+-    ld_flags += win_ld
+-
++    cxx_flags.extend([
++          "-Wno-format",
++          "-Wno-format-extra-args",
++          "-Wno-unknown-pragmas",
++          "-Wno-invalid-constexpr",
++          "-w",
++      ])
++      
+   if cxx_flags:
+     c_cxx_flags_str = " ".join(cxx_flags)
+     configure_cmd.append(f"-DCMAKE_CXX_FLAGS={c_cxx_flags_str}")
+diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/cmake_utils.py b/third_party/dawn/cmake_utils.py
+--- a/third_party/dawn/cmake_utils.py	2025-10-28 18:43:28.000000000 +0300
++++ b/third_party/dawn/cmake_utils.py	2026-11-13 00:34:34.781353500 +0300
+@@ -314,6 +314,16 @@
+     os.remove(gen_library_path)
+ 
+   assert len(object_files) > 0
++  import shutil as _sh
++  if target_os == "Windows" and _sh.which("ar") and os.environ.get("MSYSTEM"):
++    rsp = os.path.join(build_dir, "objects_ar.rsp")
++    with open(rsp, "w") as f:
++      for obj in object_files:
++        f.write(obj.replace("\\", "/") + "\n")
++    subprocess.run([_sh.which("ar"), "rcs", lib_name, "@objects_ar.rsp"],
++                   cwd=build_dir, check=True)
++    copy_if_changed(gen_library_path, os.path.join(os.getcwd(), output_path))
++    return
+   # Use ar/lib to join all the object files that comprise the necessary
+   # libraries and any transitive dependencies into one .a file.
+   if target_os == "Windows":
+diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/mingw_compat/DXProgrammableCapture.h b/third_party/dawn/mingw_compat/DXProgrammableCapture.h
+--- a/third_party/dawn/mingw_compat/DXProgrammableCapture.h	1970-01-01 03:00:00.000000000 +0300
++++ b/third_party/dawn/mingw_compat/DXProgrammableCapture.h	2026-11-13 00:06:27.053533900 +0300
+@@ -0,0 +1,20 @@
++#pragma once
++#include <windows.h>
++#include <unknwn.h>
++#include <guiddef.h>
++#include <d3d12.h>
++
++#ifdef __cplusplus
++extern "C++" {
++  struct __declspec(uuid("9f251eaf-ee36-427c-87ea-aeff843d7574")) IDXGraphicsAnalysis : public IUnknown {
++      virtual void STDMETHODCALLTYPE BeginCapture() = 0;
++      virtual void STDMETHODCALLTYPE EndCapture() = 0;
++  };
++}
++
++#if defined(__MINGW32__) && !defined(SKIA_HAS_DX_ANALYSIS_UUID)
++#define SKIA_HAS_DX_ANALYSIS_UUID
++__CRT_UUID_DECL(IDXGraphicsAnalysis, 0x9f251eaf, 0xee36, 0x427c, 0x87, 0xea, 0xae, 0xff, 0x84, 0x3d, 0x75, 0x74);
++// MinGW headers already handle ID3D12Device natively now, so omit its manual re-declaration
++#endif
++#endif
+diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/mingw_compat/mingw_uuidof_fix.h b/third_party/dawn/mingw_compat/mingw_uuidof_fix.h
+--- a/third_party/dawn/mingw_compat/mingw_uuidof_fix.h	1970-01-01 03:00:00.000000000 +0300
++++ b/third_party/dawn/mingw_compat/mingw_uuidof_fix.h	2026-11-13 00:06:27.071695100 +0300
+@@ -0,0 +1,12 @@
++#pragma once
++#include <windows.h>
++#include <guiddef.h>
++#include <wrl/client.h>
++namespace dawn_mingw_compat {
++template <typename T> struct ComUuid;   // intentionally undefined: unsupported types fail at compile time
++template <typename T> struct ComUuid<Microsoft::WRL::ComPtr<T>> {
++  static const GUID& Get() { return __mingw_uuidof<T>(); }
++};
++}
++template <typename T>
++inline constexpr const GUID& __mingw_uuidof() { return dawn_mingw_compat::ComUuid<T>::Get(); }
+diff -urN -x __pycache__ -x '*.orig' a/third_party/dawn/mingw_compat/windows.h b/third_party/dawn/mingw_compat/windows.h
+--- a/third_party/dawn/mingw_compat/windows.h	1970-01-01 03:00:00.000000000 +0300
++++ b/third_party/dawn/mingw_compat/windows.h	2026-11-13 00:06:27.082049300 +0300
+@@ -0,0 +1,17 @@
++#pragma GCC system_header
++#pragma once
++#include_next <windows.h>
++#include <windef.h>
++#include <winerror.h>
++#include <winbase.h>
++
++#if defined(__cplusplus) && defined(__MINGW32__)
++// CompareObjectHandles (Windows 10 1607+) is missing from MinGW's headers: look it up at run time
++inline BOOL dawn_mingw_CompareObjectHandles(HANDLE a, HANDLE b) {
++  using Fn = BOOL (WINAPI*)(HANDLE, HANDLE);
++  static Fn fn = reinterpret_cast<Fn>(reinterpret_cast<void*>(
++      GetProcAddress(GetModuleHandleW(L"kernelbase.dll"), "CompareObjectHandles")));
++  return fn ? fn(a, b) : (a == b);
++}
++#define CompareObjectHandles dawn_mingw_CompareObjectHandles
++#endif
