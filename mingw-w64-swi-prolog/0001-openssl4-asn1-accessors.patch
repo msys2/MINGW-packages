@@ -1,0 +1,122 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -36,6 +36,10 @@ check_c_source_compiles(
+      int main() { const void *key = kSecClass; return 0; }"
+     HAVE_KSECCLASS)
+ 
++include(CheckSymbolExists)
++check_symbol_exists(ASN1_STRING_get0_data openssl/ssl.h
++		    HAVE_ASN1_STRING_get0_data)
++
+ AC_CHECK_FUNCS(timegm ERR_remove_state ERR_remove_thread_state)
+ AC_CHECK_FUNCS(X509_check_host)
+ AC_CHECK_FUNCS(CRYPTO_THREADID_get_callback CRYPTO_THREADID_set_callback)
+diff --git a/config.h.cmake b/config.h.cmake
+--- a/config.h.cmake
++++ b/config.h.cmake
+@@ -25,6 +25,7 @@
+ #cmakedefine HAVE_EVP_PKEY_GET_BN_PARAM @HAVE_EVP_PKEY_GET_BN_PARAM@
+ #cmakedefine HAVE_EVP_PKEY_GET_OCTET_STRING_PARAM @HAVE_EVP_PKEY_GET_OCTET_STRING_PARAM@
+ #cmakedefine HAVE_EVP_PKEY_GET_SIZE @HAVE_EVP_PKEY_GET_SIZE@
++#cmakedefine HAVE_ASN1_STRING_get0_data @HAVE_ASN1_STRING_get0_data@
+ #cmakedefine HAVE_EVP_PKEY_NEW @HAVE_EVP_PKEY_NEW@
+ #cmakedefine HAVE_EVP_PKEY_SIGN @HAVE_EVP_PKEY_SIGN@
+ #cmakedefine HAVE_EVP_PKEY_VERIFY @HAVE_EVP_PKEY_VERIFY@
+diff --git a/ssl4pl.c b/ssl4pl.c
+--- a/ssl4pl.c
++++ b/ssl4pl.c
+@@ -74,6 +74,12 @@
+ 
+ #define SSL_MAX_CERT_KEY_PAIRS 12
+ 
++#if !HAVE_ASN1_STRING_get0_data
++#define ASN1_STRING_get0_data(x) (x)->data
++#define ASN1_STRING_length(x)    (x)->length
++#define ASN1_STRING_type(x)      (x)->type
++#endif
++
+ typedef int BOOL;
+ #ifndef TRUE
+ #define TRUE 1
+@@ -458,12 +464,12 @@ unify_asn1_time(term_t term, const ASN1_TIME *time)
+ { time_t result = 0;
+   char buffer[24];
+   char* pbuffer = buffer;
+-  size_t length = time->length;
+-  char * source = (char *)time->data;
++  size_t length = ASN1_STRING_length(time);
++  const char * source = (const char *)ASN1_STRING_get0_data(time);
+   struct tm time_tm;
+   time_t lSecondsFromUTC;
+ 
+-  if (time->type == V_ASN1_UTCTIME)
++  if (ASN1_STRING_type(time) == V_ASN1_UTCTIME)
+   {  if ((length < 11) || (length > 17))
+      {  ssl_deb(2, "Unable to parse time - expected either 11 or 17 chars,"
+ 		   " not %d", length);
+@@ -616,7 +622,7 @@ unify_hash(term_t hash, const ASN1_OBJECT* algorithm,
+ 
+ 
+ static int
+-unify_name(term_t term, X509_NAME* name)
++unify_name(term_t term, const X509_NAME* name)
+ { int ni;
+   term_t list = PL_copy_term_ref(term);
+   term_t item = PL_new_term_ref();
+@@ -625,8 +631,8 @@ unify_name(term_t term, X509_NAME* name)
+     return PL_unify_term(term, PL_CHARS, "<null>");
+ 
+   for (ni = 0; ni < X509_NAME_entry_count(name); ni++)
+-  { X509_NAME_ENTRY* e = X509_NAME_get_entry(name, ni);
+-    ASN1_STRING* entry_data = X509_NAME_ENTRY_get_data(e);
++  { const X509_NAME_ENTRY* e = X509_NAME_get_entry(name, ni);
++    const ASN1_STRING* entry_data = X509_NAME_ENTRY_get_data(e);
+     unsigned char *utf8_data;
+     int rc;
+ 
+@@ -775,7 +781,7 @@ unify_crl(term_t term, X509_CRL* crl)
+         unify_hash(hash, palg->algorithm, i2d_X509_CRL_INFO_wrapper, crl->crl) &&
+ #endif
+         unify_asn1_time(next_update, X509_CRL_get0_nextUpdate(crl)) &&
+-        unify_bytes_hex(signature, psig->length, psig->data) &&
++        unify_bytes_hex(signature, ASN1_STRING_length(psig), ASN1_STRING_get0_data(psig)) &&
+         PL_unify_term(term,
+                       PL_LIST, 5,
+                       PL_FUNCTOR, FUNCTOR_issuername1,
+@@ -1205,7 +1211,7 @@ fetch_public_key(term_t Field, X509* cert)
+ static foreign_t
+ fetch_crls(term_t Field, X509* cert)
+ { unsigned int crl_ext_id;
+-  X509_EXTENSION * crl_ext = NULL;
++  const X509_EXTENSION * crl_ext = NULL;
+ 
+   crl_ext_id = X509_get_ext_by_NID(cert, NID_crl_distribution_points, -1);
+   crl_ext = X509_get_ext(cert, crl_ext_id);
+@@ -1232,7 +1238,7 @@ fetch_crls(term_t Field, X509* cert)
+         { name = sk_GENERAL_NAME_value(point->distpoint->name.fullname, j);
+           if (name != NULL && name->type == GEN_URI)
+           { if (!(PL_unify_list(crl_list, crl_item, crl_list) &&
+-                  PL_unify_atom_chars(crl_item, (const char *)name->d.ia5->data)))
++                  PL_unify_atom_chars(crl_item, (const char *)ASN1_STRING_get0_data(name->d.ia5))))
+             {
+               CRL_DIST_POINTS_free(distpoints);
+               return FALSE;
+@@ -1254,7 +1260,7 @@ fetch_crls(term_t Field, X509* cert)
+ static foreign_t
+ fetch_sans(term_t Field, X509* cert)
+ { unsigned int san_ext_id;
+-  X509_EXTENSION * san_ext = NULL;
++  const X509_EXTENSION * san_ext = NULL;
+ 
+   san_ext_id = X509_get_ext_by_NID(cert, NID_subject_alt_name, -1);
+   san_ext = X509_get_ext(cert, san_ext_id);
+@@ -1418,7 +1424,7 @@ fetch_signature(term_t Field, X509* cert)
+ { GET0SIG_CONST_T ASN1_BIT_STRING *psig;
+   GET0SIG_CONST_T X509_ALGOR *palg;
+   X509_get0_signature(&psig, &palg, cert);
+-  return unify_bytes_hex(Field, psig->length, psig->data);
++  return unify_bytes_hex(Field, ASN1_STRING_length(psig), ASN1_STRING_get0_data(psig));
+ }
+ 
+ 
