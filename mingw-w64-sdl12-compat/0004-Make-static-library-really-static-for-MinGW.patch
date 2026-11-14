@@ -1,0 +1,201 @@
+From 82d7e55deb620421ff40fdd2f1d818158bc3b516 Mon Sep 17 00:00:00 2001
+From: Zhongteng Gui <dragon-archer@outlook.com>
+Date: Wed, 11 Nov 2026 00:26:44 +0800
+Subject: [PATCH 2/2] Make static library really static for MinGW
+
+Signed-off-by: Zhongteng Gui <dragon-archer@outlook.com>
+---
+ CMakeLists.txt                       | 55 ++++++++++++++++++++--------
+ cmake/SDL12CompatStaticSDL2.cmake.in | 21 +++++++++++
+ src/SDL12_compat.c                   | 23 +++++++++++-
+ 3 files changed, 82 insertions(+), 17 deletions(-)
+ create mode 100644 cmake/SDL12CompatStaticSDL2.cmake.in
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 8138ce7..61d8f57 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -179,6 +179,45 @@ install(TARGETS SDL SDLmain
+   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+ )
+ 
++if(STATICDEVEL AND SDL12DEVEL)
++  add_library(SDL-static STATIC ${SDL12COMPAT_SRCS})
++  add_library(SDL::SDL-static ALIAS SDL-static)
++  target_include_directories(SDL-static PRIVATE ${SDL2_INCLUDE_DIRS})
++  set_target_properties(SDL-static PROPERTIES COMPILE_DEFINITIONS "_REENTRANT;SDL12COMPAT_STATIC")
++  target_link_libraries(SDL-static PRIVATE ${CMAKE_DL_LIBS})
++  if(MINGW)
++    find_package(SDL2 REQUIRED CONFIG COMPONENTS SDL2-static)
++    target_compile_definitions(SDL-static PRIVATE SDL12COMPAT_STATIC_SDL2)
++    get_target_property(SDL2_STATIC_DEPS SDL2::SDL2-static INTERFACE_LINK_LIBRARIES)
++    target_link_libraries(SDL-static PRIVATE ${SDL2_STATIC_DEPS})
++    string(REGEX REPLACE "\\$<LINK_ONLY:|>" "" SDL2_PRIVATE_FLAGS "${SDL2_STATIC_DEPS}")
++    list(REMOVE_ITEM SDL2_PRIVATE_FLAGS "") # Remove one empty item
++    list(TRANSFORM SDL2_PRIVATE_FLAGS PREPEND "-l")
++    string(JOIN " " SDL2_PRIVATE_FLAGS ${SDL2_PRIVATE_FLAGS})
++    get_target_property(SDL2_ARCHIVE SDL2::SDL2-static LOCATION)
++    execute_process(COMMAND "${CMAKE_AR}" t "${SDL2_ARCHIVE}"
++      OUTPUT_VARIABLE SDL2_OBJECTS OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
++    string(REPLACE "\n" ";" SDL2_OBJECTS "${SDL2_OBJECTS}")
++    set(SDL2_OBJECT_DIR "${CMAKE_CURRENT_BINARY_DIR}/SDL2-sdl12compat")
++    configure_file(cmake/SDL12CompatStaticSDL2.cmake.in SDL12CompatStaticSDL2.cmake @ONLY)
++    list(TRANSFORM SDL2_OBJECTS PREPEND "${SDL2_OBJECT_DIR}/SDL2-")
++    add_custom_command(OUTPUT ${SDL2_OBJECTS}
++      COMMAND "${CMAKE_COMMAND}" "-DINPUT=${SDL2_ARCHIVE}"
++        -P "${CMAKE_CURRENT_BINARY_DIR}/SDL12CompatStaticSDL2.cmake"
++      DEPENDS "${SDL2_ARCHIVE}" "${CMAKE_CURRENT_BINARY_DIR}/SDL12CompatStaticSDL2.cmake"
++      VERBATIM)
++    set_source_files_properties(${SDL2_OBJECTS} PROPERTIES EXTERNAL_OBJECT TRUE)
++    target_sources(SDL-static PRIVATE ${SDL2_OBJECTS})
++  endif()
++  set_target_properties(SDL-static PROPERTIES
++          VERSION "${PROJECT_VERSION}"
++        OUTPUT_NAME "SDL")
++
++  install(TARGETS SDL-static
++    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
++  )
++endif()
++
+ if(SDL12DEVEL)
+   install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+ 
+@@ -187,7 +226,7 @@ if(SDL12DEVEL)
+       set(SDL_CFLAGS "")
+       set(SDL_RLD_FLAGS "")
+       set(SDL_LIBS "-lmingw32 -lSDLmain -lSDL -mwindows")
+-      set(SDL_STATIC_LIBS "")
++      set(SDL_STATIC_LIBS "${SDL2_PRIVATE_FLAGS}")
+     elseif(APPLE)
+       set(SDL_CFLAGS "-D_THREAD_SAFE")
+       set(SDL_LIBS "-lSDLmain -lSDL -Wl,-framework,Cocoa")
+@@ -246,17 +285,3 @@ if(SDL12DEVEL)
+   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/sdl.m4" DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/aclocal")
+ endif()
+ 
+-if(STATICDEVEL AND SDL12DEVEL)
+-  add_library(SDL-static STATIC ${SDL12COMPAT_SRCS})
+-  add_library(SDL::SDL-static ALIAS SDL-static)
+-  target_include_directories(SDL-static PRIVATE ${SDL2_INCLUDE_DIRS})
+-  set_target_properties(SDL-static PROPERTIES COMPILE_DEFINITIONS "_REENTRANT;SDL12COMPAT_STATIC")
+-  target_link_libraries(SDL-static PRIVATE ${CMAKE_DL_LIBS})
+-  set_target_properties(SDL-static PROPERTIES
+-          VERSION "${PROJECT_VERSION}"
+-        OUTPUT_NAME "SDL")
+-
+-  install(TARGETS SDL-static
+-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+-  )
+-endif()
+diff --git a/cmake/SDL12CompatStaticSDL2.cmake.in b/cmake/SDL12CompatStaticSDL2.cmake.in
+new file mode 100644
+index 0000000..fbe131c
+--- /dev/null
++++ b/cmake/SDL12CompatStaticSDL2.cmake.in
+@@ -0,0 +1,21 @@
++execute_process(COMMAND "@CMAKE_NM@" -g --defined-only --format=posix "${INPUT}"
++  OUTPUT_VARIABLE symbols COMMAND_ERROR_IS_FATAL ANY)
++string(REPLACE "\n" ";" symbols "${symbols}")
++list(REMOVE_DUPLICATES symbols)
++set(renames "")
++foreach(line IN LISTS symbols)
++  if(line MATCHES "^([^ ]*SDL_[^ ]*) [A-Za-z] ")
++    set(symbol "${CMAKE_MATCH_1}")
++    string(REPLACE "SDL_" "SDL20_" renamed "${symbol}")
++    string(APPEND renames "${symbol} ${renamed}\n")
++  endif()
++endforeach()
++file(MAKE_DIRECTORY "@SDL2_OBJECT_DIR@")
++file(WRITE "@SDL2_OBJECT_DIR@/symbols" "${renames}")
++execute_process(COMMAND "@CMAKE_OBJCOPY@" "--redefine-syms=@SDL2_OBJECT_DIR@/symbols" "${INPUT}" "@SDL2_OBJECT_DIR@/SDL2.a"
++  COMMAND_ERROR_IS_FATAL ANY)
++execute_process(COMMAND "@CMAKE_AR@" x SDL2.a WORKING_DIRECTORY "@SDL2_OBJECT_DIR@"
++  COMMAND_ERROR_IS_FATAL ANY)
++foreach(member IN ITEMS @SDL2_OBJECTS@)
++  file(RENAME "@SDL2_OBJECT_DIR@/${member}" "@SDL2_OBJECT_DIR@/SDL2-${member}")
++endforeach()
+diff --git a/src/SDL12_compat.c b/src/SDL12_compat.c
+index fff3b44..db76421 100644
+--- a/src/SDL12_compat.c
++++ b/src/SDL12_compat.c
+@@ -100,7 +100,10 @@ extern "C" {
+ /** Enable this to have warnings about wrong prototypes in SDL20_syms.h.
+  *  It won't compile but it helps to make sure it's sync'ed with SDL2 headers.
+  */
+-#if 0
++#if defined(SDL12COMPAT_STATIC_SDL2)
++#define SDL20_SYM(rc,fn,params,args,ret) \
++    extern rc SDLCALL SDL20_##fn params;
++#elif 0
+ #define SDL20_SYM(rc,fn,params,args,ret) \
+     typedef rc (SDLCALL *SDL20_##fn##_t) params; \
+     static SDL20_##fn##_t SDL20_##fn = IGNORE_THIS_VERSION_OF_SDL_##fn;
+@@ -1246,7 +1249,15 @@ static SDL_bool SDL12COMPAT_CheckDebugLogging(void)
+ 
+ /* Obviously we can't use SDL_LoadObject() to load SDL2.  :)  */
+ static char loaderror[256];
+-#if defined(_WIN32)
++#if defined(SDL12COMPAT_STATIC_SDL2)
++    #if defined(_WIN32) || defined(__OS2__)
++        #define DIRSEP "\\"
++    #endif
++    #define SDL20_REQUIRED_VER SDL_VERSIONNUM(2,0,12)
++    static SDL_bool Loaded_SDL20 = SDL_FALSE;
++    #define LoadSDL20Library() (Loaded_SDL20 = SDL_TRUE)
++    #define CloseSDL20Library() (Loaded_SDL20 = SDL_FALSE)
++#elif defined(_WIN32)
+     #define DIRSEP "\\"
+     #define SDL20_LIBNAME "SDL2.dll"
+     /* require SDL2 >= 2.0.12 for SDL_CreateThread binary compatibility */
+@@ -1355,6 +1366,7 @@ static char loaderror[256];
+ #define DIRSEP "/"
+ #endif
+ 
++#if !defined(SDL12COMPAT_STATIC_SDL2)
+ static void *
+ LoadSDL20Symbol(const char *fn, int *okay)
+ {
+@@ -1369,12 +1381,15 @@ LoadSDL20Symbol(const char *fn, int *okay)
+     }
+     return retval;
+ }
++#endif
+ 
+ static void
+ UnloadSDL20(void)
+ {
++    #if !defined(SDL12COMPAT_STATIC_SDL2)
+     #define SDL20_SYM(rc,fn,params,args,ret) SDL20_##fn = NULL;
+     #include "SDL20_syms.h"
++    #endif
+     CloseSDL20Library();
+ }
+ 
+@@ -1725,8 +1740,10 @@ LoadSDL20(void)
+         if (!okay) {
+             SDL12COMPAT_stpcpy(loaderror, "sdl12-compat: Failed loading SDL2 library.");
+         } else {
++#if !defined(SDL12COMPAT_STATIC_SDL2)
+             #define SDL20_SYM(rc,fn,params,args,ret) SDL20_##fn = (SDL20_##fn##_t) LoadSDL20Symbol("SDL_" #fn, &okay);
+             #include "SDL20_syms.h"
++#endif
+             if (okay) {
+                 char sdl2verstr[16];
+                 char sdl2reqverstr[16];
+@@ -3085,10 +3102,12 @@ SDL_SetError(const char *fmt, ...)
+ DECLSPEC12 const char * SDLCALL
+ SDL_GetError(void)
+ {
++#if !defined(SDL12COMPAT_STATIC_SDL2)
+     if (SDL20_GetError == NULL) {
+         static const char noload_errstr[] = "SDL2 library isn't loaded.";
+         return noload_errstr;
+     }
++#endif
+     return SDL20_GetError();
+ }
+ 
+-- 
+2.56.1.windows.1
+

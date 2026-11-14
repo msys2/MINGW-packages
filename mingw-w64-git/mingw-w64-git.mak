@@ -7,6 +7,7 @@ git-wrapper$(X): git-wrapper.o git.res
 git-wrapper.o: %.o: ../%.c GIT-PREFIX
 	$(QUIET_CC)$(CC) $(ALL_CFLAGS) $(COMPAT_CFLAGS) \
 		-DMSYSTEM=L"\"$(MSYSTEM)\"" \
+		$(if $(filter UCRT64,$(MSYSTEM)),-DUCRT64) \
 		-fno-stack-protector -o $*.o -c -Wall -Wwrite-strings $<
 
 git-bash.res git-cmd.res git-wrapper.res gitk.res compat-bash.res tig.res: \
@@ -83,6 +84,8 @@ ifeq (,$(SIGNTOOL))
 else
 	@eval $(SIGNTOOL) $(filter %.exe,$(ALL_PROGRAMS)) \
 		contrib/credential/wincred/git-credential-wincred.exe git.exe \
-		cmd/git{,-gui,k}.exe cmd/tig.exe compat-bash.exe git-{bash,cmd,wrapper}.exe \
+		$(wildcard scalar.exe) \
+		cmd/git{,-receive-pack,-upload-pack,-gui,k}.exe \
+		cmd/tig.exe compat-bash.exe git-{bash,cmd,wrapper}.exe \
 		edit-git-bash.exe
 endif

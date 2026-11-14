@@ -1,4 +1,4 @@
-From b97172ca313627df4fac14c386e5baeeba5fbd6e Mon Sep 17 00:00:00 2001
+From 8da9a3310cb751d1400583aa7edec2901bf628c6 Mon Sep 17 00:00:00 2001
 From: Luca Bacci <luca.bacci982@gmail.com>
 Date: Mon, 28 Apr 2025 14:49:48 +0200
 Subject: [PATCH] DWrite: Get glyph bitmap with D2D in selected cases
@@ -13,14 +13,14 @@ messing the RGB mask with _cairo_compute_glyph_mask(), which always extracts the
 green channel. This brings back the previous look of fonts while still avoiding
 the color fringing issue with light text on dark backgrounds.
 ---
- src/win32/cairo-dwrite-font.cpp | 327 ++++++++++++++++++++++++++++----
- 1 file changed, 295 insertions(+), 32 deletions(-)
+ src/win32/cairo-dwrite-font.cpp | 325 +++++++++++++++++++++++++++++---
+ 1 file changed, 296 insertions(+), 29 deletions(-)
 
 diff --git a/src/win32/cairo-dwrite-font.cpp b/src/win32/cairo-dwrite-font.cpp
-index bf5191967..5faed36ae 100644
+index ae3b012..328916c 100644
 --- a/src/win32/cairo-dwrite-font.cpp
 +++ b/src/win32/cairo-dwrite-font.cpp
-@@ -96,6 +96,11 @@ _dwrite_draw_glyphs_to_gdi_surface_gdi(cairo_win32_surface_t *surface,
+@@ -89,6 +89,11 @@ _dwrite_draw_glyphs_to_gdi_surface_gdi(cairo_win32_surface_t *surface,
  				       cairo_dwrite_scaled_font_t *scaled_font,
  				       const RECT &area);
  
@@ -32,7 +32,7 @@ index bf5191967..5faed36ae 100644
  /**
   * _cairo_dwrite_error:
   * @hr HRESULT code
-@@ -1319,23 +1324,105 @@ _cairo_dwrite_scaled_font_init_glyph_color_surface(cairo_dwrite_scaled_font_t *s
+@@ -1351,23 +1356,105 @@ _cairo_dwrite_scaled_font_init_glyph_color_surface(cairo_dwrite_scaled_font_t *s
      return CAIRO_INT_STATUS_SUCCESS;
  }
  
@@ -149,7 +149,7 @@ index bf5191967..5faed36ae 100644
                                                        WICBitmapCacheOnLoad,
                                                        &bitmap);
      if (FAILED(hr))
-@@ -1343,11 +1430,7 @@ init_glyph_surface_fallback_a8 (cairo_dwrite_scaled_font_t  *scaled_font,
+@@ -1375,11 +1462,7 @@ init_glyph_surface_fallback_a8 (cairo_dwrite_scaled_font_t  *scaled_font,
  
      D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
          D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -162,7 +162,7 @@ index bf5191967..5faed36ae 100644
          D2D1_RENDER_TARGET_USAGE_NONE,
          D2D1_FEATURE_LEVEL_DEFAULT);
  
-@@ -1356,14 +1439,43 @@ init_glyph_surface_fallback_a8 (cairo_dwrite_scaled_font_t  *scaled_font,
+@@ -1388,14 +1471,43 @@ init_glyph_surface_fallback_a8 (cairo_dwrite_scaled_font_t  *scaled_font,
      if (FAILED(hr))
          return _cairo_dwrite_error (hr, "CreateWicBitmapRenderTarget failed");
  
@@ -210,7 +210,7 @@ index bf5191967..5faed36ae 100644
  
      hr = rt->EndDraw();
      if (FAILED(hr))
-@@ -1371,20 +1483,122 @@ init_glyph_surface_fallback_a8 (cairo_dwrite_scaled_font_t  *scaled_font,
+@@ -1403,16 +1515,122 @@ init_glyph_surface_fallback_a8 (cairo_dwrite_scaled_font_t  *scaled_font,
  
      // TODO: rt->Flush()?
  
@@ -223,9 +223,12 @@ index bf5191967..5faed36ae 100644
      if (cairo_surface_status (surface))
          return CAIRO_INT_STATUS_UNSUPPORTED;
  
--    // Tell pixman that it should use component alpha blending when the surface is
--    // used as a source
--    pixman_image_set_component_alpha (((cairo_image_surface_t*)surface)->pixman_image, TRUE);
+-    int stride = cairo_image_surface_get_stride (surface);
+-    WICRect rect = { 0, 0, width, height };
+-    bitmap->CopyPixels(&rect,
+-                       stride,
+-                       height * stride,
+-                       cairo_image_surface_get_data (surface));
 +    if (antialias == ANTIALIAS_CLEARTYPE) {
 +        // Tell pixman that it should use component alpha blending when the surface is
 +        // used as a source
@@ -333,17 +336,11 @@ index bf5191967..5faed36ae 100644
 +            ptr += surface_stride;
 +        }
 +    }
- 
--    int stride = cairo_image_surface_get_stride (surface);
--    WICRect rect = { 0, 0, width, height };
--    bitmap->CopyPixels(&rect,
--                       stride,
--                       height * stride,
--                       cairo_image_surface_get_data (surface));
++
      cairo_surface_mark_dirty (surface);
      cairo_surface_set_device_offset (surface, -x1, -y1);
      _cairo_scaled_glyph_set_surface (scaled_glyph,
-@@ -1394,9 +1608,10 @@ init_glyph_surface_fallback_a8 (cairo_dwrite_scaled_font_t  *scaled_font,
+@@ -1422,9 +1640,10 @@ init_glyph_surface_fallback_a8 (cairo_dwrite_scaled_font_t  *scaled_font,
      return CAIRO_INT_STATUS_SUCCESS;
  }
  
@@ -356,7 +353,7 @@ index bf5191967..5faed36ae 100644
  {
      HRESULT hr;
  
-@@ -1560,8 +1775,11 @@ _cairo_dwrite_scaled_font_init_glyph_surface (cairo_dwrite_scaled_font_t *scaled
+@@ -1591,8 +1810,11 @@ _cairo_dwrite_scaled_font_init_glyph_surface (cairo_dwrite_scaled_font_t *scaled
              // IDWriteGlyphRunAnalysis supports gray-scale antialiasing only when
              // created from IDWriteFactory2 or later. If we have IDWriteFactory
              // only, fallback to rendering with Direct2D on A8 targets.
@@ -368,7 +365,7 @@ index bf5191967..5faed36ae 100644
          }
  
          hr = DWriteFactory::Instance()->CreateGlyphRunAnalysis(&run, 1,
-@@ -1813,6 +2031,51 @@ _cairo_dwrite_scaled_font_init_glyph_surface (cairo_dwrite_scaled_font_t *scaled
+@@ -1844,6 +2066,51 @@ _cairo_dwrite_scaled_font_init_glyph_surface (cairo_dwrite_scaled_font_t *scaled
      return CAIRO_INT_STATUS_SUCCESS;
  }
  
@@ -421,5 +418,4 @@ index bf5191967..5faed36ae 100644
  _cairo_dwrite_load_truetype_table(void                 *scaled_font,
  				  unsigned long         tag,
 -- 
-2.49.0.windows.1
-
+2.55.0.windows.5

@@ -57,30 +57,11 @@ list_packages() {
     readarray -t packages < <("$DIR/ci-get-build-order.py")
 }
 
-install_packages() {
-    pacman --noprogressbar --upgrade --noconfirm *.pkg.tar.*
-}
-
 pkgver_from_metadata() {
     local version
     version="$(sed -n 's/^Version[[:space:]]*:[[:space:]]*//p')"
     version="${version%-*}"
     printf '%s\n' "${version#*~}" | sed 's/\./\\./g'
-}
-
-# List DLL dependencies
-list_dll_deps(){
-    local target="${1}"
-    echo "$(tput setaf 2)MSYS2 DLL dependencies:$(tput sgr0)"
-    find "$target" -regex ".*\.\(exe\|dll\)" -print0 | xargs -0 -r ldd | GREP_COLOR="1;35" grep --color=always "msys-.*\|" \
-    || echo "        None"
-}
-
-list_dll_bases(){
-    local target="${1}"
-    echo "$(tput setaf 2)MSYS2 DLL bases:$(tput sgr0)"
-    find "$target" -regex ".*\.\(exe\|dll\)" -print | rebase -iT - | GREP_COLOR="1;35" grep --color=always "msys-.*\|" \
-    || echo "        None"
 }
 
 # Status functions
@@ -177,14 +158,14 @@ for package in "${packages[@]}"; do
         if [ "${#binaries[@]}" -ne 0 ]; then
             for binary in ${binaries[@]}; do
                 echo "${binary}:"
-                ntldd -R ${binary} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder\|ngcrecovery\|AzureAttest\|PdmUtilities\|WTDSENSOR\|wtdccm\|SAMSRV\|LSASRV\|EDPCSP\|policymanagerprecheck\|dmenterprisediagnostics\|EFSCORE\|FVESKYBACKUP" || true
+                ntldd -R ${binary} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder\|ngcrecovery\|AzureAttest\|PdmUtilities\|WTDSENSOR\|wtdccm\|SAMSRV\|LSASRV\|EDPCSP\|policymanagerprecheck\|dmenterprisediagnostics\|EFSCORE\|FVESKYBACKUP\|DeclaredConfiguration" || true
             done
         fi
         echo "::endgroup::"
 
         echo "::group::[uninstall] ${pkgname}"
         message "Uninstalling $pkgname"
-        pacman -R --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
+        grep -qFx "${package}" "$DIR/ci-dont-install-list.txt" || pacman -R --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
         echo "::endgroup::"
     done
     cd - > /dev/null

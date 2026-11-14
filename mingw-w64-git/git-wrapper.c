@@ -687,6 +687,25 @@ int main(void)
 			&show_console, &append_quote_to_cmdline)) {
 		/* do nothing */
 	}
+#ifdef UCRT64
+	else if (wcslen(exepath) >= 12 &&
+			!wcsicmp(exepath + wcslen(exepath) - 12,
+				L"\\mingw64\\bin")) {
+		static WCHAR buffer[MAX_PATH + 2];
+
+		is_git_command = 0;
+		initialize_top_level_path(top_level_path, exepath, msystem_bin, 2);
+
+		wcscpy(exe, top_level_path);
+		my_path_append(exe, msystem_bin, MAX_PATH);
+		my_path_append(exe, basename, MAX_PATH);
+		fwprintf(stderr, L"warning: '%s' is a deprecated path; "
+				L"use '%s' instead\n", exe_bup, exe);
+		swprintf(buffer, MAX_PATH + 2, L"\"%s\"", exe);
+		prefix_args = buffer;
+		prefix_args_len = wcslen(buffer);
+	}
+#endif
 	else if (!wcsicmp(basename, L"git-lfs.exe")) {
 		initialize_top_level_path(top_level_path, exepath, msystem_bin, 1);
 
