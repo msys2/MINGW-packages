@@ -1,0 +1,545 @@
+diff --git a/Telegram/cmake/generate_midl.cmake b/Telegram/cmake/generate_midl.cmake
+--- a/Telegram/cmake/generate_midl.cmake
++++ b/Telegram/cmake/generate_midl.cmake
+@@ -8,7 +8,14 @@
+     set(gen_dst ${CMAKE_CURRENT_BINARY_DIR}/gen)
+     file(MAKE_DIRECTORY ${gen_dst})
+ 
+-    if (build_winarm)
++    if (MINGW)
++        find_program(WIDL_EXECUTABLE NAMES widl x86_64-w64-mingw32-widl REQUIRED)
++        if (CMAKE_SIZEOF_VOID_P EQUAL 8)
++            set(widl_arch -m64)
++        else()
++            set(widl_arch -m32)
++        endif()
++    elseif (build_winarm)
+         set(env arm64)
+     elseif (build_win64)
+         set(env x64)
+@@ -27,15 +34,27 @@
+             ${gen_dst}/${file_name}_i.c
+             ${gen_dst}/${file_name}_h.h
+         )
+-        list(APPEND gen_commands
+-        COMMAND
+-            midl
+-            /out ${gen_dst}
+-            /h ${file_name}_h.h
+-            /env ${env}
+-            /notlb
+-            ${src_loc}/${file}
+-        )
++        if (MINGW)
++            # Headers and IID definitions have the same Win64 ABI on x64 and ARM64.
++            list(APPEND gen_commands
++            COMMAND
++                ${WIDL_EXECUTABLE} ${widl_arch} -h
++                -o ${gen_dst}/${file_name}_h.h ${src_loc}/${file}
++            COMMAND
++                ${WIDL_EXECUTABLE} ${widl_arch} -u
++                -o ${gen_dst}/${file_name}_i.c ${src_loc}/${file}
++            )
++        else()
++            list(APPEND gen_commands
++            COMMAND
++                midl
++                /out ${gen_dst}
++                /h ${file_name}_h.h
++                /env ${env}
++                /notlb
++                ${src_loc}/${file}
++            )
++        endif()
+     endforeach()
+ 
+     add_custom_command(
+@@ -45,7 +64,7 @@
+         ${gen_files}
+     ${gen_commands}
+     COMMAND
+-        echo 1> ${gen_timestamp}
++        ${CMAKE_COMMAND} -E touch ${gen_timestamp}
+     COMMENT "Generating headers from IDLs (${target_name})"
+     DEPENDS
+         ${full_generation_sources}
+diff --git a/Telegram/CMakeLists.txt b/Telegram/CMakeLists.txt
+--- a/Telegram/CMakeLists.txt
++++ b/Telegram/CMakeLists.txt
+@@ -116,6 +116,13 @@
+ endif()
+ 
+ target_precompile_headers(Telegram PRIVATE $<$<COMPILE_LANGUAGE:CXX,OBJCXX>:${src_loc}/stdafx.h>)
++if (MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
++    # SEH needs Microsoft extensions, which must match a PCH's parser options.
++    set_source_files_properties(${src_loc}/platform/win/specific_win.cpp PROPERTIES
++        COMPILE_OPTIONS "-fms-extensions;-include;${src_loc}/stdafx.h"
++        SKIP_PRECOMPILE_HEADERS ON
++    )
++endif()
+ nice_target_sources(Telegram ${src_loc}
+ PRIVATE
+     ${style_files}
+@@ -2435,7 +2442,11 @@
+         target_link_libraries(Telegram PRIVATE desktop-app::win_directx_helper)
+     endif()
+ 
+-    target_link_options(Telegram PRIVATE /PDBPAGESIZE:8192)
++    if (MSVC)
++        target_link_options(Telegram PRIVATE /PDBPAGESIZE:8192)
++    elseif (MINGW)
++        target_link_options(Telegram PRIVATE -municode)
++    endif()
+ elseif (APPLE)
+     if (NOT DESKTOP_APP_USE_PACKAGED)
+         target_link_libraries(Telegram PRIVATE desktop-app::external_iconv)
+@@ -2782,6 +2793,14 @@
+     )
+ endif()
+ 
++if (WIN32 AND DESKTOP_APP_USE_PACKAGED)
++    include(GNUInstallDirs)
++    install(TARGETS Telegram RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
++    if (TARGET Updater)
++        install(TARGETS Updater RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
++    endif()
++endif()
++
+ if (LINUX AND DESKTOP_APP_USE_PACKAGED)
+     include(GNUInstallDirs)
+     configure_file("../lib/xdg/org.telegram.desktop.service" "${CMAKE_CURRENT_BINARY_DIR}/org.telegram.desktop.service" @ONLY)
+diff --git a/cmake/options_win.cmake b/cmake/options_win.cmake
+--- a/cmake/options_win.cmake
++++ b/cmake/options_win.cmake
+@@ -109,6 +109,13 @@
+             $<$<AND:$<NOT:$<CONFIG:Debug>>,$<BOOL:${DESKTOP_APP_ENABLE_LTO}>>:/LTCGOUT:>
+         )
+     endif()
++elseif (MINGW)
++    target_compile_options(common_options INTERFACE
++        $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-Wa,-mbig-obj>
++    )
++    target_include_directories(common_options SYSTEM INTERFACE
++        ${CMAKE_SOURCE_DIR}/Telegram/ThirdParty/wrl/include
++    )
+ endif()
+ 
+ target_link_libraries(common_options
+@@ -129,20 +136,20 @@
+     uuid
+     odbc32
+     odbccp32
+-    Shlwapi
+-    Iphlpapi
+-    Gdiplus
+-    Strmiids
+-    Netapi32
+-    Mpr
+-    Userenv
+-    Version
+-    Dwmapi
+-    UxTheme
+-    Wtsapi32
+-    Crypt32
+-    Propsys
+-    Bcrypt
++    shlwapi
++    iphlpapi
++    gdiplus
++    strmiids
++    netapi32
++    mpr
++    userenv
++    version
++    dwmapi
++    uxtheme
++    wtsapi32
++    crypt32
++    propsys
++    bcrypt
+ )
+ 
+ if (build_winstore)
+diff --git a/cmake/variables.cmake b/cmake/variables.cmake
+--- a/cmake/variables.cmake
++++ b/cmake/variables.cmake
+@@ -81,7 +81,7 @@
+         set(build_winarm 1)
+         set(build_winstore 1)
+     elseif (CMAKE_SIZEOF_VOID_P EQUAL 8)
+-        if (CMAKE_SYSTEM_PROCESSOR MATCHES "ARM")
++        if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$")
+             set(build_winarm 1)
+         else()
+             set(build_win64 1)
+diff --git a/cmake/nuget.cmake b/cmake/nuget.cmake
+--- a/cmake/nuget.cmake
++++ b/cmake/nuget.cmake
+@@ -45,6 +45,15 @@
+ endfunction()
+ 
+ function(nuget_add_webview target_name)
++    if (MINGW AND DESKTOP_APP_USE_PACKAGED)
++        find_path(DESKTOP_APP_WEBVIEW2_INCLUDE_DIR WebView2.h REQUIRED)
++        target_include_directories(${target_name} SYSTEM PRIVATE
++            ${DESKTOP_APP_WEBVIEW2_INCLUDE_DIR}
++        )
++        target_compile_definitions(${target_name} PRIVATE DESKTOP_APP_WEBVIEW2_DYNAMIC)
++        return()
++    endif()
++
+     nuget_add_package(webview2 "Microsoft.Web.WebView2" 1.0.1901.177)
+ 
+     set(webview2_loc_native ${webview2_loc}/build/native)
+diff --git a/Telegram/SourceFiles/platform/win/windows_toast_activator.h b/Telegram/SourceFiles/platform/win/windows_toast_activator.h
+--- a/Telegram/SourceFiles/platform/win/windows_toast_activator.h
++++ b/Telegram/SourceFiles/platform/win/windows_toast_activator.h
+@@ -39,6 +39,11 @@
+ 
+ };
+ 
++#ifdef __MINGW32__
++__CRT_UUID_DECL(ToastActivator, 0xF11932D3, 0x6110, 0x4BBC,
++    0x9B, 0x02, 0xB2, 0xEC, 0x07, 0xA1, 0xBD, 0x19)
++#endif
++
+ struct ToastActivation {
+ 	struct UserInput {
+ 		QString key;
+diff --git a/Telegram/lib_webview/webview/platform/win/webview_windows_edge_chromium.cpp b/Telegram/lib_webview/webview/platform/win/webview_windows_edge_chromium.cpp
+--- a/Telegram/lib_webview/webview/platform/win/webview_windows_edge_chromium.cpp
++++ b/Telegram/lib_webview/webview/platform/win/webview_windows_edge_chromium.cpp
+@@ -21,6 +21,7 @@
+ #include "base/weak_ptr.h"
+ #include "base/platform/base_platform_info.h"
+ #include "base/platform/win/base_windows_co_task_mem.h"
++#include "base/platform/win/base_windows_safe_library.h"
+ #include "base/platform/win/base_windows_winrt.h"
+ #include "base/platform/win/wrl/wrl_implements_h.h"
+ 
+@@ -42,6 +43,32 @@
+ 
+ namespace Webview::EdgeChromium {
+ namespace {
++
++#ifdef DESKTOP_APP_WEBVIEW2_DYNAMIC
++decltype(&::CreateCoreWebView2EnvironmentWithOptions)
++    CreateCoreWebView2EnvironmentWithOptions = nullptr;
++decltype(&::GetAvailableCoreWebView2BrowserVersionString)
++    GetAvailableCoreWebView2BrowserVersionString = nullptr;
++
++[[nodiscard]] bool ResolveWebView2() {
++    static const auto loaded = [] {
++        base::Platform::InitDynamicLibraries();
++        const auto library = LoadLibraryExW(
++            L"WebView2Loader.dll",
++            nullptr,
++            LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
++        return base::Platform::LoadMethod(
++            library,
++            "CreateCoreWebView2EnvironmentWithOptions",
++            CreateCoreWebView2EnvironmentWithOptions)
++            && base::Platform::LoadMethod(
++                library,
++                "GetAvailableCoreWebView2BrowserVersionString",
++                GetAvailableCoreWebView2BrowserVersionString);
++    }();
++    return loaded;
++}
++#endif
+ 
+ constexpr auto kKeepActiveInterval = crl::time(1000);
+ 
+@@ -1291,10 +1318,16 @@
+ 	if (base::options::value<bool>(kOptionWebviewLegacyEdge)) {
+ 		return false;
+ 	}
++#ifdef DESKTOP_APP_WEBVIEW2_DYNAMIC
++	if (!ResolveWebView2()) {
++		return false;
++	}
++#endif
+ 	auto version = LPWSTR(nullptr);
+ 	const auto result = GetAvailableCoreWebView2BrowserVersionString(
+ 		nullptr,
+ 		&version);
++	CoTaskMemFree(version);
+ 	return (result == S_OK);
+ }
+ 
+diff --git a/Telegram/lib_base/base/platform/win/base_windows_safe_library.cpp b/Telegram/lib_base/base/platform/win/base_windows_safe_library.cpp
+--- a/Telegram/lib_base/base/platform/win/base_windows_safe_library.cpp
++++ b/Telegram/lib_base/base/platform/win/base_windows_safe_library.cpp
+@@ -87,11 +87,11 @@
+ 
+ void *LoadMethodRaw(HINSTANCE library, LPCSTR name, WORD id) {
+ 	const auto result = GetProcAddress(library, name);
+-	return result
++	return reinterpret_cast<void*>(result
+ 		? result
+ 		: id
+ 		? GetProcAddress(library, MAKEINTRESOURCEA(id))
+-		: nullptr;
++		: nullptr);
+ }
+ 
+ void ReportLoadFailure(HINSTANCE library, LPCSTR name, DWORD id) {
+@@ -130,7 +130,13 @@
+ 	static const auto Inited = [] {
+ 		const auto kernel = LoadLibrary(L"kernel32.dll");
+ 		if (LOAD_SYMBOL(kernel, SetDefaultDllDirectories)) {
++#ifdef __MINGW32__
++			// Packaged dependencies and Qt plugins share the prefix's bin directory.
++			SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_APPLICATION_DIR
++				| LOAD_LIBRARY_SEARCH_SYSTEM32);
++#else
+ 			SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
++#endif
+ 		} else {
+ 			CheckDynamicLibraries();
+ 		}
+@@ -141,7 +147,13 @@
+ HINSTANCE SafeLoadLibrary(LPCWSTR name, bool required) {
+ 	InitDynamicLibraries();
+ 
+-	if (const auto result = HINSTANCE(LoadLibrary(name))) {
++#ifdef __MINGW32__
++	// System APIs must not resolve to a same-named DLL in the package's bin.
++	const auto library = LoadLibraryExW(name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
++#else
++	const auto library = LoadLibrary(name);
++#endif
++	if (const auto result = HINSTANCE(library)) {
+ 		return result;
+ 	} else if (required) {
+ 		FatalError(L"Could not load required DLL '"
+diff --git a/Telegram/lib_base/base/platform/win/base_battery_saving_win.cpp b/Telegram/lib_base/base/platform/win/base_battery_saving_win.cpp
+--- a/Telegram/lib_base/base/platform/win/base_battery_saving_win.cpp
++++ b/Telegram/lib_base/base/platform/win/base_battery_saving_win.cpp
+@@ -15,6 +15,13 @@
+ namespace {
+ 
+ constexpr auto kWindowClassName = L"DesktopAppBatterySaving";
++// GUID_POWER_SAVING_STATUS is not declared by mingw-w64's winnt.h.
++// https://learn.microsoft.com/en-us/windows/win32/power/power-setting-guids
++constexpr GUID kPowerSavingStatus = {
++	0xe00958c0, 0xc213, 0x4ace,
++	{ 0xac, 0x77, 0xfe, 0xcc, 0xed, 0x2e, 0xee, 0xa5 }
++};
++
+ 
+ // The only thing the window is needed for is being a target handle for
+ // RegisterPowerSettingNotification, so it is created as a message-only
+@@ -107,7 +114,7 @@
+ 	}
+ 	_notify = RegisterPowerSettingNotification(
+ 		_hwnd,
+-		&GUID_POWER_SAVING_STATUS,
++		&kPowerSavingStatus,
+ 		DEVICE_NOTIFY_WINDOW_HANDLE);
+ }
+ 
+diff --git a/Telegram/lib_base/base/platform/win/base_system_unlock_win.cpp b/Telegram/lib_base/base/platform/win/base_system_unlock_win.cpp
+--- a/Telegram/lib_base/base/platform/win/base_system_unlock_win.cpp
++++ b/Telegram/lib_base/base/platform/win/base_system_unlock_win.cpp
+@@ -12,7 +12,24 @@
+ 
+ #include <winrt/Windows.Foundation.h>
+ #include <winrt/Windows.Security.Credentials.UI.h>
++#ifdef __MINGW32__
++#include <inspectable.h>
++
++// The desktop interop interface is absent from mingw-w64's SDK headers.
++// https://learn.microsoft.com/windows/win32/api/userconsentverifierinterop/nn-userconsentverifierinterop-iuserconsentverifierinterop
++MIDL_INTERFACE("39E050C3-4E74-441A-8DC0-B81104DF949C")
++IUserConsentVerifierInterop : public IInspectable {
++	virtual HRESULT STDMETHODCALLTYPE RequestVerificationForWindowAsync(
++		HWND appWindow,
++		HSTRING message,
++		REFIID riid,
++		void **asyncOperation) = 0;
++};
++__CRT_UUID_DECL(IUserConsentVerifierInterop, 0x39e050c3, 0x4e74, 0x441a,
++	0x8d, 0xc0, 0xb8, 0x11, 0x04, 0xdf, 0x94, 0x9c)
++#else
+ #include <UserConsentVerifierInterop.h>
++#endif
+ 
+ namespace base {
+ namespace {
+diff --git a/Telegram/SourceFiles/platform/win/wallet_protection_win.cpp b/Telegram/SourceFiles/platform/win/wallet_protection_win.cpp
+--- a/Telegram/SourceFiles/platform/win/wallet_protection_win.cpp
++++ b/Telegram/SourceFiles/platform/win/wallet_protection_win.cpp
+@@ -29,6 +29,32 @@
+ #include <winrt/Windows.Storage.Streams.h>
+ #include <winrt/Windows.UI.h>
+ #include <tbs.h>
++
++// ABI::Windows::UI::WindowId, shared by the desktop export and WinRT methods.
++struct WindowIdAbi {
++	uint64_t value = 0;
++};
++
++#ifdef __MINGW32__
++#include <inspectable.h>
++
++// Windows SDK 10.0.26100.9169 ABI, absent from the packaged WinRT projection.
++MIDL_INTERFACE("30B1B9C9-61EF-43E8-88AC-CC433B38D1A6")
++TDKeyCredentialManagerCreateWithWindowStatics : public IInspectable {
++	virtual HRESULT STDMETHODCALLTYPE RequestCreateForWindowAsync(
++		WindowIdAbi window, void *name, int32_t option, void **result) noexcept = 0;
++};
++__CRT_UUID_DECL(TDKeyCredentialManagerCreateWithWindowStatics,
++	0x30B1B9C9, 0x61EF, 0x43E8, 0x88, 0xAC, 0xCC, 0x43, 0x3B, 0x38, 0xD1, 0xA6)
++
++MIDL_INTERFACE("050DEB3B-B19C-4635-9DF6-5650D66C62B1")
++TDKeyCredentialWithWindow : public IInspectable {
++	virtual HRESULT STDMETHODCALLTYPE RequestSignForWindowAsync(
++		WindowIdAbi window, void *data, void **result) noexcept = 0;
++};
++__CRT_UUID_DECL(TDKeyCredentialWithWindow,
++	0x050DEB3B, 0xB19C, 0x4635, 0x9D, 0xF6, 0x56, 0x50, 0xD6, 0x6C, 0x62, 0xB1)
++#endif
+ 
+ // The wrap key is stored nowhere: it is HKDF-SHA256 over the signature a
+ // Windows Hello credential produces for a device-wrap random challenge kept
+@@ -77,10 +103,6 @@
+ 
+ TBS_RESULT(WINAPI *GetTpmDeviceInfo)(UINT32, PVOID) = nullptr;
+ 
+-// ABI::Windows::UI::WindowId, as windows.ui.interop.h declares the export.
+-struct WindowIdAbi {
+-	uint64_t value = 0;
+-};
+ HRESULT(WINAPI *GetWindowIdFromWindow)(HWND, WindowIdAbi*) = nullptr;
+ 
+ struct Payload {
+@@ -206,10 +228,23 @@
+ 	const auto option = KeyCredentialCreationOption::ReplaceExisting;
+ 	if (owner) {
+ 		auto owned = base::WinRT::Try([&] {
++#ifdef __MINGW32__
++			const auto factory = winrt::get_activation_factory<
++				KeyCredentialManager,
++				TDKeyCredentialManagerCreateWithWindowStatics>();
++			auto result = IAsyncOperation<KeyCredentialRetrievalResult>(nullptr);
++			winrt::check_hresult(factory->RequestCreateForWindowAsync(
++				WindowIdAbi{ owner->Value },
++				winrt::get_abi(name),
++				int32_t(option),
++				winrt::put_abi(result)));
++			return result;
++#else
+ 			return KeyCredentialManager::RequestCreateForWindowAsync(
+ 				*owner,
+ 				name,
+ 				option);
++#endif
+ 		});
+ 		if (owned) {
+ 			return std::move(*owned);
+@@ -225,9 +260,22 @@
+ 		const IBuffer &data,
+ 		const std::optional<WindowId> &owner) {
+ 	if (owner) {
++#ifdef __MINGW32__
++		if (const auto owned = credential.try_as<TDKeyCredentialWithWindow>()) {
++#else
+ 		if (const auto owned = credential.try_as<IKeyCredentialWithWindow>()) {
++#endif
+ 			auto request = base::WinRT::Try([&] {
++#ifdef __MINGW32__
++				auto result = IAsyncOperation<KeyCredentialOperationResult>(nullptr);
++				winrt::check_hresult(owned->RequestSignForWindowAsync(
++					WindowIdAbi{ owner->Value },
++					winrt::get_abi(data),
++					winrt::put_abi(result)));
++				return result;
++#else
+ 				return owned.RequestSignForWindowAsync(*owner, data);
++#endif
+ 			});
+ 			if (request) {
+ 				return std::move(*request);
+diff --git a/Telegram/lib_base/base/platform/win/base_windows_winrt.cpp b/Telegram/lib_base/base/platform/win/base_windows_winrt.cpp
+--- a/Telegram/lib_base/base/platform/win/base_windows_winrt.cpp
++++ b/Telegram/lib_base/base/platform/win/base_windows_winrt.cpp
+@@ -180,6 +180,8 @@
+ 
+ } // namespace base::WinRT
+ 
++// GNU projections bind WINRT_IMPL_* directly to imported Win32 API symbols.
++#ifndef __MINGW32__
+ namespace P = base::WinRT;
+ 
+ extern "C" {
+@@ -416,3 +418,4 @@
+ }
+ 
+ } // extern "C"
++#endif
+diff --git a/Telegram/lib_base/CMakeLists.txt b/Telegram/lib_base/CMakeLists.txt
+--- a/Telegram/lib_base/CMakeLists.txt
++++ b/Telegram/lib_base/CMakeLists.txt
+@@ -265,6 +265,10 @@
+     desktop-app::external_xxhash
+ )
+ 
++if (MINGW)
++    target_link_libraries(lib_base PRIVATE runtimeobject)
++endif()
++
+ if (LINUX)
+     target_link_libraries(lib_base
+     PUBLIC
+diff --git a/Telegram/lib_webrtc/CMakeLists.txt b/Telegram/lib_webrtc/CMakeLists.txt
+--- a/Telegram/lib_webrtc/CMakeLists.txt
++++ b/Telegram/lib_webrtc/CMakeLists.txt
+@@ -89,6 +89,10 @@
+     desktop-app::external_webrtc
+ )
+ 
++if (MINGW)
++    target_link_libraries(lib_webrtc PRIVATE ksguid)
++endif()
++
+ if (APPLE)
+     target_link_libraries(lib_webrtc
+     PRIVATE
+diff --git a/cmake/external/cld3/CMakeLists.txt b/cmake/external/cld3/CMakeLists.txt
+--- a/cmake/external/cld3/CMakeLists.txt
++++ b/cmake/external/cld3/CMakeLists.txt
+@@ -7,7 +7,7 @@
+ add_library(external_cld3 INTERFACE IMPORTED GLOBAL)
+ add_library(desktop-app::external_cld3 ALIAS external_cld3)
+ 
+-if (DESKTOP_APP_USE_PACKAGED)
++if (DESKTOP_APP_USE_PACKAGED AND NOT MINGW)
+     find_package(protobuf CONFIG)
+     find_library(DESKTOP_APP_CLD3_LIBRARIES NAMES cld3)
+     find_path(DESKTOP_APP_CLD3_INCLUDE_DIRS NAMES nnet_language_identifier.h PATH_SUFFIXES cld3)
+diff --git a/cmake/external/gsl/CMakeLists.txt b/cmake/external/gsl/CMakeLists.txt
+--- a/cmake/external/gsl/CMakeLists.txt
++++ b/cmake/external/gsl/CMakeLists.txt
+@@ -8,7 +8,8 @@
+ add_library(desktop-app::external_gsl ALIAS external_gsl)
+ 
+ if (DESKTOP_APP_USE_PACKAGED)
+-    find_package(Microsoft.GSL 4.1.0 QUIET)
++    # The recipe checks the minimum version without GSL's same-major restriction.
++    find_package(Microsoft.GSL CONFIG REQUIRED)
+     if (Microsoft.GSL_FOUND)
+         target_link_libraries(external_gsl INTERFACE Microsoft.GSL::GSL)
+         return()
+diff --git a/cmake/external/tmc/CMakeLists.txt b/cmake/external/tmc/CMakeLists.txt
+--- a/cmake/external/tmc/CMakeLists.txt
++++ b/cmake/external/tmc/CMakeLists.txt
+@@ -13,7 +13,7 @@
+ )
+ 
+ if (DESKTOP_APP_USE_PACKAGED)
+-    find_package(TooManyCooks QUIET)
++    find_package(TooManyCooks CONFIG REQUIRED)
+     if (TooManyCooks_FOUND)
+         target_link_libraries(external_tmc INTERFACE TooManyCooks::TooManyCooks)
+         return()
