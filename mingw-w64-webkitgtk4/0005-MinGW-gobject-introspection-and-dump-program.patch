@@ -1,0 +1,769 @@
+--- a/Source/cmake/FindGI.cmake
++++ b/Source/cmake/FindGI.cmake
+@@ -140,6 +140,29 @@
+     return()
+ endif ()
+ 
++# MinGW port, introspection: optional Vala API generation. vapigen is
++# discovered here (not gated on ENABLE_INTROSPECTION) so that the version
++# can be checked once at configure time; the per-introspection GENERATE_VAPI
++# opt-in below consumes it.
++find_program(VAPIGEN_EXE
++    NAMES vapigen vapigen-0.56
++    DOC "Vala API generator"
++)
++if (VAPIGEN_EXE)
++    execute_process(
++        COMMAND "${VAPIGEN_EXE}" --version
++        OUTPUT_VARIABLE _vapigen_version_output
++        OUTPUT_STRIP_TRAILING_WHITESPACE
++        ERROR_QUIET
++        RESULT_VARIABLE _vapigen_version_result
++    )
++    if (_vapigen_version_result EQUAL 0 AND _vapigen_version_output MATCHES "Vala API Generator ([0-9]+\\.[0-9]+\\.[0-9]+)")
++        set(VAPIGEN_VERSION "${CMAKE_MATCH_1}")
++    endif ()
++    unset(_vapigen_version_output)
++    unset(_vapigen_version_result)
++endif ()
++
+ define_property(TARGET
+     PROPERTY GI_GIR_PATH
+     BRIEF_DOCS "Path to .gir file"
+@@ -222,9 +245,9 @@
+ 
+ function(GI_INTROSPECT namespace nsversion header)
+     cmake_parse_arguments(PARSE_ARGV 2 opt
+-        "NO_IMPLICIT_SOURCES"
++        "NO_IMPLICIT_SOURCES;GENERATE_VAPI"
+         "IDENTIFIER_PREFIX;PACKAGE;SYMBOL_PREFIX;TARGET"
+-        "DEPENDENCIES;SOURCES;OPTIONS"
++        "DEPENDENCIES;SOURCES;OPTIONS;VAPI_SOURCES"
+     )
+     if (NOT opt_PACKAGE)
+         string(TOLOWER "${namespace}" opt_PACKAGE)
+@@ -334,15 +357,33 @@
+     # Generate .gir
+     set(target_def "$<TARGET_PROPERTY:${opt_TARGET},COMPILE_DEFINITIONS>")
+     set(target_inc "$<TARGET_PROPERTY:${opt_TARGET},INTERFACE_INCLUDE_DIRECTORIES>")
++    # MinGW port: the WebKit and JavaScriptCore scans pass a few hundred
++    # source paths; on Windows a single command line that long can approach
++    # the 32767-character CreateProcess limit. Pass the sources through
++    # g-ir-scanner's --filelist response file instead (the same mechanism
++    # Meson uses for every GIR scan), keeping the explicit DEPENDS list so
++    # the Ninja dependency graph is unchanged.
++    set(gir_filelist "${CMAKE_BINARY_DIR}/${gir_name}.sources")
++    string(REPLACE ";" "\n" gir_filelist_content "${gir_srcs}")
++    file(WRITE "${gir_filelist}" "${gir_filelist_content}\n")
++    # MinGW port: the scanner runs warning-clean on the upstream Linux CI,
++    # but MinGW preprocessing (different system headers and compiler builtin
++    # macros) can surface new scanner warnings; they must not abort an
++    # hours-long build on Windows.
++    if (WIN32)
++        set(gi_scanner_fatal_warnings "")
++    else ()
++        set(gi_scanner_fatal_warnings "--warn-error")
++    endif ()
+     add_custom_command(
+         OUTPUT "${gir_path}"
+         COMMENT "Generating ${gir_name}.gir"
+         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+-        DEPENDS ${gir_deps} ${gir_srcs}
++        DEPENDS ${gir_deps} "${gir_filelist}" ${gir_srcs}
+         VERBATIM
+         COMMAND_EXPAND_LISTS
+         COMMAND ${CMAKE_COMMAND} -E env "CC=${CMAKE_C_COMPILER}" "CFLAGS=${CMAKE_C_FLAGS}"
+-            "${GI_SCANNER_EXE}" --quiet --warn-all --warn-error --no-libtool
++            "${GI_SCANNER_EXE}" --quiet --warn-all ${gi_scanner_fatal_warnings} --no-libtool
+             "--output=${gir_path}"
+             "--library=$<TARGET_FILE_BASE_NAME:${opt_TARGET}>"
+             "--library-path=$<TARGET_FILE_DIR:${opt_TARGET}>"
+@@ -356,7 +397,7 @@
+             "$<$<BOOL:${target_inc}>:-I$<JOIN:${target_inc},;-I>>"
+             ${scanner_flags}
+             ${opt_OPTIONS}
+-            ${gir_srcs}
++            "--filelist=${gir_filelist}"
+     )
+ 
+     add_custom_target("gir-${namespace}" DEPENDS "${gir_path}")
+@@ -397,6 +438,92 @@
+         COMPONENT runtime
+     )
+ 
++    # Generate .vapi (MinGW port; generic opt-in via GENERATE_VAPI, further
++    # gated on the ENABLE_VAPIGEN build option when that option is defined -
++    # the WebKit GTK port defines it, keeping default Linux builds free of
++    # any vala tool dependency).
++    #
++    # vapigen resolves each <include> of the gir either as a .vapi or as a
++    # .gir: --vapidir/--girdir pointing at the build directory pick up the
++    # sibling namespaces generated in this build (e.g. WebKit-6.0 finds
++    # JavaScriptCore-6.0), while dependencies on system namespaces resolve
++    # through the default search directories exactly like they do for the
++    # vapis shipped by the vala project itself. The --pkg entries name the
++    # pkg-config/vapi packages of the DEPENDENCIES so that already-generated
++    # sibling vapis (preferred) are loaded instead of re-parsing girs.
++    if (opt_GENERATE_VAPI AND (NOT DEFINED ENABLE_VAPIGEN OR ENABLE_VAPIGEN))
++        if (NOT VAPIGEN_EXE)
++            message(FATAL_ERROR
++                "vapigen is needed to generate the ${opt_PACKAGE}-${nsversion} vapi"
++            )
++        endif ()
++
++        set(vapi_library "${opt_PACKAGE}-${nsversion}")
++        set(vapi_path "${CMAKE_BINARY_DIR}/${vapi_library}.vapi")
++        set(vapi_pkgs)
++        set(vapi_deps "${gir_path}" "gir-${namespace}")
++        foreach (dep IN LISTS opt_DEPENDENCIES)
++            if (TARGET "gir-${dep}")
++                get_property(dep_gir_path TARGET "gir-${dep}" PROPERTY GI_GIR_PATH)
++                get_property(dep_package TARGET "gir-${dep}" PROPERTY GI_PACKAGE)
++                if (dep_gir_path)
++                    list(APPEND vapi_deps "${CMAKE_BINARY_DIR}/${dep_package}.vapi")
++                endif ()
++                if (dep_package)
++                    list(APPEND vapi_pkgs "${dep_package}")
++                endif ()
++            elseif (dep MATCHES "^([a-zA-Z0-9._-]+):([a-z0-9._\\+-]+)$")
++                list(APPEND vapi_pkgs "${CMAKE_MATCH_2}")
++            endif ()
++        endforeach ()
++        set(vapi_pkg_flags)
++        foreach (pkg IN LISTS vapi_pkgs)
++            list(APPEND vapi_pkg_flags "--pkg=${pkg}")
++        endforeach ()
++
++        add_custom_command(
++            OUTPUT "${vapi_path}"
++            COMMENT "Generating ${vapi_library}.vapi"
++            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
++            DEPENDS ${vapi_deps} ${opt_VAPI_SOURCES}
++            VERBATIM
++            COMMAND "${VAPIGEN_EXE}" --quiet
++                "--library=${vapi_library}"
++                "--vapidir=${CMAKE_BINARY_DIR}"
++                "--girdir=${CMAKE_BINARY_DIR}"
++                "--directory=${CMAKE_BINARY_DIR}"
++                ${vapi_pkg_flags}
++                ${opt_VAPI_SOURCES}
++                "${gir_path}"
++        )
++
++        add_custom_target("vapi-${namespace}" DEPENDS "${vapi_path}")
++
++        if (NOT TARGET vapi-all)
++            add_custom_target(vapi-all ALL COMMENT "All GI .vapi targets")
++        endif ()
++        add_dependencies(vapi-all "vapi-${namespace}")
++
++        install(
++            FILES "${vapi_path}"
++            DESTINATION "${CMAKE_INSTALL_DATADIR}/vala/vapi"
++            COMPONENT runtime
++        )
++
++        # .deps companion listing the vapi packages this one builds on
++        # (consumed by valac when this vapi is used through --deps).
++        if (vapi_pkgs)
++            set(vapi_depsfile "${CMAKE_BINARY_DIR}/${vapi_library}.deps")
++            string(REPLACE ";" "\n" vapi_depsfile_content "${vapi_pkgs}")
++            file(WRITE "${vapi_depsfile}" "${vapi_depsfile_content}\n")
++            install(
++                FILES "${vapi_depsfile}"
++                DESTINATION "${CMAKE_INSTALL_DATADIR}/vala/vapi"
++                COMPONENT runtime
++            )
++        endif ()
++    endif ()
++
+     # Record in targets to use later on e.g. with gi-docgen.
+     set_property(TARGET "gir-${namespace}" PROPERTY GI_GIR_PATH "${gir_path}")
+     set_property(TARGET "gir-${namespace}" PROPERTY GI_GIR_LIBRARY "$<TARGET_FILE_BASE_NAME:${opt_TARGET}>")
+--- a/Source/cmake/OptionsGTK.cmake
++++ b/Source/cmake/OptionsGTK.cmake
+@@ -49,6 +49,7 @@
+ # and the option is not relevant to other WebKit ports.
+ WEBKIT_OPTION_DEFINE(ENABLE_DOCUMENTATION "Whether to generate documentation." PUBLIC ON)
+ WEBKIT_OPTION_DEFINE(ENABLE_INTROSPECTION "Whether to enable GObject introspection." PUBLIC ON)
++WEBKIT_OPTION_DEFINE(ENABLE_VAPIGEN "Whether to generate Vala API (.vapi) files from the introspection data." PUBLIC OFF)
+ WEBKIT_OPTION_DEFINE(ENABLE_JOURNALD_LOG "Whether to enable journald logging" PUBLIC ON)
+ WEBKIT_OPTION_DEFINE(ENABLE_QUARTZ_TARGET "Whether to enable support for the Quartz windowing target." PUBLIC ON)
+ WEBKIT_OPTION_DEFINE(ENABLE_WAYLAND_TARGET "Whether to enable support for the Wayland windowing target." PUBLIC ON)
+@@ -66,6 +67,7 @@
+ WEBKIT_OPTION_DEFINE(ENABLE_JSC_RESTRICTED_OPTIONS_BY_DEFAULT "Whether to enable dangerous development options in JSC by default." PRIVATE OFF)
+ 
+ WEBKIT_OPTION_DEPEND(ENABLE_DOCUMENTATION ENABLE_INTROSPECTION)
++WEBKIT_OPTION_DEPEND(ENABLE_VAPIGEN ENABLE_INTROSPECTION)
+ WEBKIT_OPTION_DEPEND(USE_GBM USE_LIBDRM)
+ 
+ # Private options specific to the GTK port. Changing these options is
+@@ -319,6 +321,20 @@
+     message(FATAL_ERROR "GObjectIntrospection is needed for ENABLE_INTROSPECTION.")
+ endif ()
+ 
++# MinGW port, introspection: vapigen tool checks for ENABLE_VAPIGEN. The
++# version floor exists because .gir files emitted by gobject-introspection
++# >= 1.82 carry a <doc:format> repository element that only the vala
++# 0.56.18 gir parser understands; older vapigen aborts with
++# "unknown child element `doc:format' in `repository'".
++if (ENABLE_VAPIGEN)
++    if (NOT VAPIGEN_EXE)
++        message(FATAL_ERROR "Vala vapigen is needed for ENABLE_VAPIGEN (install the vala package).")
++    endif ()
++    if (VAPIGEN_VERSION AND VAPIGEN_VERSION VERSION_LESS 0.56.18)
++        message(FATAL_ERROR "vapigen ${VAPIGEN_VERSION} is too old for ENABLE_VAPIGEN: the .gir files produced by gobject-introspection >= 1.82 contain <doc:format> elements that only vapigen >= 0.56.18 understands.")
++    endif ()
++endif ()
++
+ find_package(GIDocgen)
+ if (ENABLE_DOCUMENTATION AND NOT GIDocgen_FOUND)
+     message(FATAL_ERROR "gi-docgen is needed for ENABLE_DOCUMENTATION.")
+--- a/Source/WebKit/CMakeLists.txt
++++ b/Source/WebKit/CMakeLists.txt
+@@ -1518,6 +1518,20 @@
+     endif ()
+ 
+     if (WIN32)
++        # MinGW port, introspection: g-ir-scanner (FindGI.cmake GI_INTROSPECT)
++        # receives --library-path=$<TARGET_FILE_DIR:WebKit|JavaScriptCore>,
++        # which on PE is the RUNTIME output directory (bin). The scanner's
++        # Windows library resolver (resolve_windows_libs in g-ir-scanner)
++        # only accepts import-library candidates (lib*.dll.a, lib*.a, *.lib)
++        # and never a bare DLL, and the MinGW linkers also prefer the import
++        # library over direct DLL binding. Keep the import libraries next to
++        # the DLLs in bin so that -lwebkitgtk-6.0 / -ljavascriptcoregtk-6.0
++        # resolve for the scanner dump program; the install(TARGETS ...
++        # ARCHIVE DESTINATION lib) rules below still deliver them to lib for
++        # consumers. Without this the ENABLE_INTROSPECTION build fails with
++        # "ERROR: can't resolve libraries to shared libraries".
++        set_target_properties(WebKit JavaScriptCore PROPERTIES
++            ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+         # PE install layout (MinGW). libwebkitgtk-6.0.dll is the RUNTIME
+         # artifact of the WebKit target: it must ship in bin because MSYS2
+         # requires runtime DLLs on PATH (the process executables in libexec
+--- a/Source/WebKit/PlatformGTK.cmake
++++ b/Source/WebKit/PlatformGTK.cmake
+@@ -664,6 +664,7 @@
+         JavaScriptCore
+         Gtk-${GTK_API_VERSION}.0:${GTK_PKGCONFIG_PACKAGE}
+         Soup-3.0:libsoup-3.0
++    GENERATE_VAPI
+     SOURCES
+         ${WebKitGTK_INSTALLED_HEADERS}
+         ${WEBKITGTK_SOURCES_FOR_INTROSPECTION}
+@@ -700,6 +701,7 @@
+         JavaScriptCore
+         Gtk-${GTK_API_VERSION}.0:${GTK_PKGCONFIG_PACKAGE}
+         Soup-3.0:libsoup-3.0
++    GENERATE_VAPI
+     SOURCES
+         ${WebKitDOM_SOURCES_FOR_INTROSPECTION}
+         ${WebKitWebProcessExtension_INSTALLED_HEADERS}
+--- a/Source/JavaScriptCore/PlatformGTK.cmake
++++ b/Source/JavaScriptCore/PlatformGTK.cmake
+@@ -28,9 +28,25 @@
+         DESTINATION "${WEBKITGTK_HEADER_INSTALL_DIR}/jsc"
+ )
+ 
++# MinGW port, introspection: optional Vala API generation. The JSC gir
++# models the JSCClass callback registration through raw GCallback
++# parameters, which vapigen cannot express with Vala generics; the
++# per-API-version *-custom.vala file (same recipe the vala project uses
++# for its own shipped javascriptcoregtk vapis) redeclares those members
++# with proper generic delegates. Only the 6.0 flavor is shipped, other
++# API versions fall back to plain vapigen output.
++set(JavaScriptCore_VAPI_CUSTOM_SOURCES)
++if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/API/glib/JavaScriptCore-${WEBKITGTK_API_VERSION}-custom.vala")
++    list(APPEND JavaScriptCore_VAPI_CUSTOM_SOURCES
++        "${CMAKE_CURRENT_SOURCE_DIR}/API/glib/JavaScriptCore-${WEBKITGTK_API_VERSION}-custom.vala"
++    )
++endif ()
++
+ GI_INTROSPECT(JavaScriptCore ${WEBKITGTK_API_VERSION} jsc/jsc.h
+     PACKAGE javascriptcoregtk
+     SYMBOL_PREFIX jsc
+     DEPENDENCIES GObject-2.0
++    GENERATE_VAPI
++    VAPI_SOURCES ${JavaScriptCore_VAPI_CUSTOM_SOURCES}
+ )
+ GI_DOCGEN(JavaScriptCore API/glib/docs/jsc.toml.in)
+--- /dev/null
++++ b/Source/JavaScriptCore/API/glib/JavaScriptCore-6.0-custom.vala
+@@ -0,0 +1,26 @@
++// Vala API additions for the JavaScriptCore-6.0 gir.
++//
++// The gir models the JSCClass callback registration (jsc_class_add_property
++// and the constructor/method callbacks) through raw GCallback parameters,
++// which vapigen cannot express with Vala generics. This file redeclares
++// those members with proper generic delegates, matching the
++// JavaScriptCore-6.0-custom.vala that the vala project uses when generating
++// its own shipped javascriptcoregtk-6.0.vapi.
++//
++// Copyright (C) 2025 The vala project contributors
++// SPDX-License-Identifier: LGPL-2.1-or-later
++
++namespace JSC {
++	public class Class : GLib.Object {
++		public void add_property (string name, GLib.Type property_type, [CCode (delegate_target_pos = 4.33333, destroy_notify_pos = 4.66667, type = "GCallback")] owned JSC.ClassGetPropertyCb? getter, [CCode (delegate_target_pos = 4.33333, destroy_notify_pos = 4.66667, type = "GCallback")] owned JSC.ClassSetPropertyCb? setter);
++	}
++	[CCode (cname = "GCallback", instance_pos = 1.9)]
++	public delegate T ClassGetPropertyCb<T> (JSC.Class instance);
++	[CCode (cname = "GCallback", instance_pos = 2.9)]
++	public delegate void ClassSetPropertyCb<T> (JSC.Class instance, T value);
++
++	[CCode (cname = "GCallback", instance_pos = 1.9)]
++	public delegate T ClassConstructorCb<T> (GLib.GenericArray<JSC.Value> values);
++	[CCode (cname = "GCallback", instance_pos = 2.9)]
++	public delegate T ClassMethodCb<T> (JSC.Class instance, GLib.GenericArray<JSC.Value> values);
++}
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: kangaroo maintainers
+Date: 2026-10-16
+Subject: [PATCH] MinGW: g-ir-scanner pkg-config path wrapper + lld for the
+ dump-program link
+
+ENABLE_INTROSPECTION on MSYS2 tripped over two toolchain-specific
+failures on the first GIR-enabled run of all three MINGW environments:
+
+1. CLANG64/CLANGARM64: g-ir-scanner aborted while generating
+   WebKit-6.0.gir and WebKitWebProcessExtension-6.0.gir with
+     FileNotFoundError: [WinError 3] ... '/clang64/lib'
+     giscanner/utils.py, add_dll_dirs -> _add_dll_directory
+   The g-ir-scanner.exe launcher resolves python.exe through PATH, so
+   the scanner runs under the *native* Windows Python and the
+   Windows-only DLL-search setup in giscanner.utils.dll_dirs is active:
+   it runs `pkg-config --static --libs-only-L <pkgs>` / `--variable
+   bindir <pkgs>` at scan time and feeds the results straight into
+   os.add_dll_directory(). Every MSYS2 .pc file carries POSIX-style
+   paths (glib-2.0.pc: Libs: -L${libdir}, libdir=/clang64/lib), which
+   are not valid Windows paths, so the scan of any package set whose
+   --static --libs-only-L resolution survives pkgconf's builtin-path
+   filtering aborts (JavaScriptCore-6.0.gir survived only because its
+   pkg-config set produced no -L output).
+
+2. UCRT64: the build stalled for 20+ minutes (watchdog: gcc/collect2/
+   ld.exe alive, zero progress) in the g-ir-scanner dump-program link,
+   which g-ir-scanner drives through the C compiler driver with GNU ld.
+
+Fix, in Source/cmake/FindGI.cmake (WIN32 only):
+
+- Generate a pkg-config output-conversion wrapper (pkg-config-msys2.py
+  + .bat shim) into the build tree at configure time. The MSYS2
+  installation root is derived from the pkg-config location
+  (<root>/<prefix>/bin/pkg-config.exe), and the wrapper runs the real
+  pkg-config and rewrites MSYS-style absolute paths in its output
+  (-I and -L flags and bare path tokens alike) into Windows form,
+  matching cygpath -m semantics. Setting PKG_CONFIG for the scanner
+  routes all four giscanner.pkgconfig query shapes through it.
+
+- Set LDFLAGS=-fuse-ld=lld for the scanner run: the dump-program link
+  honors LDFLAGS, and lld (already required for llvm-ar/llvm-ranlib)
+  links it instantly where GNU ld stalls indefinitely.
+
+Linux builds are untouched (both changes are WIN32-only).
+---
+--- a/Source/cmake/FindGI.cmake
++++ b/Source/cmake/FindGI.cmake
+@@ -140,6 +140,142 @@
+     return()
+ endif ()
+ 
++# MinGW port, introspection: make g-ir-scanner usable from a native
++# Windows toolchain (MSYS2 MINGW64/UCRT64/CLANG64/CLANGARM64).
++#
++# On MSYS2 the g-ir-scanner.exe launcher resolves python.exe through
++# PATH, so the scanner runs under the *native* Windows Python and the
++# Windows-only DLL-search setup in giscanner.utils.dll_dirs is active:
++# it queries pkg-config at scan time and feeds the resulting library
++# directories straight into os.add_dll_directory(). Every MSYS2 .pc
++# file carries POSIX-style paths (libdir=/clang64/lib,
++# bindir=${prefix}/bin), which are not valid Windows paths, so the scan
++# of any package with -L entries or path variables aborts with
++#   FileNotFoundError: [WinError 3] ... '/clang64/lib'
++# (observed with gobject-introspection 1.86.0, WebKit-6.0.gir and
++# WebKitWebProcessExtension-6.0.gir scans; JavaScriptCore-6.0.gir only
++# survived because its pkg-config set resolves to no -L output).
++#
++# Fix: generate a pkg-config output-conversion wrapper into the build
++# tree and route every scanner pkg-config query through it by setting
++# the PKG_CONFIG environment variable (giscanner.pkgconfig honors it
++# for all of its --cflags/--libs/--libs-only-L/--variable queries).
++# The wrapper runs the real pkg-config and rewrites MSYS-style absolute
++# paths in its output (-I and -L flags and bare path tokens alike) into
++# Windows form, using the MSYS2 installation root derived here at
++# configure time from the pkg-config location
++# (<msys2-root>/<prefix>/bin/pkg-config.exe or <msys2-root>/usr/bin/...).
++if (WIN32)
++    find_program(GI_PKG_CONFIG_EXE NAMES pkg-config pkgconf)
++    if (NOT GI_PKG_CONFIG_EXE)
++        message(FATAL_ERROR "introspection on MinGW requires pkg-config (pkgconf); none found")
++    endif ()
++    cmake_path(GET GI_PKG_CONFIG_EXE PARENT_PATH _gi_pkgconf_bindir)
++    cmake_path(GET _gi_pkgconf_bindir PARENT_PATH _gi_pkgconf_prefixdir)
++    cmake_path(GET _gi_pkgconf_prefixdir PARENT_PATH _gi_msys2_root)
++    cmake_path(GET _gi_pkgconf_prefixdir FILENAME _gi_msys2_prefix_name)
++    if (NOT _gi_msys2_prefix_name OR _gi_msys2_prefix_name STREQUAL "bin")
++        message(FATAL_ERROR "could not derive the MSYS2 installation root from ${GI_PKG_CONFIG_EXE}")
++    endif ()
++    # The wrapper script runs under the same interpreter flavor that
++    # runs g-ir-scanner: the MSYS2 MINGW Python, a hard dependency of
++    # the gobject-introspection package.
++    find_program(GI_WRAPPER_PYTHON_EXE
++        NAMES python3.exe python.exe python3 python
++        HINTS "${_gi_pkgconf_prefixdir}/bin"
++    )
++    if (NOT GI_WRAPPER_PYTHON_EXE)
++        message(FATAL_ERROR "introspection on MinGW requires a Python interpreter in ${_gi_pkgconf_prefixdir}/bin (shipped with gobject-introspection)")
++    endif ()
++    set(GI_PKG_CONFIG_WRAPPER "${CMAKE_BINARY_DIR}/pkg-config-msys2.bat")
++    set(_gi_wrapper_py [[import re
++import shlex
++import subprocess
++import sys
++
++"""pkg-config output converter for MSYS2 native builds (MinGW port).
++
++gobject-introspection's giscanner feeds pkg-config output into both the
++native compiler driver and os.add_dll_directory(); on MSYS2 the
++installed .pc files use POSIX-style paths (libdir=/clang64/lib) which
++are not valid Windows paths. This wrapper runs the real pkg-config and
++rewrites every MSYS-style absolute path token in its output into
++Windows form (MSYS2_ROOT + the POSIX path), matching `cygpath -m`
++semantics for paths under the installation root.
++"""
++
++REAL_PKG_CONFIG = r"@GI_REAL_PKG_CONFIG@"
++MSYS2_ROOT = r"@GI_MSYS2_ROOT@"
++
++_FLAG_PATH_RE = re.compile(r"^(-[IL])(/.+)$")
++
++
++def _to_windows(msys_path):
++    # MSYS2 path semantics: any absolute POSIX path resolves under the
++    # installation root (/<prefix-name>/... and /usr/... alike).
++    return MSYS2_ROOT + msys_path
++
++
++def _convert_token(token):
++    match = _FLAG_PATH_RE.match(token)
++    if match:
++        return match.group(1) + _to_windows(match.group(2))
++    if token.startswith("/"):
++        return _to_windows(token)
++    return token
++
++
++def _convert_line(line):
++    try:
++        tokens = shlex.split(line)
++    except ValueError:
++        tokens = line.split()
++    if not tokens:
++        return ""
++    converted = [_convert_token(token) for token in tokens]
++    return " ".join(
++        ('"%s"' % token) if " " in token else token
++        for token in converted
++    )
++
++
++def main():
++    try:
++        proc = subprocess.run(
++            [REAL_PKG_CONFIG] + sys.argv[1:],
++            stdout=subprocess.PIPE,
++            stderr=subprocess.STDOUT,
++        )
++    except OSError as error:
++        sys.stderr.write("pkg-config-msys2: %s\n" % error)
++        return 127
++    # pkg-config failures must keep their exit status and diagnostics
++    # (g-ir-scanner prints merged output when it tolerates errors), so
++    # stderr is merged into stdout exactly like giscanner.pkgconfig
++    # does with its own subprocess calls.
++    output = proc.stdout.decode("utf-8", errors="replace")
++    converted = "\n".join(_convert_line(line) for line in output.splitlines())
++    if converted:
++        sys.stdout.write(converted + "\n")
++    return proc.returncode
++
++
++if __name__ == "__main__":
++    sys.exit(main())
++]])
++    string(REPLACE "@GI_REAL_PKG_CONFIG@" "${GI_PKG_CONFIG_EXE}" _gi_wrapper_py "${_gi_wrapper_py}")
++    string(REPLACE "@GI_MSYS2_ROOT@" "${_gi_msys2_root}" _gi_wrapper_py "${_gi_wrapper_py}")
++    file(WRITE "${CMAKE_BINARY_DIR}/pkg-config-msys2.py" "${_gi_wrapper_py}")
++    file(WRITE "${GI_PKG_CONFIG_WRAPPER}"
++        "@\"${GI_WRAPPER_PYTHON_EXE}\" \"${CMAKE_BINARY_DIR}/pkg-config-msys2.py\" %*\n@exit /b %ERRORLEVEL%\n"
++    )
++    unset(_gi_wrapper_py)
++    unset(_gi_msys2_root)
++    unset(_gi_msys2_prefix_name)
++    unset(_gi_pkgconf_bindir)
++    unset(_gi_pkgconf_prefixdir)
++endif ()
++
+ # MinGW port, introspection: optional Vala API generation. vapigen is
+ # discovered here (not gated on ENABLE_INTROSPECTION) so that the version
+ # can be checked once at configure time; the per-introspection GENERATE_VAPI
+@@ -375,6 +511,25 @@
+     else ()
+         set(gi_scanner_fatal_warnings "--warn-error")
+     endif ()
++    # MinGW port: environment for the scanner run.
++    set(gi_scanner_env "CC=${CMAKE_C_COMPILER}" "CFLAGS=${CMAKE_C_FLAGS}")
++    if (WIN32)
++        # Route every pkg-config query made by g-ir-scanner through the
++        # build-tree output-conversion wrapper generated above: MSYS-style
++        # paths from the system .pc files must never reach
++        # os.add_dll_directory() (FileNotFoundError) or the native
++        # compiler/linker drivers.
++        list(APPEND gi_scanner_env "PKG_CONFIG=${GI_PKG_CONFIG_WRAPPER}")
++        # The dump program is linked by g-ir-scanner itself, through the
++        # C compiler driver, and the link picks up the LDFLAGS
++        # environment variable. GNU ld has been observed stalling
++        # indefinitely on that link on the MSYS2 CI machines (watchdog:
++        # gcc/collect2/ld.exe alive for 20+ minutes with zero progress),
++        # while lld (installed alongside llvm-ar/llvm-ranlib) links it
++        # instantly and is the linker the CLANG environments use for
++        # every other target anyway.
++        list(APPEND gi_scanner_env "LDFLAGS=-fuse-ld=lld")
++    endif ()
+     add_custom_command(
+         OUTPUT "${gir_path}"
+         COMMENT "Generating ${gir_name}.gir"
+@@ -382,7 +537,7 @@
+         DEPENDS ${gir_deps} "${gir_filelist}" ${gir_srcs}
+         VERBATIM
+         COMMAND_EXPAND_LISTS
+-        COMMAND ${CMAKE_COMMAND} -E env "CC=${CMAKE_C_COMPILER}" "CFLAGS=${CMAKE_C_FLAGS}"
++        COMMAND ${CMAKE_COMMAND} -E env ${gi_scanner_env}
+             "${GI_SCANNER_EXE}" --quiet --warn-all ${gi_scanner_fatal_warnings} --no-libtool
+             "--output=${gir_path}"
+             "--library=$<TARGET_FILE_BASE_NAME:${opt_TARGET}>"
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: kangaroo maintainers
+Date: 2026-10-16
+Subject: [PATCH] MinGW: g-ir-scanner cache disable + dump-program link/run hardening
+
+The first 0016-enabled CI run pushed all three MINGW environments past
+the pkg-config path crash and the GNU-ld dump-link stall, and exposed
+the next toolchain-specific failure layer of the introspection tail
+(edges ~8570/8577, the last steps of the whole build):
+
+CLANG64 - the WebKit-6.0.gir scan aborted at scanner startup:
+
+  File ".../giscanner/transformer.py", line 140, in register_include
+  ... transformer.py:232 x4 (recursive include resolution)
+  File ".../giscanner/cachestore.py", line 166, in load
+    fd = open(store_filename, 'rb')
+  PermissionError: [Errno 13] Permission denied:
+  'C:/Users/runneradmin/.cache/g-ir-scanner/7536ef06...'
+
+gobject-introspection 1.86.0 (as shipped by MSYS2 - the traceback line
+numbers match the upstream sources byte for byte) has NO cross-process
+locking in its parse cache: CacheStore writes entries with tempfile +
+shutil.move (non-atomic on Windows) and load() only tolerates ENOENT;
+every other OSError aborts the whole scan. Ninja runs the
+JavaScriptCore / WebKit / WebProcessExtension scanner edges in
+parallel, all sharing the one %USERPROFILE%\.cache\g-ir-scanner
+directory, and the freshly-written multi-MB .gir parse pickles are
+held open by the CI machines' real-time antivirus just long enough for
+the concurrent WebKit scan to hit a sharing violation. g-i's own
+utils.rmtree() docstring documents the very same virus-scanner
+interference. Setting GI_SCANNER_DISABLE_CACHE (any value; the code is
+a presence check in CacheStore._get_cachedir) makes _directory None,
+turning load()/store() into no-ops: no shared files, no lock windows,
+no stale entries carried across CI runs. The cost is re-parsing the
+include .gir XML per scan - seconds against a multi-hour build.
+
+CLANGARM64 - the WebKit-6.0 introspection dump program exited with
+status 3221226505 (0xC0000409, fail-fast: clang lowers
+__stack_chk_fail to int 0x29 on Windows, and the UCRT
+_invalid_parameter handler fail-fasts the same way). Two mechanisms
+are already ruled out by the same CI log: the WebProcessExtension
+dump, which loads the very same libwebkitgtk-6.0 DLL, succeeded (its
+vapigen edge started right after), so DLL loading and static
+initialization are healthy; and glib's gmodule resolves the get_type
+functions through find_in_any_module() (a Toolhelp snapshot walk over
+all loaded modules' export tables), so exe-level export configuration
+is irrelevant. What remains is the dump run itself: ~200 UI-process
+get_type functions, their complete class_init chains and the property
+default-value evaluation, driven on a main thread whose PE default
+stack reservation is 2 MiB - a quarter of the 8 MiB Linux default
+WebKit code is tuned against. Reserve a 16 MiB stack for the dump
+program (purely virtual, committed on demand, dump program only).
+
+UCRT64 - the build stalled again after the 0016 linker switch (no log
+tail provided; the Round-42 watchdog will name the live command line
+next time). With the dump link now on lld, the first untested step on
+UCRT64 is the same dump-program run, so the same hardening applies.
+
+Additionally set GI_SCANNER_DEBUG=save-temps for the scanner runs: on
+any scan failure g-ir-scanner then keeps its tmp-introspect*/
+directory - the dump program, functions.txt and the partial dump.xml,
+whose last <class>/<interface> element names the type being processed
+when the dump program died. That is the single most valuable artifact
+for debugging dump-program crashes on CI machines, at the cost of a
+few hundred KB per scan.
+
+All changes are WIN32-only (inside the gi_scanner_env block of the
+GI_INTROSPECT macro); Linux builds are untouched.
+---
+--- a/Source/cmake/FindGI.cmake
++++ b/Source/cmake/FindGI.cmake
+@@ -528,7 +528,39 @@
+         # while lld (installed alongside llvm-ar/llvm-ranlib) links it
+         # instantly and is the linker the CLANG environments use for
+         # every other target anyway.
+-        list(APPEND gi_scanner_env "LDFLAGS=-fuse-ld=lld")
++        # The dump program also loads the multi-hundred-MB libwebkitgtk
++        # DLL and drives the complete GType registration of the scanned
++        # API (hundreds of class_init chains plus property default value
++        # evaluation) on its main thread. The PE default stack
++        # reservation is 2 MiB, a quarter of the 8 MiB Linux default
++        # WebKit code is tuned against; reserve 16 MiB instead (a purely
++        # virtual reservation, committed on demand, and only the dump
++        # program is affected).
++        list(APPEND gi_scanner_env "LDFLAGS=-fuse-ld=lld -Wl,--stack,0x1000000")
++        # g-ir-scanner's cross-process parse cache (giscanner/cachestore.py)
++        # has no locking at all in gobject-introspection 1.86.0: entries
++        # are written via tempfile + shutil.move (non-atomic on Windows)
++        # and load() only tolerates ENOENT. Ninja runs the JavaScriptCore
++        # / WebKit / WebProcessExtension scans in parallel over the one
++        # shared %USERPROFILE%\.cache\g-ir-scanner directory, and the CI
++        # machines' real-time antivirus holds freshly-written multi-MB
++        # pickles open long enough for a concurrent reader to hit a
++        # sharing violation (PermissionError [Errno 13], observed
++        # aborting the WebKit-6.0 scan at startup on CLANG64). Disabling
++        # the cache costs a re-parse of the include .gir files per scan
++        # (seconds) and removes the entire failure class: no shared
++        # files, no lock windows, no stale entries carried across CI
++        # runs.
++        list(APPEND gi_scanner_env "GI_SCANNER_DISABLE_CACHE=1")
++        # Keep the tmp-introspect*/ directory (dump program,
++        # functions.txt, partial dump.xml) when a scan fails:
++        # GI_SCANNER_DEBUG=save-temps makes g-ir-scanner skip its
++        # post-run cleanup, preserving the crash scene - the last
++        # <class>/<interface> element of a partial dump.xml names the
++        # type being processed when the dump program died, the single
++        # most valuable artifact for debugging dump-program crashes on
++        # CI machines. Costs a few hundred KB per scan.
++        list(APPEND gi_scanner_env "GI_SCANNER_DEBUG=save-temps")
+     endif ()
+     add_custom_command(
+         OUTPUT "${gir_path}"
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: kangaroo maintainers
+Date: 2026-10-16
+Subject: [PATCH] MinGW: skip the heavy WebKit2/JSC/Skia initialization inside the gir dump program (WEBKIT_GIR_DUMP_MODE)
+
+The 0017-enabled CI run pushed CLANG64 past the scanner cache crash,
+unmasking the same dump-program failure CLANGARM64 had shown the round
+before: the WebKit-6.0 introspection dump program exited 3221226505
+(0xC0000409 fail-fast). The 16 MiB stack reserve from 0017 did not
+cure it, and the WebProcessExtension dump (which links the very same
+libwebkitgtk DLL and runs the same gdump.c runtime) succeeded on both
+machines at the same edge - isolating the failure to something the
+WebKit-6.0 dump does and the WEPE dump does not.
+
+That difference is in the class_init chains: gdump.c's dump_type does
+g_type_class_ref(type) for every scanned type, running each class_init
+body. A source audit of the whole public API surface (UIProcess/API
+glib + gtk) finds exactly one family of non-GLib code executed there:
+seven class_init bodies (WebKitNetworkSession, WebKitInputMethodContext,
+WebKitWebContext, WebKitSettings, WebKitUserContentFilterStore,
+WebKitUserContentManager, WebKitWebsiteDataManager) call
+WebKit::webkitInitialize() first, which runs the full
+InitializeWebKit2() (JSC::initialize, WTF main-thread setup, WebCore
+atom strings, populateJITOperations) plus SkGraphics::Init() inside
+the bare C-linked dump process. On Linux this incidental execution is
+survivable and therefore invisible; on this port it is the crash
+frontier. Nothing in a .gir depends on that initialization.
+
+Fix (both changes, Windows-scoped):
+  1. WebKitInitialize.cpp: under OS(WINDOWS), webkitInitialize() returns
+     early when WEBKIT_GIR_DUMP_MODE is set; applications (and every
+     Linux build) keep the upstream behavior byte-for-byte.
+  2. FindGI.cmake: the scanner environment exports
+     WEBKIT_GIR_DUMP_MODE=1; the dump program inherits it through
+     g-ir-scanner's subprocess (no env= override there), so every dump
+     run (JSC / WebKit / WebProcessExtension) skips the heavy init.
+
+The gir content is unaffected: the dump still class-refs every type,
+collects the full hierarchy, properties (specs and default values) and
+signals; only the heavyweight process-global initialization is skipped.
+
+Verification in this round: pure-replay of the consolidated 5-patch
+series on a fresh tarball reproduces the 18-step tree byte-exactly
+(diff -r empty); sentinels added to PKGBUILD prepare() for both hunks
+(bidirectional: consolidated-tree passes, 0017-era tree triggers).
+
+diff --git a/Source/WebKit/UIProcess/API/glib/WebKitInitialize.cpp b/Source/WebKit/UIProcess/API/glib/WebKitInitialize.cpp
+index bdd42db..f0bd7ed 100644
+--- a/Source/WebKit/UIProcess/API/glib/WebKitInitialize.cpp
++++ b/Source/WebKit/UIProcess/API/glib/WebKitInitialize.cpp
+@@ -30,6 +30,7 @@
+ #include "WebKit2Initialize.h"
+ #include <JavaScriptCore/RemoteInspector.h>
+ #include <JavaScriptCore/RemoteInspectorServer.h>
++#include <glib.h>
+ #include <limits>
+ #include <mutex>
+ #include <skia/core/SkGraphics.h>
+@@ -107,6 +108,26 @@ void webkitInitialize()
+     std::call_once(onceFlag, [] {
+ #if USE(SYSPROF_CAPTURE)
+         SysprofAnnotator::createIfNeeded("WebKit (UI)"_s);
++#endif
++#if OS(WINDOWS)
++        // MinGW port: g-ir-scanner's dump program class-refs the public API
++        // types inside a bare C-linked process to collect the GType table,
++        // property specs and signal list for the .gir. Seven public class_init
++        // bodies (NetworkSession, InputMethodContext, WebContext, Settings,
++        // UserContentFilterStore, UserContentManager, WebsiteDataManager) call
++        // webkitInitialize() first, so on Linux the dump incidentally runs the
++        // full WebKit2/JSC/Skia initialization from there and survives. On
++        // Windows the same heavyweight initialization is not needed for the
++        // dump (nothing in a .gir depends on it) and is the dump-program crash
++        // frontier on this port (0xC0000409 fail-fast, CLANG64 and
++        // CLANGARM64, at the exact edge where the WebProcessExtension dump -
++        // whose class_inits never call webkitInitialize() - succeeds).
++        // FindGI.cmake exports WEBKIT_GIR_DUMP_MODE=1 for the scanner runs;
++        // the dump program inherits it and skips the heavy initialization
++        // here. Real applications on Windows (and every build on Linux)
++        // keep the upstream behavior unchanged.
++        if (g_getenv("WEBKIT_GIR_DUMP_MODE"))
++            return;
+ #endif
+         InitializeWebKit2();
+ 
+diff --git a/Source/cmake/FindGI.cmake b/Source/cmake/FindGI.cmake
+index 358e436..3271c5b 100644
+--- a/Source/cmake/FindGI.cmake
++++ b/Source/cmake/FindGI.cmake
+@@ -561,6 +561,22 @@ function(GI_INTROSPECT namespace nsversion header)
+         # most valuable artifact for debugging dump-program crashes on
+         # CI machines. Costs a few hundred KB per scan.
+         list(APPEND gi_scanner_env "GI_SCANNER_DEBUG=save-temps")
++        # Round 44: the dump program class-refs every public API type
++        # (gdump.c: dump_type -> g_type_class_ref) to collect the GType
++        # table, property specs and signal list. Seven public class_init
++        # bodies call WebKit::webkitInitialize() first, so the dump run
++        # would execute the full WebKit2/JSC/Skia initialization inside
++        # the bare C-linked dump process. On Linux this incidental
++        # execution survives; on Windows it is the dump-program crash
++        # frontier (0xC0000409 fail-fast, CLANG64 and CLANGARM64, while
++        # the WebProcessExtension dump - whose class_inits never call
++        # webkitInitialize() - succeeds on the same machines). Nothing
++        # in a .gir depends on that initialization, so export
++        # WEBKIT_GIR_DUMP_MODE=1 for the scanner environment: the dump
++        # program inherits it and WebKitInitialize.cpp (OS(WINDOWS)
++        # guarded) skips the heavy initialization there. Real Windows
++        # applications are unaffected.
++        list(APPEND gi_scanner_env "WEBKIT_GIR_DUMP_MODE=1")
+     endif ()
+     add_custom_command(
+         OUTPUT "${gir_path}"
