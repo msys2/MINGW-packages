@@ -142,7 +142,7 @@ def obj_to_filename(obj):
         continue
     label = labelbytes.decode('utf-8')
     serial = printable_serial(obj)
-    return label + ":" + serial
+    return urllib.parse.quote(label + "_" + serial)
 
 def write_cert_ext_to_file(f, oid, value, public_key):
     f.write("[p11-kit-object-v1]\n")
@@ -193,7 +193,14 @@ openssl_trust = {
   "CKA_TRUST_EMAIL_PROTECTION": "emailProtection",
 }
 
+cert_distrust_types = {
+  "CKA_NSS_SERVER_DISTRUST_AFTER": "nss-server-distrust-after",
+  "CKA_NSS_EMAIL_DISTRUST_AFTER": "nss-email-distrust-after",
+}
+
 for tobj in objects:
+    if tobj['CKA_LABEL'] in blacklist:
+        continue
     if tobj['CKA_CLASS'] == 'CKO_NSS_TRUST':
         key = tobj['CKA_LABEL'] + printable_serial(tobj)
         print("producing trust for " + key)
@@ -284,7 +291,7 @@ for tobj in objects:
             pk_fname = "pubkey-" + fname
             fpkout = open(pk_fname, "w")
             dump_pk_command = ["openssl", "x509", "-in", cert_fname, "-noout", "-pubkey"]
-            subprocess.call(dump_pk_command, stdout=fpkout)
+            subprocess.check_call(dump_pk_command, stdout=fpkout)
             fpkout.close()
             with open (pk_fname, "r") as myfile:
                 pk=myfile.read()
@@ -292,10 +299,10 @@ for tobj in objects:
             comment_fname = "comment-" + fname
             fcout = open(comment_fname, "w")
             comment_command = ["openssl", "x509", "-in", cert_fname, "-noout", "-text"]
-            subprocess.call(comment_command, stdout=fcout)
+            subprocess.check_call(comment_command, stdout=fcout)
             fcout.close()
             sed_command = ["sed", "--in-place", "s/^/#/", comment_fname]
-            subprocess.call(sed_command)
+            subprocess.check_call(sed_command)
             with open (comment_fname, "r", errors = 'replace') as myfile:
                 cert_comment=myfile.read()
 
@@ -384,6 +391,16 @@ for tobj in objects:
             # requires p11-kit >= 0.23.4
             f.write("nss-mozilla-ca-policy: true\n")
             f.write("modifiable: false\n");
+
+            # requires p11-kit >= 0.23.19
+            for t in list(cert_distrust_types.keys()):
+                if t in obj:
+                    value = obj[t]
+                    if value == 'CK_FALSE':
+                        value = bytearray(1)
+                    f.write(cert_distrust_types[t] + ": \"")
+                    f.write(urllib.parse.quote(value));
+                    f.write("\"\n")
 
             f.write("-----BEGIN CERTIFICATE-----\n")
             temp_encoded_b64 = base64.b64encode(obj['CKA_VALUE'])
