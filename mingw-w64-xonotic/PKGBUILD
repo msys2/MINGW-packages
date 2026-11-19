@@ -1,0 +1,108 @@
+# Maintainer: Michał Korczak
+
+_realname=xonotic
+pkgbase="mingw-w64-${_realname}"
+pkgname="${MINGW_PACKAGE_PREFIX}-${_realname}"
+pkgver=0.8.6
+pkgrel=1
+pkgdesc='A free, fast-paced cross-platform first person shooter (mingw-w64)'
+arch=('any')
+mingw_arch=('ucrt64' 'clang64' 'clangarm64')
+url='https://xonotic.org/'
+msys2_repository_url='https://gitlab.com/xonotic/xonotic'
+msys2_references=(
+  'archlinux: xonotic'
+  'gentoo: games-fps/xonotic'
+)
+license=('spdx:GPL-3.0-or-later')
+depends=(
+  'xonotic-data'
+  "${MINGW_PACKAGE_PREFIX}-cc-libs"
+  "${MINGW_PACKAGE_PREFIX}-curl"
+  "${MINGW_PACKAGE_PREFIX}-freetype"
+  "${MINGW_PACKAGE_PREFIX}-gmp"
+  "${MINGW_PACKAGE_PREFIX}-libjpeg-turbo"
+  "${MINGW_PACKAGE_PREFIX}-libmodplug"
+  "${MINGW_PACKAGE_PREFIX}-libogg"
+  "${MINGW_PACKAGE_PREFIX}-libpng"
+  "${MINGW_PACKAGE_PREFIX}-libvorbis"
+  "${MINGW_PACKAGE_PREFIX}-sdl2"
+)
+makedepends=(
+  "${MINGW_PACKAGE_PREFIX}-autotools"
+  "${MINGW_PACKAGE_PREFIX}-cc"
+  "${MINGW_PACKAGE_PREFIX}-pkgconf"
+)
+source=(
+  "https://dl.xonotic.org/xonotic-${pkgver}-source.zip"
+  '0001-darkplaces-resolve-msys2-fs_basedir.patch'
+)
+sha256sums=('8b92ac781cff4ae89c121a23eacd7dec05a2aabedaccc23a19d1a0958b4012a8'
+            'fa049cf2a8a437b1305414f08607c674ea82d69745392e4449767b5b3330f3c0')
+
+prepare() {
+  cd "${srcdir}/Xonotic"
+
+  # overwrite DarkPlaces engine icon with Xonotic icon
+  cp -f misc/logos/icons_ico/xonotic.ico source/darkplaces/darkplaces.ico
+
+  patch -Np1 -i "${srcdir}/0001-darkplaces-resolve-msys2-fs_basedir.patch"
+}
+
+build() {
+  cd "${srcdir}/Xonotic"
+
+  # GCC 15+ defaults to -std=gnu23, which breaks DarkPlaces' qboolean enum and d0_blind_id
+  export CFLAGS+=" -std=gnu17"
+
+  # Build d0_blind_id (player stats/authentication library)
+  pushd source/d0_blind_id
+  autoreconf -fi
+  ./configure \
+    --prefix="${MINGW_PREFIX}" \
+    --enable-shared \
+    --disable-static
+  make LDFLAGS="${LDFLAGS} -no-undefined"
+  popd
+
+  # Build DarkPlaces SDL2 client and dedicated server
+  local _dp_make_args=(
+    -C source/darkplaces
+    DP_MAKE_TARGET=mingw
+    CPUOPTIMIZATIONS="${CFLAGS}"
+    DP_LINK_TO_LIBJPEG=1
+    SDL_CONFIG="${MINGW_PREFIX}/bin/sdl2-config"
+    STRIP=: # disable strip because we handle it via makepkg
+  )
+
+  # workaround ARM issue in DP's makefile.inc
+  if [[ "${CARCH}" == "aarch64" ]]; then
+    _dp_make_args+=(CFLAGS_SSE= CFLAGS_SSE2=)
+  fi
+
+  make "${_dp_make_args[@]}" sdl-release
+  make "${_dp_make_args[@]}" sv-release
+}
+
+package() {
+  cd "${srcdir}/Xonotic"
+
+  # Engine binaries
+  install -Dm755 source/darkplaces/darkplaces-sdl.exe \
+    "${pkgdir}${MINGW_PREFIX}/bin/xonotic.exe"
+  install -Dm755 source/darkplaces/darkplaces-dedicated.exe \
+    "${pkgdir}${MINGW_PREFIX}/bin/xonotic-dedicated.exe"
+
+  # Icons
+  install -Dm644 misc/logos/xonotic_icon.svg \
+    "${pkgdir}${MINGW_PREFIX}/share/icons/hicolor/scalable/apps/xonotic.svg"
+  for size in 16 22 24 32 48 64 128 256 512; do
+    install -Dm644 "misc/logos/icons_png/xonotic_${size}.png" \
+      "${pkgdir}${MINGW_PREFIX}/share/icons/hicolor/${size}x${size}/apps/xonotic.png"
+  done
+
+  # Crypto / stats library (libd0_blind_id-0.dll, libd0_rijndael-0.dll)
+  make -C source/d0_blind_id DESTDIR="${pkgdir}" install
+
+  install -Dm644 COPYING -t "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/"
+}

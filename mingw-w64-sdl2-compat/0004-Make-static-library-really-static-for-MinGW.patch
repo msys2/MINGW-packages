@@ -1,0 +1,165 @@
+From 44de901424753a7dfe8498b8e2673c9a05758625 Mon Sep 17 00:00:00 2001
+From: Zhongteng Gui <dragon-archer@outlook.com>
+Date: Tue, 10 Nov 2026 17:29:10 +0800
+Subject: [PATCH] Make static library really static for MinGW
+
+Signed-off-by: Zhongteng Gui <dragon-archer@outlook.com>
+---
+ CMakeLists.txt                      | 26 +++++++++++++++++++++++++-
+ cmake/SDL2CompatStaticSDL3.cmake.in | 22 ++++++++++++++++++++++
+ src/sdl2_compat.c                   | 22 ++++++++++++++++++++--
+ 3 files changed, 67 insertions(+), 3 deletions(-)
+ create mode 100644 cmake/SDL2CompatStaticSDL3.cmake.in
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 58ae40f..cd2d724 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -492,6 +492,30 @@ if(SDL2COMPAT_STATIC)
+   target_compile_definitions(SDL2-static PRIVATE _REENTRANT SDL2COMPAT_STATIC)
+   target_compile_definitions(SDL2-static PRIVATE "SDL2COMPAT_REVISION=\"${SDL2COMPAT_REVISION}\"")
+   target_link_libraries(SDL2-static PRIVATE ${CMAKE_DL_LIBS})
++  if(MINGW)
++    find_package(SDL3 REQUIRED COMPONENTS SDL3-static)
++    target_compile_definitions(SDL2-static PRIVATE SDL2COMPAT_STATIC_SDL3)
++    get_target_property(SDL3_STATIC_DEPS SDL3::SDL3-static INTERFACE_LINK_LIBRARIES)
++    list(REMOVE_ITEM SDL3_STATIC_DEPS SDL3::Headers)
++    target_link_libraries(SDL2-static PRIVATE ${SDL3_STATIC_DEPS})
++    string(REGEX REPLACE "\\$<LINK_ONLY:|>" "" SDL3_PRIVATE_FLAGS "${SDL3_STATIC_DEPS}")
++    list(TRANSFORM SDL3_PRIVATE_FLAGS PREPEND "-l")
++    string(JOIN " " SDL3_PRIVATE_FLAGS ${SDL3_PRIVATE_FLAGS})
++    get_target_property(SDL3_ARCHIVE SDL3::SDL3-static LOCATION)
++    execute_process(COMMAND "${CMAKE_AR}" t "${SDL3_ARCHIVE}"
++      OUTPUT_VARIABLE SDL3_OBJECTS OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
++    string(REPLACE "\n" ";" SDL3_OBJECTS "${SDL3_OBJECTS}")
++    set(SDL3_OBJECT_DIR "${CMAKE_CURRENT_BINARY_DIR}/SDL3-sdl2compat")
++    configure_file(cmake/SDL2CompatStaticSDL3.cmake.in SDL2CompatStaticSDL3.cmake @ONLY)
++    list(TRANSFORM SDL3_OBJECTS PREPEND "${SDL3_OBJECT_DIR}/SDL3-")
++    add_custom_command(OUTPUT ${SDL3_OBJECTS}
++      COMMAND "${CMAKE_COMMAND}" "-DINPUT=${SDL3_ARCHIVE}"
++        -P "${CMAKE_CURRENT_BINARY_DIR}/SDL2CompatStaticSDL3.cmake"
++      DEPENDS "${SDL3_ARCHIVE}" "${CMAKE_CURRENT_BINARY_DIR}/SDL2CompatStaticSDL3.cmake"
++      VERBATIM)
++    set_source_files_properties(${SDL3_OBJECTS} PROPERTIES EXTERNAL_OBJECT TRUE)
++    target_sources(SDL2-static PRIVATE ${SDL3_OBJECTS})
++  endif()
+   set_target_properties(SDL2-static PROPERTIES
+     VERSION "${PROJECT_VERSION}"
+     OUTPUT_NAME "SDL2"
+@@ -589,7 +613,7 @@ if(SDL2COMPAT_INSTALL)
+     set(SDL_CFLAGS "${sdl2_public_macros}")
+     set(SDL_RLD_FLAGS "")
+     set(SDL_LIBS "-lmingw32 -lSDL2main -lSDL2 -mwindows")
+-    set(SDL_STATIC_LIBS "-lshell32")
++    set(SDL_STATIC_LIBS "${SDL3_PRIVATE_FLAGS}")
+   elseif(APPLE)
+     set(SDL_CFLAGS "-D_THREAD_SAFE${sdl2_public_macros}")
+     set(SDL_RLD_FLAGS "")  # !!! FIXME: this forces rpath, which we might want?
+diff --git a/cmake/SDL2CompatStaticSDL3.cmake.in b/cmake/SDL2CompatStaticSDL3.cmake.in
+new file mode 100644
+index 0000000..49d8891
+--- /dev/null
++++ b/cmake/SDL2CompatStaticSDL3.cmake.in
+@@ -0,0 +1,22 @@
++execute_process(COMMAND "@CMAKE_NM@" -g --defined-only --format=posix "${INPUT}"
++  OUTPUT_VARIABLE symbols COMMAND_ERROR_IS_FATAL ANY)
++string(REPLACE "\n" ";" symbols "${symbols}")
++list(REMOVE_DUPLICATES symbols)
++set(renames "")
++foreach(line IN LISTS symbols)
++  if(line MATCHES "^([^ ]*SDL_[^ ]*) [A-Za-z] ")
++    set(symbol "${CMAKE_MATCH_1}")
++    string(REPLACE "SDL_" "SDL3_" renamed "${symbol}")
++    string(APPEND renames "${symbol} ${renamed}\n")
++  endif()
++endforeach()
++file(MAKE_DIRECTORY "@SDL3_OBJECT_DIR@")
++file(WRITE "@SDL3_OBJECT_DIR@/symbols" "${renames}")
++execute_process(COMMAND
++  "@CMAKE_OBJCOPY@" "--redefine-syms=@SDL3_OBJECT_DIR@/symbols" "${INPUT}" "@SDL3_OBJECT_DIR@/SDL3.a"
++  COMMAND_ERROR_IS_FATAL ANY)
++execute_process(COMMAND "@CMAKE_AR@" x SDL3.a WORKING_DIRECTORY "@SDL3_OBJECT_DIR@"
++  COMMAND_ERROR_IS_FATAL ANY)
++foreach(member IN ITEMS @SDL3_OBJECTS@)
++  file(RENAME "@SDL3_OBJECT_DIR@/${member}" "@SDL3_OBJECT_DIR@/SDL3-${member}")
++endforeach()
+diff --git a/src/sdl2_compat.c b/src/sdl2_compat.c
+index 253d0ae..71e6322 100644
+--- a/src/sdl2_compat.c
++++ b/src/sdl2_compat.c
+@@ -129,7 +129,10 @@ extern "C" {
+ #ifndef SDL2COMPAT_TEST_SYMS
+ #define SDL2COMPAT_TEST_SYMS 0
+ #endif
+-#if SDL2COMPAT_TEST_SYMS
++#if defined(SDL2COMPAT_STATIC_SDL3)
++#define SDL3_SYM(rc,fn,params,args,ret) \
++    extern rc SDLCALL SDL3_##fn params;
++#elif SDL2COMPAT_TEST_SYMS
+ #define SDL3_SYM(rc,fn,params,args,ret) \
+     typedef rc (SDLCALL *SDL3_##fn##_t) params; \
+     static SDL3_##fn##_t SDL3_##fn = IGNORE_THIS_VERSION_OF_SDL_##fn;
+@@ -386,7 +389,14 @@ static bool SDL2Compat_CheckDebugLogging(void)
+ /* Obviously we can't use SDL_LoadObject() to load SDL3.  :)  */
+ /* FIXME: Updated library names after https://github.com/libsdl-org/SDL/issues/5626 solidifies.  */
+ static char loaderror[256];
+-#if defined(_WIN32)
++#if defined(SDL2COMPAT_STATIC_SDL3)
++    #ifdef _WIN32
++        #define DIRSEP "\\"
++    #endif
++    static bool Loaded_SDL3 = false;
++    #define LoadSDL3Library() (Loaded_SDL3 = true)
++    #define CloseSDL3Library() (Loaded_SDL3 = false)
++#elif defined(_WIN32)
+     static HMODULE Loaded_SDL3 = NULL;
+     #define DIRSEP "\\"
+     #define SDL3_LIBNAME "SDL3.dll"
+@@ -477,6 +487,7 @@ static char loaderror[256];
+ #endif
+ 
+ 
++#if !defined(SDL2COMPAT_STATIC_SDL3)
+ static void *
+ LoadSDL3Symbol(const char *fn, bool *okay)
+ {
+@@ -491,12 +502,15 @@ LoadSDL3Symbol(const char *fn, bool *okay)
+     }
+     return retval;
+ }
++#endif
+ 
+ static void
+ UnloadSDL3(void)
+ {
++#if !defined(SDL2COMPAT_STATIC_SDL3)
+     #define SDL3_SYM(rc,fn,params,args,ret) SDL3_##fn = NULL;
+     #include "sdl3_syms.h"
++#endif
+     CloseSDL3Library();
+ }
+ 
+@@ -1078,7 +1092,9 @@ LoadSDL3(void)
+             SDL2COMPAT_stpcpy(loaderror, "Failed loading SDL3 library.");
+         } else {
+             /* Load SDL_GetVersion() alone first to allow us to check and log the required SDL3 version */
++#if !defined(SDL2COMPAT_STATIC_SDL3)
+             SDL3_GetVersion = (SDL3_GetVersion_t) LoadSDL3Symbol("SDL_GetVersion", &okay);
++#endif
+             if (okay) {
+                 char sdl3verstr[16];
+                 char sdl3reqverstr[16];
+@@ -1136,8 +1152,10 @@ LoadSDL3(void)
+                     SDL2Compat_SetEnvAtStartup("SDL2_COMPAT", "1");
+                 }
+             }
++#if !defined(SDL2COMPAT_STATIC_SDL3)
+             #define SDL3_SYM(rc,fn,params,args,ret) SDL3_##fn = (SDL3_##fn##_t) LoadSDL3Symbol("SDL_" #fn, &okay);
+             #include "sdl3_syms.h"
++#endif
+             if (!okay) {
+                 UnloadSDL3();
+             }
+-- 
+2.56.1.windows.1
+

@@ -1,0 +1,1230 @@
+diff --git a/botocore/compat.py b/botocore/compat.py
+index 62a265c4c6..1fd27251a5 100644
+--- a/botocore/compat.py
++++ b/botocore/compat.py
+@@ -28,7 +28,6 @@
+ 
+ from botocore.vendored import six
+ from botocore.exceptions import MD5UnavailableError
+-from dateutil.tz import tzlocal
+ from urllib3 import exceptions
+ 
+ logger = logging.getLogger(__name__)
+@@ -268,18 +267,6 @@ def _windows_shell_split(s):
+     return components
+ 
+ 
+-def get_tzinfo_options():
+-    # Due to dateutil/dateutil#197, Windows may fail to parse times in the past
+-    # with the system clock. We can alternatively fallback to tzwininfo when
+-    # this happens, which will get time info from the Windows registry.
+-    if sys.platform == 'win32':
+-        from dateutil.tz import tzwinlocal
+-
+-        return (tzlocal, tzwinlocal)
+-    else:
+-        return (tzlocal,)
+-
+-
+ # Detect if CRT is available for use
+ try:
+     import awscrt.auth
+diff --git a/botocore/credentials.py b/botocore/credentials.py
+index 3dfc11337c..c9181a7bed 100644
+--- a/botocore/credentials.py
++++ b/botocore/credentials.py
+@@ -25,10 +25,6 @@
+ from copy import deepcopy
+ from hashlib import sha1, sha256
+ 
+-import dateutil.parser
+-from dateutil.parser import parse
+-from dateutil.tz import tzlocal, tzutc
+-
+ import botocore.compat
+ import botocore.configloader
+ from botocore import UNSIGNED
+@@ -64,6 +60,7 @@
+     JSONFileCache,
+     LoginTokenLoader,
+     SSOTokenLoader,
++    _parse_timestamp_string,
+     create_nested_client,
+     get_login_token_cache_directory,
+     parse_key_val_file,
+@@ -275,13 +272,13 @@ def get_credentials(session):
+ 
+ 
+ def _local_now():
+-    return datetime.datetime.now(tzlocal())
++    return datetime.datetime.now().astimezone()
+ 
+ 
+ def _parse_if_needed(value):
+     if isinstance(value, datetime.datetime):
+         return value
+-    return parse(value)
++    return _parse_timestamp_string(value)
+ 
+ 
+ def _serialize_if_needed(value, iso=False):
+@@ -636,7 +633,7 @@ def _protected_refresh(self, is_mandatory):
+ 
+     @staticmethod
+     def _expiry_datetime(time_str):
+-        return parse(time_str)
++        return _parse_timestamp_string(time_str)
+ 
+     def _set_from_data(self, data):
+         expected_keys = ['access_key', 'secret_key', 'token', 'expiry_time']
+@@ -655,7 +652,7 @@ def _set_from_data(self, data):
+         self.access_key = data['access_key']
+         self.secret_key = data['secret_key']
+         self.token = data['token']
+-        self._staged_expiry_time = parse(data['expiry_time'])
++        self._staged_expiry_time = _parse_timestamp_string(data['expiry_time'])
+         self.account_id = data.get('account_id')
+         logger.debug(
+             "Retrieved credentials will expire at: %s",
+@@ -1267,7 +1264,7 @@ def load(self):
+ 
+             expiry_time = credentials['expiry_time']
+             if expiry_time is not None:
+-                expiry_time = parse(expiry_time)
++                expiry_time = _parse_timestamp_string(expiry_time)
+                 return RefreshableCredentials(
+                     credentials['access_key'],
+                     credentials['secret_key'],
+@@ -2313,7 +2310,9 @@ def _create_cache_key(self):
+     def _parse_timestamp(self, timestamp_ms):
+         # fromtimestamp expects seconds so: milliseconds / 1000 = seconds
+         timestamp_seconds = timestamp_ms / 1000.0
+-        timestamp = datetime.datetime.fromtimestamp(timestamp_seconds, tzutc())
++        timestamp = datetime.datetime.fromtimestamp(
++            timestamp_seconds, datetime.timezone.utc
++        )
+         return timestamp.strftime(self._UTC_DATE_FORMAT)
+ 
+     def _get_credentials(self):
+@@ -2333,7 +2332,7 @@ def _get_credentials(self):
+             # raise an UnauthorizedSSOTokenError if the loaded legacy token
+             # is expired to save a call to GetRoleCredentials with an
+             # expired token.
+-            expiration = dateutil.parser.parse(token_dict['expiresAt'])
++            expiration = _parse_timestamp_string(token_dict['expiresAt'])
+             remaining = total_seconds(expiration - self._time_fetcher())
+             if remaining <= 0:
+                 raise UnauthorizedSSOTokenError()
+@@ -2668,7 +2667,7 @@ def refresh_credentials(self):
+         output = response.get('tokenOutput')
+ 
+         expires_timestamp = self._time_fetcher().astimezone(
+-            tzutc()
++            datetime.timezone.utc
+         ) + datetime.timedelta(seconds=output['expiresIn'])
+ 
+         # Overwrite token with refreshed fields
+diff --git a/botocore/tokens.py b/botocore/tokens.py
+index 33359163ec..f8a8f81132 100644
+--- a/botocore/tokens.py
++++ b/botocore/tokens.py
+@@ -14,12 +14,9 @@
+ import logging
+ import os
+ import threading
+-from datetime import datetime, timedelta
++from datetime import datetime, timedelta, timezone
+ from typing import NamedTuple
+ 
+-import dateutil.parser
+-from dateutil.tz import tzutc
+-
+ from botocore import UNSIGNED
+ from botocore.compat import total_seconds
+ from botocore.config import Config
+@@ -33,6 +30,7 @@
+     CachedProperty,
+     JSONFileCache,
+     SSOTokenLoader,
++    _parse_timestamp_string,
+     create_nested_client,
+     get_token_from_environment,
+ )
+@@ -41,7 +39,7 @@
+ 
+ 
+ def _utc_now():
+-    return datetime.now(tzutc())
++    return datetime.now(timezone.utc)
+ 
+ 
+ def create_token_resolver(session):
+@@ -360,7 +358,7 @@ def _refresh_access_token(self, token):
+             logger.info(msg)
+             return None
+ 
+-        expiry = dateutil.parser.parse(token["registrationExpiresAt"])
++        expiry = _parse_timestamp_string(token["registrationExpiresAt"])
+         if total_seconds(expiry - self._now()) <= 0:
+             logger.info("SSO token registration expired at %s", expiry)
+             return None
+@@ -376,7 +374,7 @@ def _refresher(self):
+         session_name = self._sso_config["session_name"]
+         logger.info("Loading cached SSO token for %s", session_name)
+         token_dict = self._token_loader(start_url, session_name=session_name)
+-        expiration = dateutil.parser.parse(token_dict["expiresAt"])
++        expiration = _parse_timestamp_string(token_dict["expiresAt"])
+         logger.debug("Cached SSO token expires at %s", expiration)
+ 
+         remaining = total_seconds(expiration - self._now())
+diff --git a/botocore/utils.py b/botocore/utils.py
+index 96cee50dde..ea3170cf59 100644
+--- a/botocore/utils.py
++++ b/botocore/utils.py
+@@ -14,6 +14,7 @@
+ import binascii
+ import datetime
+ import email.message
++import email.utils
+ import functools
+ import hashlib
+ import io
+@@ -31,8 +32,6 @@
+ from pathlib import Path
+ from urllib.request import getproxies, proxy_bypass
+ 
+-import dateutil.parser
+-from dateutil.tz import tzutc
+ from urllib3.exceptions import LocationParseError
+ 
+ import botocore
+@@ -56,7 +55,6 @@
+     OrderedDict,
+     get_current_datetime,
+     get_md5,
+-    get_tzinfo_options,
+     json,
+     quote,
+     urlparse,
+@@ -941,39 +939,49 @@ def percent_encode(input_str, safe=SAFE_CHARS):
+     return quote(input_str, safe=safe)
+ 
+ 
+-def _epoch_seconds_to_datetime(value, tzinfo):
+-    """Parse numerical epoch timestamps (seconds since 1970) into a
+-    ``datetime.datetime`` in UTC using ``datetime.timedelta``. This is intended
+-    as fallback when ``fromtimestamp`` raises ``OverflowError`` or ``OSError``.
++def _epoch_seconds_to_datetime(value):
++    """Convert epoch seconds into a local ``datetime.datetime`` without
++    ``fromtimestamp``. This is intended as fallback when ``fromtimestamp``
++    raises ``OverflowError`` or ``OSError``.
+ 
+     :type value: float or int
+     :param value: The Unix timestamps as number.
+-
+-    :type tzinfo: callable
+-    :param tzinfo: A ``datetime.tzinfo`` class or compatible callable.
+     """
+-    epoch_zero = datetime.datetime(1970, 1, 1, 0, 0, 0, tzinfo=tzutc())
+-    epoch_zero_localized = epoch_zero.astimezone(tzinfo())
+-    return epoch_zero_localized + datetime.timedelta(seconds=value)
++    epoch_zero = datetime.datetime(
++        1970, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc
++    )
++    utc_value = epoch_zero + datetime.timedelta(seconds=value)
++    try:
++        return utc_value.astimezone()
++    except (OSError, OverflowError):
++        # Some platforms can't compute a local offset outside of
++        # 1970-2038, so keep the value in UTC.
++        return utc_value
+ 
+ 
+-def _parse_timestamp_with_tzinfo(value, tzinfo):
+-    """Parse timestamp with pluggable tzinfo options."""
+-    if isinstance(value, (int, float)):
+-        # Possibly an epoch time.
+-        return datetime.datetime.fromtimestamp(value, tzinfo())
+-    else:
+-        try:
+-            return datetime.datetime.fromtimestamp(float(value), tzinfo())
+-        except (TypeError, ValueError):
+-            pass
++def _parse_epoch_seconds(value):
++    """Parse epoch seconds into a local ``datetime.datetime`` that carries
++    the UTC offset in effect at that instant.
++    """
++    try:
++        return datetime.datetime.fromtimestamp(
++            value, datetime.timezone.utc
++        ).astimezone()
++    except (OSError, OverflowError) as e:
++        logger.debug(
++            'Unable to parse timestamp with fromtimestamp.', exc_info=e
++        )
++    # From Python's ``datetime.datetime.fromtimestamp`` documentation: "This
++    # may raise ``OverflowError``, if the timestamp is out of the range of
++    # values supported by the platform C localtime() function, and ``OSError``
++    # on localtime() failure. It's common for this to be restricted to years
++    # from 1970 through 2038."
+     try:
+-        # In certain cases, a timestamp marked with GMT can be parsed into a
+-        # different time zone, so here we provide a context which will
+-        # enforce that GMT == UTC.
+-        return dateutil.parser.parse(value, tzinfos={'GMT': tzutc()})
+-    except (TypeError, ValueError) as e:
+-        raise ValueError(f'Invalid timestamp "{value}": {e}')
++        return _epoch_seconds_to_datetime(value)
++    except (OSError, OverflowError) as e:
++        raise RuntimeError(
++            f'Unable to calculate correct timezone offset for "{value}"'
++        ) from e
+ 
+ 
+ def parse_timestamp(value):
+@@ -988,40 +996,76 @@ def parse_timestamp(value):
+     This will return a ``datetime.datetime`` object.
+ 
+     """
+-    tzinfo_options = get_tzinfo_options()
+-    for tzinfo in tzinfo_options:
+-        try:
+-            return _parse_timestamp_with_tzinfo(value, tzinfo)
+-        except (OSError, OverflowError) as e:
+-            logger.debug(
+-                'Unable to parse timestamp with "%s" timezone info.',
+-                tzinfo.__name__,
+-                exc_info=e,
+-            )
+-    # For numeric values attempt fallback to using fromtimestamp-free method.
+-    # From Python's ``datetime.datetime.fromtimestamp`` documentation: "This
+-    # may raise ``OverflowError``, if the timestamp is out of the range of
+-    # values supported by the platform C localtime() function, and ``OSError``
+-    # on localtime() failure. It's common for this to be restricted to years
+-    # from 1970 through 2038."
++    if isinstance(value, (int, float)):
++        return _parse_epoch_seconds(value)
+     try:
+-        numeric_value = float(value)
++        return _parse_epoch_seconds(float(value))
+     except (TypeError, ValueError):
+         pass
+-    else:
+-        try:
+-            for tzinfo in tzinfo_options:
+-                return _epoch_seconds_to_datetime(numeric_value, tzinfo=tzinfo)
+-        except (OSError, OverflowError) as e:
+-            logger.debug(
+-                'Unable to parse timestamp using fallback method with "%s" '
+-                'timezone info.',
+-                tzinfo.__name__,
+-                exc_info=e,
+-            )
+-    raise RuntimeError(
+-        f'Unable to calculate correct timezone offset for "{value}"'
++    return _parse_timestamp_string(value)
++
++
++_ISO_ZONE_SUFFIX_RE = re.compile(r"\s*(Z|UTC|GMT)$", re.IGNORECASE)
++_ISO_COMPACT_RE = re.compile(
++    r"^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2}(?:\.\d+)?)?"
++)
++_ISO_OFFSET_NO_COLON_RE = re.compile(r"\s*([+-])(\d{2})(\d{2})$")
++_ISO_FRACTIONAL_SECONDS_RE = re.compile(r"\.(\d+)")
++_ISO_THREE_DIGIT_HOUR_RE = re.compile(r"T0(\d{2}):")
++
++
++def _normalize_iso8601(value):
++    """Rewrite ISO 8601 variants that ``datetime.fromisoformat`` rejects.
++
++    Every Python version rejects ``UTC``/``GMT`` zone suffixes, which
++    botocore's own credential cache writes. Python 3.10 also rejects
++    ``Z``, compact basic form ``YYYYMMDDTHHMM[SS]``, offsets without a
++    colon (``+HHMM``) and fractional seconds other than 3 or 6 digits.
++    A handful of AWS shared examples have a malformed hour like
++    ``T016:15:21``.
++    """
++    value = _ISO_ZONE_SUFFIX_RE.sub("+00:00", value)
++    compact = _ISO_COMPACT_RE.match(value)
++    if compact:
++        y, mo, d, h, mi, s = compact.groups()
++        value = f"{y}-{mo}-{d}T{h}:{mi}:{s or '00'}{value[compact.end() :]}"
++    value = _ISO_OFFSET_NO_COLON_RE.sub(r"\1\2:\3", value)
++    value = _ISO_FRACTIONAL_SECONDS_RE.sub(
++        lambda m: "." + m.group(1).ljust(6, "0")[:6],
++        value,
++        count=1,
+     )
++    return _ISO_THREE_DIGIT_HOUR_RE.sub(r"T\1:", value, count=1)
++
++
++def _parse_timestamp_string(value):
++    """Parse a non-numeric timestamp string into a ``datetime.datetime``.
++
++    Tries ISO 8601 first, then RFC 2822 / HTTP-date via ``email.utils``.
++    """
++    if not isinstance(value, str):
++        raise ValueError(f'Invalid timestamp "{value}"')
++    value = value.strip()
++    try:
++        return _DatetimeClass.fromisoformat(value)
++    except ValueError:
++        pass
++    try:
++        return _DatetimeClass.fromisoformat(_normalize_iso8601(value))
++    except ValueError:
++        pass
++    try:
++        return email.utils.parsedate_to_datetime(value)
++    except (TypeError, ValueError):
++        pass
++    # Legacy S3 Expires header shapes covered by handle_expires_header's
++    # tests. Other non-ISO, non-RFC 2822 shapes are rejected.
++    for fmt in ("%m/%d/%Y", "%d %b %Y"):
++        try:
++            return _DatetimeClass.strptime(value, fmt)
++        except ValueError:
++            continue
++    raise ValueError(f'Invalid timestamp "{value}"')
+ 
+ 
+ def parse_to_aware_datetime(value):
+@@ -1063,9 +1107,9 @@ def parse_to_aware_datetime(value):
+         # we should use the local time.  However, to restore backwards
+         # compat, the previous behavior was to assume UTC, which is
+         # what we're going to do here.
+-        datetime_obj = datetime_obj.replace(tzinfo=tzutc())
++        datetime_obj = datetime_obj.replace(tzinfo=datetime.timezone.utc)
+     else:
+-        datetime_obj = datetime_obj.astimezone(tzutc())
++        datetime_obj = datetime_obj.astimezone(datetime.timezone.utc)
+     return datetime_obj
+ 
+ 
+@@ -1075,14 +1119,14 @@ def datetime2timestamp(dt, default_timezone=None):
+     :type dt: datetime
+     :param dt: A datetime object to be converted into timestamp
+     :type default_timezone: tzinfo
+-    :param default_timezone: If it is provided as None, we treat it as tzutc().
++    :param default_timezone: If it is provided as None, we treat it as UTC.
+                              But it is only used when dt is a naive datetime.
+     :returns: The timestamp
+     """
+     epoch = datetime.datetime(1970, 1, 1)
+     if dt.tzinfo is None:
+         if default_timezone is None:
+-            default_timezone = tzutc()
++            default_timezone = datetime.timezone.utc
+         dt = dt.replace(tzinfo=default_timezone)
+     d = dt.replace(tzinfo=None) - dt.utcoffset() - epoch
+     return d.total_seconds()
+diff --git a/botocore/validate.py b/botocore/validate.py
+index 059dae7e0c..c772590795 100644
+--- a/botocore/validate.py
++++ b/botocore/validate.py
+@@ -403,9 +403,7 @@ def _type_check_datetime(self, value):
+         try:
+             parse_to_aware_datetime(value)
+             return True
+-        except (TypeError, ValueError, AttributeError):
+-            # Yes, dateutil can sometimes raise an AttributeError
+-            # when parsing timestamps.
++        except (TypeError, ValueError):
+             return False
+ 
+ 
+diff --git a/setup.cfg b/setup.cfg
+index 6fe4148f89..189a93a1b4 100644
+--- a/setup.cfg
++++ b/setup.cfg
+@@ -4,7 +4,6 @@ universal = 0
+ [metadata]
+ requires_dist = 
+ 	jmespath>=0.7.1,<2.0.0
+-	python-dateutil>=2.1,<3.0.0
+ 	urllib3>=1.25.4,!=2.2.0,<3
+ 
+ [options.extras_require]
+diff --git a/setup.py b/setup.py
+index 1dba9c4a23..76085c569d 100644
+--- a/setup.py
++++ b/setup.py
+@@ -24,7 +24,6 @@ def find_version(*file_paths):
+ 
+ requires = [
+     'jmespath>=0.7.1,<2.0.0',
+-    'python-dateutil>=2.1,<3.0.0',
+     'urllib3>=1.25.4,!=2.2.0,<3',
+ ]
+ 
+diff --git a/tests/__init__.py b/tests/__init__.py
+index c583f99f2a..97390f41d1 100644
+--- a/tests/__init__.py
++++ b/tests/__init__.py
+@@ -28,8 +28,6 @@
+ from subprocess import PIPE, Popen
+ from unittest import mock
+ 
+-from dateutil.tz import tzlocal
+-
+ import botocore.loaders
+ import botocore.session
+ from botocore import credentials, utils
+@@ -383,7 +381,7 @@ def _current_timestamp(self):
+         return self._to_timestamp(self._current_datetime())
+ 
+     def _current_datetime(self):
+-        return datetime.datetime.now(tzlocal())
++        return datetime.datetime.now().astimezone()
+ 
+ 
+ def _urlparse(url):
+@@ -640,3 +638,16 @@ def get_checksum_cls(algorithm=DEFAULT_CHECKSUM_ALGORITHM.lower()):
+     if one isn't specified.
+     """
+     return _CHECKSUM_CLS[algorithm]
++
++
++# Timezone test utilities
++def tzlocal():
++    """Return local timezone for test assertions."""
++    return datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
++
++
++def tzoffset(name, offset_seconds):
++    """Return a timezone with a fixed offset for test assertions."""
++    return datetime.timezone(
++        datetime.timedelta(seconds=offset_seconds), name=name
++    )
+diff --git a/tests/functional/test_credentials.py b/tests/functional/test_credentials.py
+index c0edf82f8c..d6223eb8ac 100644
+--- a/tests/functional/test_credentials.py
++++ b/tests/functional/test_credentials.py
+@@ -23,7 +23,6 @@
+ from unittest.mock import patch
+ 
+ import pytest
+-from dateutil.tz import tzlocal
+ 
+ from botocore import UNSIGNED
+ from botocore.config import Config
+@@ -66,6 +65,7 @@
+     mock,
+     random_chars,
+     temporary_file,
++    tzlocal,
+     unittest,
+ )
+ from tests.functional.test_useragent import (
+diff --git a/tests/functional/test_disable_s3_express_auth.py b/tests/functional/test_disable_s3_express_auth.py
+index 4e8584daa4..f9d57dd93f 100644
+--- a/tests/functional/test_disable_s3_express_auth.py
++++ b/tests/functional/test_disable_s3_express_auth.py
+@@ -15,14 +15,15 @@
+ from unittest import mock
+ 
+ import pytest
+-from dateutil.tz import tzutc
+ 
+ from botocore.config import Config
+ from tests import ClientHTTPStubber, temporary_file
+ 
+ 
+ class TestDisableS3ExpressAuth:
+-    DATE = datetime.datetime(2024, 11, 30, 23, 59, 59, tzinfo=tzutc())
++    DATE = datetime.datetime(
++        2024, 11, 30, 23, 59, 59, tzinfo=datetime.timezone.utc
++    )
+     BUCKET_NAME = 'mybucket--usw2-az1--x-s3'
+ 
+     CREATE_SESSION_RESPONSE = b'<?xml version="1.0" encoding="UTF-8"?>\n<CreateSessionResult><Credentials><AccessKeyId>test-key</AccessKeyId><Expiration>2024-12-31T23:59:59Z</Expiration><SecretAccessKey>test-secret</SecretAccessKey><SessionToken>test-token</SessionToken></Credentials></CreateSessionResult>'
+diff --git a/tests/functional/test_dsql.py b/tests/functional/test_dsql.py
+index ababa16feb..18202d2807 100644
+--- a/tests/functional/test_dsql.py
++++ b/tests/functional/test_dsql.py
+@@ -13,7 +13,6 @@
+ import datetime
+ 
+ import pytest
+-from dateutil.tz import tzutc
+ 
+ import botocore.auth
+ from tests import FreezeTime
+@@ -22,7 +21,7 @@
+ REGION = "us-east-1"
+ AWS_ACCESS_KEY_ID = "akid"
+ AWS_SECRET_ACCESS_KEY = "secret"
+-DATE = datetime.datetime(2024, 8, 27, tzinfo=tzutc())
++DATE = datetime.datetime(2024, 8, 27, tzinfo=datetime.timezone.utc)
+ 
+ 
+ @pytest.fixture()
+diff --git a/tests/functional/test_s3.py b/tests/functional/test_s3.py
+index edc2fcd437..0245377569 100644
+--- a/tests/functional/test_s3.py
++++ b/tests/functional/test_s3.py
+@@ -15,7 +15,6 @@
+ import re
+ 
+ import pytest
+-from dateutil.tz import tzutc
+ 
+ import botocore.session
+ from botocore import UNSIGNED
+@@ -1428,7 +1427,7 @@ def test_valid_expires_value_in_response(self):
+             response = s3.get_object(Bucket='mybucket', Key='mykey')
+             self.assertEqual(
+                 response.get('Expires'),
+-                datetime.datetime(1970, 1, 1, tzinfo=tzutc()),
++                datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc),
+             )
+             self.assertEqual(response.get('ExpiresString'), expires_value)
+ 
+diff --git a/tests/functional/test_s3express.py b/tests/functional/test_s3express.py
+index ebb89b0b60..17ad6d3eef 100644
+--- a/tests/functional/test_s3express.py
++++ b/tests/functional/test_s3express.py
+@@ -13,7 +13,6 @@
+ import datetime
+ 
+ import pytest
+-from dateutil.tz import tzutc
+ 
+ import botocore.session
+ from botocore.auth import S3ExpressAuth
+@@ -36,7 +35,7 @@
+ S3EXPRESS_BUCKET = "mytestbucket--usw2-az5--x-s3"
+ 
+ 
+-DATE = datetime.datetime(2023, 11, 26, 0, 0, 0, tzinfo=tzutc())
++DATE = datetime.datetime(2023, 11, 26, 0, 0, 0, tzinfo=datetime.timezone.utc)
+ 
+ 
+ CREATE_SESSION_RESPONSE = (
+diff --git a/tests/unit/docs/test_sharedexample.py b/tests/unit/docs/test_sharedexample.py
+index 0fe6a773f2..8ef52faf5f 100644
+--- a/tests/unit/docs/test_sharedexample.py
++++ b/tests/unit/docs/test_sharedexample.py
+@@ -177,7 +177,7 @@ def test_timestamp_example(self):
+         self.assert_contains_lines_in_order(
+             [
+                 "foo.bar(",
+-                "    foo=datetime(2015, 11, 20, 21, 13, 12, 4, 324, 0)",
++                "    foo=datetime(2015, 11, 20, 21, 13, 12, 4, 324, -1)",
+                 ")",
+             ]
+         )
+diff --git a/tests/unit/test_compat.py b/tests/unit/test_compat.py
+index 6b448ae5e0..063c6eacf5 100644
+--- a/tests/unit/test_compat.py
++++ b/tests/unit/test_compat.py
+@@ -19,7 +19,6 @@
+     compat_shell_split,
+     ensure_bytes,
+     get_md5,
+-    get_tzinfo_options,
+     total_seconds,
+     unquote_str,
+ )
+@@ -208,15 +207,6 @@ def assert_raises(self, s, exception_cls, platform):
+             compat_shell_split(s, platform)
+ 
+ 
+-class TestTimezoneOperations(unittest.TestCase):
+-    def test_get_tzinfo_options(self):
+-        options = get_tzinfo_options()
+-        self.assertTrue(len(options) > 0)
+-
+-        for tzinfo in options:
+-            self.assertIsInstance(tzinfo(), datetime.tzinfo)
+-
+-
+ class TestCRTIntegration(unittest.TestCase):
+     def test_has_crt_global(self):
+         try:
+diff --git a/tests/unit/test_credentials.py b/tests/unit/test_credentials.py
+index af34f35639..a0daf9c30a 100644
+--- a/tests/unit/test_credentials.py
++++ b/tests/unit/test_credentials.py
+@@ -23,7 +23,6 @@
+ from pathlib import Path
+ 
+ import pytest
+-from dateutil.tz import tzlocal, tzutc
+ 
+ import botocore.exceptions
+ import botocore.session
+@@ -67,6 +66,7 @@
+     skip_if_crt,
+     skip_if_windows,
+     temporary_file,
++    tzlocal,
+     unittest,
+ )
+ 
+@@ -2300,7 +2300,7 @@ def test_assume_role_with_datetime(self):
+ 
+     def test_assume_role_refresher_serializes_datetime(self):
+         client = mock.Mock()
+-        time_zone = tzutc()
++        time_zone = timezone.utc
+         expiration = datetime(
+             year=2016, month=11, day=6, hour=1, minute=30, tzinfo=time_zone
+         )
+@@ -3916,7 +3916,7 @@ def setUp(self):
+             'expiresAt': '2018-10-18T22:26:40Z',
+         }
+         # This is just an arbitrary point in time we can pin to
+-        self.now = datetime(2008, 9, 23, 12, 26, 40, tzinfo=tzutc())
++        self.now = datetime(2008, 9, 23, 12, 26, 40, tzinfo=timezone.utc)
+         # The SSO endpoint uses ms whereas the OIDC endpoint uses seconds
+         self.now_timestamp = 1222172800000
+         self.mock_time_fetcher = mock.Mock(return_value=self.now)
+@@ -3989,7 +3989,7 @@ def test_raises_helpful_message_on_unauthorized_exception(self):
+ 
+     def test_expired_legacy_token_has_expected_behavior(self):
+         # Mock the current time to be in the future after the access token has expired
+-        now = datetime(2018, 10, 19, 12, 26, 40, tzinfo=tzutc())
++        now = datetime(2018, 10, 19, 12, 26, 40, tzinfo=timezone.utc)
+         mock_client = mock.Mock()
+         create_mock_client = mock.Mock(return_value=mock_client)
+         fetcher = SSOCredentialFetcher(
+@@ -4075,7 +4075,7 @@ def setUp(self):
+             'sso_role_name': self.role_name,
+             'sso_account_id': self.account_id,
+         }
+-        self.expires_at = datetime.now(tzutc()) + timedelta(hours=24)
++        self.expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+         self.cached_creds_key = '048db75bbe50955c16af7aba6ff9c41a3131bb7e'
+         self.cached_token_key = '13f9d35043871d073ab260e020f0ffde092cb14b'
+         self.cache = {
+@@ -4245,7 +4245,7 @@ def _load_login_test_cases():
+ 
+ 
+ class TestLoginProvider:
+-    FROZEN_TIME = datetime(2025, 11, 19, 0, 0, 0, tzinfo=tzutc())
++    FROZEN_TIME = datetime(2025, 11, 19, 0, 0, 0, tzinfo=timezone.utc)
+ 
+     @requires_crt()
+     @pytest.mark.parametrize(
+diff --git a/tests/unit/test_parsers.py b/tests/unit/test_parsers.py
+index dfced816f2..27d428d8d5 100644
+--- a/tests/unit/test_parsers.py
++++ b/tests/unit/test_parsers.py
+@@ -14,7 +14,6 @@
+ import itertools
+ 
+ import pytest
+-from dateutil.tz import tzutc
+ 
+ from botocore import model, parsers
+ from botocore.compat import MutableMapping, json
+@@ -658,7 +657,7 @@ def test_can_parse_float_timestamps(self):
+         parser = parsers.JSONParser()
+         timestamp_as_float = b'1407538750.49'
+         expected_parsed = datetime.datetime(
+-            2014, 8, 8, 22, 59, 10, 490000, tzinfo=tzutc()
++            2014, 8, 8, 22, 59, 10, 490000, tzinfo=datetime.timezone.utc
+         )
+         parsed = parser.parse(
+             {'body': timestamp_as_float, 'headers': [], 'status_code': 200},
+diff --git a/tests/unit/test_protocols.py b/tests/unit/test_protocols.py
+index 17d579443b..000cf1719f 100644
+--- a/tests/unit/test_protocols.py
++++ b/tests/unit/test_protocols.py
+@@ -56,10 +56,10 @@
+ import os
+ import xml.etree.ElementTree as ET
+ from base64 import b64decode
++from datetime import timezone
+ from enum import Enum
+ 
+ import pytest
+-from dateutil.tz import tzutc
+ 
+ from botocore.awsrequest import HeadersDict, prepare_request_dict
+ from botocore.compat import OrderedDict, json, urlsplit
+@@ -369,7 +369,7 @@ def _convert_special_floats_to_string(parsed):
+ def _compliance_timestamp_parser(value):
+     datetime = parse_timestamp(value)
+     # Convert from our time zone to UTC
+-    datetime = datetime.astimezone(tzutc())
++    datetime = datetime.astimezone(timezone.utc)
+     # Convert to epoch.
+     return datetime.timestamp()
+ 
+diff --git a/tests/unit/test_response.py b/tests/unit/test_response.py
+index e4ecc52415..ea1b249cb5 100644
+--- a/tests/unit/test_response.py
++++ b/tests/unit/test_response.py
+@@ -13,7 +13,6 @@
+ import datetime
+ from io import BytesIO
+ 
+-from dateutil.tz import tzutc
+ from urllib3.exceptions import ProtocolError as URLLib3ProtocolError
+ from urllib3.exceptions import ReadTimeoutError as URLLib3ReadTimeoutError
+ 
+@@ -406,7 +405,7 @@ def test_get_response_nonstreaming_ng(self):
+                         'ETag': '"00000000000000000000000000000000"',
+                         'Key': 'test.png',
+                         'LastModified': datetime.datetime(
+-                            2014, 3, 1, 17, 6, 40, tzinfo=tzutc()
++                            2014, 3, 1, 17, 6, 40, tzinfo=datetime.timezone.utc
+                         ),
+                         'Owner': {
+                             'DisplayName': 'dummy',
+diff --git a/tests/unit/test_serialize.py b/tests/unit/test_serialize.py
+index 193a02833f..0bdf84bdbd 100644
+--- a/tests/unit/test_serialize.py
++++ b/tests/unit/test_serialize.py
+@@ -19,8 +19,6 @@
+ import json
+ import struct
+ 
+-import dateutil.tz
+-
+ from botocore import serialize
+ from botocore.exceptions import ParamValidationError
+ from botocore.model import ServiceModel
+@@ -195,7 +193,7 @@ def test_accepts_datetime_object(self):
+         request = self.serialize_to_request(
+             {
+                 'TimestampHeader': datetime.datetime(
+-                    2014, 1, 1, 12, 12, 12, tzinfo=dateutil.tz.tzutc()
++                    2014, 1, 1, 12, 12, 12, tzinfo=datetime.timezone.utc
+                 )
+             }
+         )
+@@ -275,7 +273,7 @@ def test_accepts_datetime_object(self):
+         request = self.serialize_to_request(
+             {
+                 'Timestamp': datetime.datetime(
+-                    2014, 1, 1, 12, 12, 12, tzinfo=dateutil.tz.tzutc()
++                    2014, 1, 1, 12, 12, 12, tzinfo=datetime.timezone.utc
+                 )
+             }
+         )
+diff --git a/tests/unit/test_signers.py b/tests/unit/test_signers.py
+index c030073770..5283d4af20 100644
+--- a/tests/unit/test_signers.py
++++ b/tests/unit/test_signers.py
+@@ -14,7 +14,6 @@
+ import json
+ 
+ import pytest
+-from dateutil.tz import tzutc
+ 
+ import botocore
+ import botocore.auth
+@@ -42,7 +41,7 @@
+ )
+ from tests import FreezeTime, assert_url_equal, mock, unittest
+ 
+-DATE = datetime.datetime(2024, 11, 7, 17, 39, 33, tzinfo=tzutc())
++DATE = datetime.datetime(2024, 11, 7, 17, 39, 33, tzinfo=datetime.timezone.utc)
+ 
+ 
+ @pytest.fixture
+@@ -1149,7 +1148,9 @@ def test_generate_db_auth_token(self):
+         hostname = 'prod-instance.us-east-1.rds.amazonaws.com'
+         port = 3306
+         username = 'someusername'
+-        clock = datetime.datetime(2016, 11, 7, 17, 39, 33, tzinfo=tzutc())
++        clock = datetime.datetime(
++            2016, 11, 7, 17, 39, 33, tzinfo=datetime.timezone.utc
++        )
+ 
+         with mock.patch('datetime.datetime') as dt:
+             dt.now.return_value = clock
+diff --git a/tests/unit/test_tokens.py b/tests/unit/test_tokens.py
+index eab07584e2..9d21683d61 100644
+--- a/tests/unit/test_tokens.py
++++ b/tests/unit/test_tokens.py
+@@ -11,8 +11,8 @@
+ # ANY KIND, either express or implied. See the License for the specific
+ # language governing permissions and limitations under the License.
+ import unittest
++from datetime import datetime
+ 
+-import dateutil.parser
+ import pytest
+ 
+ from botocore.exceptions import (
+@@ -279,6 +279,12 @@ def test_sso_token_provider_profile_name_overrides_session_profile(test_case):
+ ]
+ 
+ 
++def _parse_utc(value):
++    # fromisoformat accepts "Z" natively in Python 3.11+; drop the replace
++    # when 3.10 support ends.
++    return datetime.fromisoformat(value.replace("Z", "+00:00"))
++
++
+ @parametrize(sso_provider_refresh_cases)
+ def test_sso_token_provider_refresh(test_case):
+     config = {
+@@ -305,7 +311,7 @@ def test_sso_token_provider_refresh(test_case):
+     refresh_response = test_case.pop("refreshResponse", None)
+     mock_sso_oidc.create_token.return_value = refresh_response
+ 
+-    current_time = dateutil.parser.parse(test_case.pop("currentTime"))
++    current_time = _parse_utc(test_case.pop("currentTime"))
+ 
+     def _time_fetcher():
+         return current_time
+@@ -337,7 +343,7 @@ def _time_fetcher():
+ 
+     raw_expiration = expected_token.get("expiration")
+     if raw_expiration is not None:
+-        expected_expiration = dateutil.parser.parse(raw_expiration)
++        expected_expiration = _parse_utc(raw_expiration)
+         assert actual_token.expiration == expected_expiration
+ 
+     expected_token_write_back = test_case.pop("expectedTokenWriteback", None)
+@@ -349,8 +355,8 @@ def _time_fetcher():
+             refreshToken=cached_token["refreshToken"],
+         )
+         raw_expiration = expected_token_write_back["expiresAt"]
+-        # The in-memory cache doesn't serialize to JSON so expect a datetime
+-        expected_expiration = dateutil.parser.parse(raw_expiration)
++        # The in-memory cache doesn't serialize to JSON so expect a datetime.
++        expected_expiration = _parse_utc(raw_expiration)
+         expected_token_write_back["expiresAt"] = expected_expiration
+         assert expected_token_write_back == token_cache[cache_key]
+ 
+diff --git a/tests/unit/test_utils.py b/tests/unit/test_utils.py
+index 602c41a7dd..735a7c83d2 100644
+--- a/tests/unit/test_utils.py
++++ b/tests/unit/test_utils.py
+@@ -16,12 +16,13 @@
+ import operator
+ import os
+ import shutil
++import sys
+ import tempfile
++import time
+ from contextlib import contextmanager
+ from sys import getrefcount
+ 
+ import pytest
+-from dateutil.tz import tzoffset, tzutc
+ 
+ import botocore
+ from botocore import xform_name
+@@ -69,6 +70,7 @@
+     S3RegionRedirectorv2,
+     SSOTokenLoader,
+     _get_bearer_env_var_name,
++    _normalize_iso8601,
+     calculate_sha256,
+     calculate_tree_hash,
+     datetime2timestamp,
+@@ -103,7 +105,14 @@
+     switch_to_virtual_host_style,
+     validate_jmespath_for_set,
+ )
+-from tests import FreezeTime, RawResponse, create_session, mock, unittest
++from tests import (
++    FreezeTime,
++    RawResponse,
++    create_session,
++    mock,
++    tzoffset,
++    unittest,
++)
+ 
+ DATE = datetime.datetime(
+     2021, 12, 10, 00, 00, 00, tzinfo=datetime.timezone.utc
+@@ -566,74 +575,74 @@ class TestParseTimestamps(unittest.TestCase):
+     def test_parse_iso8601(self):
+         self.assertEqual(
+             parse_timestamp('1970-01-01T00:10:00.000Z'),
+-            datetime.datetime(1970, 1, 1, 0, 10, tzinfo=tzutc()),
++            datetime.datetime(1970, 1, 1, 0, 10, tzinfo=datetime.timezone.utc),
+         )
+ 
+     def test_parse_epoch(self):
+         self.assertEqual(
+             parse_timestamp(1222172800),
+-            datetime.datetime(2008, 9, 23, 12, 26, 40, tzinfo=tzutc()),
++            datetime.datetime(
++                2008, 9, 23, 12, 26, 40, tzinfo=datetime.timezone.utc
++            ),
+         )
+ 
+     def test_parse_epoch_zero_time(self):
+         self.assertEqual(
+             parse_timestamp(0),
+-            datetime.datetime(1970, 1, 1, 0, 0, 0, tzinfo=tzutc()),
++            datetime.datetime(
++                1970, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc
++            ),
+         )
+ 
+     def test_parse_epoch_negative_time(self):
+         self.assertEqual(
+             parse_timestamp(-2208988800),
+-            datetime.datetime(1900, 1, 1, 0, 0, 0, tzinfo=tzutc()),
++            datetime.datetime(
++                1900, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc
++            ),
+         )
+ 
+     def test_parse_epoch_beyond_2038(self):
+         self.assertEqual(
+             parse_timestamp(2524608000),
+-            datetime.datetime(2050, 1, 1, 0, 0, 0, tzinfo=tzutc()),
++            datetime.datetime(
++                2050, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc
++            ),
+         )
+ 
+     def test_parse_epoch_as_string(self):
+         self.assertEqual(
+             parse_timestamp('1222172800'),
+-            datetime.datetime(2008, 9, 23, 12, 26, 40, tzinfo=tzutc()),
++            datetime.datetime(
++                2008, 9, 23, 12, 26, 40, tzinfo=datetime.timezone.utc
++            ),
+         )
+ 
+     def test_parse_rfc822(self):
+         self.assertEqual(
+             parse_timestamp('Wed, 02 Oct 2002 13:00:00 GMT'),
+-            datetime.datetime(2002, 10, 2, 13, 0, tzinfo=tzutc()),
++            datetime.datetime(
++                2002, 10, 2, 13, 0, tzinfo=datetime.timezone.utc
++            ),
+         )
+ 
+     def test_parse_gmt_in_uk_time(self):
+-        # In the UK the time switches from GMT to BST and back as part of
+-        # their daylight savings time. time.tzname will therefore report
+-        # both time zones. dateutil sees that the time zone is a local time
+-        # zone and so parses it as local time, but it ends up being BST
+-        # instead of GMT. To remedy this issue we can provide a time zone
+-        # context which will enforce GMT == UTC.
++        # In the UK, local time switches between GMT and BST for daylight
++        # savings, so time.tzname reports both. This test pins that
++        # parse_timestamp always treats a "GMT" suffix as UTC regardless
++        # of the system's local tz reporting.
+         with mock.patch('time.tzname', ('GMT', 'BST')):
+             self.assertEqual(
+                 parse_timestamp('Wed, 02 Oct 2002 13:00:00 GMT'),
+-                datetime.datetime(2002, 10, 2, 13, 0, tzinfo=tzutc()),
++                datetime.datetime(
++                    2002, 10, 2, 13, 0, tzinfo=datetime.timezone.utc
++                ),
+             )
+ 
+     def test_parse_invalid_timestamp(self):
+         with self.assertRaises(ValueError):
+             parse_timestamp('invalid date')
+ 
+-    def test_parse_timestamp_fails_with_bad_tzinfo(self):
+-        mock_tzinfo = mock.Mock()
+-        mock_tzinfo.__name__ = 'tzinfo'
+-        mock_tzinfo.side_effect = OSError()
+-        mock_get_tzinfo_options = mock.MagicMock(return_value=(mock_tzinfo,))
+-
+-        with mock.patch(
+-            'botocore.utils.get_tzinfo_options', mock_get_tzinfo_options
+-        ):
+-            with self.assertRaises(RuntimeError):
+-                parse_timestamp(0)
+-
+     @contextmanager
+     def mocked_fromtimestamp_that_raises(self, exception_type):
+         class MockDatetime(datetime.datetime):
+@@ -660,6 +669,25 @@ def test_parse_timestamp_succeeds_with_fromtimestamp_overflowerror(self):
+             self.assertEqual(with_fallback, wout_fallback)
+             self.assertEqual(with_fallback.tzinfo, wout_fallback.tzinfo)
+ 
++    def test_parse_timestamp_fails_when_fallback_overflows(self):
++        with self.mocked_fromtimestamp_that_raises(OverflowError):
++            with self.assertRaises(RuntimeError):
++                parse_timestamp(1e20)
++
++    def test_parse_timestamp_fallback_stays_utc_when_localizing_fails(self):
++        class MockDatetime(datetime.datetime):
++            @classmethod
++            def fromtimestamp(cls, *args, **kwargs):
++                raise OSError()
++
++            def astimezone(self, tz=None):
++                raise OSError()
++
++        with mock.patch('datetime.datetime', MockDatetime):
++            parsed = parse_timestamp(-2208988800)
++        self.assertEqual(parsed.utcoffset(), datetime.timedelta(0))
++        self.assertEqual(parsed.timestamp(), -2208988800)
++
+     def test_parse_timestamp_succeeds_with_fromtimestamp_oserror(self):
+         # Same as test_parse_timestamp_succeeds_with_fromtimestamp_overflowerror
+         # but for systems where datetime.fromtimestamp() fails with OSerror for
+@@ -671,6 +699,96 @@ def test_parse_timestamp_succeeds_with_fromtimestamp_oserror(self):
+             self.assertEqual(with_fallback.tzinfo, wout_fallback.tzinfo)
+ 
+ 
++@pytest.mark.parametrize(
++    "raw, normalized",
++    [
++        # Zone suffixes (case-insensitive) collapse to "+00:00"
++        ("2024-01-01T00:00:00Z", "2024-01-01T00:00:00+00:00"),
++        ("2024-01-01T00:00:00z", "2024-01-01T00:00:00+00:00"),
++        ("2024-01-01T00:00:00UTC", "2024-01-01T00:00:00+00:00"),
++        ("2024-01-01T00:00:00utc", "2024-01-01T00:00:00+00:00"),
++        ("2024-01-01T00:00:00 GMT", "2024-01-01T00:00:00+00:00"),
++        ("2024-01-01T00:00:00 gmt", "2024-01-01T00:00:00+00:00"),
++        # Compact basic form (with and without seconds, with fractional)
++        ("20240115T1234Z", "2024-01-15T12:34:00+00:00"),
++        ("20240115T123456Z", "2024-01-15T12:34:56+00:00"),
++        ("20240115T123456.5Z", "2024-01-15T12:34:56.500000+00:00"),
++        # Tz offset without a colon (with and without leading space)
++        ("2024-01-15T12:34:56+0530", "2024-01-15T12:34:56+05:30"),
++        ("2024-01-15T12:34:56 -0400", "2024-01-15T12:34:56-04:00"),
++        # Fractional seconds padded to 6 digits
++        ("2024-01-15T12:34:56.1", "2024-01-15T12:34:56.100000"),
++        ("2024-01-15T12:34:56.12+00:00", "2024-01-15T12:34:56.120000+00:00"),
++        # Fractional seconds truncated to 6 digits
++        ("2024-01-15T12:34:56.1234567", "2024-01-15T12:34:56.123456"),
++        # Three-digit hour from malformed AWS shared examples
++        ("2021-09-02T016:15:21-09:00", "2021-09-02T16:15:21-09:00"),
++        # Already-compliant input is unchanged
++        ("2024-01-15T12:34:56+00:00", "2024-01-15T12:34:56+00:00"),
++    ],
++)
++def test_normalize_iso8601(raw, normalized):
++    assert _normalize_iso8601(raw) == normalized
++    # Guards against typos in the table above: the expected value must
++    # be parseable by datetime.fromisoformat or the helper is pointless.
++    assert isinstance(
++        datetime.datetime.fromisoformat(normalized), datetime.datetime
++    )
++
++
++@pytest.mark.parametrize(
++    "value",
++    [
++        "2024-01-01T00:00:00Z\n",
++        " 2024-01-01T00:00:00Z",
++        "2024-01-01T00:00:00+00:00\r\n",
++    ],
++)
++def test_parse_timestamp_ignores_surrounding_whitespace(value):
++    assert parse_timestamp(value) == datetime.datetime(
++        2024, 1, 1, tzinfo=datetime.timezone.utc
++    )
++
++
++def test_parse_timestamp_numeric_string_out_of_epoch_range():
++    with pytest.raises(ValueError, match='Invalid timestamp'):
++        parse_timestamp('1e12')
++
++
++@pytest.fixture
++def new_york_local_time():
++    with mock.patch.dict(os.environ, {'TZ': 'America/New_York'}):
++        time.tzset()
++        yield
++    time.tzset()
++
++
++@pytest.mark.skipif(
++    sys.platform == 'win32', reason='time.tzset is unavailable on Windows'
++)
++@pytest.mark.parametrize(
++    "value, expected_offset_hours",
++    [
++        # 2026-07-02T00:00:00Z, EDT
++        (1782950400, -4),
++        ('1782950400', -4),
++        # 2026-01-15T00:00:00Z, EST
++        (1768435200, -5),
++        # 2026-11-01 01:30 local happens twice; each instant keeps its offset
++        (1793511000, -4),
++        (1793514600, -5),
++    ],
++)
++def test_parse_epoch_uses_local_offset_at_that_instant(
++    new_york_local_time, value, expected_offset_hours
++):
++    parsed = parse_timestamp(value)
++    assert parsed.utcoffset() == datetime.timedelta(
++        hours=expected_offset_hours
++    )
++    assert parsed.timestamp() == float(value)
++
++
+ class TestDatetime2Timestamp(unittest.TestCase):
+     def test_datetime2timestamp_naive(self):
+         self.assertEqual(
+@@ -687,7 +805,9 @@ def test_datetime2timestamp_aware(self):
+ 
+ class TestParseToUTCDatetime(unittest.TestCase):
+     def test_handles_utc_time(self):
+-        original = datetime.datetime(1970, 1, 1, 0, 0, 0, tzinfo=tzutc())
++        original = datetime.datetime(
++            1970, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc
++        )
+         self.assertEqual(parse_to_aware_datetime(original), original)
+ 
+     def test_handles_other_timezone(self):
+@@ -697,25 +817,35 @@ def test_handles_other_timezone(self):
+ 
+     def test_handles_naive_datetime(self):
+         original = datetime.datetime(1970, 1, 1, 0, 0, 0)
+-        expected = datetime.datetime(1970, 1, 1, 0, 0, 0, tzinfo=tzutc())
++        expected = datetime.datetime(
++            1970, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc
++        )
+         self.assertEqual(parse_to_aware_datetime(original), expected)
+ 
+     def test_handles_string_epoch(self):
+-        expected = datetime.datetime(1970, 1, 1, 0, 0, 0, tzinfo=tzutc())
++        expected = datetime.datetime(
++            1970, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc
++        )
+         self.assertEqual(parse_to_aware_datetime('0'), expected)
+ 
+     def test_handles_int_epoch(self):
+-        expected = datetime.datetime(1970, 1, 1, 0, 0, 0, tzinfo=tzutc())
++        expected = datetime.datetime(
++            1970, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc
++        )
+         self.assertEqual(parse_to_aware_datetime(0), expected)
+ 
+     def test_handles_full_iso_8601(self):
+-        expected = datetime.datetime(1970, 1, 1, 0, 0, 0, tzinfo=tzutc())
++        expected = datetime.datetime(
++            1970, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc
++        )
+         self.assertEqual(
+             parse_to_aware_datetime('1970-01-01T00:00:00Z'), expected
+         )
+ 
+     def test_year_only_iso_8601(self):
+-        expected = datetime.datetime(1970, 1, 1, 0, 0, 0, tzinfo=tzutc())
++        expected = datetime.datetime(
++            1970, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc
++        )
+         self.assertEqual(parse_to_aware_datetime('1970-01-01'), expected)
+ 
+ 
+diff --git a/tests/unit/test_validate.py b/tests/unit/test_validate.py
+index 06ed28be97..6b267c43a5 100644
+--- a/tests/unit/test_validate.py
++++ b/tests/unit/test_validate.py
+@@ -382,9 +382,8 @@ def test_datetime_accepts_string_timestamp(self):
+         self.assertEqual(error_msg, '')
+ 
+     def test_can_handle_none_datetimes(self):
+-        # This is specifically to test a workaround a bug in dateutil
+-        # where low level exceptions can propogate back up to
+-        # us.
++        # A None timestamp should surface as a clean "Invalid type" error
++        # from validation, not a lower-level parsing exception leaking out.
+         errors = self.get_validation_error_message(
+             given_shapes=self.shapes, input_params={'Timestamp': None}
+         )
