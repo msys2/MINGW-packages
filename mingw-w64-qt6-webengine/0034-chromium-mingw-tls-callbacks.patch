@@ -1,0 +1,77 @@
+Place Windows TLS thread-exit callbacks correctly on MinGW.
+
+base/threading/thread_local_storage_win.cc, partition_alloc partition_tls_win.cc
+and perfetto platform_windows.cc register thread-exit callbacks by putting a
+PIMAGE_TLS_CALLBACK into .CRT$XL? via the MSVC-only #pragma const_seg /
+data_seg, and keep it alive with #pragma comment(linker, "/INCLUDE:...").
+MinGW clang/gcc ignore all of these (the warning is hidden by
+-Wno-unknown-pragmas), so the pointers end up in .rdata and the callbacks
+never run: base::ThreadLocalStorage slot destructors, PartitionAlloc and
+perfetto per-thread cleanup are skipped on every thread exit.
+
+Use __attribute__((section(".CRT$XL?"), used)) on MinGW instead.
+
+diff -ruN a/src/3rdparty/chromium/base/allocator/partition_allocator/src/partition_alloc/partition_tls_win.cc b/src/3rdparty/chromium/base/allocator/partition_allocator/src/partition_alloc/partition_tls_win.cc
+--- a/src/3rdparty/chromium/base/allocator/partition_allocator/src/partition_alloc/partition_tls_win.cc	2026-08-11 15:42:19.000000000 +0300
++++ b/src/3rdparty/chromium/base/allocator/partition_allocator/src/partition_alloc/partition_tls_win.cc	2026-10-10 13:54:12.335616600 +0300
+@@ -92,7 +92,17 @@
+ // reference to this variable with a linker /INCLUDE:symbol pragma to ensure
+ // that.) If this variable is discarded, PartitionTlsOnThreadExit will never be
+ // called.
+-#ifdef _WIN64
++#if defined(__MINGW32__)
++
++// MinGW compilers ignore #pragma comment(linker)/const_seg/data_seg, so the
++// variable would land in .rdata and never be called. Place it explicitly;
++// `used` keeps it alive through --gc-sections.
++extern const PIMAGE_TLS_CALLBACK partition_tls_thread_exit_callback;
++__attribute__((section(".CRT$XLY"), used))
++const PIMAGE_TLS_CALLBACK partition_tls_thread_exit_callback =
++    partition_alloc::internal::PartitionTlsOnThreadExit;
++
++#elif defined(_WIN64)
+ 
+ // .CRT section is merged with .rdata on x64 so it must be constant data.
+ #pragma const_seg(".CRT$XLY")
+diff -ruN a/src/3rdparty/chromium/base/threading/thread_local_storage_win.cc b/src/3rdparty/chromium/base/threading/thread_local_storage_win.cc
+--- a/src/3rdparty/chromium/base/threading/thread_local_storage_win.cc	2026-08-11 15:42:19.000000000 +0300
++++ b/src/3rdparty/chromium/base/threading/thread_local_storage_win.cc	2026-10-10 13:53:50.539581900 +0300
+@@ -84,7 +84,16 @@
+ // The linker must not discard p_thread_callback_base.  (We force a reference
+ // to this variable with a linker /INCLUDE:symbol pragma to ensure that.) If
+ // this variable is discarded, the OnThreadExit function will never be called.
+-#ifdef _WIN64
++#if defined(__MINGW32__)
++
++// MinGW compilers ignore #pragma comment(linker)/const_seg/data_seg, so the
++// variable would land in .rdata and never be called. Place it explicitly;
++// `used` keeps it alive through --gc-sections.
++extern const PIMAGE_TLS_CALLBACK p_thread_callback_base;
++__attribute__((section(".CRT$XLB"), used))
++const PIMAGE_TLS_CALLBACK p_thread_callback_base = OnThreadExit;
++
++#elif defined(_WIN64)
+ 
+ // .CRT section is merged with .rdata on x64 so it must be constant data.
+ #pragma const_seg(".CRT$XLB")
+diff -ruN a/src/3rdparty/chromium/third_party/perfetto/src/tracing/platform_windows.cc b/src/3rdparty/chromium/third_party/perfetto/src/tracing/platform_windows.cc
+--- a/src/3rdparty/chromium/third_party/perfetto/src/tracing/platform_windows.cc	2026-08-11 15:42:19.000000000 +0300
++++ b/src/3rdparty/chromium/third_party/perfetto/src/tracing/platform_windows.cc	2026-10-10 13:54:19.344188900 +0300
+@@ -148,7 +148,16 @@
+   }
+ }
+ 
+-#ifdef _WIN64
++#if defined(__MINGW32__)
++
++// MinGW compilers ignore #pragma comment(linker)/const_seg/data_seg, so the
++// variable would land in .rdata and never be called. Place it explicitly;
++// `used` keeps it alive through --gc-sections.
++extern const PIMAGE_TLS_CALLBACK perfetto_thread_callback_base;
++__attribute__((section(".CRT$XLP"), used))
++const PIMAGE_TLS_CALLBACK perfetto_thread_callback_base = PerfettoOnThreadExit;
++
++#elif defined(_WIN64)
+ 
+ // .CRT section is merged with .rdata on x64 so it must be constant data.
+ #pragma const_seg(".CRT$XLP")
