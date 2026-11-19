@@ -1,0 +1,657 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Wed, 14 Oct 2026 08:30:00 +0000
+Subject: [PATCH] MinGW: guard GtkPrinter usages in WebKitPrintOperation.cpp
+ when GTK_UNIX_PRINTING is unset
+
+Update 33 (fixing the round-33 CLANG64/CLANGARM64 WebKitPrintOperation.cpp
+13-error block at [8285/8564]):
+
+WebKitPrintOperation.cpp uses GtkPrinter, gtk_enumerate_printers(),
+gtk_print_job_new(), gtk_print_job_set_source_fd(), gtk_print_job_send()
+and friends from <gtk/gtkunixprint.h>, which the file includes only
+under `#if HAVE(GTK_UNIX_PRINTING)`. The Round-23 OS(WINDOWS) stub for
+webkitPrintOperationSendPagesToPrintPortal() (the freedesktop.org
+portal path) bypassed the portal-specific surface, but several other
+code paths in the same TU still name GtkPrinter unconditionally:
+
+  * struct _WebKitPrintOperationPrivate::printer (line ~97): a member
+    typed GRefPtr<GtkPrinter>;
+  * webkitPrintOperationFinished(): `priv->printJob = nullptr;
+    priv->data = { };` (the two members themselves are guarded above
+    in the struct, but these two assignments were not);
+  * webkitPrintOperationPrintPagesForFrame(): the function signature
+    takes GtkPrinter* (the body was already guarded by
+    `#if HAVE(GTK_UNIX_PRINTING)` at line 376, but the signature was
+    not);
+  * findFilePrinter() / printerFromSettingsOrDefault(): two static
+    helpers returning GRefPtr<GtkPrinter> and calling
+    gtk_enumerate_printers() unconditionally;
+  * webkit_print_operation_print(): local `GRefPtr<GtkPrinter> printer
+    = printerFromSettingsOrDefault(...)` plus a call into
+    webkitPrintOperationPrintPagesForFrame(printer.get(), ...).
+
+The MSYS2 GTK4 build does not ship gtk4-unix-print (the Unix print
+backend is Linux-specific), so HAVE(GTK_UNIX_PRINTING) is unset on
+all three MSYS2 MinGW environments, and the include of
+<gtk/gtkunixprint.h> is skipped. The 13 undeclared-identifier errors
+on the CLANG64/CLANGARM64 runners (lines 97, 342, 343, 369, 422, 425,
+428, 847, 851, 854, 898) all reproduce against this shape.
+
+The fix adds a forward declaration `typedef struct _GtkPrinter
+GtkPrinter;` under `#else` of the existing `#if HAVE(GTK_UNIX_PRINTING)`
+include block, so the type is at least known (as an opaque GObject-
+derived pointer) when the GTK4 Unix print backend is absent. GRefPtr's
+default traits call g_object_ref_sink()/g_object_unref() (which take
+gpointer), so GRefPtr<GtkPrinter> compiles with just the forward
+declaration; the refcount semantics are correct because GtkPrinter is
+a GObject subtype on platforms where it is fully defined, and the
+type is never instantiated on platforms where it is not.
+
+The function bodies that actually call into gtk_enumerate_printers()
+or gtk_print_job_*() are then guarded:
+
+  * webkitPrintOperationFinished(): the two member-assignment lines
+    are wrapped in `#if HAVE(GTK_UNIX_PRINTING)` (the members
+    themselves are already guarded in the struct).
+  * findFilePrinter(): the full function moves under
+    `#if HAVE(GTK_UNIX_PRINTING)`, with a MinGW stub returning
+    nullptr in `#else`.
+  * printerFromSettingsOrDefault(): same shape as findFilePrinter().
+
+The webkitPrintOperationPrintPagesForFrame() signature was already
+fine (the body's GTK_UNIX_PRINTING guard makes the function a no-op
+that falls into the `if (!printer)` early-return branch when the type
+is opaque). The webkit_print_operation_print() call sites compile
+because the stub helpers return nullptr, which the existing
+`if (!printer)` guard turns into a clean error signal.
+
+Sandbox verification: pre-patch source reproduces all 13 errors
+against a synthesized MSYS2 CLANG64 configuration (HAVE(GTK_UNIX_PRINTING)
+unset, <gtk/gtkunixprint.h> not on the include path); post-patch
+source compiles cleanly with the same configuration (the forward
+declaration is the only new symbol, and the function bodies are
+removed by the preprocessor).
+
+---
+ Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp | 31 ++++++++++++++++++++++-
+ 1 file changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp b/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
+index 732ebf9..c5ec6c5 100644
+--- a/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
++++ b/Source/WebKit/UIProcess/API/gtk/WebKitPrintOperation.cpp
+@@ -47,6 +47,16 @@
+ 
+ #if HAVE(GTK_UNIX_PRINTING)
+ #include <gtk/gtkunixprint.h>
++#else
++/* MinGW: GTK4 Unix print backend (gtk/gtkunixprint.h) is not shipped by the
++ * MSYS2 GTK4 build, so HAVE(GTK_UNIX_PRINTING) is unset and GtkPrinter is
++ * not declared. Several function signatures and local variables in this
++ * file still name GtkPrinter (the dialog-less print path, the file-printer
++ * lookup, the print-pages-for-frame helper); an opaque forward declaration
++ * lets them compile, while the function bodies that actually call into
++ * gtk_enumerate_printers()/gtk_print_job_*() are guarded below and
++ * replaced with stubs that report printing as unsupported. */
++typedef struct _GtkPrinter GtkPrinter;
+ #endif
+ 
+ using namespace WebKit;
+@@ -339,8 +349,10 @@ static void webkitPrintOperationFinished(WebKitPrintOperation* printOperation)
+ static void webkitPrintOperationFinished(WebKitPrintOperation* printOperation)
+ {
+     auto* priv = printOperation->priv;
++#if HAVE(GTK_UNIX_PRINTING)
+     priv->printJob = nullptr;
+     priv->data = { };
++#endif
+ 
+     g_signal_emit(printOperation, signals[FINISHED], 0);
+ }
+@@ -419,6 +431,7 @@ static void webkitPrintOperationPrintPagesForFrame(WebKitPrintOperation* printOp
+ #endif
+ }
+ 
++#if HAVE(GTK_UNIX_PRINTING)
+ static GRefPtr<GtkPrinter> findFilePrinter(GtkPrintSettings* settings)
+ {
+     struct FindPrinterData {
+@@ -439,6 +452,15 @@ static GRefPtr<GtkPrinter> findFilePrinter(GtkPrintSettings* settings)
+ 
+     return data.printer;
+ }
++#else
++static GRefPtr<GtkPrinter> findFilePrinter(GtkPrintSettings*)
++{
++    /* MinGW stub: without GTK_UNIX_PRINTING there is no gtk_enumerate_printers
++     * and no GtkPrintBackendFile to discover; the portal path that calls this
++     * helper is also stubbed above for OS(WINDOWS). */
++    return nullptr;
++}
++#endif
+ 
+ struct PrintPortalJobData {
+     GRefPtr<WebKitPrintOperation> printOperation;
+@@ -844,6 +866,7 @@ WebKitPrintOperationResponse webkit_print_operation_run_dialog(WebKitPrintOperat
+     return webkitPrintOperationRunDialogForFrame(printOperation, parent, page.mainFrame());
+ }
+ 
++#if HAVE(GTK_UNIX_PRINTING)
+ static GRefPtr<GtkPrinter> printerFromSettingsOrDefault(GtkPrintSettings* settings)
+ {
+     struct FindPrinterData {
+@@ -867,6 +890,13 @@ static GRefPtr<GtkPrinter> printerFromSettingsOrDefault(GtkPrintSettings* settin
+ 
+     return data.printer;
+ }
++#else
++static GRefPtr<GtkPrinter> printerFromSettingsOrDefault(GtkPrintSettings*)
++{
++    /* MinGW stub: see findFilePrinter() above. */
++    return nullptr;
++}
++#endif
+ 
+ /**
+  * webkit_print_operation_print:
+-- 
+2.39.1
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Wed, 14 Oct 2026 09:25:00 +0000
+Subject: [PATCH] MinGW: drop pre-Round-27 HANDLE-style Identifier construction
+ in ProcessLauncherGLib.cpp
+
+Update 34 (fixing the round-34 CLANG64/CLANGARM64 ProcessLauncherGLib.cpp
+1-error block at [8347]/[8293]):
+
+ProcessLauncherGLib.cpp:330 fails with
+  error: no matching constructor for initialization of 'IPC::Connection::Identifier'
+  didFinishLaunchingProcess(m_processID, IPC::Connection::Identifier {
+    reinterpret_cast<HANDLE>(static_cast<intptr_t>(serverSocketValue)) });
+                                                 ^  ~~~~~~~~~~~~~~~~~~~
+The clang++ candidate list (Connection.h:298/300/301/305/309) shows only
+the USE(UNIX_DOMAIN_SOCKETS) branch's constructors:
+  * Identifier() = default
+  * Identifier(Identifier&&) = default
+  * explicit Identifier(Handle&&)              -> takes ConnectionHandle
+  * explicit Identifier(UnixFileDescriptor&&)  -> takes UnixFileDescriptor
+The OS(WINDOWS)-branch constructor `explicit Identifier(HANDLE handle)`
+at Connection.h:320 is NOT in the candidate set, which means the
+preprocessor picked the USE(UNIX_DOMAIN_SOCKETS) branch.
+
+Root cause: Round 27 (commit b9c8176, "unify MinGW GTK IPC to unix-flavored
+attachment/semaphore types") changed PlatformUse.h to unconditionally
+#define USE_UNIX_DOMAIN_SOCKETS=1 for PLATFORM(GTK)||PLATFORM(WPE) on
+Windows, so the MinGW GTK build picks the unix-flavored Identifier
+(UnixFileDescriptor payload wrapping a Win32 SOCKET handle) and the
+OS(WINDOWS)-branch Identifier(HANDLE) constructor disappears. The
+existing ConnectionGLib.cpp was rewritten to the unix flavor in
+Round 27 (six call sites in Update 27), and AuxiliaryProcessMain.cpp:110
+was migrated in Round 28. The `#if OS(WINDOWS)` block at
+ProcessLauncherGLib.cpp:328-336 was a pre-Round-27 leftover that the
+flavor migration missed — it still constructs Identifier from a raw
+HANDLE, which the unified Identifier class no longer has a constructor
+for.
+
+Fix: drop the `#if OS(WINDOWS) ... #else ... #endif` block at
+ProcessLauncherGLib.cpp:328-336 and use the unix-flavored code path
+on Windows too. The kept code is byte-identical to the original
+pre-0003 code (which was the `#else` branch):
+
+    RunLoop::mainSingleton().dispatch([protectedThis = protect(*this),
+        this, serverSocket = WTF::move(webkitSocketPair.server)] mutable {
+        didFinishLaunchingProcess(m_processID,
+            IPC::Connection::Identifier { WTF::move(serverSocket) });
+    });
+
+webkitSocketPair.server is a UnixFileDescriptor (IPCUtilities.h:55-58
+defines `struct SocketPair { UnixFileDescriptor client; UnixFileDescriptor
+server; }` under `#if USE(UNIX_DOMAIN_SOCKETS) || OS(WINDOWS)`), and
+Identifier(UnixFileDescriptor&&) is the constructor the kept code
+invokes. The Win32 SOCKET handle packed inside the UnixFileDescriptor
+is created by `IPC::createPlatformConnection()` (also in
+IPCUtilities.h) which on Windows returns a bound UDP loopback socket
+pair (the Round 22 / Round 27 winsock datagram IPC path).
+
+The `#include <windows.h>` added by 0003 at the top of the file is
+still needed: terminateProcess() further down uses OpenProcess() /
+TerminateProcess() / CloseHandle() / HANDLE / DWORD / PROCESS_TERMINATE
+under its own `#if OS(WINDOWS)` guard, and that block is correct as-is
+(pure Win32 process control, not IPC flavor-dependent).
+
+Sandbox verification: pre-patch source reproduces the
+`no matching constructor for initialization of 'IPC::Connection::Identifier'`
+error against a synthesized MSYS2 CLANG64 configuration
+(USE(UNIX_DOMAIN_SOCKETS)=1 + OS(WINDOWS)=1, matching PlatformUse.h
+on MinGW GTK). Post-patch source compiles cleanly: the kept code
+constructs Identifier(UnixFileDescriptor&&), which is in the active
+USE(UNIX_DOMAIN_SOCKETS) branch. `patch -Np1 --dry-run` on
+pristine+0001-0007 applies with 0 .rej / 0 fuzz.
+
+---
+ .../Launcher/glib/ProcessLauncherGLib.cpp         | 8 +-------
+ 1 file changed, 1 insertion(+), 7 deletions(-)
+
+diff --git a/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp b/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
+index cda05b2..a3b5f1c 100644
+--- a/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
++++ b/Source/WebKit/UIProcess/Launcher/glib/ProcessLauncherGLib.cpp
+@@ -325,15 +325,9 @@ void ProcessLauncher::launchProcess()
+     m_processID = g_ascii_strtoll(processIdStr, nullptr, 0);
+     RELEASE_ASSERT(m_processID);
+ 
+-#if OS(WINDOWS)
+-    RunLoop::mainSingleton().dispatch([protectedThis = protect(*this), this, serverSocketValue = webkitSocketPair.server.release()] mutable {
+-        didFinishLaunchingProcess(m_processID, IPC::Connection::Identifier { reinterpret_cast<HANDLE>(static_cast<intptr_t>(serverSocketValue)) });
+-    });
+-#else
+     RunLoop::mainSingleton().dispatch([protectedThis = protect(*this), this, serverSocket = WTF::move(webkitSocketPair.server)] mutable {
+         didFinishLaunchingProcess(m_processID, IPC::Connection::Identifier { WTF::move(serverSocket) });
+     });
+-#endif
+ }
+ 
+ void ProcessLauncher::terminateProcess()
+-- 
+2.39.1
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Wed, 14 Oct 2026 10:45:00 +0000
+Subject: [PATCH] MinGW: declare GLFence unix-only methods portably + add Windows stubs
+
+Update 35a (fixing the round-35 CLANG64 AcceleratedSurface.cpp 3-error
+block at [8333/8564]):
+
+AcceleratedSurface.cpp:233/248/257 fails with
+  error: no member named 'importFD' in 'WebCore::GLFence'
+  error: no member named 'createExportable' in 'WebCore::GLFence'
+  error: no member named 'exportFD' in 'WebCore::GLFence'
+
+GLFence.h declares these three methods only under #if OS(UNIX):
+  * static std::unique_ptr<GLFence> createExportable(const GLDisplay&);
+  * static std::unique_ptr<GLFence> importFD(const GLDisplay&, WTF::UnixFileDescriptor&&);
+  * virtual WTF::UnixFileDescriptor exportFD() { return { }; }
+
+On MinGW GTK (OS(WINDOWS)=1), the OS(UNIX) guard skips all three
+declarations, so any consumer that names them (AcceleratedSurface.cpp
+at lines 233/248/257, plus CoordinatedPlatformLayerBufferDMABuf.cpp
+and OpenXRGraphicsBindingOpenGLES.cpp on the Linux DMABuf / OpenXR
+paths) fails to compile.
+
+Fix: drop the OS(UNIX) guards in GLFence.h. UnixFileDescriptor is
+portable to MinGW since Round 22 (Win32 SOCKET packed in the
+descriptor payload), so the include and the signatures are safe on
+every port. In GLFence.cpp, keep the Unix implementation paths
+under OS(UNIX) (they call GLFenceEGL::createExportable /
+GLFenceEGL::importFD which depend on ANDROID_native_fence_sync, a
+Linux DMA-Buf/EGL extension that MSYS2 GTK does not ship), and add
+a Windows #else branch with stubs that return nullptr. Consumers
+link without having to repeat the OS(UNIX) guard at every call
+site; at runtime the stubs short-circuit to the no-fence path.
+
+Sandbox verification: pre-patch source reproduces the three
+'no member named' errors against a synthesized MSYS2 CLANG64
+configuration (OS(WINDOWS)=1, OS(UNIX)=0). Post-patch source
+compiles cleanly.
+
+---
+diff --git a/Source/WebCore/platform/graphics/egl/GLFence.h b/Source/WebCore/platform/graphics/egl/GLFence.h
+index 9a1a2b3..c5d4e6f 100644
+--- a/Source/WebCore/platform/graphics/egl/GLFence.h	2026-07-24 08:02:55.246843800 +0000
++++ b/Source/WebCore/platform/graphics/egl/GLFence.h	2026-10-14 10:41:29.003006316 +0000
+@@ -22,9 +22,11 @@
+ #include <wtf/Noncopyable.h>
+ #include <wtf/TZoneMalloc.h>
+ 
+-#if OS(UNIX)
++// UnixFileDescriptor is portable to MinGW since Round 22 (Win32 SOCKET packed
++// in the descriptor payload); include it unconditionally so GLFence's
++// exportFD() / importFD() / createExportable() signatures are visible on
++// every port without each consumer having to repeat the OS(UNIX) guard.
+ #include <wtf/unix/UnixFileDescriptor.h>
+-#endif
+ 
+ namespace WebCore {
+ class GLDisplay;
+@@ -35,17 +37,13 @@
+ public:
+     static bool isSupported(const GLDisplay&);
+     WEBCORE_EXPORT static std::unique_ptr<GLFence> create(const GLDisplay&);
+-#if OS(UNIX)
+     WEBCORE_EXPORT static std::unique_ptr<GLFence> createExportable(const GLDisplay&);
+     WEBCORE_EXPORT static std::unique_ptr<GLFence> importFD(const GLDisplay&, WTF::UnixFileDescriptor&&);
+-#endif
+     virtual ~GLFence() = default;
+ 
+     virtual void clientWait() = 0;
+     virtual void serverWait() = 0;
+-#if OS(UNIX)
+     virtual WTF::UnixFileDescriptor exportFD() { return { }; }
+-#endif
+ 
+ protected:
+     GLFence() = default;
+
+diff --git a/Source/WebCore/platform/graphics/egl/GLFence.cpp b/Source/WebCore/platform/graphics/egl/GLFence.cpp
+index 4b5c6d7..e7f8a9b 100644
+--- a/Source/WebCore/platform/graphics/egl/GLFence.cpp	2026-07-24 08:02:55.246843800 +0000
++++ b/Source/WebCore/platform/graphics/egl/GLFence.cpp	2026-10-14 10:41:40.223082213 +0000
+@@ -96,6 +96,8 @@
+ 
+     if (display.extensions().ANDROID_native_fence_sync)
+         return GLFenceEGL::createExportable(display);
++#else
++    UNUSED_PARAM(display);
+ #endif
+     return nullptr;
+ }
+@@ -109,10 +111,30 @@
+     if (display.extensions().ANDROID_native_fence_sync)
+         return GLFenceEGL::importFD(display, WTF::move(fd));
+ #else
++    UNUSED_PARAM(display);
+     UNUSED_PARAM(fd);
+ #endif
+     return nullptr;
+ }
++#else
++// MinGW: GLFence::createExportable / importFD are declared in the header
++// unconditionally (see GLFence.h), but the EGL implementation paths are
++// Unix-specific (ANDROID_native_fence_sync is a Linux DMA-Buf/EGL extension).
++// Provide Windows stubs that return nullptr so consumers (AcceleratedSurface.cpp,
++// CoordinatedPlatformLayerBufferDMABuf.cpp, OpenXRGraphicsBindingOpenGLES.cpp)
++// link without having to repeat the OS(UNIX) guard at every call site.
++std::unique_ptr<GLFence> GLFence::createExportable(const GLDisplay& display)
++{
++    UNUSED_PARAM(display);
++    return nullptr;
++}
++
++std::unique_ptr<GLFence> GLFence::importFD(const GLDisplay& display, UnixFileDescriptor&& fd)
++{
++    UNUSED_PARAM(display);
++    UNUSED_PARAM(fd);
++    return nullptr;
++}
+ #endif
+ 
+ } // namespace WebCore
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Wed, 14 Oct 2026 10:46:00 +0000
+Subject: [PATCH] MinGW: stub write() signature mismatch and fsync() absence in NotificationService.cpp
+
+Update 35b (fixing the round-35 CLANGARM64 NotificationService.cpp
+2-error block at [8293/8564], surfaced via UnifiedSource-UIProcess-36.cpp):
+
+NotificationService.cpp:79 fails with type mismatch: MinGW-w64 <io.h>
+declares write() as 'int write(int, const void*, unsigned int)' (matching
+MSVCRT's _write shape: the size argument is 32-bit unsigned on Windows),
+while the file-level function-pointer alias expects
+'ssize_t (*)(int, const void*, size_t)' with a 64-bit size_t on x86_64.
+
+NotificationService.cpp:104 fails with 'use of undeclared identifier fsync':
+fsync() is POSIX and is not declared by MinGW-w64's <unistd.h> / <io.h>
+(MSVCRT's file-flush entry point is _commit()).
+
+Fix: replace the file-scope write-alias with a small static wrapper on
+Windows that calls _write() with the size narrowed to unsigned. For
+flush(), use _commit() on Windows. _commit() takes an int file descriptor
+(matching m_fd.value()) and forces the CRT's internal buffer to be written
+to the OS; it is the documented MSVCRT equivalent of POSIX fsync().
+
+Sandbox verification: pre-patch source reproduces both errors against a
+synthesized MSYS2 CLANGARM64 configuration. Post-patch source compiles
+cleanly: _write and _commit resolve through <unistd.h> -> <io.h>.
+
+---
+diff --git a/Source/WebKit/UIProcess/Notifications/glib/NotificationService.cpp b/Source/WebKit/UIProcess/Notifications/glib/NotificationService.cpp
+index 5c8e7d2..a1b2c3d 100644
+--- a/Source/WebKit/UIProcess/Notifications/glib/NotificationService.cpp	2026-07-24 08:02:56.013829500 +0000
++++ b/Source/WebKit/UIProcess/Notifications/glib/NotificationService.cpp	2026-10-14 10:42:29.118412959 +0000
+@@ -76,7 +76,16 @@
+ static const Seconds s_dbusCallTimeout = 20_ms;
+ 
+ // Alias to avoid conflicting with write() below.
++#if OS(WINDOWS)
++// MinGW: write() signature uses unsigned int for the size argument, not size_t;
++// wrap it to keep the (int, const void*, size_t) shape downstream consumers expect.
++static ssize_t writeToFD(int fd, const void* buffer, size_t size)
++{
++    return _write(fd, buffer, static_cast<unsigned>(size));
++}
++#else
+ ssize_t (*writeToFD)(int, const void*, size_t) = write;
++#endif
+ 
+ // Simple stream that writes to an fd.
+ class FileDescriptorWriteStream : public SkWStream {
+@@ -101,7 +110,13 @@
+ 
+     void flush() final
+     {
++#if OS(WINDOWS)
++        // MinGW: fsync() is POSIX; _commit() is the MSVCRT equivalent that flushes
++        // the file's buffers from the CRT internal buffer to the OS.
++        _commit(m_fd.value());
++#else
+         fsync(m_fd.value());
++#endif
+     };
+ 
+     size_t bytesWritten() const final
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Wed, 14 Oct 2026 11:00:00 +0000
+Subject: [PATCH] MinGW: skip gio/gfiledescriptorbased.h include on Windows
+
+Update 36 (fixing the round-36 CLANG64/CLANGARM64 NetworkCacheDataGLib.cpp
+1-error block at [8502/8564], surfaced via UnifiedSource-NetworkProcess-11.cpp):
+
+NetworkCacheDataGLib.cpp:39 fails with
+  fatal error: 'gio/gfiledescriptorbased.h' file not found
+   39 | #include <gio/gfiledescriptorbased.h>
+
+The include is already guarded by `#if !PLATFORM(WIN)`, but PLATFORM(WIN)
+is only true for the Windows-native WebKit port (AppleWin / WinCairo), not
+for the GTK port running on Windows. On MinGW GTK (PLATFORM(GTK)=1,
+PLATFORM(WIN)=0, OS(WINDOWS)=1) the guard does not trigger and the
+include attempts to resolve <gio/gfiledescriptorbased.h>, which the
+MSYS2 GLib build does not ship (gfiledescriptorbased.h is a Unix-only
+GIO header that exposes the GFileDescriptorBased interface around
+g_unix_input_stream_new_with_fd() / g_unix_output_stream_new_with_fd(),
+both Linux/Unix-specific).
+
+Inspection of the file shows that the GFileDescriptorBased interface is
+never actually used in NetworkCacheDataGLib.cpp - the file only calls
+g_bytes_new_with_free_func, g_bytes_new, g_bytes_get_size, g_bytes_get_data
+(all from <gio/gio.h> / <glib.h>). The include is preemptive and can be
+safely dropped on Windows without losing any consumed symbols.
+
+Fix: tighten the guard from `#if !PLATFORM(WIN)` to
+`#if !PLATFORM(WIN) && !OS(WINDOWS)`. This preserves the original
+intent (skip on the Windows-native WebKit port) while also skipping on
+the GTK-on-Windows MinGW port. No new code, no new stubs - just the
+correct platform gate.
+
+Sandbox verification: pre-patch source reproduces the
+'gio/gfiledescriptorbased.h file not found' error against a
+synthesized MSYS2 CLANG64/CLANGARM64 configuration (PLATFORM(GTK)=1,
+OS(WINDOWS)=1, PLATFORM(WIN)=0). Post-patch source compiles cleanly:
+the include is skipped on Windows, and no consumer of the
+GFileDescriptorBased interface exists in the file to break.
+`patch -Np1 --dry-run` on pristine+0001-0010 applies with 0 .rej
+/ 0 fuzz.
+
+---
+diff --git a/Source/WebKit/NetworkProcess/cache/NetworkCacheDataGLib.cpp b/Source/WebKit/NetworkProcess/cache/NetworkCacheDataGLib.cpp
+index 1a2b3c4..5d6e7f8 100644
+--- a/Source/WebKit/NetworkProcess/cache/NetworkCacheDataGLib.cpp
++++ b/Source/WebKit/NetworkProcess/cache/NetworkCacheDataGLib.cpp
+@@ -35,7 +35,7 @@
+ #include <sys/types.h>
+ #include <unistd.h>
+ 
+-#if !PLATFORM(WIN)
++#if !PLATFORM(WIN) && !OS(WINDOWS)
+ #include <gio/gfiledescriptorbased.h>
+ #endif
+ 
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Wed, 15 Oct 2026 02:30:00 +0000
+Subject: [PATCH] MinGW: make IPC serialization manifests' platform variants
+ mutually exclusive
+
+Update 37 (fixing the round-36 CLANG64/CLANGARM64
+WebKitPlatformGeneratedSerializers.cpp 10-error block at [8504|8460]/8564;
+UCRT64 still stalls at [7041] Linking CXX static library libSkia.a - a
+separate issue addressed by the PKGBUILD llvm-ar change of this round).
+
+CI errors (identical on CLANG64 and CLANGARM64, WebKitPlatformGeneratedSerializers.cpp):
+
+  :91   error: static assertion failed due to requirement
+        'std::is_same_v<WTF::UnixFileDescriptor, WTF::Win32Handle>'
+  :101  error: duplicate member 'm_handle' (Win32Handle vs previous UnixFileDescriptor)
+  :107  error: static assertion failed: sizeof(ShouldBeSameSizeAsConnectionHandle)
+        == sizeof(IPC::ConnectionHandle) evaluates '1 == 8'
+  :137  error: redefinition of 'm_handle' (decoder.decode<Win32Handle> vs
+        previous decoder.decode<UnixFileDescriptor>)
+  :145  error: no matching constructor for 'IPC::ConnectionHandle' (2 arguments
+        provided - both the USE(UNIX_DOMAIN_SOCKETS) and the OS(WINDOWS) branch
+        of the braced initializer list are active)
+  ... and the same five errors again for WebCore::SharedMemoryHandle at
+  :6655/:6666/:6670/:6723/:6738 (3 arguments vs SharedMemoryHandle(Type&&, uint64_t)).
+
+Root cause: the .serialization.in manifests declare the platform-specific
+m_handle member as three INDEPENDENT #if blocks:
+
+  #if USE(UNIX_DOMAIN_SOCKETS)
+      UnixFileDescriptor m_handle;
+  #endif
+  #if OS(WINDOWS)
+      Win32Handle m_handle;
+  #endif
+  #if OS(DARWIN)
+      MachSendRight m_handle;
+  #endif
+
+generate-serializers.py parses each #if expression verbatim into
+member.condition and emits every member variant as its own #if block
+(static_assert, ShouldBeSameSizeAs member, IsIncreasing/offsetof entry,
+encode statement, decode local, constructor initializer - 6 emission
+sites per variant). On every upstream platform at most one of these
+conditions is true, so the independent #ifs happen to be exclusive.
+On MinGW GTK both USE(UNIX_DOMAIN_SOCKETS) (PlatformUse.h defines it
+unconditionally for PLATFORM(GTK)||PLATFORM(WPE), even on Windows) and
+OS(WINDOWS) are true simultaneously, and the generated
+WebKitPlatformGeneratedSerializers.cpp becomes ill-formed.
+
+The real C++ headers (ConnectionHandle.h:53-82, SharedMemory.h Type alias
+and private members) already model this correctly with a #if/#elif/#elif
+chain in which USE(UNIX_DOMAIN_SOCKETS) takes precedence; that is why the
+headers themselves compile fine on MinGW GTK and only the GENERATED
+serializers break. IPCSemaphore.serialization.in hit the same class of
+problem in round 27 and was fixed with the identical
+`OS(WINDOWS) && !USE(UNIX_DOMAIN_SOCKETS)` pattern.
+
+Fix: make the manifest variants mirror the headers' #elif semantics by
+excluding the unix flavor from the other two variants:
+
+  #if OS(WINDOWS) && !USE(UNIX_DOMAIN_SOCKETS)
+  #if OS(DARWIN) && !USE(UNIX_DOMAIN_SOCKETS)
+
+This is a no-op on every upstream platform (Linux GTK/WPE: OS(WINDOWS)=0,
+OS(DARWIN)=0; Cocoa: USE(UNIX_DOMAIN_SOCKETS)=0 so the DARWIN/WINDOWS
+conditions keep their original value; WinCairo: USE(UNIX_DOMAIN_SOCKETS)=0)
+and only changes behavior for the MinGW GTK combination, where the unix
+flavor now wins - exactly matching the headers the generated code is
+asserted against.
+
+Files touched (no existing patch touches either file):
+
+  Source/WebKit/Platform/IPC/ConnectionHandle.serialization.in
+  Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in (SharedMemoryHandle)
+
+Verification (Linux sandbox, generator + compile-shape methodology of
+rounds 27-36):
+
+1. Generator-level: ran Scripts/generate-serializers.py over all 329
+   .serialization.in manifests of the patched tree (split-by-directory
+   mode, same invocation the CMake custom command uses). PRE vs POST
+   diff of ALL generated outputs (WebKitPlatformGeneratedSerializers.cpp,
+   SerializedTypeInfo.cpp and every per-bundle file) shows exactly 28
+   changed lines - every emitted `#if OS(WINDOWS)` / `#if OS(DARWIN)`
+   guard of the two types' variants gains `&& !USE(UNIX_DOMAIN_SOCKETS)`;
+   nothing else changes.
+
+2. Compile-shape matrix (g++ -std=c++23 -fsyntax-only, verbatim-extracted
+   encode/decode blocks from the real generated file, real-class stubs
+   mirroring ConnectionHandle.h / SharedMemory.h member layout, real
+   wtf/IsIncreasing.h):
+
+     PRE  + MinGW GTK (UNIX=1,WINDOWS=1)  -> FAIL, reproducing every CI
+                                             error class (static_assert
+                                             is_same failure, duplicate
+                                             m_handle member, redefinition
+                                             of auto m_handle, no matching
+                                             constructor for the 2-arg /
+                                             3-arg braced initializers)
+     PRE  + Linux GTK  (UNIX=1)           -> PASS
+     POST + MinGW GTK  (UNIX=1,WINDOWS=1) -> PASS   <-- fix target
+     POST + Linux GTK  (UNIX=1)           -> PASS   (no regression)
+     POST + WinCairo   (UNIX=0,WINDOWS=1) -> PASS   (no regression)
+     POST + Darwin     (UNIX=0,DARWIN=1)  -> PASS   (no regression)
+
+3. Scope sweep: grepped all 329 manifests for platform-conditioned
+   members. Only ConnectionHandle and SharedMemoryHandle carry the
+   USE(UNIX_DOMAIN_SOCKETS)/OS(WINDOWS) dual-true combination
+   (IPCSemaphore was fixed in round 27; the ProcessID `using` aliases in
+   WTFArgumentCoders/WebCoreArgumentCoders are #if/#else and match the
+   real wtf/ProcessID.h on MinGW; SharedFileHandle is COCOA-only;
+   TestSerializedType.serialization.in is the generator's own unit-test
+   fixture and is not part of the CMake build).
+---
+ .../IPC/ConnectionHandle.serialization.in         | 4 ++--
+ .../WebCoreArgumentCoders.serialization.in        | 4 ++--
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/Source/WebKit/Platform/IPC/ConnectionHandle.serialization.in b/Source/WebKit/Platform/IPC/ConnectionHandle.serialization.in
+--- a/Source/WebKit/Platform/IPC/ConnectionHandle.serialization.in
++++ b/Source/WebKit/Platform/IPC/ConnectionHandle.serialization.in
+@@ -25,10 +25,10 @@ webkit_platform_header: "ConnectionHandle.h"
+ #if USE(UNIX_DOMAIN_SOCKETS)
+     UnixFileDescriptor m_handle;
+ #endif
+-#if OS(WINDOWS)
++#if OS(WINDOWS) && !USE(UNIX_DOMAIN_SOCKETS)
+     Win32Handle m_handle;
+ #endif
+-#if OS(DARWIN)
++#if OS(DARWIN) && !USE(UNIX_DOMAIN_SOCKETS)
+     MachSendRight m_handle;
+ #endif
+ }
+diff --git a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
+--- a/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
++++ b/Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in
+@@ -1661,10 +1661,10 @@ headers: <WebCore/SharedMemory.h>
+ #if USE(UNIX_DOMAIN_SOCKETS)
+     [Validator='!!m_handle && *m_handle'] UnixFileDescriptor m_handle;
+ #endif
+-#if OS(DARWIN)
++#if OS(DARWIN) && !USE(UNIX_DOMAIN_SOCKETS)
+     [Validator='!!m_handle && *m_handle'] MachSendRight m_handle;
+ #endif
+-#if OS(WINDOWS)
++#if OS(WINDOWS) && !USE(UNIX_DOMAIN_SOCKETS)
+     [Validator='!!m_handle && *m_handle'] Win32Handle m_handle;
+ #endif
+     uint64_t m_size;
+--
+2.47.0
+
