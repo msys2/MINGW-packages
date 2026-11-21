@@ -1,66 +1,201 @@
---- p11-kit-0.24.0/p11-kit/p11-kit.c.orig	2021-08-28 19:36:22.782059400 +0200
-+++ p11-kit-0.24.0/p11-kit/p11-kit.c	2021-08-28 19:39:36.776135700 +0200
-@@ -81,6 +81,7 @@
+--- a/p11-kit/p11-kit.c
++++ b/p11-kit/p11-kit.c
+@@ -120,11 +120,108 @@
+ 	{ 0, }
+ };
+ 
++#ifdef OS_WIN32
++#include <process.h>
++
++static char *
++quote_arg_win32 (const char *arg)
++{
++	if (arg == NULL)
++		return NULL;
++
++	if (arg[0] == '\0')
++		return strdup ("\"\"");
++
++	bool needs_quotes = false;
++	for (const char *p = arg; *p; p++) {
++		if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\v' || *p == '\"') {
++			needs_quotes = true;
++			break;
++		}
++	}
++
++	if (!needs_quotes)
++		return strdup (arg);
++
++	size_t len = strlen (arg);
++	char *buf = malloc (len * 2 + 3);
++	if (!buf)
++		return NULL;
++
++	char *dst = buf;
++	*dst++ = '\"';
++
++	int num_backslashes = 0;
++	for (size_t i = 0; i < len; i++) {
++		char c = arg[i];
++		if (c == '\\') {
++			num_backslashes++;
++		} else if (c == '\"') {
++			for (int j = 0; j < num_backslashes * 2 + 1; j++)
++				*dst++ = '\\';
++			num_backslashes = 0;
++			*dst++ = '\"';
++		} else {
++			for (int j = 0; j < num_backslashes; j++)
++				*dst++ = '\\';
++			num_backslashes = 0;
++			*dst++ = c;
++		}
++	}
++
++	for (int j = 0; j < num_backslashes * 2; j++)
++		*dst++ = '\\';
++
++	*dst++ = '\"';
++	*dst = '\0';
++
++	return buf;
++}
++
++static intptr_t
++spawnv_quoted_win32 (const char *cmdname,
++                     char * const *argv)
++{
++	int argc = 0;
++	while (argv[argc] != NULL)
++		argc++;
++
++	char **spawn_args = calloc (argc + 1, sizeof (char *));
++	if (spawn_args == NULL) {
++		errno = ENOMEM;
++		return -1;
++	}
++
++	for (int i = 0; i < argc; i++) {
++		spawn_args[i] = quote_arg_win32 (argv[i]);
++		if (spawn_args[i] == NULL) {
++			for (int j = 0; j < i; j++)
++				free (spawn_args[j]);
++			free (spawn_args);
++			errno = ENOMEM;
++			return -1;
++		}
++	}
++	spawn_args[argc] = NULL;
++
++	intptr_t code = _spawnv (_P_WAIT, cmdname, (const char * const *)spawn_args);
++
++	for (int i = 0; i < argc; i++)
++		free (spawn_args[i]);
++	free (spawn_args);
++
++	return code;
++}
++#endif
++
+ int
+ p11_kit_trust (int argc,
                 char *argv[])
  {
  	char **args;
++#ifdef OS_WIN32
 +	intptr_t code;
++#endif
  
  	args = calloc (argc + 2, sizeof (char *));
  	return_val_if_fail (args != NULL, 1);
-@@ -89,14 +90,18 @@
+@@ -133,14 +230,29 @@
  	memcpy (args + 1, argv, sizeof (char *) * argc);
  	args[argc + 1] = NULL;
  
--	execv (args[0], args);
--
--	/* At this point we have no command */
--	p11_message_err (errno, _("couldn't run trust tool"));
-+	code = _spawnv (_P_WAIT, args[0], args);
- 
- 	free (argv[0]);
- 	free (args);
--	return 2;
++#ifdef OS_WIN32
++	code = spawnv_quoted_win32 (args[0], args);
 +
-+	if (code) {
++	free (args[0]);
++	free (args);
++
++	if (code == -1) {
 +		/* At this point we have no command */
-+		p11_message_err (errno, "couldn't run trust tool");
++		p11_message_err (errno, _("couldn't run trust tool"));
 +		return 2;
 +	}
 +
-+	return 0;
++	return (int)code;
++#else
+ 	execv (args[0], args);
+ 
+ 	/* At this point we have no command */
+ 	p11_message_err (errno, _("couldn't run trust tool"));
+ 
+-	free (argv[0]);
++	free (args[0]);
+ 	free (args);
+ 	return 2;
++#endif
  }
  
  int
-@@ -106,6 +111,7 @@
+@@ -150,6 +262,10 @@
  	const char *private_dir;
  	char *filename;
  	char *path;
++	char *cmdname;
++#ifdef OS_WIN32
 +	intptr_t code;
++#endif
  
  	/* These are trust commands, send them to that tool */
  	if (strcmp (argv[0], "extract") == 0) {
-@@ -132,14 +138,18 @@
- 	argv[0] = path;
- #endif
- 	argv[argc] = NULL;
--	execv (path, argv);
--
--	/* At this point we have no command */
--	p11_message (_("'%s' is not a valid command. See 'p11-kit --help'"), argv[0]);
-+	code = _spawnv (_P_WAIT, path, argv);
+@@ -159,6 +275,8 @@
+ 		return p11_kit_trust (argc, argv);
+ 	}
  
- 	free (filename);
- 	free (path);
--	return 2;
++	cmdname = argv[0];
 +
-+	if (code) {
+ 	if (asprintf (&filename, "p11-kit-%s%s", argv[0], EXEEXT) < 0)
+ 		return_val_if_reached (1);
+ 
+@@ -170,20 +288,34 @@
+ 	path = p11_path_build (private_dir, filename, NULL);
+ 	return_val_if_fail (path != NULL, 1);
+ 
+-	/* Windows execv() requires the first element of ARGV must be
+-	 * the executable name */
+ #ifdef OS_WIN32
+ 	argv[0] = path;
+-#endif
++	argv[argc] = NULL;
++	code = spawnv_quoted_win32 (path, argv);
++	argv[0] = cmdname;
++
++	if (code == -1) {
 +		/* At this point we have no command */
-+		p11_message ("'%s' is not a valid command. See 'p11-kit --help'", argv[0]);
++		p11_message (_("'%s' is not a valid command. See 'p11-kit --help'"), cmdname);
++		free (filename);
++		free (path);
 +		return 2;
 +	}
 +
-+	return 0;
++	free (filename);
++	free (path);
++	return (int)code;
++#else
+ 	argv[argc] = NULL;
+ 	execv (path, argv);
+ 
+ 	/* At this point we have no command */
+-	p11_message (_("'%s' is not a valid command. See 'p11-kit --help'"), argv[0]);
++	p11_message (_("'%s' is not a valid command. See 'p11-kit --help'"), cmdname);
+ 
+ 	free (filename);
+ 	free (path);
+ 	return 2;
++#endif
  }
  
  int
