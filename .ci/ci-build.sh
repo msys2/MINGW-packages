@@ -174,6 +174,3 @@ for package in "${packages[@]}"; do
     unset package
 done
 success 'All packages built successfully'
-
-cd artifacts
-execute 'SHA-256 checksums' sha256sum *
