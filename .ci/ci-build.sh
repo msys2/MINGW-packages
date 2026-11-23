@@ -70,7 +70,8 @@ pkgver_from_metadata() {
     local version
     version="$(sed -n 's/^Version[[:space:]]*:[[:space:]]*//p')"
     version="${version%-*}"
-    printf '%s\n' "${version#*~}" | sed 's/\./\\./g'
+    # escape all metacharacters
+    printf '%s\n' "${version#*~}" | sed 's/[][\.^$*|]/\\&/g'
 }
 
 # Status functions
