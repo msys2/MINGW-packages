@@ -47,7 +47,13 @@ def get_pkginfo(package, packageset):
         script += f"echo \"${{{prop}[@]}}\" && printf '\\0'\n"
 
     shell = os.environ.get("SHELL", "bash")
-    results = run(shell, "-c", script).split("\0")[:-1]
+
+    # overrides for MSYS repository only
+    env = {
+        **os.environ,
+        "MINGW_PACKAGE_PREFIX": os.environ.get("MINGW_PACKAGE_PREFIX") or "mingw-w64",
+    }
+    results = run(shell, "-c", script, env=env).split("\0")[:-1]
     assert len(props) == len(results), "Length of props matches results"
 
     info = {}
