@@ -154,9 +154,9 @@ for package in "${packages[@]}"; do
 
         echo "::group::[runtime-dependencies] ${pkgname}"
         message "Runtime dependencies for ${pkgname}"
-        declare -a binaries=($(pacman -Ql $pkgname | sed -e 's|^[^ ]* ||' | grep -E ${MINGW_PREFIX}/.+\.\(dll\|exe\|pyd\)$))
+        readarray -t binaries < <(pacman -Ql "${pkgname}" | sed -e 's|^[^ ]* ||' | grep -E "${MINGW_PREFIX}/.+\.(dll|exe|pyd)$")
         if [ "${#binaries[@]}" -ne 0 ]; then
-            for binary in ${binaries[@]}; do
+            for binary in "${binaries[@]}"; do
                 echo "${binary}:"
                 ntldd -R ${binary} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder\|ngcrecovery\|AzureAttest\|PdmUtilities\|WTDSENSOR\|wtdccm\|SAMSRV\|LSASRV\|EDPCSP\|policymanagerprecheck\|dmenterprisediagnostics\|EFSCORE\|FVESKYBACKUP\|DeclaredConfiguration" || true
             done
