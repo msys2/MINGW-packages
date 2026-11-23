@@ -42,7 +42,9 @@ def list_packages():
 
 def get_pkginfo(package, packageset):
     props = ["depends", "makedepends", "pkgname", "provides"]
-    script = f'source "{package}/PKGBUILD"\n'
+
+    # ignore potential stdout noise
+    script = f'source "{package}/PKGBUILD" >/dev/null\n'
     for prop in props:
         script += f"echo \"${{{prop}[@]}}\" && printf '\\0'\n"
 
