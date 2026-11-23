@@ -49,8 +49,8 @@ execute(){
     cd "${package:-.}"
     message "${status}"
     if [[ "${command}" != *:* ]]
-        then ${command} ${arguments[@]}
-        else ${command%%:*} | ${command#*:} ${arguments[@]}
+        then "${command}" "${arguments[@]}"
+        else "${command%%:*}" | "${command#*:}" "${arguments[@]}"
     fi || failure "${status} failed"
     cd - > /dev/null
 }
@@ -101,8 +101,9 @@ done
 
 for package in "${skipped_packages[@]}"; do
     for i in "${!packages[@]}"; do
-        if [[ ${packages[i]} == $package ]]; then
-            unset packages[i]
+        if [[ "${packages[i]}" == "${package}" ]]; then
+            # unquoted undergoes pathname expansion
+            unset 'packages[i]'
         fi
     done
     unset package
