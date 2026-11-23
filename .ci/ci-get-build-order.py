@@ -77,7 +77,8 @@ def get_pkginfo(package, packageset):
 def get_build_order(packages, toadd=None, ordered=None):
     if toadd is None:
         toadd, ordered = {}, []
-        ThreadPool(os.cpu_count()).map(lambda x: get_pkginfo(x, toadd), packages)
+        with ThreadPool(os.cpu_count()) as pool:
+            pool.map(lambda x: get_pkginfo(x, toadd), packages)
 
     for package in packages:
         if package not in toadd:
