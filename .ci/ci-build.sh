@@ -142,6 +142,9 @@ for package in "${packages[@]}"; do
 
     cd B
     for pkg in *.pkg.tar.*; do
+        # skip signatures as they cannot be build
+        [[ "$pkg" == *.sig ]] && continue
+
         pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
         echo "::group::[install] ${pkgname}"
         grep -qFx "${package}" "$DIR/ci-dont-install-list.txt" || pacman --noprogressbar --upgrade --noconfirm $pkg
