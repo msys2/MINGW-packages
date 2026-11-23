@@ -164,8 +164,8 @@ for package in "${packages[@]}"; do
         old_pkgver="$(pacman -Si ${MSYSTEM,,}/"${pkgname}" | pkgver_from_metadata || true)"
         new_pkgver="$(pacman -Qip "${pkg}" | pkgver_from_metadata || true)"
         diff -Nur \
-            <(pacman -Fl ${MSYSTEM,,}/"${pkgname}" | sed -e 's|^[^ ]* |/|' -e "s|${old_pkgver}|PKGVER|g" | sort) \
-            <(pacman -Qlp "${pkg}" | sed -e 's|^[^ ]* ||' -e "s|${new_pkgver}|PKGVER|g" | sort) || true
+            <(pacman -Fl ${MSYSTEM,,}/"${pkgname}" | sed -e 's|^[^ ]* |/|' ${old_pkgver:+-e "s|${old_pkgver}|PKGVER|g"} | sort) \
+            <(pacman -Qlp "${pkg}" | sed -e 's|^[^ ]* ||' ${new_pkgver:+-e "s|${new_pkgver}|PKGVER|g"} | sort) || true
         echo "::endgroup::"
 
         echo "::group::[runtime-dependencies] ${pkgname}"
