@@ -33,8 +33,12 @@ _status() {
         success) local -n nameref_color='green'; title='[MSYS2 CI] SUCCESS:' ;;
         message) local -n nameref_color='cyan';  title='[MSYS2 CI]'
     esac
-    printf "\n${nameref_color}${title}${normal} ${status}\n\n"
-    printf "${items:+\t%s\n}" "${items:+${items[@]}}"
+    # format-string safety
+    printf '\n%s%s%s %s\n\n' "${nameref_color}" "${title}" "${normal}" "${status}"
+    # if an array has an empty element, it will print nothing after it
+    if [ "${#items[@]}" -gt 0 ]; then
+        printf '\t%s\n' "${items[@]}"
+    fi
 }
 
 # Run command with status
