@@ -18,10 +18,10 @@ sed -i 's/^CheckSpace/#CheckSpace/g' /etc/pacman.conf
 pacman --noconfirm -Fy
 
 # Enable colors
-normal=$(tput sgr0)
-red=$(tput setaf 1)
-green=$(tput setaf 2)
-cyan=$(tput setaf 6)
+normal=$(tput sgr0 2>/dev/null || true)
+red=$(tput setaf 1 2>/dev/null || true)
+green=$(tput setaf 2 2>/dev/null || true)
+cyan=$(tput setaf 6 2>/dev/null || true)
 
 # Basic status function
 _status() {
