@@ -55,6 +55,11 @@ execute(){
 list_packages() {
     # readarray doesn't work with a plain pipe
     readarray -t packages < <("$DIR/ci-get-build-order.py")
+
+    # readarray returns its own exit status, if ci-get-build-order.py crashes
+    # and outputs nothing, list_packages still succeeds and reports "no changes"
+    # code below propagates exit status of the most recent process substitution ($! is a PID)
+    wait "$!"
 }
 
 pkgver_from_metadata() {
