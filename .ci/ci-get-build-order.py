@@ -33,10 +33,13 @@ def list_changes(*git_args):
 
 def list_packages():
     changes = list_changes("--pretty=format:", "--name-only")
+
+    # if: block resolving from path like foo/bar/PKGBUILD to foo
+    # and failing on: source "foo/PKGBUILD"
     return [
         x.split("/")[0]
         for x in changes
-        if x.endswith("/PKGBUILD") and os.path.exists(x)
+        if x.count("/") == 1 and x.endswith("/PKGBUILD") and os.path.exists(x)
     ]
 
 
