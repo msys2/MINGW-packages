@@ -13,12 +13,18 @@ from contextlib import contextmanager
 from enum import Enum, auto
 from functools import cache
 from pathlib import Path
+from typing import NamedTuple
 
 
 class InstallStatus(Enum):
     OK = auto()
     CONFLICT = auto()
     FAILED = auto()
+
+
+class InstallResult(NamedTuple):
+    status: InstallStatus
+    output: str = ""
 
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -29,6 +35,10 @@ RDEPS_REGEX = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 OPTIONS_REGEX = re.compile(r"options=\((?P<options>[\S ]*)\)")
+CONFLICT_REGEX = re.compile(
+    r"^::\s+(\S+)\s+and\s+(\S+)\s+are in conflict",
+    re.MULTILINE,
+)
 
 REPO_ROOT = Path(__file__).parent.parent
 MINGW_PREFIX = "mingw-w64-ucrt-x86_64"
@@ -97,16 +107,23 @@ def create_and_add_to_repo(repo_dir: Path, pkgs: list[Path]) -> None:
         raise FileNotFoundError(f"Expected repository database at {repo_path}")
 
 
+def refresh_pacman_db() -> None:
+    with gha_group("Refreshing pacman databases"):
+        subprocess.run(
+            ["pacman", "--noprogressbar", "--sync", "--refresh", "--noconfirm"],
+            check=True,
+        )
+
+
 @contextmanager
-def install_package(pkgs: Sequence[str]) -> Generator[InstallStatus]:
+def install_package(pkgs: Sequence[str]) -> Generator[InstallResult]:
     if not pkgs:
-        yield InstallStatus.OK
+        yield InstallResult(InstallStatus.OK)
         return
 
     command = [
         "pacman",
         "--noprogressbar",
-        "--refresh",
         "--sync",
         "--noconfirm",
         "--needed",
@@ -123,16 +140,23 @@ def install_package(pkgs: Sequence[str]) -> Generator[InstallStatus]:
     ]
 
     with gha_group(f"Installing: {', '.join(pkgs)}"):
-        ret = subprocess.run(command, stderr=subprocess.PIPE, text=True, check=False)
-        if ret.stderr:
-            print(ret.stderr, file=sys.stderr, flush=True)
+        ret = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+        output = ret.stdout or ""
+        if output:
+            print(output, end="" if output.endswith("\n") else "\n", flush=True)
 
     if ret.returncode != 0:
-        if "conflicting dependencies" in (ret.stderr or ""):
+        if "conflicting dependencies" in output:
             logger.warning(
                 "Package conflict detected while installing %s.", ", ".join(pkgs)
             )
-            yield InstallStatus.CONFLICT
+            yield InstallResult(InstallStatus.CONFLICT, output)
             return
 
         logger.error(
@@ -140,14 +164,27 @@ def install_package(pkgs: Sequence[str]) -> Generator[InstallStatus]:
             command,
             ret.returncode,
         )
-        yield InstallStatus.FAILED
+        yield InstallResult(InstallStatus.FAILED, output)
         return
 
     try:
-        yield InstallStatus.OK
+        yield InstallResult(InstallStatus.OK, output)
     finally:
         with gha_group(f"Uninstalling: {', '.join(pkgs)}"):
             subprocess.run(uninstall_command, check=False)
+
+
+def find_conflicting_rdep(output: str, rdeps: Sequence[str]) -> str | None:
+    """Return one package from rdeps named in pacman's conflict output, if any."""
+    rdep_set = set(rdeps)
+    for match in CONFLICT_REGEX.finditer(output):
+        for token in (match.group(1), match.group(2)):
+            if token in rdep_set:
+                return token
+            for pkg in rdeps:
+                if token.startswith(f"{pkg}-"):
+                    return pkg
+    return None
 
 
 def get_rdeps(pkg: str) -> list[str]:
@@ -179,26 +216,40 @@ def get_rdeps(pkg: str) -> list[str]:
 
 
 def check_rdeps_batch(pkgname: str, rdeps: Sequence[str]) -> bool:
-    """Install and `pip check` rdeps, bisecting automatically on package conflicts."""
+    """Install and `pip check` rdeps, peeling off conflicting packages automatically."""
     if not rdeps:
         return True
 
-    with install_package(rdeps) as status:
-        if status is InstallStatus.OK:
+    with install_package(rdeps) as result:
+        if result.status is InstallStatus.OK:
             with gha_group(f"Pip Output (with rdeps {', '.join(rdeps)}): {pkgname}"):
                 return run_pip_check(pkgname)
 
-        if status is InstallStatus.CONFLICT and len(rdeps) > 1:
-            mid = len(rdeps) // 2
+        if result.status is InstallStatus.CONFLICT and len(rdeps) > 1:
+            culprit = find_conflicting_rdep(result.output, rdeps)
+            if culprit is not None:
+                rest = [p for p in rdeps if p != culprit]
+                logger.info(
+                    "Deferring conflicting rdep %s; retrying %d others.",
+                    culprit,
+                    len(rest),
+                )
+                rest_ok = check_rdeps_batch(pkgname, rest)
+                culprit_ok = check_rdeps_batch(pkgname, [culprit])
+                return rest_ok and culprit_ok
+
+            # Transitive conflict fallback: stride split separates adjacent names
+            even_batch = rdeps[::2]
+            odd_batch = rdeps[1::2]
             logger.info(
-                "Splitting %d conflicting rdeps into batches of %d and %d.",
+                "Transitive conflict in %d rdeps; stride-splitting into batches of %d and %d.",
                 len(rdeps),
-                mid,
-                len(rdeps) - mid,
+                len(even_batch),
+                len(odd_batch),
             )
-            left_ok = check_rdeps_batch(pkgname, rdeps[:mid])
-            right_ok = check_rdeps_batch(pkgname, rdeps[mid:])
-            return left_ok and right_ok
+            even_ok = check_rdeps_batch(pkgname, even_batch)
+            odd_ok = check_rdeps_batch(pkgname, odd_batch)
+            return even_ok and odd_ok
 
         # Single-package conflict (e.g. conflicts with pkgname itself) or download/other error
         logger.error(
@@ -310,11 +361,12 @@ def main(artifacts_dir: Path) -> None:
         sys.exit(exit_code)
 
     logger.info("Strip option check is done.")
+    refresh_pacman_db()
 
     for pkgloc in pkgs:
         pkgname = get_pkg_name(pkgloc)
-        with install_package([pkgname]) as status:
-            if status is not InstallStatus.OK:
+        with install_package([pkgname]) as result:
+            if result.status is not InstallStatus.OK:
                 logger.error(
                     "::error :: Could not install %s; dependency check failed.",
                     pkgname,
