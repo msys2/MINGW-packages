@@ -129,7 +129,7 @@ def install_package(pkgs: Sequence[str]) -> Generator[bool]:
 
 
 def get_rdeps(pkg: str) -> list[str]:
-    with gha_group("Finding Reverse Dependency"):
+    with gha_group(f"Finding reverse dependencies for {pkg}"):
         p = subprocess.run(
             ["pacman", "-Sii", pkg],
             capture_output=True,
@@ -137,47 +137,42 @@ def get_rdeps(pkg: str) -> list[str]:
             check=False,
         )
         if p.returncode != 0:
-            logger.info("Looks like a new package.")
+            logger.info("%s not found in sync db; querying local db.", pkg)
             p = subprocess.run(
                 ["pacman", "-Qi", pkg],
                 capture_output=True,
                 text=True,
                 check=False,
             )
-        logger.info("Installing rdeps of: %s", pkg)
-        logger.info("Pkgname: %s", pkg)
-        logger.info("Installing Package.")
-        ret = p.stdout
-        rdeps_re = RDEPS_REGEX.search(ret)
-        if rdeps_re:
-            pkgs_str = rdeps_re.group("rdeps")
-            pkgs = [i.strip() for i in pkgs_str.split() if i != "None"]
-            logger.info("Rdeps parsed: %s", pkgs)
-            return pkgs
-        else:
-            raise ValueError(f"Unable to parse Pacman output: {ret}")
+        if p.returncode != 0:
+            raise RuntimeError(f"pacman failed for {pkg}: {p.stderr.strip()}")
+
+        match = RDEPS_REGEX.search(p.stdout)
+        if not match:
+            raise ValueError(f"Unable to parse pacman output:\n{p.stdout}")
+
+        pkgs = [name for name in match.group("rdeps").split() if name != "None"]
+        logger.info("Reverse dependencies for %s: %s", pkg, pkgs)
+        return pkgs
 
 
-def run_pip_check(pkg: str) -> None:
+def run_pip_check(pkg: str) -> bool:
     p = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "check",
-        ],
+        [sys.executable, "-m", "pip", "check"],
         capture_output=True,
         text=True,
         check=False,
     )
     if p.returncode != 0:
-        logger.error("Pip Check Failed for %s", pkg)
-        logger.error("Running `pip check` didn't suceed. Maybe missing dependencies?")
-        logger.error("Here is what it failed.")
-        logger.error(p.stdout)
-        logger.error("::error :: %s", p.stderr)
-        sys.exit(1)
-    logger.info("All dependencies are correct satisfied for %s", pkg)
+        logger.error("`pip check` failed for %s (possible missing dependencies).", pkg)
+        if p.stdout.strip():
+            logger.error("::error :: %s", p.stdout.strip())
+        if p.stderr.strip():
+            logger.error("::error :: %s", p.stderr.strip())
+        return False
+
+    logger.info("All dependencies are satisfied for %s.", pkg)
+    return True
 
 
 @contextmanager
@@ -269,7 +264,8 @@ def main(artifacts_dir: Path) -> None:
             if not installed:
                 continue
             with gha_group(f"Pip Output (without reverse dependencies): {pkgloc.name}"):
-                run_pip_check(pkgname)
+                if not run_pip_check(pkgname):
+                    sys.exit(1)
             rdeps = get_rdeps(pkgname)
             if not rdeps:
                 continue
@@ -277,7 +273,8 @@ def main(artifacts_dir: Path) -> None:
                 if not rdeps_installed:
                     continue
                 with gha_group(f"Pip Output (with reverse dependencies): {pkgloc.name}"):
-                    run_pip_check(pkgname)
+                    if not run_pip_check(pkgname):
+                        sys.exit(1)
 
 
 def check_whether_we_should_run(artifacts_dir: Path) -> bool:
