@@ -132,7 +132,9 @@ def install_package(pkg: list[str] | Path) -> Generator[None]:
         ret = subprocess.run(command, check=False)
     if ret.returncode != 0:
         logger.error(
-            "::error :: %s failed to run. Returned return code: %s", command, ret.returncode
+            "::error :: %s failed to run. Returned return code: %s",
+            command,
+            ret.returncode,
         )
         logger.info("::error :: Failed to Install, skipping the test.")
     yield
@@ -204,7 +206,9 @@ def gha_group(title: str) -> Generator[None]:
 
 
 def gha_error(filename: Path, title: str, message: str) -> None:
-    print(f"::error file={filename.relative_to(REPO_ROOT).as_posix()},title={title}::{message}")
+    print(
+        f"::error file={filename.relative_to(REPO_ROOT).as_posix()},title={title}::{message}"
+    )
     stdout.flush()
 
 
