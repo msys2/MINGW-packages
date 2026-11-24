@@ -4,26 +4,38 @@ import argparse
 import logging
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tarfile
-import tempfile
 import textwrap
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
+from enum import Enum, auto
 from functools import cache
 from pathlib import Path
-from sys import stdout
+
+
+class InstallStatus(Enum):
+    OK = auto()
+    CONFLICT = auto()
+    FAILED = auto()
+
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
 RDEPS_REGEX = re.compile(
-    r"Repository\s*: \s*[\n\S\s]*\nRequired By\s*:\s*(?P<rdeps>[\s\S]*)Optional For\s*:\s*"
+    r"^Required By\s*:\s*(?P<rdeps>.*?)\nOptional For\s*:",
+    re.MULTILINE | re.DOTALL,
 )
 OPTIONS_REGEX = re.compile(r"options=\((?P<options>[\S ]*)\)")
+
 REPO_ROOT = Path(__file__).parent.parent
+MINGW_PREFIX = "mingw-w64-ucrt-x86_64"
+ENV_PREFIX = "ucrt64"
+PYTHON_PKG = f"{MINGW_PREFIX}-python"
+PIP_PKG = f"{MINGW_PREFIX}-python-pip"
+INSTALLER_PKG = f"{MINGW_PREFIX}-python-installer"
 
 
 def convert_win2unix_path(winpath: Path | str) -> str:
@@ -36,6 +48,7 @@ def convert_win2unix_path(winpath: Path | str) -> str:
     return p.stdout.strip()
 
 
+@cache
 def get_msys2_root() -> str:
     p = subprocess.run(
         ["cygpath", "-w", "/"],
@@ -56,21 +69,18 @@ def get_pacdb_database(repo_dir: Path):
 def create_and_add_to_repo(repo_dir: Path, pkgs: list[Path]) -> None:
     repo_dir.mkdir(exist_ok=True)
     conf = Path(get_msys2_root(), "etc/pacman.conf")
-    with conf.open("r", encoding="utf-8") as h:
-        text = h.read()
-        uri = repo_dir.as_uri()
-        if uri not in text:
-            with open(conf, "w", encoding="utf-8") as h2:
-                h2.write(
-                    textwrap.dedent(
-                        f"""\
-                        [ci]
-                        Server={uri}
-                        SigLevel=Never
-                        """
-                    )
-                )
-                h2.write(text)
+    text = conf.read_text(encoding="utf-8")
+    uri = repo_dir.as_uri()
+    if uri not in text:
+        header = textwrap.dedent(
+            f"""\
+            [ci]
+            Server={uri}
+            SigLevel=Never
+            """
+        )
+        conf.write_text(header + text, encoding="utf-8")
+
     repo_path = repo_dir / "ci.db.tar.gz"
     with gha_group("Create temporary Repository:"):
         subprocess.run(
@@ -83,67 +93,65 @@ def create_and_add_to_repo(repo_dir: Path, pkgs: list[Path]) -> None:
             check=True,
             cwd=repo_dir,
         )
-    assert repo_path.exists()
+    if not repo_path.exists():
+        raise FileNotFoundError(f"Expected repository database at {repo_path}")
 
 
 @contextmanager
-def install_package(pkg: list[str] | Path) -> Generator[None]:
-    if isinstance(pkg, Path):
-        command = [
-            "pacman",
-            "--noprogressbar",
-            "--refresh",
-            "--sync",
-            "--noconfirm",
-            "--needed",
-            "mingw-w64-ucrt-x86_64-python-pip",
-            get_pkg_name(pkg),
-        ]
-        uninstall_command = [
-            "pacman",
-            "--noprogressbar",
-            "--remove",
-            "--noconfirm",
-            "-cns",
-            get_pkg_name(pkg),
-        ]
-    else:
-        if len(pkg) != 0:
-            command = [
-                "pacman",
-                "--sync",
-                "--refresh",
-                "--noconfirm",
-                "--needed",
-                "mingw-w64-ucrt-x86_64-python-pip",
-                *pkg,
-            ]
-            uninstall_command = [
-                "pacman",
-                "--noprogressbar",
-                "--remove",
-                "--noconfirm",
-                "-cns",
-                *pkg,
-            ]
-        else:
-            command = uninstall_command = ["true"]
-    with gha_group(f"Installing: {pkg}"):
-        ret = subprocess.run(command, check=False)
+def install_package(pkgs: Sequence[str]) -> Generator[InstallStatus]:
+    if not pkgs:
+        yield InstallStatus.OK
+        return
+
+    command = [
+        "pacman",
+        "--noprogressbar",
+        "--refresh",
+        "--sync",
+        "--noconfirm",
+        "--needed",
+        PIP_PKG,
+        *pkgs,
+    ]
+    uninstall_command = [
+        "pacman",
+        "--noprogressbar",
+        "--remove",
+        "--noconfirm",
+        "-cns",
+        *pkgs,
+    ]
+
+    with gha_group(f"Installing: {', '.join(pkgs)}"):
+        ret = subprocess.run(command, stderr=subprocess.PIPE, text=True, check=False)
+        if ret.stderr:
+            print(ret.stderr, file=sys.stderr, flush=True)
+
     if ret.returncode != 0:
+        if "conflicting dependencies" in (ret.stderr or ""):
+            logger.warning(
+                "Package conflict detected while installing %s.", ", ".join(pkgs)
+            )
+            yield InstallStatus.CONFLICT
+            return
+
         logger.error(
-            "::error :: %s failed to run. Returned return code: %s",
+            "::error :: %s failed with return code %s.",
             command,
             ret.returncode,
         )
-        logger.info("::error :: Failed to Install, skipping the test.")
-    yield
-    with gha_group(f"Uninstalling: {pkg}"):
-        subprocess.run(uninstall_command, check=False)
+        yield InstallStatus.FAILED
+        return
+
+    try:
+        yield InstallStatus.OK
+    finally:
+        with gha_group(f"Uninstalling: {', '.join(pkgs)}"):
+            subprocess.run(uninstall_command, check=False)
 
 
 def get_rdeps(pkg: str) -> list[str]:
-    with gha_group("Finding Reverse Dependency"):
+    with gha_group(f"Finding reverse dependencies for {pkg}"):
         p = subprocess.run(
             ["pacman", "-Sii", pkg],
             capture_output=True,
@@ -151,107 +159,128 @@ def get_rdeps(pkg: str) -> list[str]:
             check=False,
         )
         if p.returncode != 0:
-            logger.info("Looks like a new package.")
+            logger.info("%s not found in sync db; querying local db.", pkg)
             p = subprocess.run(
                 ["pacman", "-Qi", pkg],
                 capture_output=True,
                 text=True,
                 check=False,
             )
-        logger.info("Installing rdeps of: %s", pkg)
-        logger.info("Pkgname: %s", pkg)
-        logger.info("Installing Package.")
-        ret = p.stdout
-        rdeps_re = RDEPS_REGEX.search(ret)
-        if rdeps_re:
-            pkgs_str = rdeps_re.group("rdeps")
-            pkgs = [i.strip() for i in pkgs_str.split() if i != "None"]
-            logger.info("Rdeps parsed: %s", pkgs)
-            return pkgs
-        else:
-            raise ValueError(f"Unable to parse Pacman output: {ret}")
+        if p.returncode != 0:
+            raise RuntimeError(f"pacman failed for {pkg}: {p.stderr.strip()}")
+
+        match = RDEPS_REGEX.search(p.stdout)
+        if not match:
+            raise ValueError(f"Unable to parse pacman output:\n{p.stdout}")
+
+        pkgs = [name for name in match.group("rdeps").split() if name != "None"]
+        logger.info("Reverse dependencies for %s: %s", pkg, pkgs)
+        return pkgs
 
 
-def run_pip_check(pkg: str) -> None:
+def check_rdeps_batch(pkgname: str, rdeps: Sequence[str]) -> bool:
+    """Install and `pip check` rdeps, bisecting automatically on package conflicts."""
+    if not rdeps:
+        return True
+
+    with install_package(rdeps) as status:
+        if status is InstallStatus.OK:
+            with gha_group(f"Pip Output (with rdeps {', '.join(rdeps)}): {pkgname}"):
+                return run_pip_check(pkgname)
+
+        if status is InstallStatus.CONFLICT and len(rdeps) > 1:
+            mid = len(rdeps) // 2
+            logger.info(
+                "Splitting %d conflicting rdeps into batches of %d and %d.",
+                len(rdeps),
+                mid,
+                len(rdeps) - mid,
+            )
+            left_ok = check_rdeps_batch(pkgname, rdeps[:mid])
+            right_ok = check_rdeps_batch(pkgname, rdeps[mid:])
+            return left_ok and right_ok
+
+        # Single-package conflict (e.g. conflicts with pkgname itself) or download/other error
+        logger.error(
+            "::error :: Could not install rdeps %s for %s; dependency check incomplete.",
+            list(rdeps),
+            pkgname,
+        )
+        return False
+
+
+def run_pip_check(pkg: str) -> bool:
     p = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "check",
-        ],
+        [sys.executable, "-m", "pip", "check"],
         capture_output=True,
         text=True,
         check=False,
     )
     if p.returncode != 0:
-        logger.error("Pip Check Failed for %s", pkg)
-        logger.error("Running `pip check` didn't suceed. Maybe missing dependencies?")
-        logger.error("Here is what it failed.")
-        logger.error(p.stdout)
-        logger.error("::error :: %s", p.stderr)
-        sys.exit(1)
-    logger.info("All dependencies are correct satisfied for %s", pkg)
+        logger.error("`pip check` failed for %s (possible missing dependencies).", pkg)
+        if p.stdout.strip():
+            logger.error("::error :: %s", p.stdout.strip())
+        if p.stderr.strip():
+            logger.error("::error :: %s", p.stderr.strip())
+        return False
+
+    logger.info("All dependencies are satisfied for %s.", pkg)
+    return True
 
 
 @contextmanager
 def gha_group(title: str) -> Generator[None]:
-    print(f"\n::group::{title}")
-    stdout.flush()
+    print(f"\n::group::{title}", flush=True)
     try:
         yield
     finally:
-        print("::endgroup::")
-        stdout.flush()
+        print("::endgroup::", flush=True)
 
 
 def gha_error(filename: Path, title: str, message: str) -> None:
     print(
-        f"::error file={filename.relative_to(REPO_ROOT).as_posix()},title={title}::{message}"
+        f"::error file={filename.relative_to(REPO_ROOT).as_posix()},title={title}::{message}",
+        flush=True,
     )
-    stdout.flush()
 
 
 def get_pkg_name(pkgloc: Path) -> str:
     return "-".join(pkgloc.name.split("-")[:-3])
 
 
-def get_pkgbuild_file(repo_dir: Path, pkg_name: str) -> Path:
+def get_pkg(repo_dir: Path, pkg_name: str):
     db = get_pacdb_database(repo_dir)
     pkg = db.get_pkg(pkg_name)
     if pkg is None:
         raise ValueError(f"Unable to find {pkg_name} in the database.")
-    return REPO_ROOT / pkg.base / "PKGBUILD"
+    return pkg
+
+
+def get_pkgbuild_file(repo_dir: Path, pkg_name: str) -> Path:
+    return REPO_ROOT / get_pkg(repo_dir, pkg_name).base / "PKGBUILD"
 
 
 def check_strip_disabled_for_pkg(repo_dir: Path, pkg_name: str) -> bool:
     pkgbuild_file = get_pkgbuild_file(repo_dir, pkg_name)
     if not pkgbuild_file.exists():
-        raise ValueError(
+        raise FileNotFoundError(
             f"Unable to find PKGBUILD for {pkg_name}: tried {pkgbuild_file}"
         )
-    with open(pkgbuild_file, "r", encoding="utf-8") as h:
-        text = h.read()
-        match = OPTIONS_REGEX.search(text)
-        if match and "!strip" in match.group("options"):
-            return True
-    return False
+    text = pkgbuild_file.read_text(encoding="utf-8")
+    match = OPTIONS_REGEX.search(text)
+    return bool(match and "!strip" in match.group("options"))
 
 
 def check_whether_using_python_installer(repo_dir: Path, pkg_name: str) -> bool:
-    db = get_pacdb_database(repo_dir)
-    pkg = db.get_pkg(pkg_name)
-    if pkg is None:
-        raise ValueError(f"Unable to find {pkg_name} in the database.")
-    return "mingw-w64-ucrt-x86_64-python-installer" in pkg.makedepends
+    pkg = get_pkg(repo_dir, pkg_name)
+    return INSTALLER_PKG in pkg.makedepends
 
 
 def check_whether_files_in_bin_folder(repo_dir: Path, pkg_name: str) -> bool:
-    db = get_pacdb_database(repo_dir)
-    pkg = db.get_pkg(pkg_name)
-    if pkg is None:
-        raise ValueError(f"Unable to find {pkg_name} in the database.")
-    return any(i.startswith("ucrt64/bin") and i.endswith(".exe") for i in pkg.files)
+    pkg = get_pkg(repo_dir, pkg_name)
+    return any(
+        i.startswith(f"{ENV_PREFIX}/bin/") and i.endswith(".exe") for i in pkg.files
+    )
 
 
 def main(artifacts_dir: Path) -> None:
@@ -280,49 +309,55 @@ def main(artifacts_dir: Path) -> None:
     if exit_code != 0:
         sys.exit(exit_code)
 
-    print("Strip option check is done.")
+    logger.info("Strip option check is done.")
 
     for pkgloc in pkgs:
-        with install_package(pkgloc):
-            pkgname = get_pkg_name(pkgloc)
+        pkgname = get_pkg_name(pkgloc)
+        with install_package([pkgname]) as status:
+            if status is not InstallStatus.OK:
+                logger.error(
+                    "::error :: Could not install %s; dependency check failed.",
+                    pkgname,
+                )
+                exit_code = 1
+                continue
+
             with gha_group(f"Pip Output (without reverse dependencies): {pkgloc.name}"):
-                run_pip_check(pkgname)
+                if not run_pip_check(pkgname):
+                    exit_code = 1
+
             rdeps = get_rdeps(pkgname)
-            with (
-                install_package(rdeps),
-                gha_group(f"Pip Output (with reverse dependencies): {pkgloc.name}"),
-            ):
-                run_pip_check(pkgname)
+            if not check_rdeps_batch(pkgname, rdeps):
+                exit_code = 1
+
+    if exit_code != 0:
+        sys.exit(exit_code)
 
 
 def check_whether_we_should_run(artifacts_dir: Path) -> bool:
-    if not artifacts_dir.exists():
+    if not artifacts_dir.is_dir():
         return False
-    for pkgloc in artifacts_dir.glob("*.pkg.tar.*"):
+
+    pkgs = list(artifacts_dir.glob("*.pkg.tar.*"))
+    candidates: list[Path] = []
+
+    for pkgloc in pkgs:
         pkgname = get_pkg_name(pkgloc)
         if "-python-" in pkgname:
             return True
-        elif pkgname == "mingw-w64-ucrt-x86_64-python":
-            return False
-    # now this is complicated
-    # need to find file listing in the package.
-    # try using zstd, it's installed by default on GHA machines
-    for pkgloc in artifacts_dir.glob("*.pkg.tar.*"):
-        with tempfile.TemporaryDirectory() as tempdir:
-            shutil.copy(pkgloc, tempdir)
-            subprocess.run(
-                ["zstd", "-d", str(Path(tempdir, pkgloc.name))],
-                check=True,
-                cwd=tempdir,
-            )
-            with tarfile.open(Path(tempdir, pkgloc.stem), mode="r") as tar:
-                for mem in tar.getmembers():
-                    if "ucrt64/lib/python" in mem.name:
-                        return True
+        if pkgname == PYTHON_PKG:
+            continue
+        candidates.append(pkgloc)
+
+    for pkgloc in candidates:
+        with tarfile.open(pkgloc, mode="r:*") as tar:
+            if any(f"{ENV_PREFIX}/lib/python" in name for name in tar.getnames()):
+                return True
+
     return False
 
 
-if __name__ == "__main__":
+def cli(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="After install checks.")
     parser.add_argument(
         "--whether-to-run",
@@ -335,7 +370,7 @@ if __name__ == "__main__":
         help="Directory containing the artifacts.",
         type=Path,
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     artifacts_dir = args.directory.resolve()
 
     if args.run:
@@ -348,7 +383,11 @@ if __name__ == "__main__":
                 print(output, file=f)
         else:
             print(output)
+        return 0
 
-        sys.exit(0)
-    else:
-        main(artifacts_dir)
+    main(artifacts_dir)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli())
