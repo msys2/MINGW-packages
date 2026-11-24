@@ -26,8 +26,22 @@ def get_toplevel() -> str:
     return run("cygpath", "-m", path)
 
 
+def get_base_ref() -> str:
+    for ref in ("upstream/master", "origin/master", "master"):
+        res = subprocess.run(
+            ("git", "rev-parse", "--verify", "--quiet", ref),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if res.returncode == 0:
+            return ref
+    return "HEAD^"
+
+
 def list_changes(*git_args: str) -> list[str]:
-    out = run("git", "log", *git_args, "upstream/master..").splitlines()
+    base = get_base_ref()
+    out = run("git", "log", *git_args, f"{base}..").splitlines()
     out += run("git", "log", *git_args, "HEAD^..").splitlines()
     return list(dict.fromkeys(x.split("::")[-1] for x in sorted(out)))
 
@@ -104,5 +118,6 @@ def get_build_order(
 
 if __name__ == "__main__":
     os.chdir(get_toplevel())
-    packages = "\n".join(get_build_order(list_packages()))
+    targets = sys.argv[1:] or list_packages()
+    packages = "\n".join(get_build_order(targets))
     sys.stdout.buffer.write(packages.encode("utf-8"))  # Prevent CRLF newlines
