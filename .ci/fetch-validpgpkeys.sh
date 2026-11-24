@@ -7,7 +7,6 @@ set -e
 
 _keyservers=(
     "keyserver.ubuntu.com"
-    "keys.gnupg.net"
     "pgp.mit.edu"
     "keys.openpgp.org"
 )
