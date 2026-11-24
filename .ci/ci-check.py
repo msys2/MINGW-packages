@@ -10,8 +10,16 @@ import tarfile
 import textwrap
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
+from enum import Enum, auto
 from functools import cache
 from pathlib import Path
+
+
+class InstallStatus(Enum):
+    OK = auto()
+    CONFLICT = auto()
+    FAILED = auto()
+
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -90,9 +98,9 @@ def create_and_add_to_repo(repo_dir: Path, pkgs: list[Path]) -> None:
 
 
 @contextmanager
-def install_package(pkgs: Sequence[str]) -> Generator[bool]:
+def install_package(pkgs: Sequence[str]) -> Generator[InstallStatus]:
     if not pkgs:
-        yield True
+        yield InstallStatus.OK
         return
 
     command = [
@@ -115,20 +123,28 @@ def install_package(pkgs: Sequence[str]) -> Generator[bool]:
     ]
 
     with gha_group(f"Installing: {', '.join(pkgs)}"):
-        ret = subprocess.run(command, check=False)
+        ret = subprocess.run(command, stderr=subprocess.PIPE, text=True, check=False)
+        if ret.stderr:
+            print(ret.stderr, file=sys.stderr, flush=True)
 
     if ret.returncode != 0:
+        if "conflicting dependencies" in (ret.stderr or ""):
+            logger.warning(
+                "Package conflict detected while installing %s.", ", ".join(pkgs)
+            )
+            yield InstallStatus.CONFLICT
+            return
+
         logger.error(
-            "::error :: %s failed to run. Returned return code: %s",
+            "::error :: %s failed with return code %s.",
             command,
             ret.returncode,
         )
-        logger.error("::error :: Failed to install, skipping the test.")
-        yield False
+        yield InstallStatus.FAILED
         return
 
     try:
-        yield True
+        yield InstallStatus.OK
     finally:
         with gha_group(f"Uninstalling: {', '.join(pkgs)}"):
             subprocess.run(uninstall_command, check=False)
@@ -160,6 +176,37 @@ def get_rdeps(pkg: str) -> list[str]:
         pkgs = [name for name in match.group("rdeps").split() if name != "None"]
         logger.info("Reverse dependencies for %s: %s", pkg, pkgs)
         return pkgs
+
+
+def check_rdeps_batch(pkgname: str, rdeps: Sequence[str]) -> bool:
+    """Install and `pip check` rdeps, bisecting automatically on package conflicts."""
+    if not rdeps:
+        return True
+
+    with install_package(rdeps) as status:
+        if status is InstallStatus.OK:
+            with gha_group(f"Pip Output (with rdeps {', '.join(rdeps)}): {pkgname}"):
+                return run_pip_check(pkgname)
+
+        if status is InstallStatus.CONFLICT and len(rdeps) > 1:
+            mid = len(rdeps) // 2
+            logger.info(
+                "Splitting %d conflicting rdeps into batches of %d and %d.",
+                len(rdeps),
+                mid,
+                len(rdeps) - mid,
+            )
+            left_ok = check_rdeps_batch(pkgname, rdeps[:mid])
+            right_ok = check_rdeps_batch(pkgname, rdeps[mid:])
+            return left_ok and right_ok
+
+        # Single-package conflict (e.g. conflicts with pkgname itself) or download/other error
+        logger.error(
+            "::error :: Could not install rdeps %s for %s; dependency check incomplete.",
+            list(rdeps),
+            pkgname,
+        )
+        return False
 
 
 def run_pip_check(pkg: str) -> bool:
@@ -266,23 +313,25 @@ def main(artifacts_dir: Path) -> None:
 
     for pkgloc in pkgs:
         pkgname = get_pkg_name(pkgloc)
-        with install_package([pkgname]) as installed:
-            if not installed:
+        with install_package([pkgname]) as status:
+            if status is not InstallStatus.OK:
+                logger.error(
+                    "::error :: Could not install %s; dependency check failed.",
+                    pkgname,
+                )
+                exit_code = 1
                 continue
+
             with gha_group(f"Pip Output (without reverse dependencies): {pkgloc.name}"):
                 if not run_pip_check(pkgname):
-                    sys.exit(1)
+                    exit_code = 1
+
             rdeps = get_rdeps(pkgname)
-            if not rdeps:
-                continue
-            with install_package(rdeps) as rdeps_installed:
-                if not rdeps_installed:
-                    continue
-                with gha_group(
-                    f"Pip Output (with reverse dependencies): {pkgloc.name}"
-                ):
-                    if not run_pip_check(pkgname):
-                        sys.exit(1)
+            if not check_rdeps_batch(pkgname, rdeps):
+                exit_code = 1
+
+    if exit_code != 0:
+        sys.exit(exit_code)
 
 
 def check_whether_we_should_run(artifacts_dir: Path) -> bool:
