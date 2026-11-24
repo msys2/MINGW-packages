@@ -260,16 +260,18 @@ def main(artifacts_dir: Path) -> None:
     exit_code = 0
     for pkg_loc in pkgs:
         pkg_name = get_pkg_name(pkg_loc)
-        if check_whether_using_python_installer(artifacts_dir, pkg_name):
-            if check_whether_files_in_bin_folder(artifacts_dir, pkg_name):
-                if not check_strip_disabled_for_pkg(artifacts_dir, pkg_name):
-                    gha_error(
-                        get_pkgbuild_file(artifacts_dir, pkg_name),
-                        "Strip option is not disabled",
-                        f"Package `{pkg_name}` is using `python-installer` and has executables "
-                        "but strip option is not disabled in the PKGBUILD.",
-                    )
-                    exit_code = 1
+        if (
+            check_whether_using_python_installer(artifacts_dir, pkg_name)
+            and check_whether_files_in_bin_folder(artifacts_dir, pkg_name)
+            and not check_strip_disabled_for_pkg(artifacts_dir, pkg_name)
+        ):
+            gha_error(
+                get_pkgbuild_file(artifacts_dir, pkg_name),
+                "Strip option is not disabled",
+                f"Package `{pkg_name}` is using `python-installer` and has executables "
+                "but strip option is not disabled in the PKGBUILD.",
+            )
+            exit_code = 1
 
     if exit_code != 0:
         sys.exit(exit_code)
