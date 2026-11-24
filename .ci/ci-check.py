@@ -22,7 +22,7 @@ except ImportError:
     pacdb = None
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 TEMP_REPO_PATH = ARTIFACTS_LOCATION = None
 RDEPS_REGEX = re.compile(r"Repository\s*: \s*[\n\S\s]*\nRequired By\s*:\s*(?P<rdeps>[\s\S]*)Optional For\s*:\s*")
@@ -30,7 +30,7 @@ OPTIONS_REGEX = re.compile(r"options=\((?P<options>[\S ]*)\)")
 REPO_ROOT = Path(__file__).parent.parent
 
 
-def convert_win2unix_path(winpath: typing.Union[Path, str]):
+def convert_win2unix_path(winpath: Path | str):
     p = subprocess.run(
         ["cygpath", "-u", str(winpath)],
         capture_output=True,
@@ -55,7 +55,7 @@ def get_pacdb_database():
     return pacdb.Database("ci", TEMP_REPO_PATH / "ci.files.tar.gz")
 
 
-def create_and_add_to_repo(pkgs: typing.List[Path]) -> None:
+def create_and_add_to_repo(pkgs: list[Path]) -> None:
     TEMP_REPO_PATH.mkdir(exist_ok=True)
     conf = Path(get_msys2_root(), "etc/pacman.conf")
     with conf.open("r", encoding="utf-8") as h:
@@ -89,7 +89,7 @@ def create_and_add_to_repo(pkgs: typing.List[Path]) -> None:
 
 
 @contextmanager
-def install_package(pkg: typing.Union[typing.List[str], Path]) -> typing.Generator:
+def install_package(pkg: list[str] | Path) -> typing.Generator:
     if isinstance(pkg, Path):
         command = [
             "pacman",
@@ -142,8 +142,8 @@ def install_package(pkg: typing.Union[typing.List[str], Path]) -> typing.Generat
         ret = subprocess.run(uninstall_command)
 
 
-def get_rdeps(pkg: str) -> typing.List[str]:
-    with gha_group(f"Finding Reverse Dependency"):
+def get_rdeps(pkg: str) -> list[str]:
+    with gha_group("Finding Reverse Dependency"):
         p = subprocess.run(
             ["pacman", "-Sii", pkg],
             capture_output=True,
