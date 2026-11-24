@@ -12,7 +12,6 @@ from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
-from sys import stdout
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -22,7 +21,13 @@ RDEPS_REGEX = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 OPTIONS_REGEX = re.compile(r"options=\((?P<options>[\S ]*)\)")
+
 REPO_ROOT = Path(__file__).parent.parent
+MINGW_PREFIX = "mingw-w64-ucrt-x86_64"
+ENV_PREFIX = "ucrt64"
+PYTHON_PKG = f"{MINGW_PREFIX}-python"
+PIP_PKG = f"{MINGW_PREFIX}-python-pip"
+INSTALLER_PKG = f"{MINGW_PREFIX}-python-installer"
 
 
 def convert_win2unix_path(winpath: Path | str) -> str:
@@ -35,6 +40,7 @@ def convert_win2unix_path(winpath: Path | str) -> str:
     return p.stdout.strip()
 
 
+@cache
 def get_msys2_root() -> str:
     p = subprocess.run(
         ["cygpath", "-w", "/"],
@@ -96,7 +102,7 @@ def install_package(pkgs: Sequence[str]) -> Generator[bool]:
         "--sync",
         "--noconfirm",
         "--needed",
-        "mingw-w64-ucrt-x86_64-python-pip",
+        PIP_PKG,
         *pkgs,
     ]
     uninstall_command = [
@@ -177,20 +183,18 @@ def run_pip_check(pkg: str) -> bool:
 
 @contextmanager
 def gha_group(title: str) -> Generator[None]:
-    print(f"\n::group::{title}")
-    stdout.flush()
+    print(f"\n::group::{title}", flush=True)
     try:
         yield
     finally:
-        print("::endgroup::")
-        stdout.flush()
+        print("::endgroup::", flush=True)
 
 
 def gha_error(filename: Path, title: str, message: str) -> None:
     print(
-        f"::error file={filename.relative_to(REPO_ROOT).as_posix()},title={title}::{message}"
+        f"::error file={filename.relative_to(REPO_ROOT).as_posix()},title={title}::{message}",
+        flush=True,
     )
-    stdout.flush()
 
 
 def get_pkg_name(pkgloc: Path) -> str:
@@ -222,12 +226,14 @@ def check_strip_disabled_for_pkg(repo_dir: Path, pkg_name: str) -> bool:
 
 def check_whether_using_python_installer(repo_dir: Path, pkg_name: str) -> bool:
     pkg = get_pkg(repo_dir, pkg_name)
-    return "mingw-w64-ucrt-x86_64-python-installer" in pkg.makedepends
+    return INSTALLER_PKG in pkg.makedepends
 
 
 def check_whether_files_in_bin_folder(repo_dir: Path, pkg_name: str) -> bool:
     pkg = get_pkg(repo_dir, pkg_name)
-    return any(i.startswith("ucrt64/bin/") and i.endswith(".exe") for i in pkg.files)
+    return any(
+        i.startswith(f"{ENV_PREFIX}/bin/") and i.endswith(".exe") for i in pkg.files
+    )
 
 
 def main(artifacts_dir: Path) -> None:
@@ -256,7 +262,7 @@ def main(artifacts_dir: Path) -> None:
     if exit_code != 0:
         sys.exit(exit_code)
 
-    print("Strip option check is done.")
+    logger.info("Strip option check is done.")
 
     for pkgloc in pkgs:
         pkgname = get_pkg_name(pkgloc)
@@ -272,7 +278,9 @@ def main(artifacts_dir: Path) -> None:
             with install_package(rdeps) as rdeps_installed:
                 if not rdeps_installed:
                     continue
-                with gha_group(f"Pip Output (with reverse dependencies): {pkgloc.name}"):
+                with gha_group(
+                    f"Pip Output (with reverse dependencies): {pkgloc.name}"
+                ):
                     if not run_pip_check(pkgname):
                         sys.exit(1)
 
@@ -288,19 +296,19 @@ def check_whether_we_should_run(artifacts_dir: Path) -> bool:
         pkgname = get_pkg_name(pkgloc)
         if "-python-" in pkgname:
             return True
-        if pkgname == "mingw-w64-ucrt-x86_64-python":
+        if pkgname == PYTHON_PKG:
             continue
         candidates.append(pkgloc)
 
     for pkgloc in candidates:
         with tarfile.open(pkgloc, mode="r:*") as tar:
-            if any("ucrt64/lib/python" in name for name in tar.getnames()):
+            if any(f"{ENV_PREFIX}/lib/python" in name for name in tar.getnames()):
                 return True
 
     return False
 
 
-if __name__ == "__main__":
+def cli(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="After install checks.")
     parser.add_argument(
         "--whether-to-run",
@@ -313,7 +321,7 @@ if __name__ == "__main__":
         help="Directory containing the artifacts.",
         type=Path,
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     artifacts_dir = args.directory.resolve()
 
     if args.run:
@@ -326,7 +334,11 @@ if __name__ == "__main__":
                 print(output, file=f)
         else:
             print(output)
+        return 0
 
-        sys.exit(0)
-    else:
-        main(artifacts_dir)
+    main(artifacts_dir)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli())
