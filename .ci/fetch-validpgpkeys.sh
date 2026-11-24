@@ -7,8 +7,8 @@ set -e
 
 _keyservers=(
     "keyserver.ubuntu.com"
-    "pgp.mit.edu"
     "keys.openpgp.org"
+    "pgp.surf.nl"
 )
 
 for key in "${validpgpkeys[@]}"; do
