@@ -6,9 +6,9 @@ set -e
 . ./PKGBUILD
 
 _keyservers=(
-    "keyserver.ubuntu.com"
-    "keys.openpgp.org"
-    "pgp.surf.nl"
+    "hkps://keyserver.ubuntu.com"
+    "hkps://keys.openpgp.org"
+    "hkps://pgp.surf.nl"
 )
 
 for key in "${validpgpkeys[@]}"; do
