@@ -1,8 +1,9 @@
 #!/bin/bash
 
-. PKGBUILD
-
 set -e
+
+# use ./ otherwise it resolves the whole PATH
+. ./PKGBUILD
 
 _keyserver=(
     "keyserver.ubuntu.com"
