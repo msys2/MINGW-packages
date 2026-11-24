@@ -296,29 +296,25 @@ def main(artifacts_dir: Path) -> None:
 
 
 def check_whether_we_should_run(artifacts_dir: Path) -> bool:
-    if not artifacts_dir.exists():
+    if not artifacts_dir.is_dir():
         return False
-    for pkgloc in artifacts_dir.glob("*.pkg.tar.*"):
+
+    pkgs = list(artifacts_dir.glob("*.pkg.tar.*"))
+    candidates: list[Path] = []
+
+    for pkgloc in pkgs:
         pkgname = get_pkg_name(pkgloc)
         if "-python-" in pkgname:
             return True
-        elif pkgname == "mingw-w64-ucrt-x86_64-python":
-            return False
-    # now this is complicated
-    # need to find file listing in the package.
-    # try using zstd, it's installed by default on GHA machines
-    for pkgloc in artifacts_dir.glob("*.pkg.tar.*"):
-        with tempfile.TemporaryDirectory() as tempdir:
-            shutil.copy(pkgloc, tempdir)
-            subprocess.run(
-                ["zstd", "-d", str(Path(tempdir, pkgloc.name))],
-                check=True,
-                cwd=tempdir,
-            )
-            with tarfile.open(Path(tempdir, pkgloc.stem), mode="r") as tar:
-                for mem in tar.getmembers():
-                    if "ucrt64/lib/python" in mem.name:
-                        return True
+        if pkgname == "mingw-w64-ucrt-x86_64-python":
+            continue
+        candidates.append(pkgloc)
+
+    for pkgloc in candidates:
+        with tarfile.open(pkgloc, mode="r:*") as tar:
+            if any("ucrt64/lib/python" in name for name in tar.getnames()):
+                return True
+
     return False
 
 
