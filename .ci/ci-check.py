@@ -16,11 +16,6 @@ from functools import cache
 from pathlib import Path
 from sys import stdout
 
-try:
-    import pacdb
-except ImportError:
-    pacdb = None
-
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
@@ -52,6 +47,8 @@ def get_msys2_root():
 
 @cache
 def get_pacdb_database():
+    import pacdb
+
     return pacdb.Database("ci", TEMP_REPO_PATH / "ci.files.tar.gz")
 
 
