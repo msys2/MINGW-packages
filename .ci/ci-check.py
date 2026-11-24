@@ -129,7 +129,7 @@ def install_package(pkg: list[str] | Path) -> Generator[None]:
         else:
             command = uninstall_command = ["true"]
     with gha_group(f"Installing: {pkg}"):
-        ret = subprocess.run(command)
+        ret = subprocess.run(command, check=False)
     if ret.returncode != 0:
         logger.error(
             "::error :: %s failed to run. Returned return code: %s", command, ret.returncode
@@ -137,7 +137,7 @@ def install_package(pkg: list[str] | Path) -> Generator[None]:
         logger.info("::error :: Failed to Install, skipping the test.")
     yield
     with gha_group(f"Uninstalling: {pkg}"):
-        subprocess.run(uninstall_command)
+        subprocess.run(uninstall_command, check=False)
 
 
 def get_rdeps(pkg: str) -> list[str]:
@@ -146,6 +146,7 @@ def get_rdeps(pkg: str) -> list[str]:
             ["pacman", "-Sii", pkg],
             capture_output=True,
             text=True,
+            check=False,
         )
         if p.returncode != 0:
             logger.info("Looks like a new package.")
@@ -153,6 +154,7 @@ def get_rdeps(pkg: str) -> list[str]:
                 ["pacman", "-Qi", pkg],
                 capture_output=True,
                 text=True,
+                check=False,
             )
         logger.info("Installing rdeps of: %s", pkg)
         logger.info("Pkgname: %s", pkg)
@@ -178,6 +180,7 @@ def run_pip_check(pkg: str) -> None:
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     if p.returncode != 0:
         logger.error("Pip Check Failed for %s", pkg)
