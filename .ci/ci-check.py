@@ -4,11 +4,9 @@ import argparse
 import logging
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tarfile
-import tempfile
 import textwrap
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -56,21 +54,18 @@ def get_pacdb_database(repo_dir: Path):
 def create_and_add_to_repo(repo_dir: Path, pkgs: list[Path]) -> None:
     repo_dir.mkdir(exist_ok=True)
     conf = Path(get_msys2_root(), "etc/pacman.conf")
-    with conf.open("r", encoding="utf-8") as h:
-        text = h.read()
-        uri = repo_dir.as_uri()
-        if uri not in text:
-            with open(conf, "w", encoding="utf-8") as h2:
-                h2.write(
-                    textwrap.dedent(
-                        f"""\
-                        [ci]
-                        Server={uri}
-                        SigLevel=Never
-                        """
-                    )
-                )
-                h2.write(text)
+    text = conf.read_text(encoding="utf-8")
+    uri = repo_dir.as_uri()
+    if uri not in text:
+        header = textwrap.dedent(
+            f"""\
+            [ci]
+            Server={uri}
+            SigLevel=Never
+            """
+        )
+        conf.write_text(header + text, encoding="utf-8")
+
     repo_path = repo_dir / "ci.db.tar.gz"
     with gha_group("Create temporary Repository:"):
         subprocess.run(
@@ -83,7 +78,8 @@ def create_and_add_to_repo(repo_dir: Path, pkgs: list[Path]) -> None:
             check=True,
             cwd=repo_dir,
         )
-    assert repo_path.exists()
+    if not repo_path.exists():
+        raise FileNotFoundError(f"Expected repository database at {repo_path}")
 
 
 @contextmanager
