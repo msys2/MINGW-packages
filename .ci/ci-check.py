@@ -212,42 +212,37 @@ def get_pkg_name(pkgloc: Path) -> str:
     return "-".join(pkgloc.name.split("-")[:-3])
 
 
-def get_pkgbuild_file(repo_dir: Path, pkg_name: str) -> Path:
+def get_pkg(repo_dir: Path, pkg_name: str):
     db = get_pacdb_database(repo_dir)
     pkg = db.get_pkg(pkg_name)
     if pkg is None:
         raise ValueError(f"Unable to find {pkg_name} in the database.")
-    return REPO_ROOT / pkg.base / "PKGBUILD"
+    return pkg
+
+
+def get_pkgbuild_file(repo_dir: Path, pkg_name: str) -> Path:
+    return REPO_ROOT / get_pkg(repo_dir, pkg_name).base / "PKGBUILD"
 
 
 def check_strip_disabled_for_pkg(repo_dir: Path, pkg_name: str) -> bool:
     pkgbuild_file = get_pkgbuild_file(repo_dir, pkg_name)
     if not pkgbuild_file.exists():
-        raise ValueError(
+        raise FileNotFoundError(
             f"Unable to find PKGBUILD for {pkg_name}: tried {pkgbuild_file}"
         )
-    with open(pkgbuild_file, "r", encoding="utf-8") as h:
-        text = h.read()
-        match = OPTIONS_REGEX.search(text)
-        if match and "!strip" in match.group("options"):
-            return True
-    return False
+    text = pkgbuild_file.read_text(encoding="utf-8")
+    match = OPTIONS_REGEX.search(text)
+    return bool(match and "!strip" in match.group("options"))
 
 
 def check_whether_using_python_installer(repo_dir: Path, pkg_name: str) -> bool:
-    db = get_pacdb_database(repo_dir)
-    pkg = db.get_pkg(pkg_name)
-    if pkg is None:
-        raise ValueError(f"Unable to find {pkg_name} in the database.")
+    pkg = get_pkg(repo_dir, pkg_name)
     return "mingw-w64-ucrt-x86_64-python-installer" in pkg.makedepends
 
 
 def check_whether_files_in_bin_folder(repo_dir: Path, pkg_name: str) -> bool:
-    db = get_pacdb_database(repo_dir)
-    pkg = db.get_pkg(pkg_name)
-    if pkg is None:
-        raise ValueError(f"Unable to find {pkg_name} in the database.")
-    return any(i.startswith("ucrt64/bin") and i.endswith(".exe") for i in pkg.files)
+    pkg = get_pkg(repo_dir, pkg_name)
+    return any(i.startswith("ucrt64/bin/") and i.endswith(".exe") for i in pkg.files)
 
 
 def main(artifacts_dir: Path) -> None:
