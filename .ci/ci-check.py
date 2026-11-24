@@ -284,9 +284,11 @@ def main(artifacts_dir: Path) -> None:
             with gha_group(f"Pip Output (without reverse dependencies): {pkgloc.name}"):
                 run_pip_check(pkgname)
             rdeps = get_rdeps(pkgname)
-            with install_package(rdeps):
-                with gha_group(f"Pip Output (with reverse dependencies): {pkgloc.name}"):
-                    run_pip_check(pkgname)
+            with (
+                install_package(rdeps),
+                gha_group(f"Pip Output (with reverse dependencies): {pkgloc.name}"),
+            ):
+                run_pip_check(pkgname)
 
 
 def check_whether_we_should_run(artifacts_dir: Path) -> bool:
@@ -309,11 +311,10 @@ def check_whether_we_should_run(artifacts_dir: Path) -> bool:
                 check=True,
                 cwd=tempdir,
             )
-            with open(Path(tempdir, pkgloc.stem), "rb") as file:
-                with tarfile.open(fileobj=file, mode="r") as tar:
-                    for mem in tar.getmembers():
-                        if "ucrt64/lib/python" in mem.name:
-                            return True
+            with tarfile.open(Path(tempdir, pkgloc.stem), mode="r") as tar:
+                for mem in tar.getmembers():
+                    if "ucrt64/lib/python" in mem.name:
+                        return True
     return False
 
 
