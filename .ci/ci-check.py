@@ -10,7 +10,7 @@ import sys
 import tarfile
 import tempfile
 import textwrap
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
@@ -87,7 +87,7 @@ def create_and_add_to_repo(repo_dir: Path, pkgs: list[Path]) -> None:
 
 
 @contextmanager
-def install_package(pkg: list[str] | Path) -> Iterator[None]:
+def install_package(pkg: list[str] | Path) -> Generator[None]:
     if isinstance(pkg, Path):
         command = [
             "pacman",
@@ -190,7 +190,7 @@ def run_pip_check(pkg: str) -> None:
 
 
 @contextmanager
-def gha_group(title: str) -> Iterator[None]:
+def gha_group(title: str) -> Generator[None]:
     print(f"\n::group::{title}")
     stdout.flush()
     try:
