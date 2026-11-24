@@ -18,7 +18,8 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
 RDEPS_REGEX = re.compile(
-    r"Repository\s*: \s*[\n\S\s]*\nRequired By\s*:\s*(?P<rdeps>[\s\S]*)Optional For\s*:\s*"
+    r"^Required By\s*:\s*(?P<rdeps>.*?)\nOptional For\s*:",
+    re.MULTILINE | re.DOTALL,
 )
 OPTIONS_REGEX = re.compile(r"options=\((?P<options>[\S ]*)\)")
 REPO_ROOT = Path(__file__).parent.parent
