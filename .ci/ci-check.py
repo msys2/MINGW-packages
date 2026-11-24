@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tarfile
 import textwrap
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
@@ -83,59 +83,48 @@ def create_and_add_to_repo(repo_dir: Path, pkgs: list[Path]) -> None:
 
 
 @contextmanager
-def install_package(pkg: list[str] | Path) -> Generator[None]:
-    if isinstance(pkg, Path):
-        command = [
-            "pacman",
-            "--noprogressbar",
-            "--refresh",
-            "--sync",
-            "--noconfirm",
-            "--needed",
-            "mingw-w64-ucrt-x86_64-python-pip",
-            get_pkg_name(pkg),
-        ]
-        uninstall_command = [
-            "pacman",
-            "--noprogressbar",
-            "--remove",
-            "--noconfirm",
-            "-cns",
-            get_pkg_name(pkg),
-        ]
-    else:
-        if len(pkg) != 0:
-            command = [
-                "pacman",
-                "--sync",
-                "--refresh",
-                "--noconfirm",
-                "--needed",
-                "mingw-w64-ucrt-x86_64-python-pip",
-                *pkg,
-            ]
-            uninstall_command = [
-                "pacman",
-                "--noprogressbar",
-                "--remove",
-                "--noconfirm",
-                "-cns",
-                *pkg,
-            ]
-        else:
-            command = uninstall_command = ["true"]
-    with gha_group(f"Installing: {pkg}"):
+def install_package(pkgs: Sequence[str]) -> Generator[bool]:
+    if not pkgs:
+        yield True
+        return
+
+    command = [
+        "pacman",
+        "--noprogressbar",
+        "--refresh",
+        "--sync",
+        "--noconfirm",
+        "--needed",
+        "mingw-w64-ucrt-x86_64-python-pip",
+        *pkgs,
+    ]
+    uninstall_command = [
+        "pacman",
+        "--noprogressbar",
+        "--remove",
+        "--noconfirm",
+        "-cns",
+        *pkgs,
+    ]
+
+    with gha_group(f"Installing: {', '.join(pkgs)}"):
         ret = subprocess.run(command, check=False)
+
     if ret.returncode != 0:
         logger.error(
             "::error :: %s failed to run. Returned return code: %s",
             command,
             ret.returncode,
         )
-        logger.info("::error :: Failed to Install, skipping the test.")
-    yield
-    with gha_group(f"Uninstalling: {pkg}"):
-        subprocess.run(uninstall_command, check=False)
+        logger.error("::error :: Failed to install, skipping the test.")
+        yield False
+        return
+
+    try:
+        yield True
+    finally:
+        with gha_group(f"Uninstalling: {', '.join(pkgs)}"):
+            subprocess.run(uninstall_command, check=False)
 
 
 def get_rdeps(pkg: str) -> list[str]:
@@ -274,16 +263,20 @@ def main(artifacts_dir: Path) -> None:
     print("Strip option check is done.")
 
     for pkgloc in pkgs:
-        with install_package(pkgloc):
-            pkgname = get_pkg_name(pkgloc)
+        pkgname = get_pkg_name(pkgloc)
+        with install_package([pkgname]) as installed:
+            if not installed:
+                continue
             with gha_group(f"Pip Output (without reverse dependencies): {pkgloc.name}"):
                 run_pip_check(pkgname)
             rdeps = get_rdeps(pkgname)
-            with (
-                install_package(rdeps),
-                gha_group(f"Pip Output (with reverse dependencies): {pkgloc.name}"),
-            ):
-                run_pip_check(pkgname)
+            if not rdeps:
+                continue
+            with install_package(rdeps) as rdeps_installed:
+                if not rdeps_installed:
+                    continue
+                with gha_group(f"Pip Output (with reverse dependencies): {pkgloc.name}"):
+                    run_pip_check(pkgname)
 
 
 def check_whether_we_should_run(artifacts_dir: Path) -> bool:
