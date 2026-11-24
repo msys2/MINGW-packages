@@ -18,10 +18,10 @@ sed -i 's/^CheckSpace/#CheckSpace/g' /etc/pacman.conf
 pacman --noconfirm -Fy
 
 # Enable colors
-normal=$(tput sgr0)
-red=$(tput setaf 1)
-green=$(tput setaf 2)
-cyan=$(tput setaf 6)
+normal=$(tput sgr0 2>/dev/null || true)
+red=$(tput setaf 1 2>/dev/null || true)
+green=$(tput setaf 2 2>/dev/null || true)
+cyan=$(tput setaf 6 2>/dev/null || true)
 
 # Basic status function
 _status() {
@@ -33,8 +33,12 @@ _status() {
         success) local -n nameref_color='green'; title='[MSYS2 CI] SUCCESS:' ;;
         message) local -n nameref_color='cyan';  title='[MSYS2 CI]'
     esac
-    printf "\n${nameref_color}${title}${normal} ${status}\n\n"
-    printf "${items:+\t%s\n}" "${items:+${items[@]}}"
+    # format-string safety
+    printf '\n%s%s%s %s\n\n' "${nameref_color}" "${title}" "${normal}" "${status}"
+    # if an array has an empty element, it will print nothing after it
+    if [ "${#items[@]}" -gt 0 ]; then
+        printf '\t%s\n' "${items[@]}"
+    fi
 }
 
 # Run command with status
@@ -45,8 +49,8 @@ execute(){
     cd "${package:-.}"
     message "${status}"
     if [[ "${command}" != *:* ]]
-        then ${command} ${arguments[@]}
-        else ${command%%:*} | ${command#*:} ${arguments[@]}
+        then "${command}" "${arguments[@]}"
+        else "${command%%:*}" | "${command#*:}" "${arguments[@]}"
     fi || failure "${status} failed"
     cd - > /dev/null
 }
@@ -55,13 +59,19 @@ execute(){
 list_packages() {
     # readarray doesn't work with a plain pipe
     readarray -t packages < <("$DIR/ci-get-build-order.py")
+
+    # readarray returns its own exit status, if ci-get-build-order.py crashes
+    # and outputs nothing, list_packages still succeeds and reports "no changes"
+    # code below propagates exit status of the most recent process substitution ($! is a PID)
+    wait "$!"
 }
 
 pkgver_from_metadata() {
     local version
     version="$(sed -n 's/^Version[[:space:]]*:[[:space:]]*//p')"
     version="${version%-*}"
-    printf '%s\n' "${version#*~}" | sed 's/\./\\./g'
+    # escape all metacharacters
+    printf '%s\n' "${version#*~}" | sed 's/[][\.^$*|]/\\&/g'
 }
 
 # Status functions
@@ -91,8 +101,9 @@ done
 
 for package in "${skipped_packages[@]}"; do
     for i in "${!packages[@]}"; do
-        if [[ ${packages[i]} == $package ]]; then
-            unset packages[i]
+        if [[ "${packages[i]}" == "${package}" ]]; then
+            # unquoted undergoes pathname expansion
+            unset 'packages[i]'
         fi
     done
     unset package
@@ -104,7 +115,7 @@ done
 message 'Building packages' "${packages[@]}"
 
 message 'Adding an empty local repository'
-repo-add $PWD/artifacts/ci.db.tar.gz
+repo-add "$PWD/artifacts/ci.db.tar.gz"
 sed -i '1s|^|[ci]\nServer = file://'"$PWD"'/artifacts/\nSigLevel = Never\n|' /etc/pacman.conf
 pacman -Sy
 
@@ -122,20 +133,26 @@ for package in "${packages[@]}"; do
     echo "::group::[build] ${package}"
     execute 'Clear cache' pacman -Scc --noconfirm
     execute 'Fetch keys' "$DIR/fetch-validpgpkeys.sh"
-    cp -r ${package} B && cd B
+    rm -rf B && cp -r "${package}" B && cd B
     message 'Building binary'
-    makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild || failure "${status} failed"
+    makepkg-mingw --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild || failure 'Building binary failed'
     cd - > /dev/null
-    repo-add $PWD/artifacts/ci.db.tar.gz $PWD/B/*.pkg.tar.*
+    repo-add "$PWD/artifacts/ci.db.tar.gz" "$PWD/B"/*.pkg.tar.*
     pacman -Sy
-    cp $PWD/B/*.pkg.tar.* $PWD/artifacts
+    cp "$PWD/B"/*.pkg.tar.* "$PWD/artifacts"
     echo "::endgroup::"
 
     cd B
     for pkg in *.pkg.tar.*; do
+        # skip signatures as they cannot be build
+        [[ "$pkg" == *.sig ]] && continue
+
         pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
+        skip_install=0
+        grep -qFx "${package}" "$DIR/ci-dont-install-list.txt" && skip_install=1
+
         echo "::group::[install] ${pkgname}"
-        grep -qFx "${package}" "$DIR/ci-dont-install-list.txt" || pacman --noprogressbar --upgrade --noconfirm $pkg
+        [ "${skip_install}" -eq 1 ] || pacman --noprogressbar --upgrade --noconfirm "$pkg"
         echo "::endgroup::"
 
         echo "::group::[meta-diff] ${pkgname}"
@@ -148,24 +165,26 @@ for package in "${packages[@]}"; do
         old_pkgver="$(pacman -Si ${MSYSTEM,,}/"${pkgname}" | pkgver_from_metadata || true)"
         new_pkgver="$(pacman -Qip "${pkg}" | pkgver_from_metadata || true)"
         diff -Nur \
-            <(pacman -Fl ${MSYSTEM,,}/"${pkgname}" | sed -e 's|^[^ ]* |/|' -e "s|${old_pkgver}|PKGVER|g" | sort) \
-            <(pacman -Ql "${pkgname}" | sed -e 's|^[^/]*||' -e "s|${new_pkgver}|PKGVER|g" | sort) || true
+            <(pacman -Fl ${MSYSTEM,,}/"${pkgname}" | sed -e 's|^[^ ]* |/|' ${old_pkgver:+-e "s|${old_pkgver}|PKGVER|g"} | sort) \
+            <(pacman -Qlp "${pkg}" | sed -e 's|^[^ ]* ||' ${new_pkgver:+-e "s|${new_pkgver}|PKGVER|g"} | sort) || true
         echo "::endgroup::"
 
         echo "::group::[runtime-dependencies] ${pkgname}"
-        message "Runtime dependencies for ${pkgname}"
-        declare -a binaries=($(pacman -Ql $pkgname | sed -e 's|^[^ ]* ||' | grep -E ${MINGW_PREFIX}/.+\.\(dll\|exe\|pyd\)$))
-        if [ "${#binaries[@]}" -ne 0 ]; then
-            for binary in ${binaries[@]}; do
-                echo "${binary}:"
-                ntldd -R ${binary} | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder\|ngcrecovery\|AzureAttest\|PdmUtilities\|WTDSENSOR\|wtdccm\|SAMSRV\|LSASRV\|EDPCSP\|policymanagerprecheck\|dmenterprisediagnostics\|EFSCORE\|FVESKYBACKUP\|DeclaredConfiguration" || true
-            done
+        if [ "${skip_install}" -eq 0 ]; then
+            message "Runtime dependencies for ${pkgname}"
+            readarray -t binaries < <(pacman -Ql "${pkgname}" | sed -e 's|^[^ ]* ||' | grep -E "${MINGW_PREFIX}/.+\.(dll|exe|pyd)$")
+            if [ "${#binaries[@]}" -ne 0 ]; then
+                for binary in "${binaries[@]}"; do
+                    echo "${binary}:"
+                    ntldd -R "${binary}" | grep -v "ext-ms\|api-ms\|WINDOWS\|Windows\|HvsiFileTrust\|wpaxholder\|ngcrecovery\|AzureAttest\|PdmUtilities\|WTDSENSOR\|wtdccm\|SAMSRV\|LSASRV\|EDPCSP\|policymanagerprecheck\|dmenterprisediagnostics\|EFSCORE\|FVESKYBACKUP\|DeclaredConfiguration" || true
+                done
+            fi
         fi
         echo "::endgroup::"
 
         echo "::group::[uninstall] ${pkgname}"
         message "Uninstalling $pkgname"
-        grep -qFx "${package}" "$DIR/ci-dont-install-list.txt" || pacman -R --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
+        [ "${skip_install}" -eq 1 ] || pacman -R --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
         echo "::endgroup::"
     done
     cd - > /dev/null
@@ -174,6 +193,3 @@ for package in "${packages[@]}"; do
     unset package
 done
 success 'All packages built successfully'
-
-cd artifacts
-execute 'SHA-256 checksums' sha256sum *

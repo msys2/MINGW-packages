@@ -1,0 +1,187 @@
+Fix file URI formatting and path relocation on Windows
+
+1. On Windows, absolute file paths start with drive letters (e.g. C:/...).
+   Prepending 'file://' results in 'file://C:/...' with two slashes instead of
+   three (RFC 8089). libxml2 / xsltproc treats 'C:' as the network authority /
+   host, failing with:
+     xsl:import : invalid URI reference file://C:/...
+   Ensure proper 3-slash 'file:///' URIs and safe encoding.
+
+2. Resolve DATADIR and XSL stylesheet paths relative to the script location
+   when configured paths are not directly accessible, enabling full relocatability
+   without hardcoding build-time prefixes.
+
+3. In mal-ncx.xsl and mal-opf.xsl, use relative stylesheet includes to yelp-xsl
+   so stylesheets resolve cleanly regardless of install root.
+
+diff -uprN yelp-tools-42.1.orig/tools/yelp-build.in yelp-tools-42.1/tools/yelp-build.in
+--- yelp-tools-42.1.orig/tools/yelp-build.in	2026-11-20 01:14:46.521657900 +0530
++++ yelp-tools-42.1/tools/yelp-build.in	2026-11-20 01:16:10.189760600 +0530
+@@ -30,14 +30,30 @@ import lxml.etree
+ import lxml.ElementInclude
+ 
+ 
+-XSL_DB2HTML = '@XSL_DB2HTML@'
+-XSL_DB2XHTML = '@XSL_DB2XHTML@'
+-XSL_MALCACHE = '@XSL_MAL_CACHE@'
+-XSL_MAL2HTML = '@XSL_MAL2HTML@'
+-XSL_MAL2XHTML = '@XSL_MAL2XHTML@'
+-XSL_MAL_OPF='@DATADIR@/xslt/mal-opf.xsl'
+-XSL_MAL_NCX='@DATADIR@/xslt/mal-ncx.xsl'
+-YELP_JS_DIR = '@YELP_JS_DIR@'
++def _resolve_path(path, rel_subpath):
++    if path and os.path.exists(path):
++        return os.path.realpath(path).replace('\\', '/')
++    prefix = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
++    fallback = os.path.join(prefix, *rel_subpath.split('/')).replace('\\', '/')
++    if os.path.exists(fallback):
++        return fallback
++    return path.replace('\\', '/')
++
++def to_file_uri(path):
++    path = os.path.realpath(path).replace('\\', '/')
++    if not path.startswith('/'):
++        return 'file:///' + urllib.parse.quote(path, safe='/:')
++    else:
++        return 'file://' + urllib.parse.quote(path, safe='/:')
++
++XSL_DB2HTML = _resolve_path('@XSL_DB2HTML@', 'share/yelp-xsl/xslt/docbook/html/db2html.xsl')
++XSL_DB2XHTML = _resolve_path('@XSL_DB2XHTML@', 'share/yelp-xsl/xslt/docbook/html/db2xhtml.xsl')
++XSL_MALCACHE = _resolve_path('@XSL_MAL_CACHE@', 'share/yelp-xsl/xslt/mallard/cache/mal-cache.xsl')
++XSL_MAL2HTML = _resolve_path('@XSL_MAL2HTML@', 'share/yelp-xsl/xslt/mallard/html/mal2html.xsl')
++XSL_MAL2XHTML = _resolve_path('@XSL_MAL2XHTML@', 'share/yelp-xsl/xslt/mallard/html/mal2xhtml.xsl')
++XSL_MAL_OPF = _resolve_path('@DATADIR@/xslt/mal-opf.xsl', 'share/yelp-tools/xslt/mal-opf.xsl')
++XSL_MAL_NCX = _resolve_path('@DATADIR@/xslt/mal-ncx.xsl', 'share/yelp-tools/xslt/mal-ncx.xsl')
++YELP_JS_DIR = _resolve_path('@YELP_JS_DIR@', 'share/yelp-xsl/js')
+ 
+ XSLCOMMON = ('''
+ <xsl:variable name="yelp.internal.datadir" select="'{intdatadir}'"/>
+@@ -89,7 +105,7 @@ DB2HTML = ('''
+   xmlns="http://www.w3.org/1999/xhtml"
+   extension-element-prefixes="exsl"
+   version="1.0">
+-<xsl:import href="file://{xslfile}"/>
++<xsl:import href="{xslfile}"/>
+ '''
+ + XSLCOMMON + 
+ '''
+@@ -107,8 +123,8 @@ MAL2HTML = ('''
+   exclude-result-prefixes="mal cache"
+   extension-element-prefixes="exsl"
+   version="1.0">
+-<xsl:import href="file://{xslfile}"/>
+-<xsl:param name="mal.cache.file" select="'file://{cachefile}'"/>
++<xsl:import href="{xslfile}"/>
++<xsl:param name="mal.cache.file" select="'{cachefile}'"/>
+ '''
+ + XSLCOMMON + 
+ '''
+@@ -399,7 +415,7 @@ class CacheBuilder (Builder):
+                     page = '<stack'
+                 else:
+                     continue
+-                page += ' cache:href="file://' + urllib.parse.quote(os.path.realpath(infile.absfile)) + '"'
++                page += ' cache:href="' + to_file_uri(infile.absfile) + '"'
+                 if self.get_option_bool('site'):
+                     page += ' site:dir="' + infile.sitedir + '"'
+                 page += '/>'
+@@ -497,14 +513,13 @@ class XhtmlBuilder (Builder):
+             else:
+                 customxsl = xsl
+             if customxsl is not None:
+-                customxsl = urllib.parse.quote(os.path.realpath(customxsl))
+-                includes += '<xsl:include href="file://' + customxsl + '"/>'
++                includes += '<xsl:include href="' + to_file_uri(customxsl) + '"/>'
+             if self.epub:
+                 includes += '''<xsl:param name="mal.if.target" select="'target:epub target:html target:xhtml'"/>'''
+                 includes += '''<xsl:template mode="html.header.mode" match="mal:page"/>'''
+                 includes += '''<xsl:template mode="html.footer.mode" match="mal:page"/>'''
+-            xslout.write(MAL2HTML.format(xslfile=xslfile,
+-                                         cachefile=cachefile,
++            xslout.write(MAL2HTML.format(xslfile=to_file_uri(xslfile),
++                                         cachefile=to_file_uri(cachefile),
+                                          includes=includes,
+                                          intdatadir=self.intdatadir))
+         if output is None:
+@@ -544,9 +559,8 @@ class XhtmlBuilder (Builder):
+                 else:
+                     customxsl = self.get_option_str('xsl')
+                 if customxsl is not None:
+-                    customxsl = urllib.parse.quote(os.path.realpath(customxsl))
+-                    includes += '<xsl:include href="file://' + customxsl + '"/>'
+-                xslout.write(DB2HTML.format(xslfile=xslfile,
++                    includes += '<xsl:include href="' + to_file_uri(customxsl) + '"/>'
++                xslout.write(DB2HTML.format(xslfile=to_file_uri(xslfile),
+                                             includes=includes,
+                                             intdatadir=self.intdatadir))
+         if output is None:
+diff -uprN yelp-tools-42.1.orig/tools/yelp-check.in yelp-tools-42.1/tools/yelp-check.in
+--- yelp-tools-42.1.orig/tools/yelp-check.in	2026-11-20 01:14:46.528813100 +0530
++++ yelp-tools-42.1/tools/yelp-check.in	2026-11-20 01:16:20.300743600 +0530
+@@ -28,7 +28,16 @@ import tempfile
+ import textwrap
+ 
+ 
+-DATADIR = '@DATADIR@'
++def _resolve_path(path, rel_subpath):
++    if path and os.path.exists(path):
++        return os.path.realpath(path).replace('\\', '/')
++    prefix = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
++    fallback = os.path.join(prefix, *rel_subpath.split('/')).replace('\\', '/')
++    if os.path.exists(fallback):
++        return fallback
++    return path.replace('\\', '/')
++
++DATADIR = _resolve_path('@DATADIR@', 'share/yelp-tools')
+ 
+ XML_ID = '{http://www.w3.org/XML/1998/namespace}id'
+ NAMESPACES = {
+diff -uprN yelp-tools-42.1.orig/tools/yelp-new.in yelp-tools-42.1/tools/yelp-new.in
+--- yelp-tools-42.1.orig/tools/yelp-new.in	2026-11-20 01:14:46.530811400 +0530
++++ yelp-tools-42.1/tools/yelp-new.in	2026-11-20 01:16:30.410351600 +0530
+@@ -24,7 +24,16 @@ import subprocess
+ import sys
+ 
+ 
+-DATADIR = '@DATADIR@'
++def _resolve_path(path, rel_subpath):
++    if path and os.path.exists(path):
++        return os.path.realpath(path).replace('\\', '/')
++    prefix = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
++    fallback = os.path.join(prefix, *rel_subpath.split('/')).replace('\\', '/')
++    if os.path.exists(fallback):
++        return fallback
++    return path.replace('\\', '/')
++
++DATADIR = _resolve_path('@DATADIR@', 'share/yelp-tools')
+ 
+ class YelpNew:
+     arguments = [
+diff -uprN yelp-tools-42.1.orig/xslt/mal-ncx.xsl.in yelp-tools-42.1/xslt/mal-ncx.xsl.in
+--- yelp-tools-42.1.orig/xslt/mal-ncx.xsl.in	2026-11-20 01:14:46.484643100 +0530
++++ yelp-tools-42.1/xslt/mal-ncx.xsl.in	2026-11-20 01:16:39.939879800 +0530
+@@ -15,8 +15,8 @@
+ 
+ <xsl:param name="ncx.id"/>
+ 
+-<xsl:include href="file://@XSL_MAL_LINK@"/>
+-<xsl:include href="file://@XSL_MAL_SORT@"/>
++<xsl:include href="../../yelp-xsl/xslt/mallard/common/mal-link.xsl"/>
++<xsl:include href="../../yelp-xsl/xslt/mallard/common/mal-sort.xsl"/>
+ 
+ <xsl:param name="mal.cache" select="/cache:cache"/>
+ 
+diff -uprN yelp-tools-42.1.orig/xslt/mal-opf.xsl.in yelp-tools-42.1/xslt/mal-opf.xsl.in
+--- yelp-tools-42.1.orig/xslt/mal-opf.xsl.in	2026-11-20 01:14:46.485645100 +0530
++++ yelp-tools-42.1/xslt/mal-opf.xsl.in	2026-11-20 01:16:48.929991300 +0530
+@@ -13,8 +13,8 @@
+ <xsl:param name="opf.id"/>
+ <xsl:param name="opf.data"/>
+ 
+-<xsl:include href="file://@XSL_MAL_LINK@"/>
+-<xsl:include href="file://@XSL_MAL_SORT@"/>
++<xsl:include href="../../yelp-xsl/xslt/mallard/common/mal-link.xsl"/>
++<xsl:include href="../../yelp-xsl/xslt/mallard/common/mal-sort.xsl"/>
+ 
+ <xsl:param name="mal.cache" select="/cache:cache"/>
+ 
