@@ -337,16 +337,13 @@ if __name__ == "__main__":
     if args.run:
         res = check_whether_we_should_run(artifacts_dir)
 
-        _op_file = sys.stdout
-        _file_name = os.environ.get("GITHUB_OUTPUT")
-        if _file_name:
-            _op_file = open(_file_name, "a")
-        if res:
-            print("run=true", file=_op_file)
+        output = f"run={'true' if res else 'false'}"
+
+        if github_output := os.environ.get("GITHUB_OUTPUT"):
+            with open(github_output, "a", encoding="utf-8") as f:
+                print(output, file=f)
         else:
-            print("run=false", file=_op_file)
-        if _op_file is not sys.stdout:
-            _op_file.close()
+            print(output)
 
         sys.exit(0)
     else:
