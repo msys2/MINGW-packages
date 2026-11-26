@@ -27,6 +27,15 @@ XML_TEMPLATE = """\
       <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
     </application>
   </compatibility>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://microsoft.com">UTF-8</activeCodePage>
+      <longPathAware xmlns="http://microsoft.com">true</longPathAware>
+      <dpiAware xmlns="http://microsoft.com">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://microsoft.com">PerMonitorV2</dpiAwareness>
+      <gdiScaling xmlns="http://microsoft.com">true</gdiScaling>
+    </windowsSettings>
+  </application>
 </assembly>
 """
 
