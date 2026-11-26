@@ -1,17 +1,31 @@
 #!/bin/bash
 
-. PKGBUILD
-
 set -e
 
-_keyserver=(
-    "keyserver.ubuntu.com"
-    "keys.gnupg.net"
-    "pgp.mit.edu"
-    "keys.openpgp.org"
+# use ./ otherwise it resolves the whole PATH
+. ./PKGBUILD
+
+_keyservers=(
+    "hkps://keyserver.ubuntu.com"
+    "hkps://keys.openpgp.org"
+    "hkps://pgp.surf.nl"
 )
+
 for key in "${validpgpkeys[@]}"; do
-    for server in "${_keyserver[@]}"; do
-        timeout 20 /usr/bin/gpg --keyserver "${server}" --recv "${key}" && break || true
+    if /usr/bin/gpg --list-keys "${key}" >/dev/null 2>&1; then
+        continue
+    fi
+
+    fetched=false
+    for server in "${_keyservers[@]}"; do
+        if timeout 20 /usr/bin/gpg --keyserver "${server}" --recv-keys "${key}"; then
+            fetched=true
+            break
+        fi
     done
+
+    # warning because makepkg will fail after checking the archive's real PGP key
+    if [[ "${fetched}" != true ]]; then
+        echo "warning: failed to fetch PGP key ${key}" >&2
+    fi
 done
