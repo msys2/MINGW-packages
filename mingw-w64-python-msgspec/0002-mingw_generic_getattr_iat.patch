@@ -1,0 +1,57 @@
+From fdaaa8e5dc2cdc250a5b08c35f9fac5bf5b52cb2 Mon Sep 17 00:00:00 2001
+From: "Jonatan R. Fischer" <jonafischer@gmail.com>
+Date: Tue, 24 Nov 2026 12:35:13 -0300
+Subject: [PATCH] Fix dataclass ClassVar leak on MinGW builds
+
+MinGW extensions declare PyAPI_FUNC without __declspec(dllimport)
+(see CPython exports.h), so &PyObject_GenericGetAttr inside the
+extension resolves to a linker-generated import thunk rather than the
+function in libpython. The pointer comparison in dataclass_iter_setup
+against the type slot therefore always fails, the encoder falls back
+to getattr() per field name, and ClassVar class-level defaults are
+emitted as if they were real dataclass fields.
+
+Resolve the real function address through the import address table
+(__imp_PyObject_GenericGetAttr) so the fast-path check behaves the
+same as on MSVC/ELF.
+
+Forwarded: https://github.com/msgspec/msgspec/pull/1362
+---
+ src/msgspec/_core.c | 17 ++++++++++++++---
+ 1 file changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/src/msgspec/_core.c b/src/msgspec/_core.c
+index 8b37f86..9e79b10 100644
+--- a/src/msgspec/_core.c
++++ b/src/msgspec/_core.c
+@@ -9467,6 +9467,19 @@ ms_get_dataclass_fields(MsgspecState *mod, PyTypeObject *type, PyObject *obj) {
+     return fields;
+ }
+
++/* MinGW extension modules declare PyAPI_FUNC without
++ * __declspec(dllimport) (see CPython's exports.h), so taking the
++ * address of PyObject_GenericGetAttr yields a linker-generated import
++ * thunk inside this module instead of the function in libpython.
++ * Pointer comparisons against type slots must resolve the real
++ * address through the import address table instead. */
++#ifdef __MINGW32__
++extern void *__imp_PyObject_GenericGetAttr;
++#  define MSGSPEC_IS_GENERIC_GETATTR(type)     ((type)->tp_getattro == (getattrofunc)__imp_PyObject_GenericGetAttr)
++#else
++#  define MSGSPEC_IS_GENERIC_GETATTR(type)     ((type)->tp_getattro == PyObject_GenericGetAttr)
++#endif
++
+ static bool
+ dataclass_iter_setup(DataclassIter *iter, PyObject *obj, PyObject *fields) {
+     iter->dict = NULL;
+@@ -9481,9 +9494,7 @@ dataclass_iter_setup(DataclassIter *iter, PyObject *obj, PyObject *fields) {
+     iter->fields_pos = 0;
+     iter->dict_pos = 0;
+     iter->fastpath = false;
+-    iter->standard_getattr = (
+-        Py_TYPE(obj)->tp_getattro == PyObject_GenericGetAttr
+-    );
++    iter->standard_getattr = MSGSPEC_IS_GENERIC_GETATTR(Py_TYPE(obj));
+     if (iter->standard_getattr) {
+         iter->dict = PyObject_GenericGetDict(obj, NULL);
+         if (iter->dict == NULL) {
