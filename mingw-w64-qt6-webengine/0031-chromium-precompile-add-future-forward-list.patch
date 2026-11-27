@@ -1,0 +1,54 @@
+Pre-parse <future> and <forward_list> in chromium's PCH to dodge the
+mingw __try/__catch macro mismatch.
+
+The mingw toolchain patch installs an override in build_config.h:
+
+  #undef __try   ;   #define __try try
+  #undef __except;   #define __except(x) catch(...)
+
+(0029 extends that with the matching __catch / __throw_exception_again,
+which keeps libstdc++ headers that use the __try/__catch macro pair
+consistent.)
+
+Some libstdc++ headers, however, mix the patterns. <future> writes:
+
+      __try { ... }
+  #if __cpp_exceptions
+      catch (const system_error& __e) { ... }
+  #endif
+
+i.e. `__try` (a macro that goes through chromium's override and becomes
+the real `try` keyword), and then a real `catch` clause that is
+compiled out under -fno-exceptions. The result for clang+mingw is
+
+  try { ... }  /* no catch */
+
+which fails to parse:
+
+  c++/16.1.0/future:1831: error: expected catch
+
+This pattern is unique to <future> (basic_string.tcc, alloc_traits.h,
+cow_string.h, exception_ptr.h all guard the `try` together with the
+`catch`). The 0029 macro extension cannot help because the `catch`
+clause in <future> is real C++, not a macro.
+
+The chromium precompile.h already pre-parses a list of stdlib headers.
+Add <future> there so the std::async template body is parsed once,
+before any chromium TU has had a chance to redefine __try. <forward_list>
+is added alongside for symmetry -- the 0029 fix already handles its
+macro pair, but pre-parsing makes it independent of the override
+ordering.
+
+--- a/src/3rdparty/chromium/build/precompile.h
++++ b/src/3rdparty/chromium/build/precompile.h
+@@ -42,8 +42,10 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
++#include <forward_list>
+ #include <fstream>
+ #include <functional>
++#include <future>
+ #include <iomanip>
+ #include <iosfwd>
+ #include <iterator>
