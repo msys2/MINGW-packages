@@ -1,0 +1,1408 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Mon, 12 Oct 2026 07:22:50 +0000
+Subject: [PATCH 4/6] MinGW: CMake package discovery and harfbuzz-icu shim
+
+- FindHarfBuzz.cmake: under WIN32, degrade the (MSYS2-)missing
+  harfbuzz-icu component to the core library so the HarfBuzz::ICU
+  target still exists for FreeType.cmake/Skia.cmake.
+- mingw-compat hb-icu.h: inline shim reimplementing the only WebKit
+  entry point hb_icu_script_to_script() on top of ICU
+  uscript_getShortName + hb_script_from_string.
+---
+ .../ThirdParty/mingw-compat/include/hb-icu.h  | 75 +++++++++++++++++++
+ Source/cmake/FindHarfBuzz.cmake               | 15 ++++
+ 2 files changed, 90 insertions(+)
+ create mode 100644 Source/ThirdParty/mingw-compat/include/hb-icu.h
+
+diff --git a/Source/ThirdParty/mingw-compat/include/hb-icu.h b/Source/ThirdParty/mingw-compat/include/hb-icu.h
+new file mode 100644
+index 0000000..84024a5
+--- /dev/null
++++ b/Source/ThirdParty/mingw-compat/include/hb-icu.h
+@@ -0,0 +1,75 @@
++/*
++ * Copyright (C) 2025 Taozuhong <taozuhong@hotmail.com>
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/*
++ * MinGW compat shim: minimal hb-icu replacement.
++ *
++ * Modern HarfBuzz releases (>= 12) removed the ICU integration entirely:
++ * there is no libharfbuzz-icu and no <hb-icu.h> header anymore, and
++ * MSYS2/MinGW environments therefore cannot provide them. The GTK port
++ * of WebKit only uses one entry point from that API:
++ *
++ *     hb_icu_script_to_script(UScriptCode)
++ *
++ * This header re-implements it inline on top of ICU's uscript API and
++ * HarfBuzz's hb_script_from_string(), matching the semantics of the
++ * original implementation in harfbuzz/src/hb-icu.cc. Since it is a
++ * static inline function no hb_icu_* symbols are ever referenced, so
++ * linking against plain libharfbuzz + libicuuc is sufficient.
++ */
++
++#ifndef MINGW_COMPAT_HB_ICU_H
++#define MINGW_COMPAT_HB_ICU_H
++
++#include <hb.h>
++#include <unicode/utypes.h>
++#include <unicode/uscript.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++static inline hb_script_t
++hb_icu_script_to_script(UScriptCode script)
++{
++    if (script == USCRIPT_INHERITED)
++        return HB_SCRIPT_INHERITED;
++    if (script == USCRIPT_COMMON)
++        return HB_SCRIPT_COMMON;
++
++    /* uscript_getShortName() returns the 4-letter ISO 15924 code (e.g. "Latn"),
++     * or NULL for invalid script codes. */
++    const char* tag = uscript_getShortName(script);
++    if (!tag || !*tag)
++        return HB_SCRIPT_UNKNOWN;
++
++    return hb_script_from_string(tag, -1);
++}
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* MINGW_COMPAT_HB_ICU_H */
+diff --git a/Source/cmake/FindHarfBuzz.cmake b/Source/cmake/FindHarfBuzz.cmake
+index 6dd9b8b..49af958 100644
+--- a/Source/cmake/FindHarfBuzz.cmake
++++ b/Source/cmake/FindHarfBuzz.cmake
+@@ -124,6 +124,21 @@ if ("ICU" IN_LIST HarfBuzz_FIND_COMPONENTS)
+         else ()
+            list(APPEND HarfBuzz_LIBS_FOUND "ICU (optional): ${HarfBuzz_ICU_LIBRARY}")
+         endif ()
++    elseif (WIN32)
++        # Modern HarfBuzz releases no longer ship the ICU integration
++        # (no harfbuzz-icu library, no hb-icu.h), so MSYS2/MinGW systems
++        # cannot provide it. WebKit only uses hb_icu_script_to_script(),
++        # which the mingw-compat shim re-implements inline on top of
++        # libharfbuzz and libicuuc -- both already linked. Point the ICU
++        # component at the core library so the HarfBuzz::ICU imported
++        # target still exists for the FreeType/Skia CMake modules.
++        set(HarfBuzz_ICU_LIBRARY "${HarfBuzz_LIBRARY}")
++        set(HarfBuzz_ICU_INCLUDE_DIR "${HarfBuzz_INCLUDE_DIR}")
++        if (HarfBuzz_FIND_REQUIRED_ICU)
++            list(APPEND HarfBuzz_LIBS_FOUND "ICU (via mingw-compat shim): ${HarfBuzz_ICU_LIBRARY}")
++        else ()
++            list(APPEND HarfBuzz_LIBS_FOUND "ICU (optional, via mingw-compat shim): ${HarfBuzz_ICU_LIBRARY}")
++        endif ()
+     else ()
+         if (HarfBuzz_FIND_REQUIRED_ICU)
+            set(_HarfBuzz_REQUIRED_LIBS_FOUND OFF)
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Mon, 12 Oct 2026 07:22:50 +0000
+Subject: [PATCH 5/6] MinGW: Skia FreeType backend and GTK font manager
+
+- ThirdParty/skia: build the FreeType/Fontconfig branch under MinGW
+  (the release tarball lacks all four skia/src/utils/win/ files needed
+  by the DirectWrite backend); file IO via SkOSFile_win.cpp instead of
+  the sys/mman.h-requiring posix variant; SK_TYPEFACE_FACTORY=FREETYPE.
+- FontCacheSkia.cpp: the GTK platform uses SkFontMgr_New_FontConfig
+  (same shape as Linux GTK) instead of DirectWrite.
+
+  Update 26 (fixing the round-26 UCRT64 Skia -Wformat warnings, first
+  hit at SkAssert.h:141 via SkLog.h:35 while compiling SkSVGText.cpp):
+  SK_PRINTF_LIKE expands to format(printf, ...) and MinGW gcc checks
+  the plain printf archetype against the MSVCRT (ms_printf), which does
+  not know C99 length modifiers, so every SkLog/SK_ABORT call site
+  taking size_t warned "unknown conversion type character 'z' in
+  format" plus "too many arguments for format" (9 warnings per TU on
+  every Skia TU including SkAssert.h). The runtime side is fine on all
+  three environments: __USE_MINGW_ANSI_STDIO=1 (PKGBUILD CFLAGS) routes
+  printf-family calls through the C99-conformant __mingw_*
+  implementations and the UCRT printf handles %zu natively. The
+  attribute now maps to __gnu_printf__ for MinGW gcc on _UCRT or
+  __USE_MINGW_ANSI_STDIO targets, mirroring mingw-w64's own
+  __MINGW_PRINTF_FORMAT mapping and the PAS_FORMAT_PRINTF mapping
+  already established in 0006; clang (which checks the plain archetype
+  as C99 and produced no CI warnings) and non-MinGW hosts keep the
+  default. The SkAssert.h TU goes from 9 warnings to 0.
+
+  Update 18 (fixing one UCRT64 and one CLANG64 Skia failure):
+  include/private/SkAttributes.h maps SK_ALWAYS_INLINE to
+  __forceinline whenever SK_BUILD_FOR_WIN is set, and both MinGW
+  compilers trigger that branch via _WIN32. MinGW GCC only survives
+  the keyword when a CRT header happens to be included first - the
+  mingw-w64 _mingw.h defines __forceinline as a macro and libstdc++
+  pulls one in before SkAssert.h:191 - but clang64's libc++ headers
+  pull no CRT header on that path, so the token reached the parser
+  and SkAssert.h:191 died with "unknown type name '__forceinline'".
+  The keyword is now reserved to real MSVC-family compilers
+  (SK_BUILD_FOR_WIN && _MSC_VER), matching the guard SkFeatures.h
+  already applies to SK_RESTRICT; MinGW compilers fall back to the
+  portable SK_ATTRIBUTE(always_inline) inline form.
+  src/core/SkRasterPipeline.h enables SK_HAS_MUSTTAIL whenever
+  __has_cpp_attribute(clang::musttail) fires, and GCC 15 understands
+  [[clang::musttail]]. The Win64 ABI passes Skia's 16-byte vector
+  values by invisible reference, so GCC rejects every highp stage
+  tail call with "cannot tail-call: argument must be passed by
+  copying" (first hit at sse3::set_base_pointer while compiling
+  SkOpts.cpp; 20 errors before -fmax-errors cut it off). The flag now
+  also requires !(__MINGW32__ && !__clang__): MinGW clang folds the
+  same tail calls successfully (verified against the emitted objects,
+  since clang passes the vectors by value there) and keeps them,
+  while MinGW GCC compiles the stages as regular calls, which is also
+  how MSVC builds behave.
+
+  Update 20 (fixing one CLANG64 and one CLANGARM64 Skia failure):
+  src/ports/SkFontHost_FreeType.cpp includes <dlfcn.h> whenever the
+  default SK_FREETYPE_MINIMUM_RUNTIME_VERSION carries the
+  SK_FREETYPE_DLOPEN flag (SkFontHost_FreeType.cpp:91), and mingw-w64
+  does not ship <dlfcn.h>, so both CLANG64 and CLANGARM64 died on the
+  first FreeType translation unit with "fatal error: 'dlfcn.h' file
+  not found". The dl*() symbols are not referenced anywhere in the
+  file - that include is the flag's only remaining consumer - so the
+  include is now guarded with !defined(_WIN32). Windows builds simply
+  use the FreeType library they link against, which is what the
+  dlopen fallback would have handed them anyway.
+---
+ Source/ThirdParty/skia/CMakeLists.txt            | 16 ++++++++++++----
+ .../skia/include/private/SkAttributes.h          |  6 +++++-
+ .../ThirdParty/skia/src/core/SkRasterPipeline.h  |  6 ++++++
+ .../platform/graphics/skia/FontCacheSkia.cpp     |  4 ++--
+ .../skia/src/ports/SkFontHost_FreeType.cpp       |  4 +++-
+ 5 files changed, 28 insertions(+), 8 deletions(-)
+
+diff --git a/Source/ThirdParty/skia/CMakeLists.txt b/Source/ThirdParty/skia/CMakeLists.txt
+index 49b9262..6d826bf 100644
+--- a/Source/ThirdParty/skia/CMakeLists.txt
++++ b/Source/ThirdParty/skia/CMakeLists.txt
+@@ -1,7 +1,7 @@
+ set_property(DIRECTORY . PROPERTY FOLDER "skia")
+ 
+ # Skia dependencies not used directly in WebKit.
+-if (NOT WIN32 AND NOT PLAYSTATION)
++if ((NOT WIN32 OR MINGW) AND NOT PLAYSTATION)
+     find_package(Freetype 2.9.0 REQUIRED)
+     find_package(Fontconfig 2.13.0 REQUIRED)
+ endif ()
+@@ -811,7 +811,7 @@ add_library(Skia STATIC
+     modules/skcms/src/skcms_TransformSkx.cc
+ )
+ 
+-if (WIN32)
++if (WIN32 AND NOT MINGW)
+     target_sources(Skia PRIVATE
+         src/ports/SkFontHost_win.cpp
+         src/ports/SkFontMgr_win_dw.cpp
+@@ -825,10 +825,18 @@ if (WIN32)
+         src/utils/win/SkHRESULT.cpp
+     )
+ else ()
++    if (MINGW)
++        target_sources(Skia PRIVATE
++            src/ports/SkOSFile_win.cpp
++        )
++    else ()
++        target_sources(Skia PRIVATE
++            src/ports/SkOSFile_posix.cpp
++        )
++    endif ()
+     target_sources(Skia PRIVATE
+         src/ports/SkFontHost_FreeType.cpp
+         src/ports/SkFontHost_FreeType_common.cpp
+-        src/ports/SkOSFile_posix.cpp
+         src/ports/SkTypeface_proxy.cpp
+     )
+     target_link_libraries(Skia PRIVATE Freetype::Freetype)
+@@ -1082,7 +1090,7 @@ target_compile_definitions(Skia PUBLIC
+     SK_ASSUME_WEBGL=0
+ )
+ 
+-if (WIN32)
++if (WIN32 AND NOT MINGW)
+     target_compile_definitions(Skia PRIVATE SK_TYPEFACE_FACTORY_DIRECTWRITE)
+ else ()
+     target_compile_definitions(Skia PRIVATE SK_TYPEFACE_FACTORY_FREETYPE)
+diff --git a/Source/ThirdParty/skia/include/private/SkAttributes.h b/Source/ThirdParty/skia/include/private/SkAttributes.h
+index 8499525..1aa3d41 100644
+--- a/Source/ThirdParty/skia/include/private/SkAttributes.h
++++ b/Source/ThirdParty/skia/include/private/SkAttributes.h
+@@ -24,7 +24,11 @@
+  *     SK_ALWAYS_INLINE void someMethod() { ... }   // should always be inlined
+  */
+ #if !defined(SK_ALWAYS_INLINE)
+-#  if defined(SK_BUILD_FOR_WIN)
++#  if defined(SK_BUILD_FOR_WIN) && defined(_MSC_VER)
++// Real MSVC-family compilers only. MinGW GCC and MinGW clang do not know
++// the __forceinline keyword, and GCC only survives it when a CRT header
++// (which defines the keyword as a macro) happens to be included first, so
++// fall back to the portable attribute form on those toolchains.
+ #    define SK_ALWAYS_INLINE __forceinline
+ #  else
+ #    define SK_ALWAYS_INLINE SK_ATTRIBUTE(always_inline) inline
+@@ -49,7 +53,21 @@
+  * `B` is the (1 based) index of the first argument used by the format string.
+  */
+ #if !defined(SK_PRINTF_LIKE)
+-#  define SK_PRINTF_LIKE(A, B) SK_ATTRIBUTE(format(printf, (A), (B)))
++#  if defined(__MINGW32__) && defined(__GNUC__) && !defined(__clang__) \
++      && (defined(_UCRT) || __USE_MINGW_ANSI_STDIO)
++   /* MinGW gcc checks the plain printf archetype against the MSVCRT
++      (ms_printf), which does not know C99 length modifiers such as %zu,
++      while the C runtime's printf family itself is declared with the
++      gnu_printf archetype (C99-conformant __mingw_printf is used at
++      runtime thanks to __USE_MINGW_ANSI_STDIO, and the UCRT supports
++      %zu natively). Mirror mingw-w64's own stdio.h mapping for
++      __MINGW_PRINTF_FORMAT so these attributes match the implementations
++      actually called; clang already checks the plain printf archetype as
++      C99, and MSVC/non-MinGW hosts keep the default. */
++#    define SK_PRINTF_LIKE(A, B) SK_ATTRIBUTE(format(__gnu_printf__, (A), (B)))
++#  else
++#    define SK_PRINTF_LIKE(A, B) SK_ATTRIBUTE(format(printf, (A), (B)))
++#  endif
+ #endif
+ 
+ /**
+diff --git a/Source/ThirdParty/skia/src/core/SkRasterPipeline.h b/Source/ThirdParty/skia/src/core/SkRasterPipeline.h
+index feb9cc0..f5d9a70 100644
+--- a/Source/ThirdParty/skia/src/core/SkRasterPipeline.h
++++ b/Source/ThirdParty/skia/src/core/SkRasterPipeline.h
+@@ -29,9 +29,15 @@ struct skcms_TransferFunction;
+ 
+ #if __has_cpp_attribute(clang::musttail) && !defined(__EMSCRIPTEN__) && !defined(SK_CPU_ARM32) && \
+         !defined(SK_CPU_LOONGARCH) && !defined(SK_CPU_PPC) && \
++        !(defined(__MINGW32__) && !defined(__clang__)) && \
+         !(defined(_WIN32) && defined(SK_BUILD_FOR_ANDROID_FRAMEWORK))
+     // [[clang::musttail]] is disabled for the Android version of Skia running on Windows as it
+     // causes crashes (This is probably related to http://crbug.com/1505442).
++    // It is also disabled for MinGW GCC: the Win64 ABI passes Skia's 16-byte
++    // vector values by invisible reference, so GCC 15+ (which understands
++    // [[clang::musttail]]) rejects every stage tail call with
++    // "cannot tail-call: argument must be passed by copying". MinGW clang
++    // folds the same calls successfully, so it keeps the tail calls.
+     #define SK_HAS_MUSTTAIL 1
+ #else
+     #define SK_HAS_MUSTTAIL 0
+diff --git a/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp b/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
+index e5885cc..c7ec06d 100644
+--- a/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
++++ b/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
+@@ -44,7 +44,7 @@ WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
+ 
+ #if OS(ANDROID)
+ #include <skia/ports/SkFontMgr_android.h>
+-#elif PLATFORM(WIN)
++#elif OS(WINDOWS) && !PLATFORM(GTK)
+ #include <dwrite.h>
+ #include <skia/ports/SkTypeface_win.h>
+ #else
+@@ -63,7 +63,7 @@ SkFontMgr& FontCache::fontManager() const
+     if (!m_fontManager) {
+ #if OS(ANDROID)
+         m_fontManager = SkFontMgr_New_Android(nullptr, SkFontScanner_Make_FreeType());
+-#elif OS(WINDOWS)
++#elif OS(WINDOWS) && !PLATFORM(GTK)
+         auto result = createDWriteFactory();
+         m_fontManager = SkFontMgr_New_DirectWrite(result.factory.get(), result.fontCollection.get());
+ #else
+diff --git a/Source/ThirdParty/skia/src/ports/SkFontHost_FreeType.cpp b/Source/ThirdParty/skia/src/ports/SkFontHost_FreeType.cpp
+index f8043f25e91e..7d75e17be6b5 100644
+--- a/Source/ThirdParty/skia/src/ports/SkFontHost_FreeType.cpp
++++ b/Source/ThirdParty/skia/src/ports/SkFontHost_FreeType.cpp
+@@ -88,7 +88,9 @@
+ #  endif
+ #endif
+ #if SK_FREETYPE_MINIMUM_RUNTIME_VERSION & SK_FREETYPE_DLOPEN
+-#  include <dlfcn.h>
++#  if !defined(_WIN32)
++#    include <dlfcn.h>
++#  endif
+ #endif
+ 
+ #ifdef TT_SUPPORT_COLRV1
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Taozuhong <taozuhong@hotmail.com>
+Date: Mon, 12 Oct 2026 07:22:51 +0000
+Subject: [PATCH 6/6] MinGW: libpas/bmalloc and compatibility shims
+
+Compatibility shims:
+- err.h shim for the GLib/unix code paths that use err()/errx();
+- unifdef format fixes (eval%ld for LP64).
+- pas_utils.h/err.h format attributes mapped per mingw-w64 stdio.h
+  (MinGW gcc -> __gnu_printf__, clang/host unchanged).
+libpas/bmalloc:
+- pas_thread.h: drop the MSVC pthread emulation in favour of the
+  system <pthread.h> under MinGW; exclude the emulation .c; guard
+  scavenger/status_reporter thread main signatures.
+- Explicit <windows.h> includes for PAS_OS(WINDOWS) files that use
+  WinAPI without any Windows header (upstream relies on prefix
+  headers): pas_committed_pages_vector.c, pas_page_malloc.c,
+  pas_scavenger.c, pas_probabilistic_guard_malloc_allocator.c,
+  pas_lock.c (futex WaitOnAddress/INFINITE - mingw-w64 synchapi.h
+  does not pull winbase.h), pas_status_reporter.c (Sleep).
+- __PAS_API expands to nothing under __MINGW32__: PE/COFF has no
+  visibility semantics and MinGW GCC warns on every annotated
+  declaration; libpas links as a static library.
+- pas_large_sharing_pool.h: keep [[clang::preferred_type]] only
+  under __clang__ (GCC ignores it on PE and warns per TU).
+- bmalloc/CMakeLists.txt: link synchronization on MINGW
+  (WaitOnAddress/WakeByAddress* live in libsynchronization.a);
+  bmalloc is static so the requirement propagates to the final
+  JavaScriptCore link.
+- Update 15 (xdgmime fails to compile on MinGW, [6131]/8552 on ucrt64):
+  the mingw-w64 CRT ships neither <fnmatch.h> nor <netinet/in.h>. New
+  shims: fnmatch.h implements the classic glob subset (*, ?, [...],
+  backslash escaping) inline - the WebKit consumers (xdgmime glob
+  matching, GStreamer pattern checks) always pass flags = 0, the
+  standard FNM_* constants are defined for completeness and the
+  matcher is function-tested against 25 POSIX-semantics cases;
+  netinet/in.h provides inline ntohl/ntohs/htonl/htons byte-order
+  conversions instead of reusing winsock2.h, whose declarations are
+  dllimport and would drag the ws2_32 import library into every final
+  link of the static xdgmime archive. All eight xdgmime sources compile
+  and link with the shims (cross-gcc, zero extra libraries).
+
+- Update 16 (ucrt64 [6103]/8552, xdgmimecache.c compiled as C): the
+  sys/mman.h shim was written in C++ (reinterpret_cast, static_cast,
+  nullptr) and is now pulled into the C translation unit
+  xdgmimecache.c because HAVE_MMAP is force-enabled under MinGW since
+  update 12. The shim is rewritten with C-style casts, NULL and a
+  <stdint.h> include so the identical header serves C and C++
+  consumers; verified against all eight xdgmime C sources with the
+  cross compiler and against the WTF C++ mmap consumers.
+
+- Update 25 (fixing the round-25 CLANG64/CLANGARM64 WebCore
+  unified-source failures): mingw-compat gains a <libintl.h> wrapper.
+  gettext's libintl.h (MSYS2 gettext-runtime 1.0, lines 588-590)
+  unconditionally installs the object-like macro chain
+  "printf -> libintl_printf -> __printf__" whenever it is included -
+  glib's i18n machinery (gi18n-lib.h) drags it into many WebCore
+  unified sources after the PCH has already declared WTF::PrintStream.
+  The preprocessor knows nothing about member access, so a later header
+  calling the member compiles as "out.__printf__(...)" and dies with
+  "no member named '__printf__' in 'WTF::PrintStream'" - CI hit it at
+  JSC ValueProfile.h:115/118 (out.printf(": ")/out.printf(", "),
+  reached via UnlinkedMetadataTable.h) in UnifiedSource-html-9/10/12,
+  and the same hazard covers the out.vprintf(...) call sites in
+  ScopedPrintStream.h, DataLog.cpp, LinkBuffer.cpp and Integrity.cpp.
+  The wrapper #include_next'es the real header and then #undefs exactly
+  that *printf-family redirect set (printf, vprintf, fprintf, vfprintf,
+  sprintf, vsprintf, snprintf, vsnprintf, asprintf, vasprintf), which
+  is behavior-neutral on this build: with -D__USE_MINGW_ANSI_STDIO=1
+  (always set by the PKGBUILD) the CRT printf family is already
+  C99-conformant - the libintl macros ultimately wrap the very same
+  CRT symbols on MinGW, because libintl_printf is defined as the
+  __printf__ builtin alias - while the gettext/dgettext/... family,
+  setlocale/newlocale and libintl.h's "namespace std" using-declarations
+  stay untouched; WebKit routes translatable positional-format strings
+  (LocalizedStrings.cpp WEB_UI_FORMAT_STRING) through GLib's
+  g_strdup_vprintf, which never sees the macros. Verified in the sandbox
+  against the real MSYS2 clang64/clangarm64 gettext-runtime 1.0
+  libintl.h: a TU declaring PrintStream before libintl.h reproduces the
+  CI error set line-for-line (same notes pointing at libintl.h:588/590),
+  and the same TU with the wrapper searched first compiles clean -
+  including printf("%zu") and dgettext() use and object codegen - on
+  both targets.
+---
+ Source/ThirdParty/mingw-compat/include/err.h  | 164 ++++++++++++++++++
+ .../ThirdParty/mingw-compat/include/fnmatch.h | 157 +++++++++++++++++
+ Source/ThirdParty/mingw-compat/include/libintl.h |  54 +++++++
+ .../mingw-compat/include/netinet/in.h         |  54 ++++++
+ .../mingw-compat/include/sys/mman.h           |  11 +-
+ Source/ThirdParty/unifdef/unifdef.c           |  36 ++--
+ Source/ThirdParty/unifdef/unifdef.h           |   7 +
+ Source/bmalloc/CMakeLists.txt                 |   8 +
+ .../src/libpas/pas_committed_pages_vector.c   |   4 +
+ .../src/libpas/pas_large_sharing_pool.h       |   9 +
+ Source/bmalloc/libpas/src/libpas/pas_lock.c   |   4 +-
+ .../libpas/src/libpas/pas_page_malloc.c       |   4 +
+ ...pas_probabilistic_guard_malloc_allocator.c |   2 +
+ .../bmalloc/libpas/src/libpas/pas_scavenger.c |   9 +-
+ .../libpas/src/libpas/pas_status_reporter.c   |   8 +-
+ Source/bmalloc/libpas/src/libpas/pas_thread.c |   9 +-
+ Source/bmalloc/libpas/src/libpas/pas_thread.h |  13 ++
+ .../src/libpas/pas_thread_local_cache.c       |   7 +-
+ .../src/libpas/pas_thread_local_cache.h       |   6 +-
+ Source/bmalloc/libpas/src/libpas/pas_utils.h  |  13 ++
+ .../libpas/src/libpas/pas_utils_prefix.h      |   8 +-
+ 21 files changed, 556 insertions(+), 31 deletions(-)
+ create mode 100644 Source/ThirdParty/mingw-compat/include/err.h
+ create mode 100644 Source/ThirdParty/mingw-compat/include/fnmatch.h
+ create mode 100644 Source/ThirdParty/mingw-compat/include/libintl.h
+ create mode 100644 Source/ThirdParty/mingw-compat/include/netinet/in.h
+
+diff --git a/Source/ThirdParty/mingw-compat/include/err.h b/Source/ThirdParty/mingw-compat/include/err.h
+new file mode 100644
+index 0000000..81b0c1e
+--- /dev/null
++++ b/Source/ThirdParty/mingw-compat/include/err.h
+@@ -0,0 +1,164 @@
++/*
++ * Copyright (C) 2025 Taozuhong <taozuhong@hotmail.com>
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/*
++ * MinGW compat shim: the BSD <err.h> diagnostics API.
++ *
++ * The MinGW-w64 CRT does not provide <err.h> (err/errx/warn/warnx and
++ * their v-variants are BSD/glibc extensions), but vendored build tools
++ * such as ThirdParty/unifdef rely on it. This header implements the
++ * complete family as static inline functions on top of plain stdio,
++ * matching the BSD semantics:
++ *
++ *   warn(fmt, ...)   <message>: <strerror(errno)> + newline
++ *   warnx(fmt, ...)  <message> + newline
++ *   err(eval, ...)   warn() followed by exit(eval)
++ *   errx(eval, ...)  warnx() followed by exit(eval)
++ *
++ * errno is captured before any stdio call so that the vfprintf() inside
++ * the implementation cannot clobber the value being reported. If the
++ * format string is empty or NULL, the ": " separator is suppressed as
++ * on BSD. All functions are static inline, so no err* symbols are ever
++ * referenced or defined and the header can safely be included from any
++ * number of translation units (C or C++). The v-variants carry the same
++ * format(printf, N, 0) attributes glibc uses, so both -Wmissing-format-attribute
++ * and format-string checking behave as they would against the BSD header.
++ */
++
++#ifndef MINGW_COMPAT_ERR_H
++#define MINGW_COMPAT_ERR_H
++
++#include <errno.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Under MinGW gcc the plain printf archetype checks against the MSVCRT
++   printf (ms_printf), while the C runtime's vfprintf() itself is declared
++   with the gnu_printf archetype (C99-conformant __mingw_printf is used at
++   runtime thanks to __USE_MINGW_ANSI_STDIO). Mirror mingw-w64's own
++   stdio.h mapping so these attributes match the implementations called
++   below; clang already checks the plain printf archetype as C99, and
++   non-MinGW hosts keep it too. */
++#if defined(__MINGW32__) && defined(__GNUC__) && !defined(__clang__) \
++    && (defined(_UCRT) || __USE_MINGW_ANSI_STDIO)
++#define MINGW_COMPAT_PRINTF_ARCHETYPE __gnu_printf__
++#else
++#define MINGW_COMPAT_PRINTF_ARCHETYPE printf
++#endif
++
++/* The v-variants carry the format(printf, N, 0) attribute exactly like
++   glibc does. Callers that forward their own format parameter to them
++   (e.g. unifdef's debug() wrapper, which is declared with
++   format(printf, 1, 2)) are then exempt from -Wformat-nonliteral and
++   -Wformat-security for the forwarded format. */
++
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 1, 0)))
++static inline void vwarnx(const char* fmt, va_list ap)
++{
++    if (fmt && *fmt)
++        vfprintf(stderr, fmt, ap);
++    fputc('\n', stderr);
++}
++
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 1, 0)))
++static inline void vwarn(const char* fmt, va_list ap)
++{
++    int saved_errno = errno;
++
++    if (fmt && *fmt) {
++        vfprintf(stderr, fmt, ap);
++        fputs(": ", stderr);
++    }
++    fputs(strerror(saved_errno), stderr);
++    fputc('\n', stderr);
++}
++
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 1, 2)))
++static inline void warnx(const char* fmt, ...)
++{
++    va_list ap;
++
++    va_start(ap, fmt);
++    vwarnx(fmt, ap);
++    va_end(ap);
++}
++
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 1, 2)))
++static inline void warn(const char* fmt, ...)
++{
++    va_list ap;
++
++    va_start(ap, fmt);
++    vwarn(fmt, ap);
++    va_end(ap);
++}
++
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 2, 3)))
++static inline void errx(int eval, const char* fmt, ...)
++{
++    va_list ap;
++
++    va_start(ap, fmt);
++    vwarnx(fmt, ap);
++    va_end(ap);
++    exit(eval);
++}
++
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 2, 3)))
++static inline void err(int eval, const char* fmt, ...)
++{
++    va_list ap;
++
++    va_start(ap, fmt);
++    vwarn(fmt, ap);
++    va_end(ap);
++    exit(eval);
++}
++
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 2, 0)))
++static inline void verrx(int eval, const char* fmt, va_list ap)
++{
++    vwarnx(fmt, ap);
++    exit(eval);
++}
++
++__attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 2, 0)))
++static inline void verr(int eval, const char* fmt, va_list ap)
++{
++    vwarn(fmt, ap);
++    exit(eval);
++}
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* MINGW_COMPAT_ERR_H */
+diff --git a/Source/ThirdParty/mingw-compat/include/fnmatch.h b/Source/ThirdParty/mingw-compat/include/fnmatch.h
+new file mode 100644
+index 0000000..847cf02
+--- /dev/null
++++ b/Source/ThirdParty/mingw-compat/include/fnmatch.h
+@@ -0,0 +1,157 @@
++/*
++ * Copyright (C) 2025 Tao Zuhong
++ *
++ * This library is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; either version 2.1 of the License, or (at
++ * your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License
++ * for more details.
++ *
++ * Minimal <fnmatch.h> emulation for MinGW: the mingw-w64 CRT does not provide
++ * the POSIX fnmatch(3). Implementations used inside WebKit (xdgmime glob
++ * matching, GStreamer pattern checks) always pass flags = 0, so the matcher
++ * below implements the classic glob subset (*, ?, [...], backslash escaping)
++ * and defines the standard flag constants for completeness.
++ */
++
++#pragma once
++
++#include <ctype.h>
++
++#define FNM_NOMATCH     1
++#define FNM_PATHNAME    2
++#define FNM_PERIOD      4
++#define FNM_NOESCAPE    8
++#define FNM_CASEFOLD    16
++#define FNM_LEADING_DIR 32
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++inline static int fnmatchInternal(const char *pattern, const char *string, int flags)
++{
++    int fold = flags & FNM_CASEFOLD;
++
++    while (*pattern) {
++        char c = *pattern++;
++
++        if (c == '*') {
++            while (*pattern == '*')
++                pattern++;
++            if (!*pattern)
++                return 0;
++            for (; *string; string++) {
++                if (fnmatchInternal(pattern, string, flags) == 0)
++                    return 0;
++            }
++            return FNM_NOMATCH;
++        }
++
++        if (!*string)
++            return FNM_NOMATCH;
++
++        if (c == '?') {
++            if ((flags & FNM_PATHNAME) && *string == '/')
++                return FNM_NOMATCH;
++            string++;
++            continue;
++        }
++
++        if (c == '\\') {
++            if (flags & FNM_NOESCAPE)
++                goto literal;
++            if (!*pattern)
++                return FNM_NOMATCH;
++            c = *pattern++;
++            if (fold) {
++                if (tolower((unsigned char)c) != tolower((unsigned char)*string))
++                    return FNM_NOMATCH;
++            } else if (c != *string) {
++                return FNM_NOMATCH;
++            }
++            string++;
++            continue;
++        }
++
++        if (c == '[') {
++            int negate = 0;
++            int matched = 0;
++            char sc = *string++;
++
++            if ((flags & FNM_PATHNAME) && sc == '/')
++                return FNM_NOMATCH;
++
++            if (*pattern == '!' || *pattern == '^') {
++                negate = 1;
++                pattern++;
++            }
++
++            char pc = *pattern++;
++            if (pc == ']') {
++                /* A ']' in leading position is a literal member. */
++                if (fold) {
++                    if (tolower((unsigned char)sc) == tolower((unsigned char)pc))
++                        matched = 1;
++                } else if (sc == pc)
++                    matched = 1;
++                pc = *pattern++;
++            }
++            while (pc && pc != ']') {
++                if (*pattern == '-' && pattern[1] && pattern[1] != ']') {
++                    char lo = pc;
++                    char hi = pattern[1];
++                    pattern += 2;
++                    if (lo > hi) {
++                        char tmp = lo;
++                        lo = hi;
++                        hi = tmp;
++                    }
++                    if (fold) {
++                        char fsc = tolower((unsigned char)sc);
++                        if (fsc >= tolower((unsigned char)lo) && fsc <= tolower((unsigned char)hi))
++                            matched = 1;
++                    } else if (sc >= lo && sc <= hi)
++                        matched = 1;
++                } else {
++                    if (fold) {
++                        if (tolower((unsigned char)sc) == tolower((unsigned char)pc))
++                            matched = 1;
++                    } else if (sc == pc)
++                        matched = 1;
++                }
++                pc = *pattern++;
++            }
++            /* Unterminated class is a literal-failure, not a crash. */
++            if (!pc)
++                return FNM_NOMATCH;
++            if (negate ? matched : !matched)
++                return FNM_NOMATCH;
++            continue;
++        }
++
++literal:
++        if (fold) {
++            if (tolower((unsigned char)c) != tolower((unsigned char)*string))
++                return FNM_NOMATCH;
++        } else if (c != *string) {
++            return FNM_NOMATCH;
++        }
++        string++;
++    }
++
++    return *string ? FNM_NOMATCH : 0;
++}
++
++inline static int fnmatch(const char *pattern, const char *string, int flags)
++{
++    return fnmatchInternal(pattern, string, flags);
++}
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/Source/ThirdParty/mingw-compat/include/netinet/in.h b/Source/ThirdParty/mingw-compat/include/netinet/in.h
+new file mode 100644
+index 0000000..3762db2
+--- /dev/null
++++ b/Source/ThirdParty/mingw-compat/include/netinet/in.h
+@@ -0,0 +1,54 @@
++/*
++ * Copyright (C) 2025 Tao Zuhong
++ *
++ * This library is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; either version 2.1 of the License, or (at
++ * your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License
++ * for more details.
++ *
++ * Minimal <netinet/in.h> emulation for MinGW: the mingw-w64 CRT does not
++ * provide the POSIX header. winsock2.h does declare ntohl/ntohs, but as
++ * dllimport symbols requiring the ws2_32 import library at link time; the
++ * inline implementations below keep the byte-order conversions
++ * dependency-free. Windows only runs on little-endian hosts.
++ */
++
++#pragma once
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++inline static uint32_t ntohl(uint32_t value)
++{
++    return ((value & 0x000000ffu) << 24)
++         | ((value & 0x0000ff00u) << 8)
++         | ((value & 0x00ff0000u) >> 8)
++         | ((value & 0xff000000u) >> 24);
++}
++
++inline static uint16_t ntohs(uint16_t value)
++{
++    return (uint16_t)((value >> 8) | (value << 8));
++}
++
++inline static uint32_t htonl(uint32_t value)
++{
++    return ntohl(value);
++}
++
++inline static uint16_t htons(uint16_t value)
++{
++    return ntohs(value);
++}
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/Source/ThirdParty/mingw-compat/include/sys/mman.h b/Source/ThirdParty/mingw-compat/include/sys/mman.h
+index 2e379cb..2fccb9f 100644
+--- a/Source/ThirdParty/mingw-compat/include/sys/mman.h
++++ b/Source/ThirdParty/mingw-compat/include/sys/mman.h
+@@ -25,6 +25,7 @@
+ #include <io.h>
+ #include <fcntl.h>
+ #include <errno.h>
++#include <stdint.h>
+ 
+ #define PROT_NONE  0x0
+ #define PROT_READ  0x1
+@@ -88,11 +89,11 @@ inline static void* mmanMapPageFile(void* address, size_t length, int prot, int
+     if (fd == -1)
+         return MAP_FAILED;
+ 
+-    HANDLE osHandle = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
++    HANDLE osHandle = (HANDLE)_get_osfhandle(fd);
+     if (osHandle == INVALID_HANDLE_VALUE)
+         return MAP_FAILED;
+ 
+-    HANDLE mapping = CreateFileMappingW(osHandle, nullptr, PAGE_READWRITE, 0, 0, nullptr);
++    HANDLE mapping = CreateFileMappingW(osHandle, NULL, PAGE_READWRITE, 0, 0, NULL);
+     if (!mapping)
+         return MAP_FAILED;
+ 
+@@ -123,7 +124,7 @@ inline static void* mmap(void* address, size_t length, int prot, int flags, int
+     if (!(flags & MAP_ANON))
+         return mmanMapPageFile(address, length, prot, flags, fd, offset);
+ 
+-    SIZE_T reservedBytes = static_cast<SIZE_T>(length);
++    SIZE_T reservedBytes = (SIZE_T)length;
+     DWORD allocationType = MEM_RESERVE;
+     if (prot != PROT_NONE)
+         allocationType |= MEM_COMMIT;
+@@ -150,13 +151,13 @@ inline static int mprotect(void* address, size_t length, int prot)
+     SYSTEM_INFO systemInfo;
+     GetSystemInfo(&systemInfo);
+ 
+-    uintptr_t base = reinterpret_cast<uintptr_t>(address);
++    uintptr_t base = (uintptr_t)address;
+     uintptr_t pageMask = systemInfo.dwPageSize ? (systemInfo.dwPageSize - 1) : 0xFFF;
+     uintptr_t alignedBase = base & ~pageMask;
+     size_t alignedLength = length + (base - alignedBase);
+ 
+     DWORD oldProtection;
+-    if (!VirtualProtect(reinterpret_cast<void*>(alignedBase), alignedLength, mmanProtectionFromProt(prot), &oldProtection)) {
++    if (!VirtualProtect((void *)alignedBase, alignedLength, mmanProtectionFromProt(prot), &oldProtection)) {
+         errno = ENOMEM;
+         return -1;
+     }
+diff --git a/Source/ThirdParty/unifdef/unifdef.c b/Source/ThirdParty/unifdef/unifdef.c
+index dc145a2..5a6374b 100644
+--- a/Source/ThirdParty/unifdef/unifdef.c
++++ b/Source/ThirdParty/unifdef/unifdef.c
+@@ -215,7 +215,7 @@ static void             addsym2(bool, const char *, const char *);
+ static char            *astrcat(const char *, const char *);
+ static void             cleantemp(void);
+ static void             closeio(void);
+-static void             debug(const char *, ...);
++static void             debug(const char *, ...) __attribute__((format(MINGW_COMPAT_PRINTF_ARCHETYPE, 1, 2)));
+ static void             debugsym(const char *, int);
+ static bool             defundef(void);
+ static void             defundefile(const char *);
+@@ -849,7 +849,7 @@ parseline(void)
+ 		if (fgets(tline + len, MAXLINE - len, input) == NULL) {
+ 			if (ferror(input))
+ 				err(2, "can't read %s", filename);
+-			debug("parser insert newline at EOF", linenum);
++			debug("parser insert newline at EOF");
+ 			strcpy(tline + len, newline);
+ 			cp += strlen(newline);
+ 			linestate = LS_START;
+@@ -1019,7 +1019,7 @@ eval_unary(const struct ops *ops, long *valp, const char **cpp)
+ 
+ 	cp = skipcomment(*cpp);
+ 	if (*cp == '!') {
+-		debug("eval%d !", prec(ops));
++		debug("eval%ld !", prec(ops));
+ 		cp++;
+ 		lt = eval_unary(ops, valp, &cp);
+ 		if (lt == LT_ERROR)
+@@ -1029,7 +1029,7 @@ eval_unary(const struct ops *ops, long *valp, const char **cpp)
+ 			lt = *valp ? LT_TRUE : LT_FALSE;
+ 		}
+ 	} else if (*cp == '~') {
+-		debug("eval%d ~", prec(ops));
++		debug("eval%ld ~", prec(ops));
+ 		cp++;
+ 		lt = eval_unary(ops, valp, &cp);
+ 		if (lt == LT_ERROR)
+@@ -1039,7 +1039,7 @@ eval_unary(const struct ops *ops, long *valp, const char **cpp)
+ 			lt = *valp ? LT_TRUE : LT_FALSE;
+ 		}
+ 	} else if (*cp == '-') {
+-		debug("eval%d -", prec(ops));
++		debug("eval%ld -", prec(ops));
+ 		cp++;
+ 		lt = eval_unary(ops, valp, &cp);
+ 		if (lt == LT_ERROR)
+@@ -1050,7 +1050,7 @@ eval_unary(const struct ops *ops, long *valp, const char **cpp)
+ 		}
+ 	} else if (*cp == '(') {
+ 		cp++;
+-		debug("eval%d (", prec(ops));
++		debug("eval%ld (", prec(ops));
+ 		lt = eval_table(eval_ops, valp, &cp);
+ 		if (lt == LT_ERROR)
+ 			return (LT_ERROR);
+@@ -1058,7 +1058,7 @@ eval_unary(const struct ops *ops, long *valp, const char **cpp)
+ 		if (*cp++ != ')')
+ 			return (LT_ERROR);
+ 	} else if (isdigit((unsigned char)*cp)) {
+-		debug("eval%d number", prec(ops));
++		debug("eval%ld number", prec(ops));
+ 		*valp = strtol(cp, &ep, 0);
+ 		if (ep == cp)
+ 			return (LT_ERROR);
+@@ -1075,20 +1075,20 @@ eval_unary(const struct ops *ops, long *valp, const char **cpp)
+ 		sym = findsym(&cp);
+ 		cp = skipcomment(cp);
+ 		if (defparen && *cp++ != ')') {
+-			debug("eval%d defined missing ')'", prec(ops));
++			debug("eval%ld defined missing ')'", prec(ops));
+ 			return (LT_ERROR);
+ 		}
+ 		if (sym < 0) {
+-			debug("eval%d defined unknown", prec(ops));
++			debug("eval%ld defined unknown", prec(ops));
+ 			lt = LT_IF;
+ 		} else {
+-			debug("eval%d defined %s", prec(ops), symname[sym]);
++			debug("eval%ld defined %s", prec(ops), symname[sym]);
+ 			*valp = (value[sym] != NULL);
+ 			lt = *valp ? LT_TRUE : LT_FALSE;
+ 		}
+ 		constexpr = false;
+ 	} else if (!endsym(*cp)) {
+-		debug("eval%d symbol", prec(ops));
++		debug("eval%ld symbol", prec(ops));
+ 		sym = findsym(&cp);
+ 		if (sym < 0) {
+ 			lt = LT_IF;
+@@ -1105,12 +1105,12 @@ eval_unary(const struct ops *ops, long *valp, const char **cpp)
+ 		}
+ 		constexpr = false;
+ 	} else {
+-		debug("eval%d bad expr", prec(ops));
++		debug("eval%ld bad expr", prec(ops));
+ 		return (LT_ERROR);
+ 	}
+ 
+ 	*cpp = cp;
+-	debug("eval%d = %d", prec(ops), *valp);
++	debug("eval%ld = %ld", prec(ops), *valp);
+ 	return (lt);
+ }
+ 
+@@ -1125,7 +1125,7 @@ eval_table(const struct ops *ops, long *valp, const char **cpp)
+ 	long val = 0;
+ 	Linetype lt, rt;
+ 
+-	debug("eval%d", prec(ops));
++	debug("eval%ld", prec(ops));
+ 	cp = *cpp;
+ 	lt = ops->inner(ops+1, valp, &cp);
+ 	if (lt == LT_ERROR)
+@@ -1145,7 +1145,7 @@ eval_table(const struct ops *ops, long *valp, const char **cpp)
+ 		if (op->str == NULL)
+ 			break;
+ 		cp += strlen(op->str);
+-		debug("eval%d %s", prec(ops), op->str);
++		debug("eval%ld %s", prec(ops), op->str);
+ 		rt = ops->inner(ops+1, &val, &cp);
+ 		if (rt == LT_ERROR)
+ 			return (LT_ERROR);
+@@ -1153,8 +1153,8 @@ eval_table(const struct ops *ops, long *valp, const char **cpp)
+ 	}
+ 
+ 	*cpp = cp;
+-	debug("eval%d = %d", prec(ops), *valp);
+-	debug("eval%d lt = %s", prec(ops), linetype_name[lt]);
++	debug("eval%ld = %ld", prec(ops), *valp);
++	debug("eval%ld lt = %s", prec(ops), linetype_name[lt]);
+ 	return (lt);
+ }
+ 
+@@ -1172,7 +1172,7 @@ ifeval(const char **cpp)
+ 	debug("eval %s", *cpp);
+ 	constexpr = killconsts ? false : true;
+ 	ret = eval_table(eval_ops, &val, cpp);
+-	debug("eval = %d", val);
++	debug("eval = %ld", val);
+ 	return (constexpr ? LT_IF : ret == LT_ERROR ? LT_IF : ret);
+ }
+ 
+diff --git a/Source/ThirdParty/unifdef/unifdef.h b/Source/ThirdParty/unifdef/unifdef.h
+index 2cd706d..c91dcb8 100644
+--- a/Source/ThirdParty/unifdef/unifdef.h
++++ b/Source/ThirdParty/unifdef/unifdef.h
+@@ -45,6 +45,13 @@ mktempmode(char *tmp, int mode)
+ {
+ 	int fd = mkstemp(tmp);
+ 	if (fd < 0) return (NULL);
++#ifndef __MINGW32__
++	/* MinGW-w64 has no fchmod(), and the permission bits are
++	   meaningless for the temporary file that is renamed over the
++	   output file on Windows. */
+ 	fchmod(fd, mode & (S_IRWXU|S_IRWXG|S_IRWXO));
++#else
++	(void)mode;	/* MinGW: no permission bits to apply */
++#endif
+ 	return (fdopen(fd, "wb"));
+ }
+diff --git a/Source/bmalloc/CMakeLists.txt b/Source/bmalloc/CMakeLists.txt
+index b9eedea..12b7140 100644
+--- a/Source/bmalloc/CMakeLists.txt
++++ b/Source/bmalloc/CMakeLists.txt
+@@ -725,6 +725,14 @@ endif ()
+ 
+ WEBKIT_FRAMEWORK(bmalloc)
+ 
++if (MINGW)
++    # pas_lock.c emulates futexes through the Windows 8+ WaitOnAddress API
++    # set. mingw-w64 exposes those symbols through libsynchronization.a,
++    # which is not part of the default linker spec; bmalloc is a static
++    # library, so the dependency propagates to the consuming targets.
++    target_link_libraries(bmalloc PRIVATE synchronization)
++endif ()
++
+ # bmalloc is statically linked into JavaScriptCore, so it uses JSC's PGO profile.
+ if (USE_APPLE_INTERNAL_SDK)
+     WEBKIT_TARGET_USE_PGO(bmalloc PROFILE JavaScriptCore)
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_committed_pages_vector.c b/Source/bmalloc/libpas/src/libpas/pas_committed_pages_vector.c
+index f2e5d1c..3191aa5 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_committed_pages_vector.c
++++ b/Source/bmalloc/libpas/src/libpas/pas_committed_pages_vector.c
+@@ -36,6 +36,10 @@
+ #include <sys/mman.h>
+ #endif
+ 
++#if PAS_OS(WINDOWS)
++#include <windows.h> /* for MEMORY_BASIC_INFORMATION / VirtualQuery */
++#endif
++
+ PAS_BEGIN_EXTERN_C;
+ 
+ void pas_committed_pages_vector_construct(pas_committed_pages_vector* vector,
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_large_sharing_pool.h b/Source/bmalloc/libpas/src/libpas/pas_large_sharing_pool.h
+index 2840c9c..e4a8117 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_large_sharing_pool.h
++++ b/Source/bmalloc/libpas/src/libpas/pas_large_sharing_pool.h
+@@ -61,9 +61,18 @@ struct pas_large_sharing_node {
+     Until then - on Windows we'll use unsigned on these types, but add the clang::preferred_type annotation for better debug information
+     */
+ 
++    /* GCC warns "scoped attribute directive ignored" for every translation
++       unit that includes this header; the annotation only affects clang's
++       debug info, so keep it there. */
++#if defined(__clang__)
+     [[clang::preferred_type(pas_commit_mode)]] unsigned is_committed : 1;
+     [[clang::preferred_type(pas_physical_memory_synchronization_style)]] unsigned synchronization_style : 1;
+     [[clang::preferred_type(pas_page_flags)]] unsigned page_flags : 2;
++#else
++    unsigned is_committed : 1;
++    unsigned synchronization_style : 1;
++    unsigned page_flags : 2;
++#endif
+ #else
+     pas_commit_mode is_committed : 1;
+     pas_physical_memory_synchronization_style synchronization_style : 1;
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_lock.c b/Source/bmalloc/libpas/src/libpas/pas_lock.c
+index 9ac1100..7dd4155 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_lock.c
++++ b/Source/bmalloc/libpas/src/libpas/pas_lock.c
+@@ -40,7 +40,9 @@
+ #include <sys/syscall.h>
+ #include <unistd.h>
+ #elif PAS_OS(WINDOWS)
+-#include <synchapi.h>
++/* mingw-w64's synchapi.h declares WaitOnAddress but does not pull in
++   winbase.h, so INFINITE would be undeclared; windows.h brings both. */
++#include <windows.h>
+ #elif PAS_OS(FREEBSD)
+ #include <sys/umtx.h>
+ #endif
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_page_malloc.c b/Source/bmalloc/libpas/src/libpas/pas_page_malloc.c
+index ac0e48a..99334f9 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_page_malloc.c
++++ b/Source/bmalloc/libpas/src/libpas/pas_page_malloc.c
+@@ -36,6 +36,10 @@
+ #include <sys/mman.h>
+ #include <unistd.h>
+ #endif
++
++#if PAS_OS(WINDOWS)
++#include <windows.h> /* for VirtualAlloc / VirtualFree / VirtualQuery / GetSystemInfo */
++#endif
+ #if PAS_OS(DARWIN)
+ #include <mach/vm_statistics.h>
+ #endif
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_probabilistic_guard_malloc_allocator.c b/Source/bmalloc/libpas/src/libpas/pas_probabilistic_guard_malloc_allocator.c
+index fb8709a..378c33c 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_probabilistic_guard_malloc_allocator.c
++++ b/Source/bmalloc/libpas/src/libpas/pas_probabilistic_guard_malloc_allocator.c
+@@ -40,6 +40,8 @@
+ #include <stdlib.h>
+ #if !PAS_OS(WINDOWS)
+ #include <sys/mman.h>
++#else
++#include <windows.h> /* for VirtualAlloc / VirtualFree / VirtualQuery */
+ #endif
+ 
+ /* PlayStation does not currently support the backtrace API. Android API versions < 33 don't, either. Windows does not either. Linux only with GLibc and not uCLibc/Musl. */
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_scavenger.c b/Source/bmalloc/libpas/src/libpas/pas_scavenger.c
+index 82e65dd..eb62547 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_scavenger.c
++++ b/Source/bmalloc/libpas/src/libpas/pas_scavenger.c
+@@ -29,6 +29,10 @@
+ 
+ #include "pas_scavenger.h"
+ 
++#if PAS_OS(WINDOWS)
++#include <windows.h> /* for QueryPerformanceFrequency / QueryPerformanceCounter */
++#endif
++
+ #include <math.h>
+ #include "pas_baseline_allocator_table.h"
+ #include "pas_compact_expendable_memory.h"
+@@ -179,7 +183,10 @@ static bool handle_expendable_memory(pas_expendable_memory_scavenge_kind kind)
+     return should_go_again;
+ }
+ 
+-#if PAS_OS(WINDOWS)
++#if PAS_OS(WINDOWS) && !defined(__MINGW32__)
++/* MSVC: the libpas pthread emulation uses unsigned thread functions
++   (_beginthreadex). MinGW uses real winpthreads with the POSIX
++   void* signature, so it takes the generic branch below. */
+ #define R_NULL 0
+ 
+ unsigned scavenger_thread_main(void* arg)
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_status_reporter.c b/Source/bmalloc/libpas/src/libpas/pas_status_reporter.c
+index 4d12ba5..bc36768 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_status_reporter.c
++++ b/Source/bmalloc/libpas/src/libpas/pas_status_reporter.c
+@@ -29,6 +29,10 @@
+ 
+ #include "pas_status_reporter.h"
+ 
++#if PAS_OS(WINDOWS)
++#include <windows.h> /* for Sleep */
++#endif
++
+ #include "pas_all_heaps.h"
+ #include "pas_baseline_allocator_table.h"
+ #include "pas_bitfit_directory.h"
+@@ -1012,7 +1016,9 @@ static void pas_sleep(unsigned microseconds)
+ #endif
+ }
+ 
+-#if PAS_OS(WINDOWS)
++#if PAS_OS(WINDOWS) && !defined(__MINGW32__)
++/* MSVC: unsigned thread function via the libpas pthread emulation;
++   MinGW uses real winpthreads with the POSIX void* signature. */
+ #define R_NULL 0
+ 
+ static unsigned status_reporter_thread_main(void* arg)
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_thread.c b/Source/bmalloc/libpas/src/libpas/pas_thread.c
+index 9bea5f0..f02a9bc 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_thread.c
++++ b/Source/bmalloc/libpas/src/libpas/pas_thread.c
+@@ -24,11 +24,16 @@
+ 
+ /* Implement the subset of pthreads that libpas requires to run on Windows
+    It's not a complete implementation - we only care about implementing the
+-   subset required to get libpas working. */
++   subset required to get libpas working.
++
++   MinGW environments (MSYS2 mingw64 / ucrt64 / clang64 / clangarm64) use
++   the system winpthreads implementation instead of this emulation (see
++   pas_thread.h); compiling this file there would clash with the real
++   pthread_once / pthread_mutex_* / pthread_cond_* symbols. */
+ 
+ #include "pas_config.h"
+ 
+-#if LIBPAS_ENABLED && PAS_OS(WINDOWS)
++#if LIBPAS_ENABLED && PAS_OS(WINDOWS) && !defined(__MINGW32__)
+ #include "pas_thread.h"
+ #include "pas_log.h"
+ #include "pas_utils.h"
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_thread.h b/Source/bmalloc/libpas/src/libpas/pas_thread.h
+index 1c08f6a..45c24a4 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_thread.h
++++ b/Source/bmalloc/libpas/src/libpas/pas_thread.h
+@@ -26,6 +26,19 @@
+ 
+ #if !PAS_OS(WINDOWS)
+ #include <pthread.h>
++#elif defined(__MINGW32__)
++
++/* MinGW environments (MSYS2 mingw64 / ucrt64 / clang64 / clangarm64) ship
++   the winpthreads implementation of the pthread API. C++ translation units
++   may already have pulled in the system <pthread.h> through the C++
++   standard library's gthr layer (<atomic>, <mutex>, ...), so keeping the
++   MSVC-oriented emulation below would conflict with the system pthread
++   types (INIT_ONCE/SRWLOCK/CONDITION_VARIABLE vs long/intptr_t) and
++   functions. Use the real winpthreads declarations instead; they provide
++   the full subset libpas needs (pthread_once, mutexes, condition
++   variables, pthread_getname_np, ...). */
++#include <pthread.h>
++
+ #else
+ 
+ /* Implement the subset of pthread that libpas requires to run on Windows */
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_thread_local_cache.c b/Source/bmalloc/libpas/src/libpas/pas_thread_local_cache.c
+index 0dd9fc6..852bfb1 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_thread_local_cache.c
++++ b/Source/bmalloc/libpas/src/libpas/pas_thread_local_cache.c
+@@ -62,9 +62,14 @@
+ PAS_BEGIN_EXTERN_C;
+ 
+ #if PAS_HAVE_THREAD_KEYWORD
+-#if PAS_OS(WINDOWS)
++#if PAS_OS(WINDOWS) && !defined(__MINGW32__)
+ __declspec(thread) void* pas_thread_local_cache_pointer = NULL;
+ #else
++/* MSVC-style __declspec(thread) is not implemented by the MinGW-w64
++   toolchains: Clang on windows-gnu rejects it as an unknown attribute
++   (silently dropping thread-local storage), while __thread is supported
++   by both GCC and Clang there. Must match the declaration in
++   pas_thread_local_cache.h. */
+ __thread void* pas_thread_local_cache_pointer = NULL;
+ #endif
+ #endif
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_thread_local_cache.h b/Source/bmalloc/libpas/src/libpas/pas_thread_local_cache.h
+index 958705a..45e8b84 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_thread_local_cache.h
++++ b/Source/bmalloc/libpas/src/libpas/pas_thread_local_cache.h
+@@ -87,9 +87,13 @@ PAS_API extern pas_fast_tls pas_thread_local_cache_fast_tls;
+ #endif
+ 
+ #if PAS_HAVE_THREAD_KEYWORD
+-#if PAS_OS(WINDOWS)
++#if PAS_OS(WINDOWS) && !defined(__MINGW32__)
+ PAS_API extern __declspec(thread) void* pas_thread_local_cache_pointer;
+ #else
++/* MSVC-style __declspec(thread) is not implemented by the MinGW-w64
++   toolchains: Clang on windows-gnu rejects it as an unknown attribute
++   (silently dropping thread-local storage), while __thread is supported
++   by both GCC and Clang there. */
+ PAS_API extern __thread void* pas_thread_local_cache_pointer;
+ #endif
+ #define PAS_THREAD_LOCAL_KEY pas_thread_local_cache_pointer
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_utils.h b/Source/bmalloc/libpas/src/libpas/pas_utils.h
+index 433b26f..265124e 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_utils.h
++++ b/Source/bmalloc/libpas/src/libpas/pas_utils.h
+@@ -96,7 +96,20 @@ PAS_BEGIN_EXTERN_C;
+ #define PAS_ALIGNOF(type) _Alignof(type)
+ #endif
+ 
++/* On MinGW targets the plain __printf__ archetype checks against the
++   MSVCRT printf, which does not know C99 length modifiers like %zu that
++   libpas uses extensively - even when __USE_MINGW_ANSI_STDIO=1 makes the
++   actual runtime function __mingw_printf (C99-conformant). Mirror the
++   mapping mingw-w64's own stdio.h uses for __MINGW_PRINTF_FORMAT:
++   gcc on UCRT or ANSI-stdio targets checks against __gnu_printf__; clang
++   already accepts %zu with the plain archetype, and MSVC/non-MinGW hosts
++   keep the default. */
++#if defined(__MINGW32__) && defined(__GNUC__) && !defined(__clang__) \
++    && (defined(_UCRT) || __USE_MINGW_ANSI_STDIO)
++#define PAS_FORMAT_PRINTF(fmt, args) __attribute__((format(__gnu_printf__, fmt, args)))
++#else
+ #define PAS_FORMAT_PRINTF(fmt, args) __attribute__((format(__printf__, fmt, args)))
++#endif
+ 
+ #define PAS_UNUSED __attribute__((unused))
+ 
+diff --git a/Source/bmalloc/libpas/src/libpas/pas_utils_prefix.h b/Source/bmalloc/libpas/src/libpas/pas_utils_prefix.h
+index c42ee5f..fa450fe 100644
+--- a/Source/bmalloc/libpas/src/libpas/pas_utils_prefix.h
++++ b/Source/bmalloc/libpas/src/libpas/pas_utils_prefix.h
+@@ -61,7 +61,13 @@ __PAS_BEGIN_EXTERN_C;
+ #define PAS_BMALLOC_HIDDEN 1
+ #endif
+ 
+-#if defined(PAS_LIBMALLOC) && PAS_LIBMALLOC || defined(PAS_BMALLOC_HIDDEN) && PAS_BMALLOC_HIDDEN
++#if defined(__MINGW32__)
++/* PE/COFF has no visibility semantics and MinGW GCC emits
++   "visibility attribute not supported in this configuration; ignored"
++   for every single annotated declaration. libpas is linked as a static
++   archive, so there is nothing to decorate. */
++#define __PAS_API
++#elif defined(PAS_LIBMALLOC) && PAS_LIBMALLOC || defined(PAS_BMALLOC_HIDDEN) && PAS_BMALLOC_HIDDEN
+ #define __PAS_API __attribute__((visibility("hidden")))
+ #else
+ #define __PAS_API __attribute__((visibility("default")))
+diff --git a/Source/ThirdParty/mingw-compat/include/libintl.h b/Source/ThirdParty/mingw-compat/include/libintl.h
+new file mode 100644
+index 0000000..879042e1
+--- /dev/null
++++ b/Source/ThirdParty/mingw-compat/include/libintl.h
+@@ -0,0 +1,54 @@
++/*
++ * MinGW compat shim: <libintl.h> wrapper that defuses the *printf-family
++ * redirection macros.
++ *
++ * gettext's libintl.h (>= 0.22, as shipped in MSYS2) installs object-like
++ * macros whenever it is included:
++ *
++ *     #define printf    libintl_printf   (expands to __printf__ on MinGW)
++ *     #define vprintf   libintl_vprintf
++ *     #define fprintf   libintl_fprintf
++ *     ... (sprintf, vsprintf, snprintf, vsnprintf, asprintf, vasprintf)
++ *
++ * In C++ those macros are applied blindly by the preprocessor, which knows
++ * nothing about member access: any use of the identifier "printf" after
++ * "out." (or "String::") is rewritten, so WebKit's WTF::PrintStream::printf
++ * / vprintf member calls (JSC ValueProfile.h, ScopedPrintStream.h, DataLog,
++ * ...) explode with "no member named '__printf__' in 'WTF::PrintStream'".
++ * It also silently renames member *declarations* that appear after the
++ * include, and clobbers the "printf" archetype name of
++ * __attribute__((format(printf, M, N))).
++ *
++ * gettext only installs the redirects so that printf()-family calls pick up
++ * its positional-format-aware implementations from the intl runtime. On
++ * MinGW -D__USE_MINGW_ANSI_STDIO=1 (always set by this package) the CRT
++ * printf family is already C99-conformant (the __mingw_* implementations),
++ * so dropping the macros routes the plain functions to the same CRT
++ * implementations the macros were ultimately wrapping and changes no
++ * observable behavior for the GTK port, which funnels user-visible,
++ * translatable strings through GLib's own g_strdup_printf()/g_string_*()
++ * helpers (compiled inside glib, unaffected by this header). The
++ * gettext/dgettext/... family, setlocale/newlocale and the "namespace std"
++ * using-declarations installed by libintl.h are all left untouched.
++ *
++ * include_next reaches the real <libintl.h> because mingw-compat/include is
++ * searched before the toolchain's default header directories.
++ */
++
++#ifndef MINGW_COMPAT_LIBINTL_H
++#define MINGW_COMPAT_LIBINTL_H
++
++#include_next <libintl.h>
++
++#undef printf
++#undef vprintf
++#undef fprintf
++#undef vfprintf
++#undef sprintf
++#undef vsprintf
++#undef snprintf
++#undef vsnprintf
++#undef asprintf
++#undef vasprintf
++
++#endif /* MINGW_COMPAT_LIBINTL_H */
