@@ -6,10 +6,10 @@ pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
 # Sadly, upstream currently suggests bundling a binaryen version for the time being:
 # https://github.com/emscripten-core/emscripten/issues/12252
 # I'm obviously unhappy about that but it appears to be the only practical solution for the time being.
-pkgver=7.0.0
+pkgver=7.0.1
 # NOTE: You need to run ./get-compatible-versions.sh after changing the pkgver!
-_binaryen_revision=a9141c8ccdd082009c61970e715c02a8652a3f6f
-_llvm_project_revision=84ba7b37f02df5a5567e31a1bcfa0f607e578f12
+_binaryen_revision=e7a4b90f3c638d57dc5a9bf5b49a9a0342278af4
+_llvm_project_revision=d361f7b3f5946f69f9e9e54fb28feac5da45d7d0
 pkgrel=1
 pkgdesc="Compile C and C++ into highly-optimizable JavaScript for the web (mingw-w64)"
 arch=('any')
@@ -26,6 +26,7 @@ depends=(
   "${MINGW_PACKAGE_PREFIX}-cc-libs"
   "${MINGW_PACKAGE_PREFIX}-nodejs"
   "${MINGW_PACKAGE_PREFIX}-python"
+  "${MINGW_PACKAGE_PREFIX}-rolldown"
   "${MINGW_PACKAGE_PREFIX}-zlib"
   "${MINGW_PACKAGE_PREFIX}-zstd"
 )
@@ -44,23 +45,29 @@ conflicts=("${MINGW_PACKAGE_PREFIX}-binaryen")
 provides=("${MINGW_PACKAGE_PREFIX}-binaryen")
 install="emscripten-${MSYSTEM}.install"
 source=(
-  "git+$msys2_repository_url#tag=$pkgver"
-  "llvm-project-$_llvm_project_revision.tar.gz::https://github.com/llvm/llvm-project/archive/$_llvm_project_revision.tar.gz"
-  "binaryen-$_binaryen_revision.tar.gz::https://github.com/WebAssembly/binaryen/archive/$_binaryen_revision.tar.gz"
+  "git+${msys2_repository_url}#tag=${pkgver}"
+  "llvm-project-${_llvm_project_revision}.tar.gz::https://github.com/llvm/llvm-project/archive/${_llvm_project_revision}.tar.gz"
+  "binaryen-${_binaryen_revision}.tar.gz::https://github.com/WebAssembly/binaryen/archive/${_binaryen_revision}.tar.gz"
 )
-noextract=("llvm-project-$_llvm_project_revision.tar.gz")
-sha256sums=('ffa1b6902f09cb664c81dd52019e040876bf00d51b0f7683a93e40d904ef2ca5'
-            '06e15ba80099e543fdf07db3f96667320e623c33af19654fd30f409d50536a99'
-            '16bd0846bb00e82ef5afada2f38c6c03c7527d747b6e142e1451827850232ef4')
+noextract=("llvm-project-${_llvm_project_revision}.tar.gz")
+sha256sums=('738b46f88c16b895430211ed138b15f1e9bdea2b922167c1a60a42832a39a8cf'
+            'f9f3f349913aee3df17e8a1d34224db679e560a18266dbcffc4dd9402e01557a'
+            '98705ca9218e620cd1bb6fcd838ada2eb6b37db4864cc7991b4e8ac8cc5528fc')
 
 prepare() {
-  tar -xf llvm-project-$_llvm_project_revision.tar.gz 2> /dev/null || true
-  mv "llvm-project-$_llvm_project_revision" llvm-project
-  mv "binaryen-$_binaryen_revision" binaryen
+  tar -xf llvm-project-${_llvm_project_revision}.tar.gz 2> /dev/null || true
+  mv "llvm-project-${_llvm_project_revision}" llvm-project
+  mv "binaryen-${_binaryen_revision}" binaryen
 
-  cd "$srcdir"/emscripten
+  cd emscripten
 
+  local _cpu=x64
+  if [[ ${MSYSTEM} == CLANGARM64 ]]; then
+    _cpu=arm64
+  fi
+  
   # Bootstrap launcher scripts. For more info see https://github.com/emscripten-core/emscripten/pull/23761
+  NAPI_RS_NATIVE_LIBRARY_PATH="${MINGW_PREFIX}/lib/node_modules/rolldown/rolldown-binding.win32-${_cpu}-gnu.node" \
   ./bootstrap.py
 }
 
@@ -73,21 +80,21 @@ build() {
   fi
 
   # Build binaryen
-  mkdir -p "$srcdir"/build-${MSYSTEM}-binaryen && cd "$srcdir"/build-${MSYSTEM}-binaryen
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
-  ${MINGW_PREFIX}/bin/cmake \
+  cmake \
     -Wno-author \
     -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
     -GNinja \
     "${_extra_config[@]}" \
     -DENABLE_WERROR=OFF \
     -DBUILD_TESTS=OFF \
-    ../binaryen
-  ${MINGW_PREFIX}/bin/cmake --build .
+    -S binaryen \
+    -B build-${MSYSTEM}-binaryen
+
+  cmake --build build-${MSYSTEM}-binaryen
 
   # Inspired from https://github.com/WebAssembly/waterfall/blob/db2ea5eeb11b74cce9b9459be0cc88807744b1b5/src/build.py#L868
   # Build llvm
-  mkdir -p "$srcdir"/build-${MSYSTEM}-llvm && cd "$srcdir"/build-${MSYSTEM}-llvm
   _archs="WebAssembly"
   if [[ "${CARCH}" == "aarch64" ]]; then
     _archs+=";AArch64"
@@ -95,7 +102,7 @@ build() {
     _archs+=";X86"
   fi
   MSYS2_ARG_CONV_EXCL="-DCMAKE_INSTALL_PREFIX=" \
-  ${MINGW_PREFIX}/bin/cmake \
+  cmake \
     -Wno-author \
     -GNinja \
     -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX}/opt/emscripten-llvm \
@@ -110,22 +117,22 @@ build() {
     -DLLVM_TARGETS_TO_BUILD="${_archs}" \
     -DLLVM_ENABLE_PROJECTS="lld;clang" \
     -DCLANG_INCLUDE_TESTS=OFF \
-    ../llvm-project/llvm
-  ${MINGW_PREFIX}/bin/cmake --build .
+    -S llvm-project/llvm \
+    -B build-${MSYSTEM}-llvm
+
+  cmake --build build-${MSYSTEM}-llvm
 }
 
 package() {
-  cd "$srcdir"/build-${MSYSTEM}-binaryen
-  DESTDIR="$pkgdir"  ${MINGW_PREFIX}/bin/cmake --install .
+  DESTDIR="${pkgdir}" cmake --install build-${MSYSTEM}-binaryen
 
   # Install LLVM stuff according to
   # https://github.com/emscripten-core/emscripten/blob/master/docs/packaging.md
   # and
   # https://github.com/WebAssembly/waterfall/blob/d4a504ffee488a68d09b336897c00d404544601d/src/build.py#L915
-  cd "$srcdir"/build-${MSYSTEM}-llvm
-  DESTDIR="$pkgdir"  ${MINGW_PREFIX}/bin/cmake --install .
+  DESTDIR="${pkgdir}" cmake --install build-${MSYSTEM}-llvm
 
-  cd "$pkgdir"${MINGW_PREFIX}/opt/emscripten-llvm/bin
+  cd "${pkgdir}"${MINGW_PREFIX}/opt/emscripten-llvm/bin
 
   # Clean up some unnecessary bins and libs
   rm clang-check.exe clang-cl.exe clang-cpp.exe clang-extdef-mapping.exe clang-format.exe \
@@ -136,17 +143,17 @@ package() {
 
   # Copy some stuff that we need but that wasn't installed by default
   for bin in llvm-as.exe llvm-dis.exe FileCheck.exe llc.exe llvm-link.exe llvm-mc.exe llvm-readobj.exe opt.exe llvm-dwarfdump.exe; do
-      install -Dm755 "$srcdir"/build-${MSYSTEM}-llvm/bin/$bin "$pkgdir"${MINGW_PREFIX}/opt/emscripten-llvm/bin/$bin
+      install -Dm755 "${srcdir}"/build-${MSYSTEM}-llvm/bin/${bin} "${pkgdir}"${MINGW_PREFIX}/opt/emscripten-llvm/bin/${bin}
   done
 
   # Install emscripten
-  cd "$srcdir"/emscripten
-  DESTDIR="$pkgdir"${MINGW_PREFIX}/lib/emscripten make install
+  cd "${srcdir}"/emscripten
+  DESTDIR="${pkgdir}"${MINGW_PREFIX}/lib/emscripten make install
 
   # install profile script
   mkdir -p "${pkgdir}${MINGW_PREFIX}"/etc/profile.d
   echo "export PATH=\$PATH:${MINGW_PREFIX}/lib/emscripten" > "${pkgdir}${MINGW_PREFIX}"/etc/profile.d/emscripten.sh
   cp "${pkgdir}${MINGW_PREFIX}"/etc/profile.d/emscripten.{sh,zsh}
 
-  install -Dm644 LICENSE "$pkgdir"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
+  install -Dm644 LICENSE "${pkgdir}"${MINGW_PREFIX}/share/licenses/${_realname}/LICENSE
 }
